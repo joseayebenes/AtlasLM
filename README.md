@@ -13,14 +13,14 @@ están en `legacy/` y se migran módulo a módulo en la fase 1.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 15 pruebas, sin modelo
+python -m pytest -q                         # 17 pruebas, sin modelo
 ```
 
 ### Tres niveles de modelo
 
 | Nivel | Para qué | Configuración |
 |---|---|---|
-| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa) | `atlas.test.toml` |
+| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa, modelo que razona) | `atlas.test.toml` |
 | **Modelo local** (Ollama o LM Studio) | probar la calidad real de análisis, búsqueda y agentes sin cupo ni red | `atlas.dev.toml` |
 | **Gateway corporativo** | producción | `atlas.toml` |
 
@@ -45,7 +45,10 @@ Tamaño del modelo según la memoria del Mac (valores aproximados de descarga en
 | 16 GB | `gemma4:e4b` (~10 GB) o `gemma4:12b` (~8 GB cuantizado) | `embeddinggemma` |
 | 24-32 GB | `gemma4:26b` (MoE, 4B activos: rápido para su calidad) | `embeddinggemma` |
 
-Comprueba la conexión antes de nada: `python -m atlas.cli check atlas.dev.toml`.
+Comprueba la conexión antes de nada: `python -m atlas.cli check atlas.dev.toml`. Si el
+modelo razona antes de contestar (gemma4 lo hace por defecto), `check` lo indica
+(`OK: 'ok' (reasoning model: …)`). Ese razonamiento cuenta dentro de `max_tokens`. Si el
+modelo agota el presupuesto razonando sin llegar a contestar, `check` falla y lo explica.
 
 ## Comandos
 

@@ -9,6 +9,8 @@ The control file is re-read on every request; keys:
   emb_fail_if: ["text"]            -> 400 if any text in the batch contains the string
   section_fail_if: ["text"]        -> prose answer (not JSON) if the section contains the string
   slow: seconds                    -> delay per request
+  reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
+                                      answer; with max_tokens <= N the answer comes back empty
 GET / returns counters. Sections are analysed with a heuristic (sentences with "shall").
 """
 import argparse, json, re, hashlib, os
@@ -64,6 +66,10 @@ class H(BaseHTTPRequestHandler):
         else:
             content = json.dumps({"summary": "Overall.", "purpose": "p", "scope": "s", "main_topics": ["t"]})
         message, finish = {"role": "assistant", "content": content}, "stop"
+        if c.get("reasoning_tokens"):
+            message["reasoning"] = "The user wants a short answer. "
+            if body.get("max_tokens") is not None and body["max_tokens"] <= c["reasoning_tokens"]:
+                message["content"], finish = "", "length"
         self.send(200, {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
                         "choices": [{"index": 0, "finish_reason": finish, "message": message}],
                         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})

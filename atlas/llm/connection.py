@@ -656,6 +656,41 @@ def describe(cfg: ServiceConfig) -> str:
             + (", adaptive pace" if n.adaptive else ""))
 
 
+# Output budget of the check request. Reasoning models think before answering and that
+# reasoning counts against max_tokens: with a tiny budget they never get to the answer.
+CHECK_MAX_TOKENS = 512
+
+
+def _reasoning(response, message) -> str:
+    """Describes the reasoning of a reasoning model, or "" if there is none. The text comes
+    as `reasoning` (Ollama) or `reasoning_content` (vLLM, LM Studio); servers that hide it
+    may still report `usage.completion_tokens_details.reasoning_tokens`."""
+    for name in ("reasoning", "reasoning_content"):
+        text = getattr(message, name, None)
+        if isinstance(text, str) and text.strip():
+            return f"{len(text)} characters of reasoning"
+    details = getattr(getattr(response, "usage", None), "completion_tokens_details", None)
+    tokens = getattr(details, "reasoning_tokens", None)
+    return f"{tokens} reasoning tokens" if tokens else ""
+
+
+def _check_chat(response) -> tuple[bool, str]:
+    """(ok, detail) for the answer to the check request."""
+    choice = response.choices[0]
+    answer = (choice.message.content or "").strip()
+    reasoning = _reasoning(response, choice.message)
+    if answer:
+        return True, repr(answer[:30]) + (f" (reasoning model: {reasoning})" if reasoning else "")
+    if choice.finish_reason == "length" and reasoning:
+        return False, (f"the server answered, but the model spent the whole {CHECK_MAX_TOKENS}-token "
+                       f"budget reasoning ({reasoning}) and wrote no answer. Check that it is not "
+                       "stuck reasoning, or turn reasoning off in the server.")
+    if choice.finish_reason == "length":
+        return False, (f"the server answered, but the reply was cut at {CHECK_MAX_TOKENS} tokens "
+                       "before any text")
+    return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
+
+
 def check(conn: Connection) -> int:
     """Real chat and embeddings request. Returns 0 if everything works."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
@@ -667,13 +702,15 @@ def check(conn: Connection) -> int:
             t0 = time.time()
             if name == "LLM":
                 r = client.chat.completions.create(
-                    model=cfg.model, max_tokens=5,
+                    model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
                     messages=[{"role": "user", "content": "Reply with: ok"}])
-                detail = repr((r.choices[0].message.content or "").strip()[:30])
+                ok, detail = _check_chat(r)
             else:
                 r = client.embeddings.create(model=cfg.model, input=["test"])
-                detail = f"dimension {len(r.data[0].embedding)}"
-            print(f"  OK ({time.time() - t0:.1f}s): {detail}")
+                ok, detail = True, f"dimension {len(r.data[0].embedding)}"
+            print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
+            if not ok:
+                failures += 1
         except SystemExit:
             raise
         except Exception as e:

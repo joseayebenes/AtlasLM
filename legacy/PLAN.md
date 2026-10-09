@@ -945,12 +945,12 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/doors/`: adaptador `database` completo (sección 15).
 - `atlas/code/`: analizador Ada sobre el `ada_graph.py` actual.
 - `atlas/llm/`: `connection.py` (el `conexion.py` de legacy, en inglés), alimentado desde
-  `atlas.toml`.
+  `atlas.toml`; `atlas check` reconoce los modelos que razonan.
 - `atlas/cli.py`: `run`, `status`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 15 pruebas (configuración, plugins, DOORS, reanudación tras corte, cuarentena,
-  poda, dependencias, CLI, servidor falso).
+- `tests/`: 17 pruebas (configuración, plugins, DOORS, reanudación tras corte, cuarentena,
+  poda, dependencias, CLI, servidor falso, `atlas check` con modelos que razonan).
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

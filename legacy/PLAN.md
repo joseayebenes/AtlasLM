@@ -965,7 +965,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/cli.py`: `run`, `status`, `sections`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 40 pruebas: configuración, plugins, DOORS, reanudación tras corte,
+- `tests/`: 45 pruebas: configuración, plugins, DOORS, reanudación tras corte,
   cuarentena, poda, dependencias, varios hilos sobre el mismo atlas.db, CLI, servidor
   falso, `atlas check` con modelos que razonan, documentos (estructura, análisis, caché,
   división de secciones, paso `docs.process` y equivalencia con `pdf_struct.py`) y, solo

@@ -28,3 +28,4 @@ include = ["atlas*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)"]

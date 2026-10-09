@@ -13,6 +13,9 @@ fake:           ## servidor OpenAI falso en :8770 para atlas.test.toml
 test:           ## pruebas automáticas (sin modelo)
 	$(PY) -m pytest -q
 
+test-ollama:    ## prueba de agente ADK contra Ollama local (se omite si no está en marcha)
+	$(PY) -m pytest -q -m ollama
+
 run-test:       ## procesamiento incremental sobre las muestras (sin modelo)
 	$(PY) -m atlas.cli run atlas.test.toml
 
@@ -28,4 +31,4 @@ check:          ## prueba de conexión con el modelo local
 clean:
 	rm -rf workspace-dev workspace-test examples/samples .pytest_cache
 
-.PHONY: install samples fake test run-test run-dev status check clean
+.PHONY: install samples fake test test-ollama run-test run-dev status check clean

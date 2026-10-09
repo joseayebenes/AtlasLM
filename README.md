@@ -13,7 +13,7 @@ están en `legacy/` y se migran módulo a módulo en la fase 1.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 17 pruebas, sin modelo
+python -m pytest -q                         # 17 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -49,6 +49,28 @@ Comprueba la conexión antes de nada: `python -m atlas.cli check atlas.dev.toml`
 modelo razona antes de contestar (gemma4 lo hace por defecto), `check` lo indica
 (`OK: 'ok' (reasoning model: …)`). Ese razonamiento cuenta dentro de `max_tokens`. Si el
 modelo agota el presupuesto razonando sin llegar a contestar, `check` falla y lo explica.
+
+### Agentes ADK con Ollama
+
+```bash
+pip install -e ".[agents]"                       # google-adk y litellm
+OLLAMA_CONTEXT_LENGTH=16384 ollama serve         # en otra terminal
+make test-ollama                                 # o: python -m pytest -q -m ollama
+```
+
+`tests/test_agents_ollama.py` monta un `LlmAgent` de ADK con LiteLLM sobre la URL y el
+modelo de `atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Le da dos herramientas
+sobre las muestras: `get_requirement`, que usa el adaptador de DOORS, y `trace`, que busca
+las etiquetas `Req:` en el Ada. Comprueba que el agente usa las dos, que responde con el
+requisito y los ficheros correctos y que no se inventa ficheros. Se omite sola si falta el
+extra `[agents]`, si Ollama no responde o si el modelo no está descargado. Para excluirla:
+`python -m pytest -m "not ollama"`.
+
+Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
+(`reasoning_effort="none"`, como hace la prueba). Con razonamiento, 7 de 10 respuestas
+fueron correctas y tardaron 40-80 s; las otras salieron vacías o con ficheros inventados.
+Sin razonamiento, acertó 5 de 5 en 8-14 s. Al instalar `[agents]`, litellm baja `openai`
+a la versión 2.x; el resto del proyecto funciona igual.
 
 ## Comandos
 
@@ -87,7 +109,8 @@ atlas/
 ├── graph/ index/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
 └── cli.py          run | status | plugins | check
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
-tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso
+tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
+                            test_agents_ollama.py, la prueba de agentes con Ollama
 legacy/                     scripts actuales + README y PLAN del proyecto
 ```
 

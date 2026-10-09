@@ -51,6 +51,13 @@ modelo razona antes de contestar (gemma4 lo hace por defecto), `check` lo indica
 (`OK: 'ok' (reasoning model: …)`). Ese razonamiento cuenta dentro de `max_tokens`. Si el
 modelo agota el presupuesto razonando sin llegar a contestar, `check` falla y lo explica.
 
+`atlas.dev.toml` desactiva el razonamiento con `[llm] reasoning_effort = "none"` (`check` y
+el análisis de documentos lo envían en cada petición). Con razonamiento, `gemma4:12b`
+tardaba entre 1 y 8 minutos en cada sección del manual de ejemplo. Sin él tarda unos 15 s,
+y el manual entero, 48 s, con los tres requisitos literales. Esa versión de Ollama tampoco
+acepta `response_format` con esquema JSON (responde 501): el análisis sigue sin él y saca
+el JSON de la respuesta.
+
 ### Agentes ADK con Ollama
 
 ```bash

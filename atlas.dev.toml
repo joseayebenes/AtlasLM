@@ -9,6 +9,7 @@ base_url = "http://localhost:11434/v1"     # Ollama. LM Studio: http://localhost
 model = "gemma4:12b"                       # en un Mac de 16 GB: gemma4:12b o gemma4:e4b
 api_key = "local"
 max_tokens = 8192
+reasoning_effort = "none"                  # gemma4 razona por defecto: una sección tarda minutos en vez de segundos
 
 [embeddings]
 model = "embeddinggemma"

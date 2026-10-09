@@ -135,6 +135,8 @@ class JsonLlm:
             kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)
             if self.cfg.max_tokens:
                 kwargs["max_tokens"] = self.cfg.max_tokens
+            if self.cfg.reasoning_effort:
+                kwargs["reasoning_effort"] = self.cfg.reasoning_effort
             if self.schema_ok:
                 kwargs["response_format"] = {"type": "json_schema", "json_schema":
                                              {"name": name, "schema": schema}}

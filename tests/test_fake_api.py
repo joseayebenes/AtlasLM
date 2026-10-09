@@ -39,3 +39,18 @@ def test_check_fails_when_reasoning_leaves_no_answer(fake, capsys):
     assert check(Connection(llm=_service(url), embeddings=_service(url))) == 1
     out = capsys.readouterr().out
     assert "FAILED" in out and "budget reasoning" in out
+
+
+def test_check_and_from_config_use_reasoning_effort(fake, capsys, tmp_path):
+    url, control = fake
+    from atlas.config import load_config
+    from atlas.llm import Connection, check, from_config
+    from atlas.llm.connection import CHECK_MAX_TOKENS
+    control.write_text(json.dumps({"reasoning_tokens": CHECK_MAX_TOKENS}))
+    toml = tmp_path / "atlas.toml"
+    toml.write_text(f'[llm]\nbase_url = "{url}"\nmodel = "fake"\nreasoning_effort = "none"\n'
+                    f'[network]\nproxy = ""\nno_proxy = "*"\n')
+    conn = from_config(load_config(toml))
+    assert conn.llm.reasoning_effort == "none"
+    assert check(Connection(llm=conn.llm, embeddings=_service(url))) == 0
+    assert "OK" in capsys.readouterr().out

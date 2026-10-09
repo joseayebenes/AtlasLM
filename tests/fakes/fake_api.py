@@ -15,7 +15,8 @@ The control file is re-read on every request; keys:
                                       this with some models)
   slow: seconds                    -> delay per request
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
-                                      answer; with max_tokens <= N the answer comes back empty
+                                      answer; with max_tokens <= N the answer comes back empty.
+                                      reasoning_effort = "none" in the request turns it off
 GET / returns counters. Sections are analysed with a heuristic (sentences with "shall").
 """
 import argparse, json, re, hashlib, os
@@ -77,7 +78,7 @@ class H(BaseHTTPRequestHandler):
         else:
             content = json.dumps({"summary": "Overall.", "purpose": "p", "scope": "s", "main_topics": ["t"]})
         message, finish = {"role": "assistant", "content": content}, "length" if cut else "stop"
-        if c.get("reasoning_tokens"):
+        if c.get("reasoning_tokens") and body.get("reasoning_effort") != "none":
             message["reasoning"] = "The user wants a short answer. "
             if body.get("max_tokens") is not None and body["max_tokens"] <= c["reasoning_tokens"]:
                 message["content"], finish = "", "length"

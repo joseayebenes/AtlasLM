@@ -43,7 +43,7 @@ def _expand(v: Any) -> Any:
 SCHEMA: dict[str, dict[str, Any]] = {
     "project": {"name": str, "workspace": str, "log_level": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
-            "max_tokens": int, "network": dict},
+            "max_tokens": int, "reasoning_effort": str, "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,

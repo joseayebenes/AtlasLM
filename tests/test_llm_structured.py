@@ -64,3 +64,12 @@ def test_servers_without_structured_output(fake_llm, fake_chats):
     llm.ask_json("system", "<section>x</section>", SCHEMA, "section")
     assert fake_chats() - before == 1
 
+
+def test_reasoning_can_be_turned_off(fake_llm):
+    service, control = fake_llm
+    control.write_text(json.dumps({"reasoning_tokens": 100}))
+    service.max_tokens = 50                      # all of it would go to reasoning
+    with pytest.raises(TruncatedResponse):
+        JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+    service.reasoning_effort = "none"
+    assert JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")["summary"]

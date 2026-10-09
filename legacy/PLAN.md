@@ -679,10 +679,20 @@ Estado:
   - `clean_headers` ya no borra líneas del cuerpo que siguen una plantilla aunque caigan en
     el borde de una página;
   - la salida y sus textos fijos están en inglés.
-- El cliente JSON con reparación está en `atlas.llm.structured`, para reutilizarlo en
+- El cliente JSON con reparación está en `atlas.llm.structured`; lo usan `atlas.docs` y
   `atlas.index`.
-- Pendientes: `atlas.index`, la migración real de `atlas.code`, `atlas.graph` y
-  `atlas.mcp`.
+- **`atlas.index` hecho.** `tests/test_index_legacy.py` comprueba que da los mismos
+  registros, resultados de búsqueda (con y sin reescritura, con filtros) y fuentes de
+  respuesta que `doc_rag.py`. Sus tablas y la caché de vectores van en `atlas.db`. Tiene el
+  paso `index.documents` (por documento, tras `docs.process`) y `atlas search` / `atlas ask`.
+  El modelo de embeddings ya no queda fijado en la base de datos: la búsqueda vectorial
+  solo usa los vectores del modelo actual.
+- Pendientes:
+  - la migración real de `atlas.code`;
+  - `atlas.graph`;
+  - `atlas.mcp`, que debe recoger las herramientas del MCP de `doc_rag.py`
+    (`list_documents`, `search_docs`, `get_section`, `get_requirement`, `ask_docs`) y las
+    de `ada_graph_mcp.py`.
 
 ### Fase 2 — Motor incremental completo (≈ 6 días)
 
@@ -960,16 +970,20 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/code/`: analizador Ada sobre el `ada_graph.py` actual.
 - `atlas/docs/`: `pdf_struct.py` migrado en la fase 1 (extracción, estructura, análisis
   `llm | regex | none` y Markdown), con el paso `docs.process`.
+- `atlas/index/`: `doc_rag.py` migrado en la fase 1 (registros, embeddings con caché, FTS5,
+  búsqueda híbrida, respuesta citada), con el paso `index.documents`.
 - `atlas/llm/`: `connection.py` (el `conexion.py` de legacy, en inglés), alimentado desde
   `atlas.toml`; `atlas check` reconoce los modelos que razonan.
-- `atlas/cli.py`: `run`, `status`, `sections`, `plugins`, `check`.
+- `atlas/cli.py`: `run`, `status`, `sections`, `search`, `ask`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 45 pruebas: configuración, plugins, DOORS, reanudación tras corte,
+- `tests/`: 51 pruebas: configuración, plugins, DOORS, reanudación tras corte,
   cuarentena, poda, dependencias, varios hilos sobre el mismo atlas.db, CLI, servidor
   falso, `atlas check` con modelos que razonan, documentos (estructura, análisis, caché,
-  división de secciones, paso `docs.process` y equivalencia con `pdf_struct.py`) y, solo
-  si Ollama está en marcha, un agente ADK que usa herramientas.
+  división de secciones, paso `docs.process` y equivalencia con `pdf_struct.py`), índice
+  (registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, paso
+  `index.documents` y equivalencia con `doc_rag.py`) y, solo si Ollama está en marcha, un
+  agente ADK que usa herramientas.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

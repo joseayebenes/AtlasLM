@@ -100,13 +100,21 @@ class Ledger:
                 started TEXT, finished TEXT, PRIMARY KEY (step, unit));
             CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger(step, status);
         """)
-        self.lock = threading.Lock()
+        # The connection is shared by the Runner's worker threads, and the sqlite3 module
+        # does not serialise them: every read and write goes through this lock. Re-entrant
+        # because mark() reads the previous row while holding it.
+        self.lock = threading.RLock()
+
+    def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
+        with self.lock:
+            return self.db.execute(sql, params).fetchall()
 
     def get(self, step: str, unit: str) -> sqlite3.Row | None:
-        return self.db.execute("SELECT * FROM ledger WHERE step=? AND unit=?", (step, unit)).fetchone()
+        rows = self._query("SELECT * FROM ledger WHERE step=? AND unit=?", (step, unit))
+        return rows[0] if rows else None
 
     def units(self, step: str) -> dict[str, sqlite3.Row]:
-        return {r["unit"]: r for r in self.db.execute("SELECT * FROM ledger WHERE step=?", (step,))}
+        return {r["unit"]: r for r in self._query("SELECT * FROM ledger WHERE step=?", (step,))}
 
     def mark(self, step: str, unit: str, status: str, fingerprint: str | None = None,
              output_hash: str | None = None, error: str | None = None, attempts: int | None = None) -> None:
@@ -130,12 +138,12 @@ class Ledger:
 
     def summary(self) -> dict[str, dict[str, int]]:
         out: dict[str, dict[str, int]] = {}
-        for r in self.db.execute("SELECT step, status, COUNT(*) n FROM ledger GROUP BY step, status"):
+        for r in self._query("SELECT step, status, COUNT(*) n FROM ledger GROUP BY step, status"):
             out.setdefault(r["step"], {})[r["status"]] = r["n"]
         return out
 
     def pending(self) -> list[dict]:
-        return [dict(r) for r in self.db.execute(
+        return [dict(r) for r in self._query(
             "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','quarantined','running')"
             " ORDER BY step, unit")]
 

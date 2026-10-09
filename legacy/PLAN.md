@@ -671,8 +671,10 @@ Aceptación:
 - Pruebas trasladadas (servidores falsos, PDFs de prueba, proyecto Ada de prueba).
 
 Aceptación:
-- [ ] Mismo resultado que los scripts actuales sobre los documentos y el código de prueba.
-- [ ] Cada módulo se importa y se usa solo, sin ADK ni MCP.
+- [x] Mismo resultado que los scripts actuales sobre los documentos y el código de prueba
+      (`tests/test_*_legacy.py`, `test_same_analysis_as_ada_graph`,
+      `test_same_graph_as_ada_graph`), salvo las diferencias buscadas que se listan abajo.
+- [x] Cada módulo se importa y se usa solo, sin ADK ni MCP.
 
 Estado:
 - **`atlas.docs` hecho.** `tests/test_docs_legacy.py` comprueba que da el mismo resultado
@@ -691,12 +693,24 @@ Estado:
   paso `index.documents` (por documento, tras `docs.process`) y `atlas search` / `atlas ask`.
   El modelo de embeddings ya no queda fijado en la base de datos: la búsqueda vectorial
   solo usa los vectores del modelo actual.
-- Pendientes:
-  - la migración real de `atlas.code`;
-  - `atlas.graph`;
-  - `atlas.mcp`, que debe recoger las herramientas del MCP de `doc_rag.py`
-    (`list_documents`, `search_docs`, `get_section`, `get_requirement`, `ask_docs`) y las
-    de `ada_graph_mcp.py`.
+- **`atlas.code` hecho.** El analizador Ada ya no depende de `legacy/`, y da lo mismo que
+  `ada_graph.analizar` en cada fichero de ejemplo. Ahora sí se usa `req_tag` (también
+  `req_regex`). Los resultados salen en el orden del fichero: con py-tree-sitter 0.26,
+  `ada_graph.py` cambiaba el orden de los tipos entre ejecuciones.
+- **`atlas.graph` hecho (parte de código).** Construye el grafo con un paso `graph.build`, lo
+  guarda en `atlas.db` por origen y lo exporta a GraphML y JSON. `KnowledgeGraph` ofrece las
+  16 consultas de `ada_graph_mcp.py`, y `atlas graph` muestra el informe. Con los
+  identificadores proyectados a nombres simples, el grafo de los ejemplos es el de
+  `ada_graph.py`. Diferencias buscadas:
+  - identificadores `unidad.nombre`, como pide la sección 7. Antes, dos subprogramas con el
+    mismo nombre en dos paquetes eran un solo nodo, y un procedimiento de biblioteca
+    sobrescribía el nodo de su unidad;
+  - resolución de nombres por unidad propia, `with` y, si es ambiguo, aristas a todos los
+    candidatos.
+- Pendiente de la fase 1: `atlas.mcp`, que debe recoger las herramientas del MCP de
+  `doc_rag.py` (`list_documents`, `search_docs`, `get_section`, `get_requirement`,
+  `ask_docs`) y las de `ada_graph_mcp.py`, ya disponibles como métodos de `atlas.index.Index`
+  y `atlas.graph.KnowledgeGraph`.
 
 ### Fase 2 — Motor incremental completo (≈ 6 días)
 
@@ -971,23 +985,31 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/pipeline/`: motor incremental (`Step`, `Ledger`, `Runner`) con reanudación,
   cuarentena, poda, orden por dependencias y bloqueo del workspace.
 - `atlas/doors/`: adaptador `database` completo (sección 15).
-- `atlas/code/`: analizador Ada sobre el `ada_graph.py` actual.
+- `atlas/code/`: analizador Ada (`ada_graph.py` migrado en la fase 1).
+- `atlas/graph/`: grafo de código en `atlas.db`, consultas de `ada_graph_mcp.py` y
+  exportación, con el paso `graph.build` (fase 1).
 - `atlas/docs/`: `pdf_struct.py` migrado en la fase 1 (extracción, estructura, análisis
   `llm | regex | none` y Markdown), con el paso `docs.process`.
 - `atlas/index/`: `doc_rag.py` migrado en la fase 1 (registros, embeddings con caché, FTS5,
   búsqueda híbrida, respuesta citada), con el paso `index.documents`.
 - `atlas/llm/`: `connection.py` (el `conexion.py` de legacy, en inglés), alimentado desde
   `atlas.toml`; `atlas check` reconoce los modelos que razonan.
-- `atlas/cli.py`: `run`, `status`, `sections`, `search`, `ask`, `plugins`, `check`.
+- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 53 pruebas: configuración, plugins, DOORS, reanudación tras corte y tras
-  `kill -9`, cuarentena, poda, dependencias, varios hilos sobre el mismo atlas.db, CLI,
-  servidor falso, `atlas check` con modelos que razonan, documentos (estructura, análisis, caché,
-  división de secciones, paso `docs.process` y equivalencia con `pdf_struct.py`), índice
-  (registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, paso
-  `index.documents` y equivalencia con `doc_rag.py`) y, solo si Ollama está en marcha, un
-  agente ADK que usa herramientas.
+- `tests/`: 62 pruebas:
+  - configuración, plugins y DOORS;
+  - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
+    varios hilos sobre el mismo atlas.db;
+  - CLI, servidor falso y `atlas check` con modelos que razonan;
+  - documentos: estructura, análisis, caché, división de secciones, paso `docs.process` y
+    equivalencia con `pdf_struct.py`;
+  - índice: registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, paso
+    `index.documents` y equivalencia con `doc_rag.py`;
+  - código y grafo: etiquetas, análisis Ada, nombres repetidos en dos paquetes,
+    almacenamiento, exportación, consultas, paso `graph.build` y equivalencia con
+    `ada_graph.py`;
+  - solo si Ollama está en marcha, un agente ADK que usa herramientas.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

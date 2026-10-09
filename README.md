@@ -6,7 +6,9 @@ repositorio es el **esqueleto de la fase 0 del plan** (`legacy/PLAN.md`): motor
 incremental, configuración validada, sistema de plugins, lector de DOORS desde base de
 datos, analizador Ada, datos de ejemplo, servidor falso y pruebas. Los scripts anteriores
 están en `legacy/` y se migran módulo a módulo en la fase 1. Ya están migrados
-`pdf_struct.py` (ahora `atlas.docs`) y `doc_rag.py` (ahora `atlas.index`).
+`pdf_struct.py` (ahora `atlas.docs`), `doc_rag.py` (`atlas.index`), `ada_graph.py`
+(`atlas.code` y `atlas.graph`) y las consultas de `ada_graph_mcp.py` (`atlas.graph`).
+Falta el servidor MCP (`atlas.mcp`).
 
 ## Puesta en marcha en un Mac (Apple Silicon)
 
@@ -14,7 +16,7 @@ están en `legacy/` y se migran módulo a módulo en la fase 1. Ya están migrad
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 52 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 61 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -86,6 +88,7 @@ a la versión 2.x; el resto del proyecto funciona igual.
 python -m atlas.cli run      atlas.dev.toml   # procesamiento incremental y reanudable
 python -m atlas.cli status   atlas.dev.toml   # libro de registro y datos
 python -m atlas.cli sections atlas.dev.toml   # secciones de cada documento, sin llamar al modelo
+python -m atlas.cli graph    atlas.dev.toml   # informe del grafo de código
 python -m atlas.cli search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
 python -m atlas.cli ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
@@ -99,8 +102,9 @@ Prueba el motor sin modelo:
 
 ```bash
 python tests/fakes/fake_api.py --port 8770 &      # en otra terminal
-python -m atlas.cli run atlas.test.toml           # primera vez: DOORS, Ada, documentos e índice
+python -m atlas.cli run atlas.test.toml           # primera vez: DOORS, Ada, grafo, documentos e índice
 python -m atlas.cli run atlas.test.toml           # segunda vez: todo "al día", 0 peticiones
+python -m atlas.cli graph atlas.test.toml
 python -m atlas.cli search "alarm latency" atlas.test.toml
 # cambia un .adb, un requisito en examples/samples/doors.sqlite o hmi_manual.md y vuelve a
 # ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones cambiadas y
@@ -118,12 +122,13 @@ atlas/
 ├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos;
 │                   structured.py: respuestas JSON con reparación
 ├── doors/          adaptador "database": consultas y convención configurables, diff
-├── code/           analizador "ada" (envuelve legacy/ada_graph.py)
+├── code/           analizadores de código: "ada" (era ada_graph.py), etiquetas de requisito
 ├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
 ├── index/          índice (era doc_rag.py): registros, embeddings con caché, FTS5, búsqueda
 │                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db
-├── graph/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
-└── cli.py          run | status | sections | search | ask | plugins | check
+├── graph/          grafo de código en atlas.db, consultas (eran ada_graph*.py), GraphML y JSON
+├── agents/ mcp/    pendientes (fases 1 y 5 del plan)
+└── cli.py          run | status | sections | graph | search | ask | plugins | check
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
                             test_agents_ollama.py, la prueba de agentes con Ollama
@@ -136,7 +141,7 @@ El código está en inglés: nombres, comentarios, docstrings, mensajes de la l�
 comandos y los ficheros que genera (los Markdown de cada documento; el contenido de los
 resúmenes sigue `lang`). La documentación está en español: este README, `legacy/PLAN.md`,
 `legacy/README.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el español
-hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
+mientras siga existiendo.
 
 ## Añadir o quitar piezas
 
@@ -220,6 +225,44 @@ from atlas.index import Index
 idx = Index.from_config(load_config("atlas.dev.toml"))
 hits = idx.search("alarm latency", k=8, kinds=["requirement"])
 res = idx.answer("When does the HMI raise an alarm?")      # {"answer": ..., "sources": [...]}
+```
+
+## Código y grafo
+
+El paso `code` analiza cada fichero Ada con tree-sitter y guarda en `atlas.db`:
+- sus subprogramas, con sus líneas, sus llamadas propias, el comentario de cabecera (el del
+  `.ads` si lo hay) y los requisitos que citan;
+- sus tipos, variables, constantes y `with`.
+
+Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
+otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs.
+
+El paso `graph` construye con eso el grafo de código y lo exporta a `<workspace>/graph/`
+(`code.graphml` para Gephi o yEd, `code.json`).
+
+Los elementos se identifican como `unidad.nombre` (`tracks.update`), así que dos paquetes
+pueden tener un `Update` cada uno. Cada `Nombre (...)` de un cuerpo se clasifica según lo
+que es `Nombre`:
+- un subprograma: es una llamada;
+- un tipo: es una conversión;
+- una variable de paquete: es un uso;
+- un tipo predefinido: se ignora;
+- algo desconocido: es una llamada externa.
+
+Un nombre sin paquete se busca primero en la propia unidad y luego en las demás,
+prefiriendo las que se importan con `with`. Si aún hay varias, la arista va a todas, para
+que el análisis de impacto no se deje ninguna; `atlas graph` las cuenta como llamadas
+ambiguas.
+
+Como librería, las consultas son las del antiguo `ada_graph_mcp.py`:
+
+```python
+from atlas.config import load_config
+from atlas.graph import KnowledgeGraph
+g = KnowledgeGraph.from_config(load_config("atlas.dev.toml"))
+g.impact("Delete_Track", depth=3)          # quién lo llama, directa o indirectamente
+g.requirement("SRS-0004")                 # qué subprogramas y tipos lo trazan
+g.read_source("tracks.update")            # el código, con números de línea
 ```
 
 ## DOORS desde una base de datos

@@ -621,6 +621,10 @@ ADK las convierte en `FunctionTool` y `atlas.mcp` las expone con los mismos nomb
 
 - Salidas compactas con `truncated` y presupuesto de caracteres (ya se hace en los MCP
   actuales).
+- Para agentes de código, `atlas.code.CodeTools`: `list_files`, `grep`, `read_file`,
+  `edit_file` y `write_file`, confinadas a `[sources.code] roots`. Para editar hay que leer
+  antes, y el texto debe ser único. Toleran los escapes y la sangría mal copiados por los
+  modelos pequeños. Con ellas, `gemma4:12b` en ADK hizo un cambio preciso 5 veces de 5.
 - Nombres estables y sin solapamiento (`search` busca en todo; `trace` resuelve
   requisito↔código; `impact` es transitivo; `read_source` lee rangos de líneas).
 - Un agente ADK puede usarse como herramienta de otro (`AgentTool`): OpenCode llama a
@@ -997,7 +1001,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 62 pruebas:
+- `tests/`: 74 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
@@ -1009,7 +1013,10 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   - código y grafo: etiquetas, análisis Ada, nombres repetidos en dos paquetes,
     almacenamiento, exportación, consultas, paso `graph.build` y equivalencia con
     `ada_graph.py`;
-  - solo si Ollama está en marcha, un agente ADK que usa herramientas.
+  - herramientas de ficheros: confinamiento, lectura, búsqueda, reglas de edición,
+    codificación y tolerancia a los fallos de los modelos pequeños;
+  - solo si Ollama está en marcha, dos agentes ADK: uno que traza un requisito y otro que
+    edita código.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

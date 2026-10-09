@@ -16,7 +16,7 @@ Falta el servidor MCP (`atlas.mcp`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 61 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 72 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -122,7 +122,8 @@ atlas/
 ├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos;
 │                   structured.py: respuestas JSON con reparación
 ├── doors/          adaptador "database": consultas y convención configurables, diff
-├── code/           analizadores de código: "ada" (era ada_graph.py), etiquetas de requisito
+├── code/           analizadores de código: "ada" (era ada_graph.py), etiquetas de requisito,
+│                   herramientas de ficheros para agentes de código
 ├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
 ├── index/          índice (era doc_rag.py): registros, embeddings con caché, FTS5, búsqueda
 │                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db
@@ -264,6 +265,46 @@ g.impact("Delete_Track", depth=3)          # quién lo llama, directa o indirect
 g.requirement("SRS-0004")                 # qué subprogramas y tipos lo trazan
 g.read_source("tracks.update")            # el código, con números de línea
 ```
+
+### Herramientas para agentes de código
+
+`atlas.code.CodeTools` tiene las herramientas habituales de un agente de código sobre
+`[sources.code] roots`:
+
+| Herramienta | Qué hace |
+|---|---|
+| `list_files` | ficheros por patrón glob (`*.adb` busca en todas las subcarpetas) |
+| `grep` | expresión regular, con fichero, línea y líneas de contexto |
+| `read_file` | un fragmento numerado |
+| `edit_file` | sustituye un texto y devuelve el diff |
+| `write_file` | crea un fichero o lo reescribe entero |
+
+Protecciones:
+- No tocan nada fuera de las raíces ni de lo excluido con `exclude`; tampoco con `..` ni
+  con enlaces simbólicos.
+- Solo editan un fichero leído antes, y no si ha cambiado desde entonces.
+- Si el texto a sustituir aparece varias veces, exigen precisar más o pedir `replace_all`.
+- Conservan la codificación, los finales de línea CRLF y los permisos, y escriben de forma
+  atómica.
+- `CodeTools(..., read_only=True)` deja solo las de lectura.
+
+Un error es una respuesta con `error` (y, si el texto no aparece, las líneas más
+parecidas) para que el agente se corrija.
+
+Los modelos pequeños suelen fallar copiando el texto a sustituir: escapan las comillas o
+cambian la sangría. `edit_file` lo intenta primero exacto y luego sin esos escapes y sin
+tener en cuenta la sangría, siempre que la coincidencia sea única, y lo indica en `notes`.
+Con eso, un agente ADK con `gemma4:12b` cambió un mensaje de log en los ejemplos en 5
+intentos de 5, unos 20 s cada uno; sin esa tolerancia entraba en bucle.
+
+```python
+from atlas.code import CodeTools
+tools = CodeTools.from_config(load_config("atlas.dev.toml"))
+agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # ADK
+```
+
+También están registradas como plugins `tool` con esos nombres, para `[agents.*] tools` y
+`[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente `atlas run`.
 
 ## DOORS desde una base de datos
 

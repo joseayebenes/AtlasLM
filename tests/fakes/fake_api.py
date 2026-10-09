@@ -17,7 +17,8 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
-GET / returns counters. Sections are analysed with a heuristic (sentences with "shall").
+GET / returns counters. Sections are analysed with a heuristic (sentences with "shall");
+questions with sources ("Sources: ...") get an answer that cites [1].
 """
 import argparse, json, re, hashlib, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -73,6 +74,8 @@ class H(BaseHTTPRequestHandler):
                     content, cut = content[:len(content) // 2], True
         elif "Reply with: ok" in user:
             content = "ok"
+        elif user.startswith("Sources:"):
+            content = "Answer taken from the sources [1]."
         elif "search queries" in (body["messages"][0]["content"] if body["messages"] else ""):
             content = json.dumps({"queries": [user[:60]], "keywords": []})
         else:

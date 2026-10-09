@@ -112,9 +112,10 @@ class TruncatedResponse(Exception):
 
 
 class JsonLlm:
-    """Chat client that answers with JSON objects. It asks for `response_format` with a
-    JSON schema and, if the server does not accept it, goes on without it. Thread-safe:
-    one instance can be shared by the workers that analyse sections in parallel."""
+    """Chat client that answers with JSON objects (`ask_json`) or with text (`ask_text`).
+    It asks for `response_format` with a JSON schema and, if the server does not accept
+    it, goes on without it. Thread-safe: one instance can be shared by the workers that
+    analyse sections in parallel."""
 
     # How servers say they do not support response_format: 400 (most), 422 (some vLLM
     # versions), 501 "structured output is unavailable" (Ollama with some models)
@@ -130,13 +131,23 @@ class JsonLlm:
         self.schema_ok = True   # turned off if the server does not accept json_schema
         self._lock = threading.Lock()
 
+    def _kwargs(self, messages: list[dict]) -> dict:
+        kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)
+        if self.cfg.max_tokens:
+            kwargs["max_tokens"] = self.cfg.max_tokens
+        if self.cfg.reasoning_effort:
+            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+        return kwargs
+
+    def ask_text(self, system: str, user: str) -> str:
+        """A plain text answer (e.g. a cited answer for a person)."""
+        resp = self.client.chat.completions.create(**self._kwargs(
+            [{"role": "system", "content": system}, {"role": "user", "content": user}]))
+        return (resp.choices[0].message.content or "").strip()
+
     def _call(self, messages: list[dict], schema: dict, name: str) -> tuple[str, str]:
         while True:
-            kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)
-            if self.cfg.max_tokens:
-                kwargs["max_tokens"] = self.cfg.max_tokens
-            if self.cfg.reasoning_effort:
-                kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+            kwargs = self._kwargs(messages)
             if self.schema_ok:
                 kwargs["response_format"] = {"type": "json_schema", "json_schema":
                                              {"name": name, "schema": schema}}

@@ -86,8 +86,22 @@ def fake_llm(fake):
 
 
 @pytest.fixture
-def fake_chats(fake):
-    """Function that returns how many chat requests the fake API has received."""
+def fake_stats(fake):
+    """Function that returns the counters of the fake API (chat, embeddings, emb_texts)."""
     import json
     url = fake[0].removesuffix("/v1") + "/"
-    return lambda: json.load(urllib.request.urlopen(url))["chat"]
+    return lambda: json.load(urllib.request.urlopen(url))
+
+
+@pytest.fixture
+def fake_chats(fake_stats):
+    """Function that returns how many chat requests the fake API has received."""
+    return lambda: fake_stats()["chat"]
+
+
+@pytest.fixture
+def fake_embeddings(fake):
+    """ServiceConfig of the embeddings of the fake API."""
+    from atlas.llm import NetConfig, ServiceConfig
+    return ServiceConfig(base_url=fake[0], model="embeddinggemma", api_key="x", batch=16,
+                         net=NetConfig(proxy="", no_proxy="*"))

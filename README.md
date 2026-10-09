@@ -15,8 +15,8 @@ Falta el servidor MCP (`atlas.mcp`).
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
-python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 72 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
+python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
+python -m pytest -q                         # 90 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -121,7 +121,7 @@ atlas/
 ├── store.py        atlas.db: requisitos, enlaces, unidades de código, documentos
 ├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos;
 │                   structured.py: respuestas JSON con reparación
-├── doors/          adaptador "database": consultas y convención configurables, diff
+├── doors/          requisitos: base de intercambio (exchange.py) y adaptadores "exchange" y "database"
 ├── code/           analizadores de código: "ada" (era ada_graph.py), etiquetas de requisito,
 │                   herramientas de ficheros para agentes de código
 ├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
@@ -130,7 +130,8 @@ atlas/
 ├── graph/          grafo de código en atlas.db, consultas (eran ada_graph*.py), GraphML y JSON
 ├── agents/ mcp/    pendientes (fases 1 y 5 del plan)
 └── cli.py          run | status | sections | graph | search | ask | plugins | check
-examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
+examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requirements.sqlite)
+tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
                             test_agents_ollama.py, la prueba de agentes con Ollama
 legacy/                     scripts actuales + README y PLAN del proyecto
@@ -306,10 +307,44 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 También están registradas como plugins `tool` con esos nombres, para `[agents.*] tools` y
 `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente `atlas run`.
 
-## DOORS desde una base de datos
+## Requisitos: la base de intercambio
 
-`[sources.doors.database]` lleva las consultas SQL (módulos, requisitos, enlaces e
-instantánea) con el parámetro `:module`, y `[sources.doors.convention]` el nombre de las
-columnas, el patrón de los IDs, la normalización, las columnas de enlace y la expresión
-regular de referencias dentro del texto. Ver `atlas.dev.toml` (SQLite de ejemplo) y
-`atlas.toml` (ODBC hacia SQL Server). Nada de esto está en el código.
+atlas lee siempre los requisitos de la **base de intercambio**: una base SQLite con un
+esquema fijo y versionado (`atlas/doors/exchange.py`).
+
+| Tabla | Qué guarda |
+|---|---|
+| `exchange_modules` | módulos, con una instantánea que cambia con su contenido |
+| `exchange_requirements` | ID, texto, título, tipo (`requirement`, `heading` o `information`), padre, orden, nivel, numeración y atributos |
+| `exchange_links` | enlaces ya tipados |
+
+Lo que cambia de un proyecto a otro es **quién la rellena**: cada relleno hace su propia
+correspondencia con la fuente, y atlas no necesita saber de dónde vienen los datos.
+
+```
+DOORS ─► tools/doors_export ─┐
+ReqIF, hoja de cálculo... ───┼─► requirements.sqlite ─► atlas (adapter = "exchange")
+```
+
+- **DOORS**: `tools/doors_export` descarga en bruto desde DOORS (en el PC con DOORS) y
+  publica la base aplicando `mapping.toml`. Ese fichero dice qué atributo da el ID y el
+  texto, qué atributos pasan, cómo se llama cada módulo y qué tipo es cada módulo de
+  enlaces. Ver [su README](tools/doors_export/README.md).
+- **Otro origen**: basta con escribir la base con `ExchangeWriter`, que comprueba el
+  contrato: IDs únicos, tipos válidos y enlaces que salen del propio módulo.
+
+En `atlas.toml` solo se dice dónde está la base y cómo casan los IDs con documentos y
+código:
+
+```toml
+[sources.doors]
+adapter = "exchange"
+[sources.doors.exchange]
+path = "C:/atlas/tms/requirements.sqlite"
+[sources.doors.convention]
+id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # "see SSS-0012" en el texto es un enlace
+```
+
+Para leer directamente otra base con consultas propias queda el adaptador `database`
+(`[sources.doors.database]`, SQLite u ODBC; ver `atlas/doors/__init__.py`).

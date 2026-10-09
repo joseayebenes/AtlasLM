@@ -747,6 +747,17 @@ Aceptación:
 - [ ] La misma configuración funciona contra la base de datos real cambiando solo
       `[sources.doors.database]`.
 
+Estado. Decisión del 9 de octubre de 2026: atlas lee siempre los requisitos de una **base
+de intercambio** con esquema fijo (`atlas/doors/exchange.py`, adaptador `exchange`). Lo que
+cambia es quién la rellena, y la correspondencia con la fuente la hace ese relleno.
+- **DOORS.** Lo hace `tools/doors_export`, a partir del script de doors_kb, en dos pasos:
+  1. descarga en bruto por COM y DXL, con jerarquía, enlaces y definiciones de atributos;
+  2. publicación con `mapping.toml`, que no necesita DOORS.
+- **Probado.** Todo, con un DOORS simulado que habla el mismo protocolo, hasta `atlas run`.
+- **Pendiente.** Validar en DOORS real la DXL nueva de jerarquía y enlaces
+  (`doors_download.py --check`) y una descarga completa de un módulo grande. Faltan además
+  la jerarquía en el grafo y los requisitos en el índice.
+
 ### Fase 4 — Grafo unificado y trazabilidad (≈ 7 días)
 
 - Cargadores de documentos, DOORS y código al mismo grafo; aristas `implemented_by`
@@ -863,7 +874,7 @@ gantt
 
 | Pregunta | Quién | ¿Bloquea? |
 |---|---|---|
-| ¿Cómo se accederá a DOORS: exportaciones periódicas (ReqIF/CSV) o el servidor MCP en vivo? ¿Qué atributos y tipos de enlace hay que conservar? | tú / administración de DOORS | fase 3 |
+| ~~¿Cómo se accederá a DOORS: exportaciones periódicas (ReqIF/CSV) o el servidor MCP en vivo? ¿Qué atributos y tipos de enlace hay que conservar?~~ Resuelta: descarga por COM y DXL (`tools/doors_export`) a una base de intercambio. Se conservan todos los atributos no de sistema y todos los enlaces salientes, y `mapping.toml` elige cuáles pasan a atlas y con qué tipo | tú / administración de DOORS | fase 3 |
 | ¿Qué convención exacta tienen los IDs de requisito y cómo se referencian en el código y en los documentos? | tú | fase 4 |
 | ¿Qué framework de pruebas usa el código Ada (AUnit u otro) para enlazar prueba → requisito? | tú | no (fase 4 puede empezar con patrones de ruta) |
 | ¿Está `google-adk` (y LiteLLM) disponible en el repositorio pip interno y en qué versión? | IT | fase 5 |
@@ -952,6 +963,11 @@ analizador y subir `version()` reprocesa solo los ficheros de ese lenguaje.
 
 ## 15. DOORS desde una base de datos
 
+Desde el 9 de octubre de 2026, el camino habitual es la base de intercambio (ver el estado
+de la fase 3 y `tools/doors_export/README.md`): un esquema fijo, rellenado por el
+exportador de DOORS con su `mapping.toml`. Lo que sigue describe el adaptador `database`,
+que se mantiene para leer otra base con consultas propias.
+
 DOORS se explota a una base de datos y `atlas` lee de ahí (solo lectura). Nada del esquema
 de esa base está en el código: las consultas y la convención de requisitos van en
 `atlas.toml` (ver sección 5).
@@ -988,7 +1004,10 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/plugins.py`: interfaces y registro de la sección 14.
 - `atlas/pipeline/`: motor incremental (`Step`, `Ledger`, `Runner`) con reanudación,
   cuarentena, poda, orden por dependencias y bloqueo del workspace.
-- `atlas/doors/`: adaptador `database` completo (sección 15).
+- `atlas/doors/`: base de intercambio de requisitos (`exchange.py`), adaptadores `exchange`
+  y `database` (sección 15).
+- `tools/doors_export/`: exportador de DOORS a la base de intercambio (descarga y
+  publicación con `mapping.toml`).
 - `atlas/code/`: analizador Ada (`ada_graph.py` migrado en la fase 1).
 - `atlas/graph/`: grafo de código en `atlas.db`, consultas de `ada_graph_mcp.py` y
   exportación, con el paso `graph.build` (fase 1).
@@ -1001,7 +1020,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 74 pruebas:
+- `tests/`: 92 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
@@ -1015,6 +1034,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
     `ada_graph.py`;
   - herramientas de ficheros: confinamiento, lectura, búsqueda, reglas de edición,
     codificación y tolerancia a los fallos de los modelos pequeños;
+  - requisitos: contrato de la base de intercambio, adaptador `exchange`, y exportador de
+    DOORS con un DOORS simulado, desde la descarga hasta `atlas run`;
   - solo si Ollama está en marcha, dos agentes ADK: uno que traza un requisito y otro que
     edita código.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.

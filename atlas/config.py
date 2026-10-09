@@ -77,7 +77,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "plugins": {"modules": [], "disabled": []},
     "graph": {"exports": ["graphml", "json"], "communities": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
-              "kinds": ["chunk", "section_summary", "requirement", "definition", "code_doc"]},
+              "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
+                        "code_doc"]},
     "mcp": {"enabled": False, "tools": []},
 }
 

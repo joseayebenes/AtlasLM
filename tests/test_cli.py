@@ -92,3 +92,81 @@ lang = "Spanish"
     assert "[manuals]" in capsys.readouterr().out
     with pytest.raises(ConfigError, match="analysis"):
         run(load_config(toml(sources.replace('analysis = "regex"', 'analysis = "gpt"'))))
+
+
+def test_index_step_search_and_ask(toml, docs_samples, tmp_path, fake, fake_stats, capsys):
+    import shutil
+    import pytest
+    from atlas.cli import ask, main, search, status
+    from atlas.config import ConfigError
+    pytest.importorskip("markitdown")
+    url, control = fake
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for f in ("spec_with_bookmarks.pdf", "hmi_manual.md"):
+        shutil.copy(docs_samples / f, docs / f)
+    extra = f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+batch = 8
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["docs", "index"]
+[[sources.docs]]
+name = "standards"
+paths = ["{docs.as_posix()}"]
+patterns = ["*.pdf"]
+analysis = "regex"
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+patterns = ["*.md"]
+'''
+    path = toml(extra)
+    cfg = load_config(path)
+
+    def go(expected_rc=0):
+        assert run(cfg) == expected_rc
+        return json.loads(capsys.readouterr().out)
+
+    rep = go()
+    assert rep["processed"] == {"docs.process": 2, "index.documents": 2}
+    stats = fake_stats()
+    rep = go()
+    assert rep["processed"] == {} and rep["skipped"]["index.documents"] == 2
+    assert fake_stats()["emb_texts"] == stats["emb_texts"]
+
+    assert search(cfg, "SRS-0102 alarm") == 0
+    out = capsys.readouterr().out
+    assert "[1] hmi_manual.md › 2 Alarms, p. 1 (requirement)" in out
+    assert ask(cfg, "When does the HMI raise an alarm?") == 0
+    out = capsys.readouterr().out
+    assert "[1]" in out and "Sources:" in out and "003-2-alarms.md" in out
+    with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
+        main(["search", "keep logs", str(path)])
+    assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out
+
+    # a changed document: reprocessed and reindexed; a failed embeddings batch is retried
+    (docs / "hmi_manual.md").write_text((docs / "hmi_manual.md").read_text().replace("30 days", "60 days"))
+    control.write_text(json.dumps({"emb_fail_if": ["60 days"]}))
+    rep = go(expected_rc=1)
+    assert rep["processed"]["docs.process"] == 1 and rep["errors"] == {"index.documents": 1}
+    control.write_text("{}")
+    rep = go()
+    assert rep["processed"] == {"index.documents": 1}
+    search(cfg, "keep logs for 60 days")
+    assert "60 days" in capsys.readouterr().out
+
+    # a deleted document leaves the index too
+    (docs / "spec_with_bookmarks.pdf").unlink()
+    rep = go()
+    assert rep["pruned"] == {"docs.process": 1, "index.documents": 1}
+    assert status(cfg) == 0
+    assert "'documents': 1, 'records'" in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="kinds"):
+        run(load_config(toml(extra + '[index]\nkinds = ["chunk", "pages"]\n')))

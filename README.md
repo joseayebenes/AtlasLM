@@ -5,8 +5,8 @@ configurable por fichero, importable como librería y orquestada con Google ADK.
 repositorio es el **esqueleto de la fase 0 del plan** (`legacy/PLAN.md`): motor
 incremental, configuración validada, sistema de plugins, lector de DOORS desde base de
 datos, analizador Ada, datos de ejemplo, servidor falso y pruebas. Los scripts anteriores
-están en `legacy/` y se migran módulo a módulo en la fase 1. Ya está migrado
-`pdf_struct.py`, que ahora es `atlas.docs`.
+están en `legacy/` y se migran módulo a módulo en la fase 1. Ya están migrados
+`pdf_struct.py` (ahora `atlas.docs`) y `doc_rag.py` (ahora `atlas.index`).
 
 ## Puesta en marcha en un Mac (Apple Silicon)
 
@@ -14,7 +14,7 @@ están en `legacy/` y se migran módulo a módulo en la fase 1. Ya está migrado
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 44 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 50 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -86,6 +86,8 @@ a la versión 2.x; el resto del proyecto funciona igual.
 python -m atlas.cli run      atlas.dev.toml   # procesamiento incremental y reanudable
 python -m atlas.cli status   atlas.dev.toml   # libro de registro y datos
 python -m atlas.cli sections atlas.dev.toml   # secciones de cada documento, sin llamar al modelo
+python -m atlas.cli search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
+python -m atlas.cli ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
 python -m atlas.cli check    atlas.dev.toml   # conexión con el modelo
 ```
@@ -97,10 +99,12 @@ Prueba el motor sin modelo:
 
 ```bash
 python tests/fakes/fake_api.py --port 8770 &      # en otra terminal
-python -m atlas.cli run atlas.test.toml           # primera vez: DOORS, Ada y documentos
+python -m atlas.cli run atlas.test.toml           # primera vez: DOORS, Ada, documentos e índice
 python -m atlas.cli run atlas.test.toml           # segunda vez: todo "al día", 0 peticiones
+python -m atlas.cli search "alarm latency" atlas.test.toml
 # cambia un .adb, un requisito en examples/samples/doors.sqlite o hmi_manual.md y vuelve a
-# ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones cambiadas)
+# ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones cambiadas y
+# los textos nuevos del índice)
 ```
 
 ## Estructura
@@ -116,8 +120,10 @@ atlas/
 ├── doors/          adaptador "database": consultas y convención configurables, diff
 ├── code/           analizador "ada" (envuelve legacy/ada_graph.py)
 ├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
-├── graph/ index/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
-└── cli.py          run | status | sections | plugins | check
+├── index/          índice (era doc_rag.py): registros, embeddings con caché, FTS5, búsqueda
+│                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db
+├── graph/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
+└── cli.py          run | status | sections | search | ask | plugins | check
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
                             test_agents_ollama.py, la prueba de agentes con Ollama
@@ -173,6 +179,47 @@ Como librería, sin motor ni CLI:
 ```python
 from atlas.docs import DocsOptions, process_document
 data = process_document("spec.pdf", "out/spec", DocsOptions(analysis="regex"))
+```
+
+## Búsqueda
+
+El paso `index` de `atlas run` indexa cada documento procesado a varias granularidades:
+
+- resumen global;
+- resúmenes de sección;
+- fragmentos de unos `chunk_chars` caracteres con solape, cada uno con la ruta y el
+  resumen de su sección;
+- requisitos;
+- definiciones;
+- pendientes.
+
+`[index] kinds` elige cuáles. Una búsqueda combina tres listas con Reciprocal Rank Fusion:
+
+- los IDs exactos que aparecen en la consulta;
+- la similitud de los vectores (`[embeddings]`);
+- BM25 sobre el mismo texto (FTS5 de SQLite).
+
+`atlas ask` reescribe antes la pregunta en consultas de búsqueda. Después pasa al modelo
+los mejores resultados, con los fragmentos vecinos, y le pide responder solo con esas
+fuentes y citándolas como `[n]`.
+
+Todo va en `atlas.db`: registros, vectores, índice de texto y una caché de vectores por
+modelo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
+embebe sus textos nuevos. Cambiar `[embeddings] model` reindexa todo sin volver al LLM, y
+la búsqueda nunca mezcla vectores de dos modelos.
+
+Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
+lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
+contexto y de la respuesta.
+
+Como librería:
+
+```python
+from atlas.config import load_config
+from atlas.index import Index
+idx = Index.from_config(load_config("atlas.dev.toml"))
+hits = idx.search("alarm latency", k=8, kinds=["requirement"])
+res = idx.answer("When does the HMI raise an alarm?")      # {"answer": ..., "sources": [...]}
 ```
 
 ## DOORS desde una base de datos

@@ -8,7 +8,7 @@
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
-    atlas serve    [atlas.toml]     (phase 5) MCP server
+    atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
 """
 from __future__ import annotations
 
@@ -408,7 +408,7 @@ def graph(cfg: Config) -> int:
     if not s:
         print("no code graph yet: run `atlas run` with \"code\" and \"graph\" in [pipeline] steps")
         return 1
-    print(f"code graph of {s['built_at']}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
+    print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
           f"{s['types']} types, {s['variables']} variables, {s['externals']} externals, "
           f"{s['requirements']} requirements) from {s['files']} files")
     c = s["edges_by_kind"]
@@ -462,6 +462,16 @@ def check(cfg: Config) -> int:
     return check_connection(from_config(cfg))
 
 
+def serve(cfg: Config) -> int:
+    """The MCP server over stdio, until the client closes it."""
+    from atlas.mcp import serve as serve_mcp
+    try:
+        serve_mcp(cfg, _context(cfg))
+    except ImportError as e:            # without the mcp package
+        sys.exit(str(e))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
@@ -469,7 +479,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "check": check}
+               "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask}
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")

@@ -84,3 +84,40 @@ def test_vectors_of_another_embeddings_model_are_not_mixed(docs, tmp_path, fake_
     assert other.search("alarm", k=1)            # the lexical search still finds it
     _add(other, docs["hmi_manual.md"])
     assert other.store.dense(other.embedder.queries(["alarm"])[0], "nomic-embed-text", 5, None)
+
+
+def test_a_long_lived_index_sees_what_another_connection_indexes(docs, tmp_path, fake_embeddings):
+    server = Index(tmp_path / "atlas.db", fake_embeddings)        # atlas serve, for instance
+    runner = Index(tmp_path / "atlas.db", fake_embeddings)        # and an atlas run meanwhile
+    _add(runner, docs["hmi_manual.md"])
+    qvec = server.embedder.queries(["track"])[0]
+    before = server.store.dense(qvec, server.embedder.model, 10_000, None)
+    _add(runner, docs["spec_with_bookmarks.pdf"])
+    after = server.store.dense(qvec, server.embedder.model, 10_000, None)
+    total = sum(d["records"] for d in runner.documents())
+    assert len(before) < len(after) == total
+    runner.remove_document("test:spec_with_bookmarks.pdf")
+    assert len(server.store.dense(qvec, server.embedder.model, 10_000, None)) == len(before)
+
+
+def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):
+    from atlas.index import DocTools
+    from atlas.store import Store
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    for data in docs.values():
+        _add(idx, data)
+    tools = DocTools(idx, Store(tmp_path))
+    listed = tools.list_documents()
+    assert listed["count"] == 2 and listed["documents"][0]["name"] == "hmi_manual.md"
+    assert tools.search("alarm", kind="pages")["error"] == "unknown kind 'pages'"
+    assert {r["kind"] for r in tools.search("track", k=50, kind="requirement")["results"]} == {"requirement"}
+    assert len(tools.search("track", k=50)["results"]) == 20                       # at most 20
+    section = tools.get_section("HMI", "3")                                      # part of the title; 3 = 003
+    assert section["section"] == "003" and "raise an alarm" in section["markdown"]
+    missing = tools.get_section("manual.pdf", "003")
+    assert missing == {"error": "document 'manual.pdf' is not indexed",
+                       "documents": ["hmi_manual.md", "spec_with_bookmarks.pdf"]}
+    assert "003-2-alarms" in tools.get_section("hmi_manual.md", "099")["sections"]
+    req = tools.get_requirement("SRS-0102")                    # not in DOORS here: only the documents
+    assert "official" not in req and req["documents"][0]["cite"].startswith("hmi_manual.md › 2 Alarms")
+    assert tools.get_requirement("SRS-9999") == {"error": "requirement 'SRS-9999' not found", "similar": []}

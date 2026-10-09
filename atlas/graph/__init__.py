@@ -4,6 +4,7 @@ documents, DOORS and traceability join it in phase 4.
     build.py       build_code_graph: nodes and edges from the CodeUnits of every file
     store.py       GraphStore: the graph in atlas.db, by origin; export to GraphML / JSON
     knowledge.py   KnowledgeGraph: queries (find_symbol, callers, impact, read_source...)
+    tools.py       GraphTools: those queries as tools of agents and of the MCP server
 
     from atlas.graph import KnowledgeGraph
     g = KnowledgeGraph.from_config(cfg)
@@ -15,5 +16,6 @@ from __future__ import annotations
 from atlas.graph.build import build_code_graph
 from atlas.graph.knowledge import KnowledgeGraph
 from atlas.graph.store import GraphStore, export_graph
+from atlas.graph.tools import GraphTools
 
-__all__ = ["GraphStore", "KnowledgeGraph", "build_code_graph", "export_graph"]
+__all__ = ["GraphStore", "GraphTools", "KnowledgeGraph", "build_code_graph", "export_graph"]

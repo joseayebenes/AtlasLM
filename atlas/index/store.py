@@ -59,7 +59,7 @@ class IndexStore:
             log.warning("this SQLite has no FTS5: vector search only")
             self.fts = False
         self.lock = threading.RLock()     # one connection shared by the Runner's threads
-        self._matrix: tuple[str, np.ndarray, np.ndarray] | None = None
+        self._matrix: tuple[str, int, np.ndarray, np.ndarray] | None = None
 
     def _query(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
         with self.lock:
@@ -125,14 +125,20 @@ class IndexStore:
 
     # --- search -------------------------------------------------------------
     def _load_matrix(self, model: str) -> tuple[np.ndarray, np.ndarray]:
-        if self._matrix is None or self._matrix[0] != model:
-            rows = self._query("SELECT r.id, r.vector FROM index_records r JOIN index_documents d "
-                               "ON d.doc = r.doc WHERE d.embed_model = ? ORDER BY r.id", (model,))
-            ids = np.array([r["id"] for r in rows], dtype=np.int64)
-            m = (np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
-                 if rows else np.zeros((0, 1), dtype=np.float32))
-            self._matrix = (model, ids, m)
-        return self._matrix[1], self._matrix[2]
+        """The vectors of a model, loaded again when the index changed: through this store
+        (which drops them) or through another connection, such as an `atlas run` while a
+        long-lived process (the MCP server) searches. data_version only changes with the
+        commits of other connections."""
+        with self.lock:
+            version = self.db.execute("PRAGMA data_version").fetchone()[0]
+            if self._matrix is None or self._matrix[:2] != (model, version):
+                rows = self.db.execute("SELECT r.id, r.vector FROM index_records r JOIN index_documents d "
+                                       "ON d.doc = r.doc WHERE d.embed_model = ? ORDER BY r.id", (model,)).fetchall()
+                ids = np.array([r["id"] for r in rows], dtype=np.int64)
+                m = (np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
+                     if rows else np.zeros((0, 1), dtype=np.float32))
+                self._matrix = (model, version, ids, m)
+            return self._matrix[2], self._matrix[3]
 
     def allowed(self, document: str = "", kinds: list[str] | None = None) -> set[int] | None:
         """Record ids of a document (by name, key or part of its title) and of some kinds;

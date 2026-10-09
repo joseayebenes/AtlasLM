@@ -21,6 +21,7 @@ in the source configuration (e.g. languages = ["ada"] only uses the "ada" analyz
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -124,6 +125,7 @@ class Tool(ABC):
     returns something compact and JSON-serialisable (use `truncated` if it cuts)."""
     name: str = ""
     description: str = ""
+    writes: bool = False            # changes files or data (MCP clients may ask before calling it)
 
     def __init__(self, context: Any):
         self.context = context      # access to graph, index, requirements, code
@@ -159,6 +161,32 @@ def plugin(kind: str, name: str) -> Callable[[type], type]:
     return lambda cls: register(kind, name, cls)
 
 
+def register_methods(owner: type, methods: Iterable[str], writes: Iterable[str] = ()) -> None:
+    """Registers methods of `owner` as "tool" plugins with their own names. Every tool of a
+    context shares the object `owner.for_context(context)` returns; the function of a tool
+    is its bound method, whose typed signature and docstring ADK and the MCP server turn
+    into the tool's schema and description."""
+    writes = set(writes)
+    for method in methods:
+        class MethodTool(Tool):
+            name = method
+            description = inspect.cleandoc(getattr(owner, method).__doc__ or "")
+
+            def __init__(self, context: Any):
+                super().__init__(context)
+                self.owner = owner.for_context(context)
+
+            def function(self) -> Callable[..., Any]:
+                return getattr(self.owner, self.name)
+
+            def run(self, **kwargs) -> Any:
+                return self.function()(**kwargs)
+
+        MethodTool.writes = method in writes
+        MethodTool.__name__ = MethodTool.__qualname__ = "".join(w.title() for w in method.split("_")) + "Tool"
+        register("tool", method, MethodTool)
+
+
 def available(kind: str) -> list[str]:
     return sorted(_REGISTRY[kind])
 
@@ -178,7 +206,7 @@ def load_plugins(modules: Iterable[str] = (), use_entry_points: bool = True) -> 
     configuration. Returns the names loaded."""
     global _LOADED
     loaded: list[str] = []
-    built_in = ["atlas.code", "atlas.doors", "atlas.docs"]
+    built_in = ["atlas.code", "atlas.doors", "atlas.docs", "atlas.index", "atlas.graph"]
     for m in built_in:
         try:
             importlib.import_module(m)

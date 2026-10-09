@@ -338,7 +338,7 @@ sets = ["eval/assistant.evalset.json", "eval/impact.evalset.json"]
 
 [mcp]
 enabled = true
-tools = ["search", "trace", "impact", "context", "read_source", "get_requirement"]
+tools = ["search", "get_requirement", "trace", "impact", "read_source"]   # vacío: las de las fuentes
 ```
 
 **Huella de configuración.** Cada paso declara de qué secciones depende; la huella de sus
@@ -711,10 +711,25 @@ Estado:
     sobrescribía el nodo de su unidad;
   - resolución de nombres por unidad propia, `with` y, si es ambiguo, aristas a todos los
     candidatos.
-- Pendiente de la fase 1: `atlas.mcp`, que debe recoger las herramientas del MCP de
-  `doc_rag.py` (`list_documents`, `search_docs`, `get_section`, `get_requirement`,
-  `ask_docs`) y las de `ada_graph_mcp.py`, ya disponibles como métodos de `atlas.index.Index`
-  y `atlas.graph.KnowledgeGraph`.
+- **`atlas.mcp` hecho.** Un solo servidor (`atlas serve`, por stdio) con las herramientas de
+  los dos MCP anteriores y las de ficheros de código. Son plugins `tool` de tres clases, que
+  los agentes de la fase 5 usarán con los mismos nombres:
+  - `atlas.index.DocTools`, las de `doc_rag.py`;
+  - `atlas.graph.GraphTools`, las de `ada_graph_mcp.py`;
+  - `atlas.code.CodeTools`, las de ficheros.
+
+  `[mcp] tools` elige cuáles; si está vacío, se ofrecen las de las fuentes configuradas.
+  `tests/test_mcp.py` lanza `atlas serve` como un cliente MCP real y le pregunta por
+  documentos, DOORS, grafo y ficheros. Diferencias buscadas:
+  - nombres sin choques: `search_docs` de documentos pasa a ser `search`, el `search_docs`
+    del grafo pasa a ser `search_code_docs` y `requirement` pasa a ser `trace`;
+  - `get_requirement` añade el texto oficial de DOORS (módulo, atributos, padre y enlaces)
+    a los pasajes de los documentos;
+  - `read_file` solo lee dentro de las raíces del código (el de `ada_graph_mcp.py` leía
+    cualquier fichero);
+  - un `atlas run` con el servidor arrancado se ve sin reiniciarlo: el grafo se vuelve a
+    leer tras cada construcción y los vectores del índice tras cada cambio de otra conexión.
+    Antes, el servidor seguía con los datos con los que arrancó.
 
 ### Fase 2 — Motor incremental completo (≈ 6 días)
 
@@ -775,8 +790,9 @@ Aceptación:
 - `AtlasLlm` sobre `atlas.llm` (o LiteLLM + callback de cupo).
 - Herramientas `FunctionTool` a partir de la librería; `assistant`, `context_builder`,
   `impact_analyst`, `coverage_auditor`, `ingest`.
-- `atlas serve` (MCP) con las mismas herramientas y `ask_atlas` / `build_context` como
-  agentes-herramienta; configuración de ejemplo para OpenCode y VS Code.
+- `ask_atlas` / `build_context` como agentes-herramienta en `atlas serve` (el servidor MCP,
+  con las herramientas de la librería y la configuración de OpenCode y VS Code, ya está
+  hecho en la fase 1).
 - Conjuntos de evaluación iniciales (20-30 casos) y `adk eval` en `pytest`.
 
 Aceptación:
@@ -1017,10 +1033,13 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   búsqueda híbrida, respuesta citada), con el paso `index.documents`.
 - `atlas/llm/`: `connection.py` (el `conexion.py` de legacy, en inglés), alimentado desde
   `atlas.toml`; `atlas check` reconoce los modelos que razonan.
-- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`.
+- `atlas/mcp/`: servidor MCP con las herramientas de documentos, grafo y ficheros
+  (`ada_graph_mcp.py` y el modo `mcp` de `doc_rag.py`, migrados en la fase 1).
+- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`,
+  `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 92 pruebas:
+- `tests/`: 98 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
@@ -1034,6 +1053,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
     `ada_graph.py`;
   - herramientas de ficheros: confinamiento, lectura, búsqueda, reglas de edición,
     codificación y tolerancia a los fallos de los modelos pequeños;
+  - servidor MCP: herramientas según la configuración, y `atlas serve` con un cliente MCP
+    real, incluido un `atlas run` con el servidor arrancado;
   - requisitos: contrato de la base de intercambio, adaptador `exchange`, y exportador de
     DOORS con un DOORS simulado, desde la descarga hasta `atlas run`;
   - solo si Ollama está en marcha, dos agentes ADK: uno que traza un requisito y otro que

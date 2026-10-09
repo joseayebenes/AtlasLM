@@ -68,6 +68,11 @@ class Store:
             d["links_in"] = [dict(x) for x in self._query("SELECT source, type FROM links WHERE target=?", (d["id"],))]
             return d
 
+    def requirement_ids(self, contains: str, limit: int = 10) -> list[str]:
+        """IDs that contain a text (any case): suggestions for an ID that is not there."""
+        return [r["id"] for r in self._query("SELECT id FROM requirements WHERE UPPER(id) LIKE ? ORDER BY id LIMIT ?",
+                                             (f"%{contains.strip().upper()}%", limit))]
+
     # --- code ---------------------------------------------------------------
     def put_code_unit(self, unit) -> None:
         from dataclasses import asdict

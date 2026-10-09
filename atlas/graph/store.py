@@ -49,7 +49,7 @@ class GraphStore:
                                 [(origin, u, v, d.get("kind", "")) for u, v, d in G.edges(data=True)])
             self.db.execute("INSERT INTO graph_builds VALUES (?,?,?)",
                             (origin, json.dumps(stats or {}, ensure_ascii=False),
-                             datetime.now().isoformat(timespec="seconds")))
+                             datetime.now().isoformat(timespec="microseconds")))     # tells two builds apart
 
     def _delete(self, origin: str) -> None:
         for table in ("graph_nodes", "graph_edges", "graph_builds"):

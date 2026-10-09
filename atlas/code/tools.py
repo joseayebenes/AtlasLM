@@ -42,7 +42,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
-from atlas.plugins import Tool, register
+from atlas.plugins import register_methods
 
 __all__ = ["CodeTools", "TOOL_NAMES"]
 
@@ -369,26 +369,4 @@ def _find(text: str, old: str, new: str, replace_all: bool) -> dict | None:
     return None
 
 
-def _plugin(method: str) -> type:
-    doc = (getattr(CodeTools, method).__doc__ or "").strip()
-
-    class CodeTool(Tool):
-        name = method
-        description = doc
-
-        def __init__(self, context: Any):
-            super().__init__(context)
-            self.tools = CodeTools.for_context(context)
-
-        def function(self):
-            return getattr(self.tools, method)
-
-        def run(self, **kwargs) -> Any:
-            return self.function()(**kwargs)
-
-    CodeTool.__name__ = CodeTool.__qualname__ = "".join(w.title() for w in method.split("_")) + "Tool"
-    return CodeTool
-
-
-for _name in TOOL_NAMES:
-    register("tool", _name, _plugin(_name))
+register_methods(CodeTools, TOOL_NAMES, writes=("edit_file", "write_file"))

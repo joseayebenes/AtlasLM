@@ -17,7 +17,7 @@ DOORS ──(1) doors_download.py──► doors_raw.sqlite ──(2) publish.py
 2. **Publicación** (`publish.py`). Aplica `mapping.toml` y escribe la base de intercambio.
    No necesita DOORS: si cambias la correspondencia, solo vuelves a publicar.
 
-Viene del script de dos ficheros del proyecto doors_kb (`scripts/descargar_requisitos.py`
+Viene del script de dos ficheros del proyecto doors_kb (`legacy/doors_kb/`: `scripts/descargar_requisitos.py`
 y `scripts/modelo_sqlite.py`). Está traducido al inglés y además lee la jerarquía y los
 enlaces, guarda la definición de los atributos y tiene versión de esquema. Una base de
 aquel script se actualiza sola al abrirla, y en módulos muy grandes ya no falla el

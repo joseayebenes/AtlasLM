@@ -8,3 +8,4 @@ build/
 dist/
 faults.json
 .venv/
+firebase-debug.log

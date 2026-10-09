@@ -77,7 +77,7 @@ atlas/
 ├── plugins.py      interfaces (CodeAnalyzer, RequirementsAdapter, DocumentExtractor, Tool) y registro
 ├── pipeline/       motor incremental: Step, Ledger (SQLite), Runner, cuarentena, poda, bloqueo
 ├── store.py        atlas.db: requisitos, enlaces, unidades de código
-├── llm/            conexion.py: clientes OpenAI, proxy, TLS, límites, reintentos
+├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos
 ├── doors/          adaptador "database": consultas y convención configurables, diff
 ├── code/           analizador "ada" (envuelve legacy/ada_graph.py)
 ├── docs/           extractores "markitdown" y "text" (la estructura y el análisis siguen en legacy/)
@@ -87,6 +87,13 @@ examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores,
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso
 legacy/                     scripts actuales + README y PLAN del proyecto
 ```
+
+## Idioma
+
+El código está en inglés: nombres, comentarios, docstrings y mensajes de la línea de
+comandos. La documentación está en español: este README, `legacy/PLAN.md`,
+`legacy/README.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el español
+hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
 
 ## Añadir o quitar piezas
 

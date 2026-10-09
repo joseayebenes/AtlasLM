@@ -3,7 +3,7 @@ from atlas.cli import run, status
 from atlas.config import load_config
 
 
-def test_run_incremental_con_doors_y_codigo(toml, samples, capsys):
+def test_incremental_run_with_doors_and_code(toml, samples, capsys):
     cfg = load_config(toml(f'''
 [pipeline]
 steps = ["doors", "code"]

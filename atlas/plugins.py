@@ -1,21 +1,21 @@
-"""Registro de plugins: todo lo que se pueda añadir o quitar pasa por aquí.
+"""Plugin registry: everything that can be added or removed goes through here.
 
-Tipos de plugin (clase base -> nombre del registro):
-    CodeAnalyzer          "code_analyzer"      un lenguaje de programación
-    RequirementsAdapter   "requirements"       una forma de leer requisitos (BD, ReqIF, CSV, MCP)
-    DocumentExtractor     "extractor"          una forma de sacar texto de un documento (PDF, DOCX...)
-    Tool                  "tool"               una herramienta para agentes ADK y para el servidor MCP
+Plugin kinds (base class -> registry name):
+    CodeAnalyzer          "code_analyzer"      a programming language
+    RequirementsAdapter   "requirements"       a way to read requirements (DB, ReqIF, CSV, MCP)
+    DocumentExtractor     "extractor"          a way to get text out of a document (PDF, DOCX...)
+    Tool                  "tool"               a tool for ADK agents and for the MCP server
 
-Cómo se registran:
-    1. Los integrados: cada módulo de atlas llama a `register(...)` al importarse.
-    2. Externos por entry point: en el pyproject del paquete externo,
-         [project.entry-points."atlas.plugins"]  mi_plugin = "mi_paquete.mi_modulo"
-       y ese módulo registra lo que ofrece al importarse.
-    3. Por configuración: [plugins] modules = ["mi_paquete.mi_modulo"] (misma idea, sin instalar).
-    4. En Python: atlas.plugins.register("code_analyzer", "cpp", MiAnalizador).
+How they are registered:
+    1. Built-in ones: each atlas module calls `register(...)` when imported.
+    2. External ones via entry point: in the pyproject of the external package,
+         [project.entry-points."atlas.plugins"]  my_plugin = "my_package.my_module"
+       and that module registers what it offers when imported.
+    3. Via configuration: [plugins] modules = ["my_package.my_module"] (same idea, no install).
+    4. In Python: atlas.plugins.register("code_analyzer", "cpp", MyAnalyzer).
 
-Cómo se quitan: [plugins] disabled = ["code_analyzer:cpp"], o no activándolos en la
-configuración de la fuente (p. ej. languages = ["ada"] solo usa el analizador "ada").
+How they are removed: [plugins] disabled = ["code_analyzer:cpp"], or by not enabling them
+in the source configuration (e.g. languages = ["ada"] only uses the "ada" analyzer).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from typing import Any, Callable, Iterable
 
 log = logging.getLogger(__name__)
 
-TIPOS = ("code_analyzer", "requirements", "extractor", "tool")
+KINDS = ("code_analyzer", "requirements", "extractor", "tool")
 
 
 # ----------------------------------------------------------------------------
@@ -39,9 +39,9 @@ TIPOS = ("code_analyzer", "requirements", "extractor", "tool")
 
 @dataclass
 class CodeUnit:
-    """Resultado del análisis de un fichero de código: lo mínimo que el grafo necesita."""
+    """Result of analysing a code file: the minimum the graph needs."""
     file: str
-    unit: str                                   # nombre de la unidad de compilación / módulo
+    unit: str                                   # compilation unit / module name
     language: str
     subprograms: list[dict] = field(default_factory=list)   # {name, start_line, end_line, calls, doc, reqs}
     types: list[dict] = field(default_factory=list)
@@ -51,8 +51,8 @@ class CodeUnit:
 
 
 class CodeAnalyzer(ABC):
-    """Un analizador por lenguaje. Debe ser determinista y trabajar fichero a fichero
-    (es la unidad del motor incremental)."""
+    """One analyzer per language. It must be deterministic and work file by file (the
+    unit of the incremental engine)."""
     name: str = ""                # "ada", "cpp"...
     extensions: tuple[str, ...] = ()
 
@@ -63,18 +63,18 @@ class CodeAnalyzer(ABC):
     def analyze_file(self, path: Path, source: bytes) -> CodeUnit: ...
 
     def version(self) -> str:
-        """Cambiarla invalida los resultados cacheados de este analizador."""
+        """Changing it invalidates the cached results of this analyzer."""
         return "1"
 
 
 @dataclass
 class Requirement:
-    id: str                       # ya normalizado según la convención configurada
+    id: str                       # already normalised according to the configured convention
     text: str
     module: str
     attributes: dict = field(default_factory=dict)
-    parent: str | None = None     # jerarquía dentro del módulo (objeto padre), si existe
-    raw_id: str = ""              # tal como venía en la fuente
+    parent: str | None = None     # hierarchy inside the module (parent object), if any
+    raw_id: str = ""              # as it came from the source
 
 
 @dataclass
@@ -85,9 +85,9 @@ class Link:
 
 
 class RequirementsAdapter(ABC):
-    """Lee requisitos y enlaces de una fuente. `snapshot()` devuelve algo cuyo hash cambia
-    cuando cambia la fuente (p. ej. fecha de exportación o hash de la tabla), para que el
-    motor sepa si hay que releer."""
+    """Reads requirements and links from a source. `snapshot()` returns something whose
+    hash changes when the source changes (e.g. export date or table hash), so the engine
+    knows whether to read it again."""
     name: str = ""
 
     def __init__(self, config: dict):
@@ -107,7 +107,7 @@ class RequirementsAdapter(ABC):
 
 
 class DocumentExtractor(ABC):
-    """Convierte un documento en texto (con \\f entre páginas si las hay)."""
+    """Turns a document into text (with \\f between pages if it has them)."""
     name: str = ""
     extensions: tuple[str, ...] = ()
 
@@ -119,79 +119,79 @@ class DocumentExtractor(ABC):
 
 
 class Tool(ABC):
-    """Herramienta para agentes ADK y para el servidor MCP. `run` recibe argumentos con
-    nombre y devuelve algo serializable a JSON y compacto (usa `truncated` si recorta)."""
+    """Tool for ADK agents and for the MCP server. `run` takes keyword arguments and
+    returns something compact and JSON-serialisable (use `truncated` if it cuts)."""
     name: str = ""
     description: str = ""
 
     def __init__(self, context: Any):
-        self.context = context      # acceso a grafo, índice, requisitos, código
+        self.context = context      # access to graph, index, requirements, code
 
     @abstractmethod
     def run(self, **kwargs) -> Any: ...
 
 
 # ----------------------------------------------------------------------------
-# Registro
+# Registry
 # ----------------------------------------------------------------------------
 
-_REGISTRO: dict[str, dict[str, type]] = {t: {} for t in TIPOS}
-_CARGADOS = False
+_REGISTRY: dict[str, dict[str, type]] = {k: {} for k in KINDS}
+_LOADED = False
 
 
-def register(tipo: str, nombre: str, cls: type) -> type:
-    if tipo not in TIPOS:
-        raise ValueError(f"tipo de plugin desconocido '{tipo}' (válidos: {', '.join(TIPOS)})")
-    if nombre in _REGISTRO[tipo] and _REGISTRO[tipo][nombre] is not cls:
-        log.warning("plugin %s:%s redefinido por %s", tipo, nombre, cls)
-    _REGISTRO[tipo][nombre] = cls
+def register(kind: str, name: str, cls: type) -> type:
+    if kind not in KINDS:
+        raise ValueError(f"unknown plugin kind '{kind}' (valid: {', '.join(KINDS)})")
+    if name in _REGISTRY[kind] and _REGISTRY[kind][name] is not cls:
+        log.warning("plugin %s:%s redefined by %s", kind, name, cls)
+    _REGISTRY[kind][name] = cls
     return cls
 
 
-def plugin(tipo: str, nombre: str) -> Callable[[type], type]:
-    """Decorador: @plugin("code_analyzer", "ada")"""
-    return lambda cls: register(tipo, nombre, cls)
+def plugin(kind: str, name: str) -> Callable[[type], type]:
+    """Decorator: @plugin("code_analyzer", "ada")"""
+    return lambda cls: register(kind, name, cls)
 
 
-def available(tipo: str) -> list[str]:
-    return sorted(_REGISTRO[tipo])
+def available(kind: str) -> list[str]:
+    return sorted(_REGISTRY[kind])
 
 
-def get(tipo: str, nombre: str, disabled: Iterable[str] = ()) -> type:
-    if f"{tipo}:{nombre}" in set(disabled):
-        raise LookupError(f"el plugin {tipo}:{nombre} está desactivado en [plugins] disabled")
+def get(kind: str, name: str, disabled: Iterable[str] = ()) -> type:
+    if f"{kind}:{name}" in set(disabled):
+        raise LookupError(f"plugin {kind}:{name} is disabled in [plugins] disabled")
     try:
-        return _REGISTRO[tipo][nombre]
+        return _REGISTRY[kind][name]
     except KeyError:
-        raise LookupError(f"no hay plugin {tipo} llamado '{nombre}'; disponibles: "
-                          f"{', '.join(available(tipo)) or 'ninguno'}") from None
+        raise LookupError(f"no {kind} plugin named '{name}'; available: "
+                          f"{', '.join(available(kind)) or 'none'}") from None
 
 
 def load_plugins(modules: Iterable[str] = (), use_entry_points: bool = True) -> list[str]:
-    """Importa los módulos integrados, los declarados por entry point y los de la
-    configuración. Devuelve los nombres cargados."""
-    global _CARGADOS
-    cargados: list[str] = []
-    integrados = ["atlas.code", "atlas.doors", "atlas.docs"]
-    for m in integrados:
+    """Imports the built-in modules, those declared by entry point and those in the
+    configuration. Returns the names loaded."""
+    global _LOADED
+    loaded: list[str] = []
+    built_in = ["atlas.code", "atlas.doors", "atlas.docs"]
+    for m in built_in:
         try:
             importlib.import_module(m)
-            cargados.append(m)
-        except ImportError as e:               # dependencia opcional ausente: se sigue
-            log.info("plugin integrado %s no disponible: %s", m, e)
+            loaded.append(m)
+        except ImportError as e:               # optional dependency missing: carry on
+            log.info("built-in plugin %s not available: %s", m, e)
     if use_entry_points:
         for ep in entry_points(group="atlas.plugins"):
             try:
                 ep.load()
-                cargados.append(f"entry-point:{ep.name}")
+                loaded.append(f"entry-point:{ep.name}")
             except Exception as e:
-                log.warning("no se pudo cargar el plugin %s: %s", ep.name, e)
+                log.warning("could not load plugin %s: %s", ep.name, e)
     for m in modules:
-        importlib.import_module(m)              # un fallo aquí sí es error: lo pidió el usuario
-        cargados.append(m)
-    _CARGADOS = True
-    return cargados
+        importlib.import_module(m)              # a failure here is an error: the user asked for it
+        loaded.append(m)
+    _LOADED = True
+    return loaded
 
 
 def describe() -> dict[str, list[str]]:
-    return {t: available(t) for t in TIPOS}
+    return {k: available(k) for k in KINDS}

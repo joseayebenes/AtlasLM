@@ -1,35 +1,35 @@
-"""Conexión con las APIs de LLM y embeddings (proxy, TLS, límites, reintentos).
+"""Connection to the LLM and embeddings APIs (proxy, TLS, limits, retries).
 
-Es el `conexion.py` original, sin cambios de API. En atlas la configuración llega desde
-las secciones [llm], [embeddings] y [network] de atlas.toml a través de `desde_config`.
+`connection.py` is legacy/conexion.py translated to English. In atlas the configuration
+comes from the [llm], [embeddings] and [network] sections of atlas.toml via `from_config`.
 """
 from __future__ import annotations
 
 from dataclasses import fields, replace
 
-from atlas.llm.conexion import (  # noqa: F401
-    Conexion, NetConfig, ServiceConfig, comprobar, crear_cliente, describir, diagnosticar,
-    es_error_conexion, limitador_para, mostrar, ocultar_credenciales,
+from atlas.llm.connection import (  # noqa: F401
+    Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
+    is_connection_error, mask_credentials, rate_limiter_for, show,
 )
 
 
-def desde_config(cfg) -> Conexion:
-    """Construye la Conexion a partir de atlas.toml (mismas claves que conexion.toml)."""
-    claves_net = {f.name for f in fields(NetConfig)}
-    claves_serv = {f.name for f in fields(ServiceConfig)} - {"net"}
+def from_config(cfg) -> Connection:
+    """Builds the Connection from atlas.toml (same keys as connection.toml)."""
+    net_keys = {f.name for f in fields(NetConfig)}
+    service_keys = {f.name for f in fields(ServiceConfig)} - {"net"}
 
     def net(base: NetConfig, extra: dict | None) -> NetConfig:
-        return replace(base, **{k: v for k, v in (extra or {}).items() if k in claves_net})
+        return replace(base, **{k: v for k, v in (extra or {}).items() if k in net_keys})
 
-    comun = net(NetConfig(), cfg.get("network"))
+    common = net(NetConfig(), cfg.get("network"))
 
-    def servicio(seccion: dict, defaults: ServiceConfig) -> ServiceConfig:
-        s = replace(defaults, **{k: v for k, v in seccion.items() if k in claves_serv})
-        return replace(s, net=net(comun, seccion.get("network")))
+    def service(section: dict, defaults: ServiceConfig) -> ServiceConfig:
+        s = replace(defaults, **{k: v for k, v in section.items() if k in service_keys})
+        return replace(s, net=net(common, section.get("network")))
 
-    llm = servicio(cfg.get("llm", {}), ServiceConfig(base_url="http://localhost:11434/v1",
-                                                     model="gemma4", api_key="local"))
-    emb = servicio(cfg.get("embeddings", {}), ServiceConfig(model="embeddinggemma"))
+    llm = service(cfg.get("llm", {}), ServiceConfig(base_url="http://localhost:11434/v1",
+                                                    model="gemma4", api_key="local"))
+    emb = service(cfg.get("embeddings", {}), ServiceConfig(model="embeddinggemma"))
     if not emb.base_url:
         emb = replace(emb, base_url=llm.base_url, api_key=emb.api_key or llm.api_key)
-    return Conexion(llm=llm, embeddings=emb, fichero=str(cfg.path))
+    return Connection(llm=llm, embeddings=emb, file=str(cfg.path))

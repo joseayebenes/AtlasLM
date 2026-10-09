@@ -8,7 +8,7 @@ samples:        ## genera examples/samples/ (PDFs, Ada, doors.sqlite)
 	$(PY) examples/make_samples.py
 
 fake:           ## servidor OpenAI falso en :8770 para atlas.test.toml
-	$(PY) tests/fakes/fake_api.py --port 8770 --control fallos.json
+	$(PY) tests/fakes/fake_api.py --port 8770 --control faults.json
 
 test:           ## pruebas automáticas (sin modelo)
 	$(PY) -m pytest -q

@@ -1,13 +1,13 @@
-"""Requisitos de DOORS leídos desde una base de datos (explotación/exportación).
+"""DOORS requirements read from a database (operational copy / export).
 
-Todo lo específico de la exportación se configura, no se programa:
+Everything specific to the export is configured, not programmed:
 
     [sources.doors]
     adapter = "database"
-    modules = ["SRS_TMS"]                  # vacío = todos los que devuelva modules_query
+    modules = ["SRS_TMS"]                  # empty = every module returned by modules_query
 
     [sources.doors.database]
-    driver = "sqlite"                      # sqlite | odbc  (odbc: pip install pyodbc, usa dsn)
+    driver = "sqlite"                      # sqlite | odbc  (odbc: pip install pyodbc, uses dsn)
     path = "examples/samples/doors.sqlite"
     modules_query = "SELECT DISTINCT module FROM requirements ORDER BY module"
     requirements_query = "SELECT * FROM requirements WHERE module = :module ORDER BY id"
@@ -17,15 +17,15 @@ Todo lo específico de la exportación se configura, no se programa:
     [sources.doors.convention]
     id_column = "id"
     text_column = "text"
-    parent_column = "parent"               # opcional: jerarquía dentro del módulo
+    parent_column = "parent"               # optional: hierarchy inside the module
     attribute_columns = ["status", "verification"]
-    id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"   # los IDs que no cumplen se avisan
-    id_normalize = "upper"                 # upper | none (siempre se quitan espacios)
+    id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"   # IDs that do not match are reported
+    id_normalize = "upper"                 # upper | none (spaces are always removed)
     link_columns = { source = "source_id", target = "target_id", type = "link_type" }
-    inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # referencias dentro del texto
+    inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # references inside the text
     inline_reference_type = "references"
 
-Uso como librería:
+Use as a library:
     from atlas.doors import DatabaseAdapter, diff_requirements
     ad = DatabaseAdapter(cfg["sources"]["doors"])
     reqs = list(ad.requirements("SRS_TMS"))
@@ -45,7 +45,7 @@ from atlas.plugins import Link, Requirement, RequirementsAdapter, register
 
 log = logging.getLogger(__name__)
 
-CONVENCION_DEFECTO = {
+DEFAULT_CONVENTION = {
     "id_column": "id", "text_column": "text", "module_column": "module", "parent_column": "",
     "attribute_columns": [], "id_pattern": "", "id_normalize": "upper",
     "link_columns": {"source": "source_id", "target": "target_id", "type": "link_type"},
@@ -64,12 +64,12 @@ def hash_requirement(r: Requirement) -> str:
 
 
 def diff_requirements(previous: dict[str, str], current: Iterable[Requirement]) -> dict[str, list]:
-    """previous: id -> hash guardado. Devuelve añadidos, cambiados y eliminados."""
-    actuales = {r.id: hash_requirement(r) for r in current}
+    """previous: id -> stored hash. Returns the added, changed and removed IDs."""
+    now = {r.id: hash_requirement(r) for r in current}
     return {
-        "added": sorted(i for i in actuales if i not in previous),
-        "changed": sorted(i for i in actuales if i in previous and previous[i] != actuales[i]),
-        "removed": sorted(i for i in previous if i not in actuales),
+        "added": sorted(i for i in now if i not in previous),
+        "changed": sorted(i for i in now if i in previous and previous[i] != now[i]),
+        "removed": sorted(i for i in previous if i not in now),
     }
 
 
@@ -81,34 +81,34 @@ class DatabaseAdapter(RequirementsAdapter):
         db = config.get("database") or {}
         self.driver = db.get("driver", "sqlite")
         self.db_cfg = db
-        self.conv = {**CONVENCION_DEFECTO, **(config.get("convention") or {})}
-        self.conv["link_columns"] = {**CONVENCION_DEFECTO["link_columns"], **self.conv.get("link_columns", {})}
-        faltan = [k for k in ("modules_query", "requirements_query") if not db.get(k)]
-        if faltan:
-            raise ValueError(f"[sources.doors.database] faltan: {', '.join(faltan)}")
+        self.conv = {**DEFAULT_CONVENTION, **(config.get("convention") or {})}
+        self.conv["link_columns"] = {**DEFAULT_CONVENTION["link_columns"], **self.conv.get("link_columns", {})}
+        missing = [k for k in ("modules_query", "requirements_query") if not db.get(k)]
+        if missing:
+            raise ValueError(f"[sources.doors.database] missing: {', '.join(missing)}")
         self._id_re = re.compile(self.conv["id_pattern"]) if self.conv.get("id_pattern") else None
         self._ref_re = (re.compile(self.conv["inline_reference_regex"])
                         if self.conv.get("inline_reference_regex") else None)
         self._conn = None
 
-    # --- conexión ---------------------------------------------------------
+    # --- connection -------------------------------------------------------
     def _connect(self):
         if self._conn is not None:
             return self._conn
         if self.driver == "sqlite":
             path = Path(self.db_cfg["path"]).expanduser()
             if not path.exists():
-                raise FileNotFoundError(f"no existe la base de datos de DOORS {path}")
+                raise FileNotFoundError(f"DOORS database {path} does not exist")
             self._conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             self._conn.row_factory = sqlite3.Row
         elif self.driver == "odbc":
             try:
                 import pyodbc  # type: ignore
             except ImportError:
-                raise ImportError("driver odbc: pip install pyodbc") from None
+                raise ImportError("odbc driver: pip install pyodbc") from None
             self._conn = pyodbc.connect(self.db_cfg["dsn"])
         else:
-            raise ValueError(f"driver de base de datos no soportado: {self.driver}")
+            raise ValueError(f"unsupported database driver: {self.driver}")
         return self._conn
 
     def _rows(self, query: str, params: dict) -> list[dict]:
@@ -116,57 +116,57 @@ class DatabaseAdapter(RequirementsAdapter):
         if self.driver == "sqlite":
             return [dict(r) for r in conn.execute(query, params)]
         cur = conn.cursor()
-        q = re.sub(r":(\w+)", "?", query)               # pyodbc usa '?'
-        orden = re.findall(r":(\w+)", query)
-        cur.execute(q, [params[k] for k in orden])
+        q = re.sub(r":(\w+)", "?", query)               # pyodbc uses '?'
+        order = re.findall(r":(\w+)", query)
+        cur.execute(q, [params[k] for k in order])
         cols = [c[0] for c in cur.description]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
 
-    # --- interfaz ---------------------------------------------------------
+    # --- interface --------------------------------------------------------
     def modules(self) -> list[str]:
-        pedidos = self.config.get("modules") or []
-        todos = [str(list(r.values())[0]) for r in self._rows(self.db_cfg["modules_query"], {})]
-        if not pedidos:
-            return todos
-        desconocidos = [m for m in pedidos if m not in todos]
-        if desconocidos:
-            log.warning("módulos no encontrados en la base de datos: %s", desconocidos)
-        return [m for m in pedidos if m in todos]
+        requested = self.config.get("modules") or []
+        found = [str(list(r.values())[0]) for r in self._rows(self.db_cfg["modules_query"], {})]
+        if not requested:
+            return found
+        unknown = [m for m in requested if m not in found]
+        if unknown:
+            log.warning("modules not found in the database: %s", unknown)
+        return [m for m in requested if m in found]
 
     def snapshot(self, module: str) -> str:
         q = self.db_cfg.get("snapshot_query")
         if q:
             r = self._rows(q, {"module": module})
             return str(list(r[0].values())[0]) if r else ""
-        # sin consulta de instantánea: hash de todo el contenido (más lento pero correcto)
+        # no snapshot query: hash of the whole content (slower but correct)
         return hashlib.sha256("".join(hash_requirement(x) for x in self.requirements(module)).encode()).hexdigest()[:16]
 
     def requirements(self, module: str) -> Iterable[Requirement]:
         c = self.conv
-        for fila in self._rows(self.db_cfg["requirements_query"], {"module": module}):
-            raw = fila.get(c["id_column"])
+        for row in self._rows(self.db_cfg["requirements_query"], {"module": module}):
+            raw = row.get(c["id_column"])
             if raw is None or str(raw).strip() == "":
                 continue
             rid = normalize_id(raw, c["id_normalize"])
             if self._id_re and not self._id_re.match(rid):
-                log.warning("ID fuera de la convención (%s): %r en %s", c["id_pattern"], raw, module)
-            parent = fila.get(c["parent_column"]) if c.get("parent_column") else None
+                log.warning("ID outside the convention (%s): %r in %s", c["id_pattern"], raw, module)
+            parent = row.get(c["parent_column"]) if c.get("parent_column") else None
             yield Requirement(
                 id=rid, raw_id=str(raw),
-                text=" ".join(str(fila.get(c["text_column"]) or "").split()),
-                module=str(fila.get(c["module_column"]) or module),
+                text=" ".join(str(row.get(c["text_column"]) or "").split()),
+                module=str(row.get(c["module_column"]) or module),
                 parent=normalize_id(parent, c["id_normalize"]) if parent else None,
-                attributes={k: fila.get(k) for k in c.get("attribute_columns", []) if k in fila},
+                attributes={k: row.get(k) for k in c.get("attribute_columns", []) if k in row},
             )
 
     def links(self, module: str) -> Iterable[Link]:
         c, lc = self.conv, self.conv["link_columns"]
         if self.db_cfg.get("links_query"):
-            for fila in self._rows(self.db_cfg["links_query"], {"module": module}):
-                yield Link(source=normalize_id(fila[lc["source"]], c["id_normalize"]),
-                           target=normalize_id(fila[lc["target"]], c["id_normalize"]),
-                           type=str(fila.get(lc["type"]) or "link"))
-        if self._ref_re:                     # referencias escritas dentro del texto
+            for row in self._rows(self.db_cfg["links_query"], {"module": module}):
+                yield Link(source=normalize_id(row[lc["source"]], c["id_normalize"]),
+                           target=normalize_id(row[lc["target"]], c["id_normalize"]),
+                           type=str(row.get(lc["type"]) or "link"))
+        if self._ref_re:                     # references written inside the text
             for r in self.requirements(module):
                 for ref in set(self._ref_re.findall(r.text)):
                     ref = normalize_id(ref, c["id_normalize"])

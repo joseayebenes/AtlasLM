@@ -171,7 +171,7 @@ flowchart TB
 atlas/
 ├── __init__.py            versión, carga rápida (atlas.load("atlas.toml"))
 ├── config/                esquema del TOML (dataclasses), validación, expansión ${VAR}, huellas
-├── llm/                   conexion.py actual: clientes OpenAI, proxy, TLS, límites, reintentos
+├── llm/                   connection.py (el conexion.py actual, en inglés): clientes OpenAI, proxy, TLS, límites, reintentos
 ├── pipeline/              motor incremental: Step, Unit, Ledger, Runner, poda, estado
 ├── docs/                  pdf_struct.py actual: extracción, estructura, análisis, Markdown
 ├── doors/                 modelo Requirement/Link, adaptadores (ReqIF, CSV, MCP), diff por ID
@@ -360,7 +360,7 @@ Generaliza lo que hoy hacen `estado.json`, la caché de secciones y `embed_cache
 | **Paso** (`Step`) | una transformación con nombre, que declara de qué pasos y de qué secciones de configuración depende |
 | **Unidad** (`Unit`) | el elemento mínimo que un paso procesa: un fichero, una sección, un requisito, un subprograma, un lote de embeddings |
 | **Huella** (`fingerprint`) | hash de las entradas de la unidad (contenido + salidas de las unidades de las que depende + configuración relevante + versión del paso y de los prompts) |
-| **Libro de registro** (`Ledger`) | tabla SQLite con, por paso y unidad: huella, estado (`ok`, `error`, `cuarentena`, `obsoleta`), intentos, error, fechas y hash de las salidas |
+| **Libro de registro** (`Ledger`) | tabla SQLite con, por paso y unidad: huella, estado (`ok`, `error`, `quarantined`, `stale`, `running`), intentos, error, fechas y hash de las salidas |
 | **Idempotencia** | ejecutar una unidad dos veces con la misma huella produce exactamente el mismo resultado y no deja duplicados |
 
 ### 6.2 Grafo de dependencias entre pasos
@@ -398,7 +398,7 @@ unidad de la izquierda". Un cambio se propaga solo por las flechas que lo tocan.
 | Fichero Ada | sha256 del fichero | análisis del fichero; nodos y aristas que define; resúmenes y vectores de sus subprogramas; enlaces `Req:` de sus unidades |
 | Configuración | hash de las secciones del TOML de las que depende cada paso | solo las unidades de ese paso |
 | Modelo / prompts / versión del código | nombre del modelo, `PROMPT_VERSION`, versión del paso | las unidades que los usan (p. ej. cambiar el modelo de chat reanaliza; cambiar el de embeddings solo re-embebe) |
-| Elemento desaparecido | unidad presente en el registro pero no en la fuente | se marca `obsoleta` y, con `prune_missing`, se eliminan sus registros, nodos y aristas |
+| Elemento desaparecido | unidad presente en el registro pero no en la fuente | se marca `stale` y, con `prune_missing`, se eliminan sus registros, nodos y aristas |
 
 ### 6.4 Ejecución y recuperación
 
@@ -610,7 +610,7 @@ los agentes respeten el **mismo proxy, los mismos certificados y el mismo contad
 peticiones** que el resto de `atlas`, se implementa `AtlasLlm`, una subclase de `BaseLlm`
 de ADK que delega en los clientes de `atlas.llm`. Como alternativa de menor esfuerzo:
 LiteLLM con las variables de proxy/CA y un `before_model_callback` que pase por el
-`Limitador` antes de cada llamada.
+`RateLimiter` antes de cada llamada.
 
 ### 8.3 Herramientas
 
@@ -647,7 +647,7 @@ librería. El orden está pensado para tener algo útil desde la fase 1.
   huellas por sección.
 - `atlas.pipeline`: `Step`, `Unit`, `Ledger` (SQLite), `Runner` con reanudación,
   cuarentena, poda y bloqueo de workspace. Pruebas con pasos de juguete.
-- `atlas.llm`: `conexion.py` tal cual, con su API pública.
+- `atlas.llm`: `conexion.py` con su API pública, traducido al inglés (`connection.py`).
 
 Aceptación:
 - [ ] `atlas run` con un paso de ejemplo procesa, se interrumpe (`kill`), reanuda y termina
@@ -944,7 +944,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   cuarentena, poda, orden por dependencias y bloqueo del workspace.
 - `atlas/doors/`: adaptador `database` completo (sección 15).
 - `atlas/code/`: analizador Ada sobre el `ada_graph.py` actual.
-- `atlas/llm/`: `conexion.py` sin cambios, alimentado desde `atlas.toml`.
+- `atlas/llm/`: `connection.py` (el `conexion.py` de legacy, en inglés), alimentado desde
+  `atlas.toml`.
 - `atlas/cli.py`: `run`, `status`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
@@ -975,7 +976,7 @@ contexto mayor que el de defecto (`OLLAMA_CONTEXT_LENGTH=16384`).
   cambios: todo "al día" en menos de un segundo y sin peticiones.
 - Un requisito editado en la base de datos y un fichero Ada modificado: se reprocesan
   exactamente esas dos unidades.
-- Corte a mitad de una unidad: la unidad queda `en_curso`, el bloqueo se libera y la
+- Corte a mitad de una unidad: la unidad queda `running`, el bloqueo se libera y la
   siguiente ejecución la retoma sin repetir las anteriores.
 - Errores propios: reintento y cuarentena al agotar `max_attempts`; error fatal: parada
   con el estado guardado; unidad desaparecida: poda.

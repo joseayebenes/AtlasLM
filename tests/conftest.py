@@ -1,17 +1,17 @@
 import sys
 from pathlib import Path
 
-RAIZ = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(RAIZ))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 import pytest  # noqa: E402
 
 
 @pytest.fixture(scope="session")
 def samples():
-    """Datos de ejemplo (se generan si no existen)."""
+    """Sample data (generated if missing)."""
     from examples import make_samples
-    d = RAIZ / "examples" / "samples"
+    d = ROOT / "examples" / "samples"
     if not (d / "doors.sqlite").exists():
         make_samples.ada(); make_samples.doors()
     return d
@@ -19,8 +19,8 @@ def samples():
 
 @pytest.fixture
 def toml(tmp_path, samples):
-    """Escribe un atlas.toml de prueba en un directorio temporal."""
-    def _hacer(extra: str = "") -> Path:
+    """Writes a test atlas.toml in a temporary directory."""
+    def _make(extra: str = "") -> Path:
         p = tmp_path / "atlas.toml"
         p.write_text(f'''
 [project]
@@ -43,4 +43,4 @@ inline_reference_regex = "\\\\b(?:SRS|SSS)-\\\\d{{4}}\\\\b"
 {extra}
 ''', encoding="utf-8")
         return p
-    return _hacer
+    return _make

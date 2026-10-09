@@ -1,8 +1,8 @@
-"""atlas — base de conocimiento de ingeniería (documentos, requisitos, código y grafo).
+"""atlas — engineering knowledge base (documents, requirements, code and graph).
 
-Uso rápido:
+Quick use:
     from atlas import load
-    cfg = load("atlas.dev.toml")       # configuración validada
+    cfg = load("atlas.dev.toml")       # validated configuration
 """
 from atlas.config import load_config as load  # noqa: F401
 

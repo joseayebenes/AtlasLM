@@ -6,5 +6,5 @@ examples/samples/
 *.egg-info/
 build/
 dist/
-fallos.json
+faults.json
 .venv/

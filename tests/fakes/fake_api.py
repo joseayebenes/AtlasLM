@@ -9,6 +9,8 @@ The control file is re-read on every request; keys:
   emb_fail_if: ["text"]            -> 400 if any text in the batch contains the string
   section_fail_if: ["text"]        -> prose answer (not JSON) if the section contains the string
   prose: true                      -> prose answer (not JSON) to every chat request
+  cut_sections_over: N             -> sections longer than N characters get their JSON cut in
+                                      half with finish_reason "length"
   slow: seconds                    -> delay per request
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty
@@ -50,7 +52,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"object": "list", "model": "e", "usage": {"prompt_tokens": 1, "total_tokens": 1},
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         stats["chat"] += 1
-        user = body["messages"][-1]["content"]
+        user = body["messages"][-1]["content"]; cut = False
         if c.get("prose"):
             content = "Sorry, I cannot produce JSON."
         elif "<section>" in user:
@@ -59,16 +61,18 @@ class H(BaseHTTPRequestHandler):
                 content = "Sorry, I cannot produce JSON."
             else:
                 reqs = [{"id": (re.search(r"Req: (\S+)", m) or [None, ""])[1], "text": re.sub(r"^Req: \S+ ", "", m.strip())}
-                        for m in re.findall(r"(?:Req: \S+ )?[A-Z][^.]*\bshall\b[^.]*\.", flat)]
+                        for m in re.findall(r"(?:Req: \S+ )?[A-Z][^.]*\bshall\b.*?\.(?=\s|$)", flat)]
                 content = json.dumps({"summary": f"Section about {flat[:50]}.", "key_points": [], "requirements": reqs,
                                       "definitions": [], "entities": [], "references": [], "open_issues": []})
+                if c.get("cut_sections_over") is not None and len(sec) > c["cut_sections_over"]:
+                    content, cut = content[:len(content) // 2], True
         elif "Reply with: ok" in user:
             content = "ok"
         elif "search queries" in (body["messages"][0]["content"] if body["messages"] else ""):
             content = json.dumps({"queries": [user[:60]], "keywords": []})
         else:
             content = json.dumps({"summary": "Overall.", "purpose": "p", "scope": "s", "main_topics": ["t"]})
-        message, finish = {"role": "assistant", "content": content}, "stop"
+        message, finish = {"role": "assistant", "content": content}, "length" if cut else "stop"
         if c.get("reasoning_tokens"):
             message["reasoning"] = "The user wants a short answer. "
             if body.get("max_tokens") is not None and body["max_tokens"] <= c["reasoning_tokens"]:

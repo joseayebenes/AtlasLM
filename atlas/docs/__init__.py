@@ -1,12 +1,16 @@
 """Documents: text extraction, structure, analysis and Markdown output (legacy/pdf_struct.py).
 
-Text extractors are plugins chosen by file extension: "markitdown" (PDF, Office, HTML) and
-"text" (Markdown and plain text). The structure (sections) comes from `atlas.docs.structure`.
+    structure.py   sections without a model: bookmarks, headings or fixed size
+    analysis.py    section analysis: llm | regex | none; verification and consolidation
+    writer.py      Markdown and structure.json
+    process.py     a whole document: DocsOptions, process_document, preview
 
-    from atlas.docs import read_text
-    from atlas.docs.structure import clean_headers, prepare_sections
-    text, _ = clean_headers(read_text("spec.pdf"))
-    sections = prepare_sections(text, pdf=Path("spec.pdf"))
+Text extractors are plugins chosen by file extension: "markitdown" (PDF, Office, HTML) and
+"text" (Markdown and plain text).
+
+    from atlas.docs import DocsOptions, process_document
+    data = process_document("spec.pdf", "out/spec", DocsOptions(analysis="regex"))
+    data = process_document("design.pdf", "out/design", DocsOptions(lang="Spanish"), llm=conn.llm)
 """
 from __future__ import annotations
 
@@ -16,7 +20,8 @@ from typing import Iterable
 from atlas import plugins
 from atlas.plugins import DocumentExtractor, register
 
-__all__ = ["MarkitdownExtractor", "TextExtractor", "extractor_for", "read_text"]
+__all__ = ["DocsOptions", "MarkitdownExtractor", "TextExtractor", "extractor_for", "preview",
+           "process_document", "read_text"]
 
 
 class MarkitdownExtractor(DocumentExtractor):
@@ -56,3 +61,6 @@ def extractor_for(path: str | Path, disabled: Iterable[str] = (), config: dict |
 def read_text(path: str | Path, disabled: Iterable[str] = ()) -> str:
     """Text of a document, with \\f between pages if it has them."""
     return extractor_for(path, disabled).extract(Path(path))
+
+
+from atlas.docs.process import DocsOptions, preview, process_document  # noqa: E402  (needs read_text)

@@ -83,3 +83,11 @@ def fake_llm(fake):
     from atlas.llm import NetConfig, ServiceConfig
     url, control = fake
     return ServiceConfig(base_url=url, model="fake", api_key="x", net=NetConfig(proxy="", no_proxy="*")), control
+
+
+@pytest.fixture
+def fake_chats(fake):
+    """Function that returns how many chat requests the fake API has received."""
+    import json
+    url = fake[0].removesuffix("/v1") + "/"
+    return lambda: json.load(urllib.request.urlopen(url))["chat"]

@@ -1,5 +1,4 @@
 import json
-import urllib.request
 
 import pytest
 
@@ -26,11 +25,7 @@ def test_repair_json_keeps_what_was_complete():
     assert repair_json("nothing", KEYS) is None
 
 
-def _chats(llm) -> int:
-    return json.load(urllib.request.urlopen(llm.cfg.base_url.removesuffix("/v1") + "/"))["chat"]
-
-
-def test_ask_json_against_the_fake_api(fake_llm):
+def test_ask_json_against_the_fake_api(fake_llm, fake_chats):
     service, control = fake_llm
     llm = JsonLlm(service)
     d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
@@ -39,10 +34,10 @@ def test_ask_json_against_the_fake_api(fake_llm):
     # prose: one request for a correction, which the fake answers with JSON
     control.write_text(json.dumps({"section_fail_if": ["broken"]}))
     failures = []
-    before = _chats(llm)
+    before = fake_chats()
     d = llm.ask_json("system", "<section>broken</section>", SCHEMA, "section",
                      on_failure=lambda attempt, text, finish: failures.append(attempt))
-    assert d["summary"] and _chats(llm) - before == 2 and failures == [1]
+    assert d["summary"] and fake_chats() - before == 2 and failures == [1]
 
     # prose again after the correction: it gives up
     control.write_text(json.dumps({"prose": True}))

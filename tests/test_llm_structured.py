@@ -52,3 +52,15 @@ def test_ask_json_against_the_fake_api(fake_llm, fake_chats):
     service.max_tokens = 50
     with pytest.raises(TruncatedResponse):
         JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+
+
+def test_servers_without_structured_output(fake_llm, fake_chats):
+    service, control = fake_llm
+    control.write_text(json.dumps({"no_structured_output": True}))
+    llm = JsonLlm(service)
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"][0]["id"] == "SRS-0001" and llm.schema_ok is False
+    before = fake_chats()                       # from then on, no request with the schema
+    llm.ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert fake_chats() - before == 1
+

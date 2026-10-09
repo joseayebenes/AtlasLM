@@ -116,11 +116,15 @@ class JsonLlm:
     JSON schema and, if the server does not accept it, goes on without it. Thread-safe:
     one instance can be shared by the workers that analyse sections in parallel."""
 
+    # How servers say they do not support response_format: 400 (most), 422 (some vLLM
+    # versions), 501 "structured output is unavailable" (Ollama with some models)
+    NO_SCHEMA_STATUSES = (400, 422, 501)
+
     def __init__(self, cfg: ServiceConfig):
-        from openai import BadRequestError
+        from openai import APIStatusError
         self.cfg = cfg
         self.client, self.proxy = create_client(cfg)
-        self._bad_request = BadRequestError
+        self._status_error = APIStatusError
         self.model = cfg.model
         self.temperature = cfg.temperature
         self.schema_ok = True   # turned off if the server does not accept json_schema
@@ -136,8 +140,8 @@ class JsonLlm:
                                              {"name": name, "schema": schema}}
             try:
                 resp = self.client.chat.completions.create(**kwargs)
-            except self._bad_request as e:
-                if "response_format" in kwargs:
+            except self._status_error as e:
+                if "response_format" in kwargs and e.status_code in self.NO_SCHEMA_STATUSES:
                     with self._lock:
                         if self.schema_ok:
                             log.warning("the server does not accept json_schema, going on without it: %s", e)

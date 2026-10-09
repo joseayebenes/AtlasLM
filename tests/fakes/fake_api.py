@@ -11,6 +11,8 @@ The control file is re-read on every request; keys:
   prose: true                      -> prose answer (not JSON) to every chat request
   cut_sections_over: N             -> sections longer than N characters get their JSON cut in
                                       half with finish_reason "length"
+  no_structured_output: true       -> 501 to chat requests with response_format (Ollama does
+                                      this with some models)
   slow: seconds                    -> delay per request
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty
@@ -52,6 +54,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"object": "list", "model": "e", "usage": {"prompt_tokens": 1, "total_tokens": 1},
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         stats["chat"] += 1
+        if c.get("no_structured_output") and body.get("response_format"):
+            return self.send(501, {"error": {"message": "structured output is unavailable", "type": "api_error"}})
         user = body["messages"][-1]["content"]; cut = False
         if c.get("prose"):
             content = "Sorry, I cannot produce JSON."

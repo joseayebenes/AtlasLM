@@ -33,7 +33,7 @@ def test_resumes_after_an_interruption_midway(tmp_path):
     with pytest.raises(KeyboardInterrupt):
         Runner(ledger, [step], workers=1).run()
     assert ledger.get("p", "a")["status"] == "ok" and ledger.get("p", "b")["status"] == "running"
-    assert not (tmp_path / "db").with_suffix(".lock").exists()   # the lock is released
+    assert (tmp_path / "db").with_suffix(".lock").read_text() == ""   # the lock is released
     crash["on"] = False
     rep = Runner(ledger, [step], workers=1).run()
     assert rep.processed == {"p": 2} and rep.skipped == {"p": 1} and done == ["a", "b", "c"]
@@ -97,3 +97,51 @@ def test_parallel_units_share_the_ledger_and_store_safely(tmp_path):
     rep = Runner(ledger, [_step("p", units, {u: "1" for u in units}, run)], workers=8).run()
     assert rep.processed == {"p": 300} and not rep.errors
     assert ledger.summary() == {"p": {"ok": 300}} and store.counts()["code_units"] == 300
+
+
+def test_kill_9_releases_the_workspace_and_the_next_run_resumes(tmp_path):
+    """A run killed in the middle of a unit (kill -9: no cleanup at all) leaves no lock
+    behind: the next run starts, redoes that unit and does not repeat the finished ones."""
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    from atlas.pipeline import WorkspaceLocked
+    root, db, started = Path(__file__).resolve().parents[1], tmp_path / "atlas.db", tmp_path / "started_b"
+    child = tmp_path / "slow_run.py"
+    child.write_text(f"""
+import sys, time
+sys.path.insert(0, {str(root)!r})
+from pathlib import Path
+from atlas.pipeline import Ledger, Runner, Step
+
+def run(ctx, u):
+    if u == "b":
+        Path({str(started)!r}).touch()
+        time.sleep(60)                      # killed here
+
+Runner(Ledger({str(db)!r}), [Step(name="s", units=lambda ctx: ["a", "b", "c"],
+                                  fingerprint=lambda ctx, u: "1", run=run)]).run()
+""")
+    proc = subprocess.Popen([sys.executable, str(child)])
+    try:
+        for _ in range(100):
+            if started.exists():
+                break
+            time.sleep(0.1)
+        assert started.exists()
+        done = []
+        step = _step("s", ["a", "b", "c"], {u: "1" for u in "abc"}, lambda ctx, u: done.append(u))
+        with pytest.raises(WorkspaceLocked, match=f"PID {proc.pid}"):   # still running: refused
+            Runner(Ledger(db), [step]).run()
+    finally:
+        proc.kill()                          # SIGKILL (TerminateProcess on Windows)
+        proc.wait()
+    rep = Runner(Ledger(db), [step]).run()
+    assert rep.processed == {"s": 2} and rep.skipped == {"s": 1} and done == ["b", "c"]
+
+
+def test_a_lock_file_left_by_an_old_version_does_not_block(tmp_path):
+    (tmp_path / "atlas.lock").write_text("12345")          # O_EXCL lock of a killed run
+    step = _step("s", ["a"], {"a": "1"}, lambda ctx, u: None)
+    assert Runner(Ledger(tmp_path / "atlas.db"), [step]).run().processed == {"s": 1}

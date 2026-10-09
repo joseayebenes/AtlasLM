@@ -84,3 +84,17 @@ def test_vectors_of_another_embeddings_model_are_not_mixed(docs, tmp_path, fake_
     assert other.search("alarm", k=1)            # the lexical search still finds it
     _add(other, docs["hmi_manual.md"])
     assert other.store.dense(other.embedder.queries(["alarm"])[0], "nomic-embed-text", 5, None)
+
+
+def test_a_long_lived_index_sees_what_another_connection_indexes(docs, tmp_path, fake_embeddings):
+    server = Index(tmp_path / "atlas.db", fake_embeddings)        # atlas serve, for instance
+    runner = Index(tmp_path / "atlas.db", fake_embeddings)        # and an atlas run meanwhile
+    _add(runner, docs["hmi_manual.md"])
+    qvec = server.embedder.queries(["track"])[0]
+    before = server.store.dense(qvec, server.embedder.model, 10_000, None)
+    _add(runner, docs["spec_with_bookmarks.pdf"])
+    after = server.store.dense(qvec, server.embedder.model, 10_000, None)
+    total = sum(d["records"] for d in runner.documents())
+    assert len(before) < len(after) == total
+    runner.remove_document("test:spec_with_bookmarks.pdf")
+    assert len(server.store.dense(qvec, server.embedder.model, 10_000, None)) == len(before)

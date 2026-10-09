@@ -4,6 +4,7 @@
     embeddings.py   Embedder: vectors through the [embeddings] connection
     store.py        IndexStore: records, vectors, FTS5 and embeddings cache in atlas.db
     search.py       hybrid search (IDs + vectors + BM25, merged with RRF) and cited answers
+    tools.py        DocTools: the tools of agents and of the MCP server over the documents
 
     from atlas.index import Index
     idx = Index.from_config(cfg)                    # the atlas.db of the workspace
@@ -25,11 +26,12 @@ from atlas.index.embeddings import Embedder
 from atlas.index.records import KINDS, build_records, chunk_text
 from atlas.index.search import answer, build_context, cite, search
 from atlas.index.store import IndexStore
+from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["KINDS", "Embedder", "Index", "IndexStore", "answer", "build_context", "build_records",
+__all__ = ["KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context", "build_records",
            "chunk_text", "cite", "index_document", "search"]
 
 log = logging.getLogger(__name__)
@@ -123,3 +125,4 @@ class Index:
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""
         return self.store.requirement(req_id)
+

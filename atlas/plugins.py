@@ -206,7 +206,7 @@ def load_plugins(modules: Iterable[str] = (), use_entry_points: bool = True) -> 
     configuration. Returns the names loaded."""
     global _LOADED
     loaded: list[str] = []
-    built_in = ["atlas.code", "atlas.doors", "atlas.docs"]
+    built_in = ["atlas.code", "atlas.doors", "atlas.docs", "atlas.index"]
     for m in built_in:
         try:
             importlib.import_module(m)

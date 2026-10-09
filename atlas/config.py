@@ -79,7 +79,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
-    "mcp": {"enabled": False, "tools": []},
+    "mcp": {"enabled": True, "tools": []},
 }
 
 

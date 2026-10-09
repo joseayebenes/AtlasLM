@@ -451,8 +451,10 @@ Garantías:
   cambie su huella o se active `retry_quarantined`, para no gastar cupo en lo imposible.
 - **Lo determinista nunca se cachea a medias**: los pasos sin LLM (extracción, análisis de
   código, grafo) se recalculan completos para una unidad; su coste es segundos.
-- **Un solo proceso por workspace**: un fichero de bloqueo evita dos `run` simultáneos
-  sobre el mismo `atlas.db`.
+- **Un solo proceso por workspace**: un bloqueo del sistema operativo sobre `atlas.lock`
+  (`flock` o `msvcrt.locking`) evita dos `run` simultáneos sobre el mismo `atlas.db`. El
+  sistema lo libera al terminar el proceso, aunque se le mate con `kill -9`, así que nunca
+  hay que borrar nada a mano.
 
 ### 6.5 Dónde encaja el código actual
 
@@ -650,9 +652,11 @@ librería. El orden está pensado para tener algo útil desde la fase 1.
 - `atlas.llm`: `conexion.py` con su API pública, traducido al inglés (`connection.py`).
 
 Aceptación:
-- [ ] `atlas run` con un paso de ejemplo procesa, se interrumpe (`kill`), reanuda y termina
-      sin repetir unidades ni dejar escrituras a medias.
-- [ ] Un TOML con una clave mal escrita falla al cargar indicando sección y clave.
+- [x] `atlas run` con un paso de ejemplo procesa, se interrumpe (`kill`), reanuda y termina
+      sin repetir unidades ni dejar escrituras a medias
+      (`test_kill_9_releases_the_workspace_and_the_next_run_resumes`).
+- [x] Un TOML con una clave mal escrita falla al cargar indicando sección y clave
+      (`test_unknown_key_fails_with_context`).
 
 ### Fase 1 — Migración de lo existente a módulos (≈ 8 días)
 
@@ -977,9 +981,9 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/cli.py`: `run`, `status`, `sections`, `search`, `ask`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 51 pruebas: configuración, plugins, DOORS, reanudación tras corte,
-  cuarentena, poda, dependencias, varios hilos sobre el mismo atlas.db, CLI, servidor
-  falso, `atlas check` con modelos que razonan, documentos (estructura, análisis, caché,
+- `tests/`: 53 pruebas: configuración, plugins, DOORS, reanudación tras corte y tras
+  `kill -9`, cuarentena, poda, dependencias, varios hilos sobre el mismo atlas.db, CLI,
+  servidor falso, `atlas check` con modelos que razonan, documentos (estructura, análisis, caché,
   división de secciones, paso `docs.process` y equivalencia con `pdf_struct.py`), índice
   (registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, paso
   `index.documents` y equivalencia con `doc_rag.py`) y, solo si Ollama está en marcha, un
@@ -1009,7 +1013,7 @@ contexto mayor que el de defecto (`OLLAMA_CONTEXT_LENGTH=16384`).
   cambios: todo "al día" en menos de un segundo y sin peticiones.
 - Un requisito editado en la base de datos y un fichero Ada modificado: se reprocesan
   exactamente esas dos unidades.
-- Corte a mitad de una unidad: la unidad queda `running`, el bloqueo se libera y la
-  siguiente ejecución la retoma sin repetir las anteriores.
+- Corte a mitad de una unidad (Ctrl+C o `kill -9`): la unidad queda `running`, el
+  bloqueo se libera y la siguiente ejecución la retoma sin repetir las anteriores.
 - Errores propios: reintento y cuarentena al agotar `max_attempts`; error fatal: parada
   con el estado guardado; unidad desaparecida: poda.

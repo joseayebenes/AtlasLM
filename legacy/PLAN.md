@@ -1,0 +1,981 @@
+# Plan de proyecto — `atlas`: base de conocimiento de ingeniería (documentos, requisitos, código y grafo) orquestada con Google ADK
+
+> `atlas` es un nombre provisional. Todo lo que sigue parte del código ya existente
+> (`conexion.py`, `pdf_struct.py`, `doc_rag.py`, `ada_graph.py`, `ada_graph_mcp.py` y el
+> servidor MCP de DOORS) y lo reorganiza como una librería Python configurable por fichero.
+
+## Contenido
+
+1. [Objetivo y alcance](#1-objetivo-y-alcance)
+2. [Principios de diseño](#2-principios-de-diseño)
+3. [Arquitectura](#3-arquitectura)
+4. [Estructura del paquete y API pública](#4-estructura-del-paquete-y-api-pública)
+5. [Configuración](#5-configuración)
+6. [Motor de procesamiento incremental y recuperable](#6-motor-de-procesamiento-incremental-y-recuperable)
+7. [Modelo de datos y grafo de conocimiento](#7-modelo-de-datos-y-grafo-de-conocimiento)
+8. [Orquestación con Google ADK](#8-orquestación-con-google-adk)
+9. [Fases, entregables y criterios de aceptación](#9-fases-entregables-y-criterios-de-aceptación)
+10. [Calendario](#10-calendario)
+11. [Pruebas y evaluación](#11-pruebas-y-evaluación)
+12. [Riesgos y mitigaciones](#12-riesgos-y-mitigaciones)
+13. [Supuestos y preguntas abiertas](#13-supuestos-y-preguntas-abiertas)
+14. [Extensibilidad: plugins](#14-extensibilidad-plugins)
+15. [DOORS desde una base de datos](#15-doors-desde-una-base-de-datos)
+16. [Entorno de desarrollo y esqueleto entregado](#16-entorno-de-desarrollo-y-esqueleto-entregado)
+
+---
+
+## 1. Objetivo y alcance
+
+### Problema
+
+Programar con un modelo pequeño y lento sobre un sistema con miles de requisitos (normas,
+especificaciones en DOORS) y una base de código Ada grande obliga a reunir contexto a mano
+o a encadenar muchas llamadas a herramientas, cada una lenta. Además, procesar esa
+documentación cuesta horas de API: no puede repetirse cada vez ni perderse por un error.
+
+### Objetivo
+
+Una librería Python, `atlas`, que construye y mantiene una **base de conocimiento unificada**
+a partir de cuatro fuentes y la pone al servicio de agentes (ADK) y de herramientas de
+programación (OpenCode, VS Code) a través de MCP:
+
+| Fuente | Qué aporta | Punto de partida |
+|---|---|---|
+| Documentos (PDF, Markdown) | normas y documentos de diseño estructurados, requisitos, glosario | `pdf_struct.py`, `doc_rag.py` |
+| DOORS | requisitos oficiales con atributos y enlaces entre módulos | servidor MCP de DOORS existente |
+| Código (Ada) | paquetes, subprogramas, tipos, variables, llamadas, comentarios `Req:` | `ada_graph.py` |
+| Grafo | la relación entre todo lo anterior: trazabilidad, impacto, dependencias | `ada_graph_mcp.py` |
+
+### Metas medibles
+
+1. **Procesar una vez**: una segunda ejecución sin cambios no hace ninguna petición a la API
+   y termina en menos de un minuto para un proyecto de 2000 secciones + 5000 requisitos +
+   3000 subprogramas.
+2. **Solo los cambios**: modificar un fichero (PDF, módulo DOORS o `.adb`) reprocesa solo
+   sus unidades y lo que depende de ellas; el resto sale de caché.
+3. **Recuperable**: tras un corte (error de red, cuota agotada, Ctrl+C, `kill`), relanzar
+   continúa donde se quedó sin repetir ningún resultado válido ni dejar datos corruptos.
+4. **Configurable por fichero**: toda la ejecución se define en `atlas.toml`; la línea de
+   comandos solo indica qué fichero usar y qué acción lanzar.
+5. **Importable**: cada módulo tiene una API pública documentada y se puede usar sin ADK,
+   sin MCP y sin el resto de módulos (`from atlas.code import AdaAnalyzer`).
+6. **Trazabilidad**: para cualquier ID de requisito se obtiene en una sola llamada su texto
+   oficial, el documento donde aparece, el código que lo implementa y las pruebas que lo
+   cubren, y a la inversa.
+7. **Evaluable**: un conjunto de preguntas y tareas con respuesta conocida mide la
+   recuperación y las respuestas de los agentes en cada versión.
+
+### Fuera de alcance (no-objetivos)
+
+- Escribir en DOORS: el acceso es de solo lectura.
+- Sustituir al editor o al agente de programación (OpenCode, VS Code): `atlas` les
+  suministra conocimiento, no edita código.
+- Ajuste fino de modelos: el modelo se usa tal cual, a través de la API.
+- Despliegue en la nube: todo corre en el puesto de trabajo o en un servidor interno, por
+  confidencialidad.
+- Otros lenguajes aparte de Ada en la primera versión; la interfaz queda preparada.
+
+---
+
+## 2. Principios de diseño
+
+1. **Determinista primero, modelo después.** Extracción, estructura, grafo, trazabilidad y
+   búsqueda se hacen sin LLM. El modelo entra solo donde aporta: resúmenes, respuestas,
+   razonamiento de los agentes. Es la forma de que un modelo pequeño y con cupo sea útil.
+2. **Librería, no aplicación.** Toda la lógica vive en `atlas.*` con funciones y clases
+   puras; la línea de comandos, los agentes ADK y el servidor MCP son capas finas.
+3. **Todo es una unidad con huella.** Cada fichero, sección, requisito y subprograma es una
+   unidad con una huella (hash de su contenido, de la configuración que le afecta y de la
+   versión del código que lo procesa). El motor solo reprocesa unidades cuya huella cambia.
+4. **Escrituras atómicas y estado explícito.** Cada paso escribe sus resultados de forma
+   atómica y anota su estado en un libro de registro. Un corte nunca deja mitades.
+5. **Una configuración, muchas entradas.** Un único `atlas.toml` validado contra un esquema;
+   los secretos se leen de variables de entorno (`${VAR}`).
+6. **Pocas herramientas, bien descritas.** Los agentes disponen de 5-8 herramientas con
+   salidas compactas; los flujos de varios pasos son fijos (workflow), no improvisados por
+   el modelo.
+7. **Reutilizar lo que ya funciona.** El código actual se migra módulo a módulo manteniendo
+   su comportamiento y sus pruebas; no se reescribe desde cero.
+8. **Todo lo variable es un plugin.** Analizadores de código, fuentes de requisitos,
+   extractores de documentos y herramientas de agente se registran por nombre y se activan
+   o desactivan desde la configuración, sin tocar el núcleo (sección 14).
+
+---
+
+## 3. Arquitectura
+
+```mermaid
+flowchart TB
+    subgraph Fuentes
+        D[("Documentos<br/>PDF · Markdown")]
+        R[("DOORS<br/>exportaciones o MCP")]
+        C[("Código Ada<br/>.ads · .adb")]
+    end
+
+    subgraph atlas_lib["Librería atlas (importable)"]
+        CFG["config<br/>atlas.toml → objetos validados"]
+        PIPE["pipeline<br/>motor incremental y recuperable<br/>(libro de registro, huellas)"]
+        DOCS["docs<br/>extracción · estructura · análisis"]
+        DOORS["doors<br/>modelo de requisito · adaptadores · diff"]
+        CODE["code<br/>analizadores (Ada, extensible)"]
+        GRAPH["graph<br/>grafo de conocimiento<br/>consultas · trazabilidad · exportación"]
+        IDX["index<br/>registros · embeddings · FTS · búsqueda híbrida"]
+        LLM["llm<br/>clientes · proxy · TLS · límites · reintentos"]
+    end
+
+    subgraph Capas["Capas de acceso"]
+        AG["agents (ADK)<br/>asistente · constructor de contexto<br/>análisis de impacto · ingesta"]
+        MCPS["mcp<br/>servidor para OpenCode / VS Code"]
+        CLI["cli<br/>atlas run · status · serve · eval"]
+    end
+
+    STORE[("workspace/<br/>atlas.db · grafo · salidas · caché")]
+    API[("API LLM + embeddings")]
+
+    D --> DOCS
+    R --> DOORS
+    C --> CODE
+    CFG --> PIPE
+    PIPE --> DOCS & DOORS & CODE
+    DOCS & DOORS & CODE --> GRAPH
+    DOCS & DOORS & CODE --> IDX
+    DOCS -. "análisis de secciones" .-> LLM
+    IDX -. "embeddings" .-> LLM
+    AG -. "razonamiento" .-> LLM
+    LLM <--> API
+    PIPE --> STORE
+    GRAPH --> STORE
+    IDX --> STORE
+    AG --> GRAPH & IDX & DOORS & CODE
+    MCPS --> GRAPH & IDX & DOORS & CODE
+    CLI --> PIPE & AG & MCPS
+```
+
+**Decisiones clave y sus alternativas:**
+
+| Decisión | Por qué | Alternativa descartada |
+|---|---|---|
+| Motor incremental propio sobre SQLite | control total de huellas, reanudación y poda; sin dependencias pesadas | Prefect/Dagster/Snakemake: potentes, pero añaden servidores o convenciones que no encajan con una librería embebible |
+| SQLite como único almacén (registro, índice, grafo) | un fichero, transacciones, sin servicios; ya probado en `doc_rag.py` | Qdrant/Neo4j: mejores a gran escala, pero infraestructura y permisos que no hacen falta para este volumen |
+| Grafo en SQLite + NetworkX en memoria | consultas rápidas, exportable a GraphML/JSON, sin servidor | base de datos de grafos dedicada |
+| ADK orquesta flujos y agentes; el motor de ingesta es determinista | ADK aporta flujos, herramientas, trazas y evaluación; el ETL no necesita un LLM que lo dirija | orquestar el ETL con agentes LLM: lento, caro y menos fiable |
+| MCP como interfaz hacia editores | OpenCode y VS Code ya lo hablan; un solo servidor para todo | un plugin por editor |
+| TOML con `${VAR}` para secretos | ya se usa en `conexion.toml`; comentable; tipado | YAML (más ambiguo), JSON (sin comentarios) |
+
+---
+
+## 4. Estructura del paquete y API pública
+
+```
+atlas/
+├── __init__.py            versión, carga rápida (atlas.load("atlas.toml"))
+├── config/                esquema del TOML (dataclasses), validación, expansión ${VAR}, huellas
+├── llm/                   conexion.py actual: clientes OpenAI, proxy, TLS, límites, reintentos
+├── pipeline/              motor incremental: Step, Unit, Ledger, Runner, poda, estado
+├── docs/                  pdf_struct.py actual: extracción, estructura, análisis, Markdown
+├── doors/                 modelo Requirement/Link, adaptadores (ReqIF, CSV, MCP), diff por ID
+├── code/                  LanguageAnalyzer (interfaz) + AdaAnalyzer (tree-sitter)
+├── graph/                 esquema de nodos/aristas, cargadores, consultas, trazabilidad, exportación
+├── index/                 registros, embeddings con caché, FTS5, búsqueda híbrida, contexto
+├── agents/                ADK: herramientas, agentes LLM, flujos, conjuntos de evaluación
+├── mcp/                   servidor MCP que expone las mismas herramientas que agents/
+└── cli.py                 atlas run | status | serve | eval  CONFIG
+```
+
+Reglas para que cada módulo sea importable por separado:
+
+- Sin efectos secundarios al importar (nada de leer ficheros ni abrir conexiones en
+  `import`).
+- Cada módulo recibe su configuración como objeto (`DocsConfig`, `CodeConfig`...), nunca
+  lee `argparse` ni variables globales. `atlas.config` construye esos objetos desde el TOML,
+  pero también se pueden crear a mano en Python.
+- Dependencias opcionales por módulo (`pip install atlas[docs]`, `[code]`, `[agents]`):
+  importar `atlas.graph` no exige tree-sitter ni ADK.
+- Registro con `logging` (nunca `print`), un logger por módulo.
+- API pública en `__all__` y documentada; lo interno con guion bajo.
+
+Ejemplos de uso como librería:
+
+```python
+from atlas.config import load_config
+from atlas.code import AdaAnalyzer
+from atlas.graph import KnowledgeGraph
+from atlas.index import Index
+from atlas.pipeline import Runner
+
+cfg = load_config("atlas.toml")
+
+# Solo el analizador de código, sin nada más
+units = AdaAnalyzer(cfg.sources.code).analyze_file("src/tracks.adb")
+
+# Solo el grafo ya construido
+g = KnowledgeGraph.open(cfg.storage)
+print(g.impact("delete_message", depth=3))
+print(g.trace("DELETE-X_2-MSG"))          # requisito → código, pruebas, documentos
+
+# Solo la búsqueda
+hits = Index.open(cfg.storage, cfg.embeddings).search("latencia de borrado de traza", k=8)
+
+# Todo el procesamiento, incremental y reanudable
+Runner(cfg).run()                          # equivale a: atlas run atlas.toml
+```
+
+---
+
+## 5. Configuración
+
+Un único fichero `atlas.toml`, validado al cargar (claves desconocidas y tipos incorrectos
+son errores con línea y sección). La línea de comandos se reduce a
+`atlas <acción> [ruta_del_toml]`; no hay opciones que dupliquen el fichero.
+
+```toml
+[project]
+name = "tms"
+workspace = "C:/atlas/tms"          # atlas.db, grafo, salidas y caché van aquí
+log_level = "INFO"
+
+# --- Conexión: mismo esquema que conexion.toml ------------------------------
+[llm]
+base_url = "https://llm-gateway.empresa/v1"
+model = "gemma-4"
+api_key = "${GW_KEY}"
+max_tokens = 8192
+
+[embeddings]
+model = "embeddinggemma"            # vacío base_url = misma URL y clave que [llm]
+batch = 64
+
+[network]
+proxy = "${HTTPS_PROXY:-}"
+ca_cert = "system"
+requests_per_minute = 28
+adaptive = true
+
+# --- Procesamiento ------------------------------------------------------------
+[pipeline]
+workers = 6                         # unidades en paralelo (el límite de la API manda)
+on_error = "continue"               # continue | stop   (los errores fatales siempre paran)
+max_attempts = 3                    # intentos por unidad antes de dejarla en cuarentena
+retry_quarantined = false           # true: volver a intentar las que agotaron intentos
+prune_missing = true                # borrar del índice y del grafo lo que ya no existe
+steps = ["docs", "doors", "code", "graph", "index"]   # qué pasos ejecutar
+
+# --- Fuentes ------------------------------------------------------------------
+[[sources.docs]]
+name = "normas"
+paths = ["C:/docs/normas"]
+patterns = ["*.pdf"]
+analysis = "regex"                  # none | regex | llm   (normas: requisitos por regex, sin LLM)
+req_regex = "(?i)\\bReq\\s*:\\s*([^\\n]+)"
+structure = "auto"                  # auto | bookmarks | headings | size
+
+[[sources.docs]]
+name = "diseno"
+paths = ["C:/docs/diseno"]
+patterns = ["*.pdf", "*.md"]
+analysis = "llm"                    # resumen, requisitos, glosario, entidades por sección
+lang = "Spanish"
+max_chars = 12000
+min_chars = 2000
+
+[plugins]
+modules = []                        # módulos Python con plugins propios (p. ej. "mi_pkg.cpp")
+disabled = []                       # p. ej. ["code_analyzer:cpp"]
+
+[sources.doors]
+adapter = "database"                # la explotación de DOORS en una base de datos
+modules = ["SRS_TMS", "SSS_MISSION"]
+
+[sources.doors.database]            # todo el SQL es configurable; :module es el parámetro
+driver = "odbc"                     # sqlite | odbc
+dsn = "DSN=DOORS_EXPORT;UID=${DB_USER};PWD=${DB_PASS}"
+modules_query = "SELECT DISTINCT module FROM dbo.requirements"
+requirements_query = "SELECT * FROM dbo.requirements WHERE module = :module"
+links_query = "SELECT source_id, target_id, link_type FROM dbo.links WHERE source_module = :module"
+snapshot_query = "SELECT CAST(COUNT(*) AS VARCHAR) + '|' + CONVERT(VARCHAR, MAX(updated_at), 126) FROM dbo.requirements WHERE module = :module"
+
+[sources.doors.convention]          # convención de requisitos: columnas, IDs, enlaces, referencias
+id_column = "id"
+text_column = "object_text"
+module_column = "module"
+parent_column = "parent"            # jerarquía dentro del módulo (vacío = sin jerarquía)
+attribute_columns = ["status", "verification_method"]
+id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"       # los IDs que no cumplen se avisan
+id_normalize = "upper"
+link_columns = { source = "source_id", target = "target_id", type = "link_type" }
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # referencias dentro del texto
+inline_reference_type = "references"
+
+[sources.code]
+roots = ["C:/src/tms"]
+languages = ["ada"]
+exclude = ["**/build/**", "**/obj/**"]
+req_tag = "Req:"                    # comentario de trazabilidad en el código
+test_patterns = ["**/tests/**/*.adb"]
+summaries = "none"                  # none | llm  (resumen de cada subprograma con el modelo)
+
+# --- Grafo e índice -----------------------------------------------------------
+[graph]
+exports = ["graphml", "json"]
+communities = true                  # módulos funcionales por Louvain
+
+[index]
+chunk_chars = 1200
+chunk_overlap = 200
+kinds = ["chunk", "section_summary", "requirement", "definition", "code_doc"]
+
+# --- Agentes y servicio -------------------------------------------------------
+[agents]
+model = "gemma-4"                   # por defecto el de [llm]; puede ser otro por agente
+[agents.assistant]
+tools = ["search", "get_requirement", "trace", "graph_query", "read_source"]
+max_steps = 8
+[agents.context_builder]
+budget_tokens = 4000
+[agents.eval]
+sets = ["eval/assistant.evalset.json", "eval/impact.evalset.json"]
+
+[mcp]
+enabled = true
+tools = ["search", "trace", "impact", "context", "read_source", "get_requirement"]
+```
+
+**Huella de configuración.** Cada paso declara de qué secciones depende; la huella de sus
+unidades incluye el hash de esas secciones. Cambiar `min_chars` reprocesa las secciones de
+documentos, pero no el grafo de código; cambiar `embeddings.model` invalida los vectores,
+pero no los análisis.
+
+---
+
+## 6. Motor de procesamiento incremental y recuperable
+
+Es el corazón del proyecto y lo que garantiza "procesar una vez" y "solo los cambios".
+Generaliza lo que hoy hacen `estado.json`, la caché de secciones y `embed_cache`.
+
+### 6.1 Conceptos
+
+| Concepto | Definición |
+|---|---|
+| **Paso** (`Step`) | una transformación con nombre, que declara de qué pasos y de qué secciones de configuración depende |
+| **Unidad** (`Unit`) | el elemento mínimo que un paso procesa: un fichero, una sección, un requisito, un subprograma, un lote de embeddings |
+| **Huella** (`fingerprint`) | hash de las entradas de la unidad (contenido + salidas de las unidades de las que depende + configuración relevante + versión del paso y de los prompts) |
+| **Libro de registro** (`Ledger`) | tabla SQLite con, por paso y unidad: huella, estado (`ok`, `error`, `cuarentena`, `obsoleta`), intentos, error, fechas y hash de las salidas |
+| **Idempotencia** | ejecutar una unidad dos veces con la misma huella produce exactamente el mismo resultado y no deja duplicados |
+
+### 6.2 Grafo de dependencias entre pasos
+
+```mermaid
+flowchart LR
+    subgraph docs
+        D1[docs.extract<br/>por fichero] --> D2[docs.sections<br/>por fichero] --> D3[docs.analyze<br/>por sección] --> D4[docs.write<br/>por fichero]
+    end
+    subgraph doors
+        R1[doors.fetch<br/>por módulo] --> R2[doors.requirements<br/>por requisito]
+    end
+    subgraph code
+        C1[code.parse<br/>por fichero] --> C2[code.summarize<br/>por subprograma, opcional]
+    end
+    D3 --> G[graph.build<br/>por fuente]
+    R2 --> G
+    C1 --> G
+    G --> T[graph.trace<br/>por requisito]
+    D3 --> I1[index.records<br/>por documento / módulo / fichero]
+    R2 --> I1
+    C2 --> I1
+    I1 --> I2[index.embed<br/>por lote] --> I3[index.store<br/>por documento]
+```
+
+Cada flecha significa "la huella de la unidad de la derecha incluye las salidas de la
+unidad de la izquierda". Un cambio se propaga solo por las flechas que lo tocan.
+
+### 6.3 Detección de cambios por fuente
+
+| Fuente | Qué se compara | Qué se reprocesa si cambia |
+|---|---|---|
+| Documento | sha256 del fichero | extracción y secciones del fichero; de las secciones, **solo las que tienen texto distinto** (misma caché que hoy); sus registros y vectores; sus nodos del grafo |
+| Requisito DOORS | ID + hash de texto y atributos; conjunto de enlaces | ese requisito en índice y grafo; los enlaces de trazabilidad en los que participa |
+| Fichero Ada | sha256 del fichero | análisis del fichero; nodos y aristas que define; resúmenes y vectores de sus subprogramas; enlaces `Req:` de sus unidades |
+| Configuración | hash de las secciones del TOML de las que depende cada paso | solo las unidades de ese paso |
+| Modelo / prompts / versión del código | nombre del modelo, `PROMPT_VERSION`, versión del paso | las unidades que los usan (p. ej. cambiar el modelo de chat reanaliza; cambiar el de embeddings solo re-embebe) |
+| Elemento desaparecido | unidad presente en el registro pero no en la fuente | se marca `obsoleta` y, con `prune_missing`, se eliminan sus registros, nodos y aristas |
+
+### 6.4 Ejecución y recuperación
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant U as atlas run
+    participant RN as Runner
+    participant L as Ledger (SQLite)
+    participant S as Paso
+    participant W as Salidas (atómicas)
+
+    U->>RN: run(config)
+    RN->>RN: ordenar pasos por dependencias
+    loop cada paso
+        RN->>S: unidades actuales de la fuente
+        RN->>L: huellas registradas
+        loop cada unidad
+            alt huella igual y estado ok
+                RN->>RN: se omite (sin trabajo, sin API)
+            else nueva, cambiada, con error o reintentable
+                RN->>S: procesar(unidad)
+                alt éxito
+                    S->>W: escribir resultado (fichero temporal + renombrado, o transacción)
+                    S->>L: ok + huella + hash de salida
+                else error propio de la unidad
+                    S->>L: error (+1 intento) → cuarentena al agotar max_attempts
+                    RN->>RN: continuar (on_error = continue)
+                else error fatal (conexión, credenciales, cuota agotada)
+                    S->>L: interrumpido
+                    RN-->>U: parar, el estado queda guardado
+                end
+            end
+        end
+        RN->>L: unidades desaparecidas → obsoletas (+ poda)
+    end
+    RN-->>U: resumen: procesadas, omitidas, errores, cuarentena
+```
+
+Garantías:
+
+- **Reanudación**: `atlas run` de nuevo continúa exactamente donde paró; no hay un comando
+  distinto para reintentar. `atlas status` muestra pendientes, errores y cuarentena.
+- **Atomicidad**: los ficheros se escriben con temporal + renombrado; las escrituras en
+  SQLite van en una transacción por unidad. Un `kill` en mitad de una unidad la deja como
+  no hecha, nunca a medias.
+- **Paralelismo seguro**: las unidades de un mismo paso se procesan en paralelo
+  (`workers`); el registro es el único punto de coordinación y usa `busy_timeout`.
+- **Cuarentena**: una unidad que falla `max_attempts` veces deja de reintentarse hasta que
+  cambie su huella o se active `retry_quarantined`, para no gastar cupo en lo imposible.
+- **Lo determinista nunca se cachea a medias**: los pasos sin LLM (extracción, análisis de
+  código, grafo) se recalculan completos para una unidad; su coste es segundos.
+- **Un solo proceso por workspace**: un fichero de bloqueo evita dos `run` simultáneos
+  sobre el mismo `atlas.db`.
+
+### 6.5 Dónde encaja el código actual
+
+| Hoy | En `atlas` |
+|---|---|
+| `estado.json` por documento | filas del `Ledger` para los pasos `docs.*` |
+| `rag_sesion.json` | vista `atlas status` sobre el `Ledger` |
+| `.cache/<clave>.json` de secciones | sigue igual (salida del paso `docs.analyze`), referenciada por huella |
+| `embed_cache` en `rag.db` | tabla del mismo `atlas.db`, clave = modelo + prefijo + texto |
+| `ingest` / `retry` / `--force` | `atlas run` (siempre incremental), `retry_quarantined`, cambio de huella |
+
+---
+
+## 7. Modelo de datos y grafo de conocimiento
+
+Un único grafo con tipos de nodo y arista fijos. Se guarda en SQLite (`nodes`, `edges`,
+con atributos JSON) y se carga en NetworkX para consultar.
+
+```mermaid
+erDiagram
+    Document ||--o{ Section : contiene
+    Section ||--o{ Requirement : declara
+    DoorsModule ||--o{ Requirement : contiene
+    Requirement }o--o{ Requirement : "satisfies / derives_from"
+    Requirement }o--o{ Subprogram : "implemented_by (Req: en el código)"
+    Requirement }o--o{ Test : "verified_by"
+    Package ||--o{ Subprogram : defines
+    Package ||--o{ Type : defines
+    Package ||--o{ Variable : defines
+    Package }o--o{ Package : withs
+    Subprogram }o--o{ Subprogram : calls
+    Subprogram }o--o{ Type : converts
+    Subprogram }o--o{ Variable : uses
+    Test }o--o{ Subprogram : covers
+    Section }o--o{ Subprogram : "documents (por nombre o ID)"
+
+    Document {
+        string id PK
+        string source "normas | diseno"
+        string path
+        string hash
+    }
+    Section {
+        string id PK
+        string title
+        string path "ruta jerárquica"
+        int page_start
+        int page_end
+        string summary
+    }
+    Requirement {
+        string id PK "ID oficial"
+        string text
+        string origin "doors | document"
+        string status
+        json attributes
+    }
+    Subprogram {
+        string id PK "paquete.nombre"
+        string file
+        int line_start
+        int line_end
+        string doc "comentario de cabecera"
+    }
+    Test {
+        string id PK
+        string file
+    }
+```
+
+Consultas que el módulo `graph` ofrece como funciones (y los agentes como herramientas):
+
+| Consulta | Devuelve |
+|---|---|
+| `trace(req_id)` | texto oficial, requisitos padre/hijo, secciones de documentos donde aparece, subprogramas que lo implementan, pruebas que lo verifican |
+| `trace_code(subprogram)` | requisitos que implementa, llamadores y llamados, tipos y globales, pruebas |
+| `impact(node, depth)` | todo lo afectado transitivamente por un cambio: código, requisitos derivados, documentos |
+| `matrix(module)` | matriz de trazabilidad requisito → código → prueba, con huecos (requisitos sin código, código sin requisito) |
+| `gaps()` | requisitos sin implementación ni prueba; subprogramas sin requisito; IDs del código que no existen en DOORS |
+| `neighbors(node, kinds, depth)` | subgrafo para explorar o dibujar |
+| `export(format)` | GraphML (Gephi), JSON, Mermaid de un subgrafo |
+
+Los IDs de requisito se normalizan (mayúsculas, guiones) para que coincidan entre DOORS,
+documentos y comentarios `Req:` del código. La **matriz de huecos** es el entregable más
+útil para certificación y sale sin ninguna llamada al modelo.
+
+---
+
+## 8. Orquestación con Google ADK
+
+ADK aporta cuatro cosas que no merece la pena reimplementar: definición de agentes y
+flujos, herramientas (funciones Python y MCP), trazas en `adk web` y evaluación con
+conjuntos de prueba. Todo lo demás sigue en la librería, que funciona sin ADK.
+
+```mermaid
+flowchart LR
+    subgraph Herramientas["atlas.agents.tools (funciones de la librería)"]
+        T1[search]
+        T2[get_requirement]
+        T3[trace]
+        T4[impact]
+        T5[graph_query]
+        T6[read_source]
+        T7[build_context]
+        T8[run_pipeline_step]
+    end
+
+    subgraph Agentes["Agentes ADK"]
+        A1["assistant (LlmAgent)<br/>preguntas con citas"]
+        A2["context_builder (workflow)<br/>reunir → condensar → paquete"]
+        A3["impact_analyst (workflow)<br/>grafo + documentos → informe"]
+        A4["coverage_auditor (workflow)<br/>huecos de trazabilidad → informe"]
+        A5["ingest (workflow)<br/>pasos del motor, con traza"]
+    end
+
+    subgraph Modelo
+        M["AtlasLlm (BaseLlm)<br/>sobre atlas.llm:<br/>proxy · TLS · límite compartido"]
+    end
+
+    subgraph Consumidores
+        W[adk web / adk run]
+        O["OpenCode / VS Code<br/>vía MCP (atlas serve)"]
+        E[adk eval]
+    end
+
+    A1 --> T1 & T2 & T3 & T5 & T6
+    A2 --> T7 & T3 & T5
+    A3 --> T4 & T1
+    A4 --> T3 & T5
+    A5 --> T8
+    A1 & A2 & A3 & A4 --> M
+    W --> A1 & A2 & A3 & A4 & A5
+    O --> A1 & A2
+    E --> A1 & A3
+```
+
+### 8.1 Agentes
+
+| Agente | Tipo | Qué hace | Modelo |
+|---|---|---|---|
+| `assistant` | LlmAgent | responde preguntas sobre normas, requisitos y código, solo con las fuentes y citando; como máximo `max_steps` llamadas a herramientas | sí |
+| `context_builder` | flujo fijo | dado un paquete, un subprograma o un requisito: reúne con el grafo y el índice todo lo relevante (determinista), lo condensa al presupuesto de tokens (paso LLM opcional) y escribe un paquete de contexto en Markdown | opcional |
+| `impact_analyst` | flujo fijo | dado un requisito o un cambio de código: `impact()` en el grafo, documentos relacionados y un informe redactado con citas | sí, al final |
+| `coverage_auditor` | flujo fijo | `gaps()` y `matrix()` del grafo; informe de huecos de trazabilidad; sin LLM salvo para redactar el resumen | opcional |
+| `ingest` | flujo fijo | ejecuta los pasos del motor incremental como herramientas, para verlos en `adk web`; equivalente a `atlas run` | no |
+
+Los flujos fijos usan los agentes de flujo de ADK (secuencial, paralelo, bucle; en las
+versiones recientes su sustituto `Workflow`), no un LLM que decida los pasos: con un modelo
+pequeño es más fiable y más barato.
+
+### 8.2 Modelo y cupo
+
+ADK habla con modelos propios vía LiteLLM o adaptadores (Ollama, vLLM, OpenAI). Para que
+los agentes respeten el **mismo proxy, los mismos certificados y el mismo contador de
+peticiones** que el resto de `atlas`, se implementa `AtlasLlm`, una subclase de `BaseLlm`
+de ADK que delega en los clientes de `atlas.llm`. Como alternativa de menor esfuerzo:
+LiteLLM con las variables de proxy/CA y un `before_model_callback` que pase por el
+`Limitador` antes de cada llamada.
+
+### 8.3 Herramientas
+
+Las herramientas son funciones de la librería con firmas tipadas y descripciones cortas;
+ADK las convierte en `FunctionTool` y `atlas.mcp` las expone con los mismos nombres. Reglas:
+
+- Salidas compactas con `truncated` y presupuesto de caracteres (ya se hace en los MCP
+  actuales).
+- Nombres estables y sin solapamiento (`search` busca en todo; `trace` resuelve
+  requisito↔código; `impact` es transitivo; `read_source` lee rangos de líneas).
+- Un agente ADK puede usarse como herramienta de otro (`AgentTool`): OpenCode llama a
+  `build_context` y el subagente hace las búsquedas por detrás; la sesión de programación
+  gasta una llamada.
+
+### 8.4 Evaluación
+
+Conjuntos de evaluación de ADK (`.evalset.json`) con preguntas y tareas de respuesta
+conocida, trayectoria de herramientas esperada y criterios sobre la respuesta final
+(citas correctas, IDs exactos). Se ejecutan con `adk eval` y en `pytest`. Además,
+`atlas eval` mide la recuperación sin modelo (acierto@k del índice y del grafo), que es lo
+que más condiciona el resultado.
+
+---
+
+## 9. Fases, entregables y criterios de aceptación
+
+Cada fase termina con código probado, documentación del módulo y un ejemplo de uso como
+librería. El orden está pensado para tener algo útil desde la fase 1.
+
+### Fase 0 — Cimientos (≈ 5 días de trabajo) — **entregada como esqueleto** (sección 16)
+
+- Esqueleto del paquete, `pyproject.toml`, extras opcionales, `logging`.
+- `atlas.config`: esquema del TOML, validación con mensajes claros, expansión `${VAR}`,
+  huellas por sección.
+- `atlas.pipeline`: `Step`, `Unit`, `Ledger` (SQLite), `Runner` con reanudación,
+  cuarentena, poda y bloqueo de workspace. Pruebas con pasos de juguete.
+- `atlas.llm`: `conexion.py` tal cual, con su API pública.
+
+Aceptación:
+- [ ] `atlas run` con un paso de ejemplo procesa, se interrumpe (`kill`), reanuda y termina
+      sin repetir unidades ni dejar escrituras a medias.
+- [ ] Un TOML con una clave mal escrita falla al cargar indicando sección y clave.
+
+### Fase 1 — Migración de lo existente a módulos (≈ 8 días)
+
+- `atlas.docs` ← `pdf_struct.py`: extracción, limpieza, estructura (marcadores, títulos,
+  tamaño), análisis con reparación y división, Markdown. Modo `analysis = "regex" | "none"`
+  para normas sin LLM.
+- `atlas.index` ← `doc_rag.py`: registros, embeddings con caché, FTS5, búsqueda híbrida,
+  contexto, respuesta citada.
+- `atlas.code` ← `ada_graph.py`: `LanguageAnalyzer` e `AdaAnalyzer` por fichero.
+- `atlas.graph` ← `ada_graph_mcp.py`: esquema de nodos y aristas, consultas de código.
+- `atlas.mcp`: un solo servidor con las herramientas de ambos MCP actuales.
+- Pruebas trasladadas (servidores falsos, PDFs de prueba, proyecto Ada de prueba).
+
+Aceptación:
+- [ ] Mismo resultado que los scripts actuales sobre los documentos y el código de prueba.
+- [ ] Cada módulo se importa y se usa solo, sin ADK ni MCP.
+
+### Fase 2 — Motor incremental completo (≈ 6 días)
+
+- Todos los pasos de documentos, código e índice registrados en el `Runner` con sus
+  huellas y dependencias; `embed_cache` y caché de secciones integradas.
+- Poda de unidades desaparecidas; `atlas status`.
+- Pruebas de incrementalidad: cambiar un fichero → solo sus unidades; cambiar
+  `embeddings.model` → solo vectores; borrar un fichero → poda.
+
+Aceptación:
+- [ ] Segunda ejecución sin cambios: 0 peticiones a la API y < 1 minuto en el proyecto de
+      prueba grande.
+- [ ] Un PDF modificado en una página reprocesa solo las secciones con texto distinto.
+
+### Fase 3 — DOORS (≈ 5 días)
+
+- `atlas.doors`: modelo `Requirement` / `Link`; adaptador `database` sobre la explotación
+  de DOORS (SQLite en desarrollo, ODBC/SQL Server en producción), con consultas y
+  convención de requisitos configurables; diff por ID y hash; normalización de IDs;
+  referencias dentro del texto como enlaces. El esqueleto ya incluye el adaptador y el
+  paso `doors.requirements` del motor; en esta fase se añaden el driver ODBC probado
+  contra la base real, la jerarquía padre/hijo en el grafo y el adaptador MCP en vivo
+  (reutilizando el servidor existente) como alternativa.
+- Requisitos en el índice (`kind = requirement`, origen `doors`) y en el grafo.
+
+Aceptación:
+- [ ] Reimportar el mismo módulo no cambia nada; un requisito editado se actualiza solo él
+      y sus enlaces (ya verificado en el esqueleto con SQLite).
+- [ ] `get_requirement("SRS-123")` devuelve texto, atributos, padre, enlaces y módulo.
+- [ ] La misma configuración funciona contra la base de datos real cambiando solo
+      `[sources.doors.database]`.
+
+### Fase 4 — Grafo unificado y trazabilidad (≈ 7 días)
+
+- Cargadores de documentos, DOORS y código al mismo grafo; aristas `implemented_by`
+  (comentarios `Req:`), `documents`, `verified_by`/`covers` (pruebas por patrón).
+- Consultas `trace`, `trace_code`, `impact`, `matrix`, `gaps`, `neighbors`; comunidades.
+- Exportación GraphML, JSON y Mermaid de subgrafos.
+
+Aceptación:
+- [ ] `matrix("SRS_TMS")` produce la matriz requisito → código → prueba y la lista de
+      huecos, verificada a mano sobre una muestra.
+- [ ] `impact` sobre un subprograma devuelve llamadores transitivos y requisitos afectados.
+
+### Fase 5 — ADK (≈ 8 días)
+
+- `AtlasLlm` sobre `atlas.llm` (o LiteLLM + callback de cupo).
+- Herramientas `FunctionTool` a partir de la librería; `assistant`, `context_builder`,
+  `impact_analyst`, `coverage_auditor`, `ingest`.
+- `atlas serve` (MCP) con las mismas herramientas y `ask_atlas` / `build_context` como
+  agentes-herramienta; configuración de ejemplo para OpenCode y VS Code.
+- Conjuntos de evaluación iniciales (20-30 casos) y `adk eval` en `pytest`.
+
+Aceptación:
+- [ ] Desde OpenCode, `build_context` devuelve en una llamada un paquete ≤ 4000 tokens con
+      requisitos, firmas, grafo y pruebas del módulo pedido.
+- [ ] `adk eval` del asistente ≥ 80 % de respuestas con citas correctas sobre el conjunto.
+
+### Fase 6 — Consolidación (≈ 5 días)
+
+- Rendimiento: paralelismo por paso, lotes de embeddings, perfiles de tiempo.
+- Documentación: README por módulo, guía de configuración, ejemplos; CHANGELOG.
+- Empaquetado para el repositorio interno (`wheel`), versión fijada de ADK y dependencias.
+- Revisión de seguridad: secretos solo por entorno, nada sale del puesto salvo al gateway.
+
+Aceptación:
+- [ ] Instalación limpia en un puesto nuevo siguiendo solo la documentación.
+- [ ] Las metas medibles de la sección 1 se cumplen sobre el proyecto real.
+
+---
+
+## 10. Calendario
+
+Orientativo, con una dedicación de unos 3 días por semana. Las fases 3 y 4 pueden
+solaparse si el acceso a DOORS se resuelve pronto.
+
+```mermaid
+gantt
+    title Calendario orientativo
+    dateFormat YYYY-MM-DD
+    axisFormat %d %b
+    section Fase 0
+    Cimientos: config, motor, llm        :f0, 2026-10-13, 12d
+    section Fase 1
+    Migración a módulos                  :f1, after f0, 19d
+    section Fase 2
+    Motor incremental completo           :f2, after f1, 12d
+    M1 Ingesta incremental               :milestone, m1, after f2, 0d
+    section Fase 3
+    DOORS                                :f3, after f2, 12d
+    section Fase 4
+    Grafo unificado y trazabilidad       :f4, after f3, 19d
+    M2 Trazabilidad completa             :milestone, m2, after f4, 0d
+    section Fase 5
+    ADK: agentes, MCP, evaluación        :f5, after f4, 19d
+    M3 Agentes en OpenCode               :milestone, m3, after f5, 0d
+    section Fase 6
+    Consolidación y entrega              :f6, after f5, 12d
+```
+
+---
+
+## 11. Pruebas y evaluación
+
+| Nivel | Qué | Cómo |
+|---|---|---|
+| Unitarias | estructura de documentos, reparación de JSON, huellas, diff de requisitos, analizador Ada | `pytest`, PDFs y fuentes de prueba generados en el repositorio (ya existen) |
+| Integración sin API | ingesta completa | servidores falsos de chat y embeddings con fallos inyectables (ya existen): 409, respuestas cortadas, prosa, cortes de conexión |
+| Recuperación | reanudación tras `kill -9`, Ctrl+C y error fatal en cada paso | prueba que mata el proceso en puntos aleatorios y comprueba registro, ficheros y base de datos |
+| Incrementalidad | contadores de peticiones y unidades procesadas tras cada tipo de cambio | aserciones sobre el `Ledger` y el servidor falso |
+| Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo |
+| Agentes | trayectoria de herramientas y calidad de respuesta | `adk eval` con `.evalset.json`; umbral mínimo en `pytest` |
+| Rendimiento | tiempo y peticiones por fase sobre el proyecto real | informe de `atlas status` guardado por versión |
+
+---
+
+## 12. Riesgos y mitigaciones
+
+| Riesgo | Impacto | Mitigación |
+|---|---|---|
+| Acceso a DOORS solo por exportación manual | datos desfasados | adaptador de exportación como camino principal; el MCP en vivo como mejora; fecha de exportación visible en el grafo |
+| Cupo de la API (28 pet./min) y latencia del modelo | ingestas de horas | normas por regex sin LLM, agrupación de secciones, paralelismo controlado por el limitador, ingesta nocturna; nada se repite |
+| Modelo pequeño poco fiable con herramientas | agentes que se pierden | flujos fijos, pocas herramientas, salida estructurada, `max_steps`, evaluación continua |
+| Cambios de API en ADK (p. ej. `SequentialAgent` → `Workflow`) | roturas al actualizar | versión fijada en `pyproject`, capa `atlas.agents` fina que aísla ADK del resto |
+| Dependencias nativas en Windows (tree-sitter, pymupdf) | fallos de instalación | versiones probadas y fijadas; `atlas.code` opcional; pruebas de instalación limpia |
+| Títulos de los PDF con formatos no previstos | secciones gigantes y mal atribuidas | marcadores del PDF primero, diagnóstico de `--dry-run`, `heading_regex` por fuente |
+| IDs de requisito con variantes (mayúsculas, guiones) | enlaces de trazabilidad perdidos | normalización única y lista de IDs no resueltos en el informe de huecos |
+| Confidencialidad | datos fuera del puesto | solo gateway corporativo o local; secretos por entorno; nada de servicios externos |
+| Un solo desarrollador | plazos | fases independientes con valor propio; cada fase deja algo usable |
+
+---
+
+## 13. Supuestos y preguntas abiertas
+
+**Supuestos**
+
+- El gateway seguirá ofreciendo un modelo de chat y uno de embeddings compatibles con
+  OpenAI; el cupo se mantiene en torno a 30 peticiones por minuto.
+- El código principal es Ada compilable con GNAT (para pruebas y, en el futuro, referencias
+  cruzadas exactas); las pruebas se identifican por patrón de ruta.
+- Los requisitos llevan un ID con formato estable que aparece en DOORS, en los documentos y
+  en los comentarios `Req:` del código.
+- Todo se ejecuta en Windows en el puesto de trabajo, sin servicios adicionales.
+
+**Preguntas abiertas** (las dos primeras condicionan la fase 3)
+
+| Pregunta | Quién | ¿Bloquea? |
+|---|---|---|
+| ¿Cómo se accederá a DOORS: exportaciones periódicas (ReqIF/CSV) o el servidor MCP en vivo? ¿Qué atributos y tipos de enlace hay que conservar? | tú / administración de DOORS | fase 3 |
+| ¿Qué convención exacta tienen los IDs de requisito y cómo se referencian en el código y en los documentos? | tú | fase 4 |
+| ¿Qué framework de pruebas usa el código Ada (AUnit u otro) para enlazar prueba → requisito? | tú | no (fase 4 puede empezar con patrones de ruta) |
+| ¿Está `google-adk` (y LiteLLM) disponible en el repositorio pip interno y en qué versión? | IT | fase 5 |
+| ¿Hará falta otro lenguaje además de Ada en el primer año? | tú | no (la interfaz queda preparada) |
+| ¿Quién más va a importar la librería? Define cuánta estabilidad de API hay que prometer. | tú | no |
+
+---
+
+## 14. Extensibilidad: plugins
+
+Lo que varía entre proyectos no se programa en el núcleo: se registra con un nombre y se
+elige desde `atlas.toml`.
+
+```mermaid
+classDiagram
+    direction LR
+    class CodeAnalyzer {
+        <<interfaz>>
+        +str name
+        +tuple extensions
+        +analyze_file(path, source) CodeUnit
+        +version() str
+    }
+    class RequirementsAdapter {
+        <<interfaz>>
+        +str name
+        +modules() list
+        +snapshot(module) str
+        +requirements(module) Iterable~Requirement~
+        +links(module) Iterable~Link~
+    }
+    class DocumentExtractor {
+        <<interfaz>>
+        +str name
+        +tuple extensions
+        +extract(path) str
+    }
+    class Tool {
+        <<interfaz>>
+        +str name
+        +str description
+        +run(kwargs) Any
+    }
+    class Registro {
+        +register(tipo, nombre, cls)
+        +get(tipo, nombre, disabled) type
+        +available(tipo) list
+        +load_plugins(modules)
+    }
+    CodeAnalyzer <|-- AdaAnalyzer
+    CodeAnalyzer <|-- CppAnalyzer : plugin externo
+    RequirementsAdapter <|-- DatabaseAdapter
+    RequirementsAdapter <|-- ReqIfAdapter : futuro
+    RequirementsAdapter <|-- DoorsMcpAdapter : futuro
+    DocumentExtractor <|-- MarkitdownExtractor
+    DocumentExtractor <|-- TextExtractor
+    Registro ..> CodeAnalyzer : registra
+    Registro ..> RequirementsAdapter : registra
+    Registro ..> DocumentExtractor : registra
+    Registro ..> Tool : registra
+```
+
+| Tipo de plugin | Interfaz | Unidad del motor | Se activa con |
+|---|---|---|---|
+| Analizador de código | `CodeAnalyzer` (`analyze_file`, `extensions`, `version`) | un fichero | `[sources.code] languages = ["ada", "cpp"]` |
+| Fuente de requisitos | `RequirementsAdapter` (`modules`, `snapshot`, `requirements`, `links`) | un módulo | `[sources.doors] adapter = "database"` |
+| Extractor de documentos | `DocumentExtractor` (`extract`, `extensions`) | un fichero | por extensión del fichero |
+| Herramienta de agente | `Tool` (`run`) | — | `[agents.*] tools` y `[mcp] tools` |
+
+Formas de añadir un plugin, de menos a más formal:
+
+1. **En Python**: `register("code_analyzer", "cpp", MiAnalizador)` antes de ejecutar.
+2. **Por configuración**: `[plugins] modules = ["mi_paquete.cpp"]`; el módulo se importa y
+   se registra a sí mismo.
+3. **Por entry point**: el paquete externo declara `[project.entry-points."atlas.plugins"]`
+   en su `pyproject.toml` y se descubre al instalarlo.
+
+Para quitar uno: `[plugins] disabled = ["code_analyzer:cpp"]`, o simplemente no activarlo en
+la fuente. Un plugin cuya dependencia opcional falte (por ejemplo tree-sitter) no rompe el
+arranque: se anota en el log y deja de estar disponible.
+
+La **versión del plugin** forma parte de la huella de sus unidades: cambiar la lógica de un
+analizador y subir `version()` reprocesa solo los ficheros de ese lenguaje.
+
+---
+
+## 15. DOORS desde una base de datos
+
+DOORS se explota a una base de datos y `atlas` lee de ahí (solo lectura). Nada del esquema
+de esa base está en el código: las consultas y la convención de requisitos van en
+`atlas.toml` (ver sección 5).
+
+| Qué se configura | Clave | Notas |
+|---|---|---|
+| Conexión | `database.driver`, `path` o `dsn` | `sqlite` para desarrollo y pruebas, `odbc` para SQL Server/Oracle (`pyodbc`); añadir otro driver es un cambio local en el adaptador |
+| Módulos | `database.modules_query`, `[sources.doors] modules` | la consulta lista los módulos; la lista opcional filtra cuáles se cargan |
+| Requisitos | `database.requirements_query` | una fila por requisito del módulo `:module`; las columnas se mapean en la convención |
+| Enlaces entre requisitos | `database.links_query` + `convention.link_columns` | origen, destino y tipo (`satisfies`, `derives_from`, `verifies`...) |
+| Referencias dentro del texto | `convention.inline_reference_regex` + `inline_reference_type` | "see SSS-0012" se convierte en un enlace |
+| Convención de IDs | `convention.id_pattern`, `id_normalize` | los que no cumplen el patrón se avisan; mayúsculas y sin espacios para que casen con documentos y código |
+| Jerarquía | `convention.parent_column` | objeto padre dentro del módulo |
+| Atributos | `convention.attribute_columns` | se guardan como JSON y quedan disponibles para filtrar y para los agentes |
+| Cambios | `database.snapshot_query` | una expresión barata (recuento + última fecha) cuyo valor cambia cuando cambia el módulo; sin ella se calcula el hash de todo el módulo |
+
+Incrementalidad: la unidad del paso `doors.requirements` es el módulo. Su huella es la
+instantánea más la configuración de DOORS; si cambia, se relee el módulo entero (segundos)
+y se sustituyen sus filas en una sola transacción, calculando qué requisitos se han
+añadido, cambiado o eliminado para que los pasos siguientes (índice, grafo, trazabilidad)
+solo toquen esos.
+
+---
+
+## 16. Entorno de desarrollo y esqueleto entregado
+
+Junto a este plan se entrega `atlas-skeleton.zip`: la fase 0 implementada y probada, para
+desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
+
+**Contenido**
+
+- `atlas/config.py`: TOML validado (sección y clave en los errores), `${VAR}`, huellas por
+  sección.
+- `atlas/plugins.py`: interfaces y registro de la sección 14.
+- `atlas/pipeline/`: motor incremental (`Step`, `Ledger`, `Runner`) con reanudación,
+  cuarentena, poda, orden por dependencias y bloqueo del workspace.
+- `atlas/doors/`: adaptador `database` completo (sección 15).
+- `atlas/code/`: analizador Ada sobre el `ada_graph.py` actual.
+- `atlas/llm/`: `conexion.py` sin cambios, alimentado desde `atlas.toml`.
+- `atlas/cli.py`: `run`, `status`, `plugins`, `check`.
+- `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
+  comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
+- `tests/`: 15 pruebas (configuración, plugins, DOORS, reanudación tras corte, cuarentena,
+  poda, dependencias, CLI, servidor falso).
+- `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
+- `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
+- `legacy/`: los scripts actuales, que las fases 1-5 migran.
+
+**Niveles de modelo**
+
+| Nivel | Uso | Fichero |
+|---|---|---|
+| Servidor falso | pruebas automáticas y desarrollo del motor: determinista, instantáneo, fallos inyectables | `atlas.test.toml` |
+| Ollama o LM Studio en el Mac | calidad real de análisis, búsqueda y agentes, sin cupo | `atlas.dev.toml` |
+| Gateway corporativo | producción | `atlas.toml` |
+
+Ollama y LM Studio exponen la misma API compatible con OpenAI, así que cambiar de uno a
+otro es cambiar `base_url`. Ollama es el más cómodo para scripts (`ollama pull gemma4:12b`,
+`ollama pull embeddinggemma`); LM Studio ofrece interfaz gráfica y el motor MLX, más
+rápido en Apple Silicon. En un Mac de 16 GB, `gemma4:e4b` o `gemma4:12b`; con 24-32 GB,
+`gemma4:26b` (mezcla de expertos con 4B activos). Con Ollama conviene arrancar con un
+contexto mayor que el de defecto (`OLLAMA_CONTEXT_LENGTH=16384`).
+
+**Qué ya se ha verificado con el esqueleto**
+
+- Primera ejecución: procesa 2 módulos de DOORS y 5 ficheros Ada; segunda ejecución sin
+  cambios: todo "al día" en menos de un segundo y sin peticiones.
+- Un requisito editado en la base de datos y un fichero Ada modificado: se reprocesan
+  exactamente esas dos unidades.
+- Corte a mitad de una unidad: la unidad queda `en_curso`, el bloqueo se libera y la
+  siguiente ejecución la retoma sin repetir las anteriores.
+- Errores propios: reintento y cuarentena al agotar `max_attempts`; error fatal: parada
+  con el estado guardado; unidad desaparecida: poda.

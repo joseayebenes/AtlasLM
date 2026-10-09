@@ -1,0 +1,42 @@
+# conexion.toml — conexión con las APIs de LLM y embeddings
+# Prioridad: argumentos de línea de comandos > este fichero > variables de entorno > defaults.
+# Cualquier valor admite ${VARIABLE} o ${VARIABLE:-por_defecto} para no guardar secretos aquí.
+
+[network]                       # común a LLM y embeddings
+proxy = "${HTTPS_PROXY:-}"      # "http://usuario:${PROXY_PASS}@proxy.empresa:8080"
+ca_cert = ""                    # "C:/certs/raiz_corporativa.pem", o "system" (almacén de Windows)
+client_cert = ""                # solo si el servidor exige TLS mutuo
+client_key = ""                 # contraseña de la clave: variable RAG_CLIENT_KEY_PASSWORD
+no_proxy = "localhost,127.0.0.1,::1"
+insecure = false                # true SOLO para diagnosticar problemas de certificados
+timeout = 600
+
+# Límites de la API. Si LLM y embeddings van al mismo servidor con la misma clave,
+# comparten el contador. Deja algo de margen respecto al límite real.
+requests_per_minute = 0         # 0 = sin límite; p. ej. 28 si el servidor permite 30
+tokens_per_minute = 0           # 0 = sin límite; solo si el servidor limita también por tokens
+adaptive = true                 # baja el ritmo al recibir rechazos y lo recupera después
+max_concurrent = 0              # peticiones simultáneas; 0 = sin límite
+max_retries = 6                 # reintentos ante errores 5xx o de conexión
+rate_limit_max_wait = 900       # ante 409/429 se espera (sin fallar) hasta este total por petición (s)
+max_backoff = 60                # espera máxima entre reintentos si no hay Retry-After (s)
+retry_statuses = [409, 429, 500, 502, 503, 504]
+
+[llm]
+base_url = "http://localhost:11434/v1"
+model = "gemma4"                # el tag que muestre `ollama list`
+api_key = "${OPENAI_API_KEY:-local}"
+temperature = 0.1
+max_tokens = 0                  # 0 = el del servidor; súbelo (p. ej. 8192) si las respuestas salen cortadas
+
+# [llm.network]                 # descomenta para sobrescribir la red solo del LLM
+# proxy = ""
+
+[embeddings]
+base_url = ""                   # vacío = el mismo servidor que el LLM
+model = "embeddinggemma"
+api_key = ""                    # vacío = la misma que el LLM
+batch = 32
+
+# [embeddings.network]          # p. ej. embeddings en local sin proxy
+# proxy = ""

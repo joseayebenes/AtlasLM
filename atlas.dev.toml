@@ -1,0 +1,94 @@
+# atlas.dev.toml — desarrollo en el portátil con Ollama y los datos de examples/samples/
+[project]
+name = "atlas-dev"
+workspace = "./workspace-dev"
+log_level = "INFO"
+
+[llm]
+base_url = "http://localhost:11434/v1"     # Ollama. LM Studio: http://localhost:1234/v1
+model = "gemma4:12b"                       # en un Mac de 16 GB: gemma4:12b o gemma4:e4b
+api_key = "local"
+max_tokens = 8192
+
+[embeddings]
+model = "embeddinggemma"
+batch = 64
+
+[network]
+no_proxy = "*"                              # todo en local, sin proxy
+
+[pipeline]
+workers = 2
+on_error = "continue"
+max_attempts = 3
+prune_missing = true
+steps = ["doors", "code", "docs", "graph", "index"]
+
+[plugins]
+modules = []                                # p. ej. ["mi_paquete.analizador_cpp"]
+disabled = []                               # p. ej. ["code_analyzer:ada"]
+
+[[sources.docs]]
+name = "normas"
+paths = ["examples/samples/docs"]
+patterns = ["*.pdf"]
+analysis = "regex"                          # requisitos por expresión regular, sin LLM
+req_regex = "(?i)\\bReq\\s*:\\s*([^\\n]+)"
+structure = "auto"
+
+[[sources.docs]]
+name = "manuales"
+paths = ["examples/samples/docs"]
+patterns = ["*.md"]
+analysis = "llm"
+lang = "Spanish"
+min_chars = 300
+
+[sources.doors]
+adapter = "database"
+modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
+
+[sources.doors.database]
+driver = "sqlite"
+path = "examples/samples/doors.sqlite"
+modules_query = "SELECT DISTINCT module FROM requirements ORDER BY module"
+requirements_query = "SELECT * FROM requirements WHERE module = :module ORDER BY id"
+links_query = "SELECT source_id, target_id, link_type FROM links WHERE source_module = :module"
+snapshot_query = "SELECT COUNT(*) || '|' || MAX(updated_at) FROM requirements WHERE module = :module"
+
+[sources.doors.convention]
+id_column = "id"
+text_column = "text"
+module_column = "module"
+parent_column = "parent"
+attribute_columns = ["status", "verification"]
+id_pattern = "^(?:SRS|SSS)-\\d{4}$"
+id_normalize = "upper"
+link_columns = { source = "source_id", target = "target_id", type = "link_type" }
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
+inline_reference_type = "references"
+
+[sources.code]
+roots = ["examples/samples/ada"]
+languages = ["ada"]
+exclude = ["**/build/**"]
+req_tag = "Req:"
+test_patterns = ["**/tests/**"]
+summaries = "none"
+
+[graph]
+exports = ["graphml", "json"]
+
+[index]
+chunk_chars = 1200
+chunk_overlap = 200
+
+[agents]
+model = "gemma4:12b"
+[agents.assistant]
+tools = ["search", "get_requirement", "trace", "graph_query", "read_source"]
+max_steps = 8
+
+[mcp]
+enabled = true
+tools = ["search", "trace", "impact", "context", "read_source", "get_requirement"]

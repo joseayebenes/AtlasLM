@@ -1,0 +1,42 @@
+# atlas.toml — producción (gateway corporativo). Copia atlas.dev.toml y cambia solo esto:
+[project]
+name = "tms"
+workspace = "C:/atlas/tms"
+
+[llm]
+base_url = "https://llm-gateway.empresa/v1"
+model = "gemma-4"
+api_key = "${GW_KEY}"
+max_tokens = 8192
+
+[embeddings]
+model = "embeddinggemma"
+batch = 64
+
+[network]
+proxy = "${HTTPS_PROXY:-}"
+ca_cert = "system"
+requests_per_minute = 28
+
+[pipeline]
+workers = 6
+steps = ["doors", "code", "docs", "graph", "index"]
+
+[sources.doors]
+adapter = "database"
+[sources.doors.database]
+driver = "odbc"                      # pip install pyodbc
+dsn = "DSN=DOORS_EXPORT;UID=${DB_USER};PWD=${DB_PASS}"
+modules_query = "SELECT DISTINCT module FROM dbo.requirements"
+requirements_query = "SELECT * FROM dbo.requirements WHERE module = :module"
+links_query = "SELECT source_id, target_id, link_type FROM dbo.links WHERE source_module = :module"
+snapshot_query = "SELECT CAST(COUNT(*) AS VARCHAR) + '|' + CONVERT(VARCHAR, MAX(updated_at), 126) FROM dbo.requirements WHERE module = :module"
+[sources.doors.convention]
+id_column = "id"
+text_column = "object_text"
+id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
+
+[sources.code]
+roots = ["C:/src/tms"]
+languages = ["ada"]

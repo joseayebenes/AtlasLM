@@ -131,6 +131,11 @@ class Tool(ABC):
     @abstractmethod
     def run(self, **kwargs) -> Any: ...
 
+    def function(self) -> Callable[..., Any]:
+        """The typed function behind the tool, from which ADK (FunctionTool) and the MCP
+        server take the parameters and the description; `run` by default."""
+        return self.run
+
 
 # ----------------------------------------------------------------------------
 # Registry

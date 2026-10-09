@@ -3,6 +3,7 @@
 
     ada.py      AdaAnalyzer (tree-sitter-ada), the analysis of legacy/ada_graph.py
     common.py   requirement tags in comments, shared by every language
+    tools.py    CodeTools: list, search, read and edit files, for coding agents
 
 The traceability tag is `req_tag` of [sources.code] ("Req:" by default), or `req_regex`
 for full control (group 1 = the list of IDs). To add another language: a CodeAnalyzer
@@ -13,8 +14,9 @@ from __future__ import annotations
 
 from atlas.code.ada import AdaAnalyzer
 from atlas.code.common import extract_requirements, requirement_pattern
+from atlas.code.tools import TOOL_NAMES, CodeTools          # registers the file tools
 from atlas.plugins import register
 
-__all__ = ["AdaAnalyzer", "extract_requirements", "requirement_pattern"]
+__all__ = ["AdaAnalyzer", "CodeTools", "TOOL_NAMES", "extract_requirements", "requirement_pattern"]
 
 register("code_analyzer", "ada", AdaAnalyzer)

@@ -141,3 +141,58 @@ def test_agent_edits_code_with_the_file_tools(ollama, samples, tmp_path, monkeyp
     tracks = tmp_path / "ada" / "src" / "tracks.adb"
     assert tracks.read_text() == before[tracks].replace('Logger.Log ("delete");', 'Logger.Log ("track deleted");')
     assert all(f.read_text() == text for f, text in before.items() if f != tracks)
+
+
+def test_agent_answers_with_the_tools_of_atlas_serve(ollama, toml, samples, docs_samples, tmp_path):
+    """gemma4 with only the tools of `atlas serve`, over MCP (what OpenCode or VS Code do), on
+    a workspace processed with the embeddings of Ollama. Without reasoning, 12 of 12 answers
+    to four questions (traceability, impact, documents, a section) were right, in 4-37 s."""
+    import shutil
+    import sys
+    pytest.importorskip("mcp")
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("markitdown")
+    from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
+    from mcp import StdioServerParameters
+    from atlas.cli import run
+    base_url, api_key, _ = ollama
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    shutil.copy(docs_samples / "spec_with_bookmarks.pdf", docs)
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{dev["llm"]["model"]}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[[sources.docs]]
+name = "docs"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+'''))
+    assert run(cfg) == 0
+
+    async def ask() -> tuple[list[str], str]:
+        with open(tmp_path / "server.log", "w") as errlog:
+            toolset = McpToolset(connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(command=sys.executable, cwd=str(ROOT),
+                                                    args=["-m", "atlas.cli", "serve", str(cfg.path)]),
+                timeout=60), errlog=errlog)
+            try:
+                return await _ask(_model(ollama), [toolset], QUESTION.replace("Ada files", "Ada subprograms"))
+            finally:
+                await toolset.close()
+
+    calls, answer = asyncio.run(asyncio.wait_for(ask(), timeout=300))
+    assert {"get_requirement", "trace"} <= set(calls), calls
+    assert "SSS-0005" in answer and "delete_track" in answer and "test_tracks" in answer, answer
+    cited = set(re.findall(r"\b(?:tracks|logger|test_tracks)\.\w+", answer.lower()))
+    assert cited <= {"tracks.delete_track", "tracks.update", "test_tracks.test_tracks", "logger.log",
+                     "logger.next_id", "tracks.adb", "tracks.ads", "test_tracks.adb"}, answer

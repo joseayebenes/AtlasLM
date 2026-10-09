@@ -21,6 +21,17 @@ def samples():
     return d
 
 
+@pytest.fixture(scope="session")
+def docs_samples(samples):
+    """examples/samples/docs (the PDFs need pymupdf; reading them, markitdown)."""
+    from examples import make_samples
+    d = samples / "docs"
+    if not (d / "spec_without_bookmarks.pdf").exists():
+        pytest.importorskip("pymupdf")
+        make_samples.pdfs()
+    return d
+
+
 @pytest.fixture
 def toml(tmp_path, samples):
     """Writes a test atlas.toml in a temporary directory."""

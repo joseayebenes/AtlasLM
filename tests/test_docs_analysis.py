@@ -59,3 +59,13 @@ def test_options_are_validated():
                        ({"req_regex": "(unclosed"}, "req_regex"), ({"max_chars": 10}, "max_chars")):
         with pytest.raises(ValueError, match=match):
             DocsOptions(**bad)
+
+
+def test_normalize_turns_objects_into_texts():
+    # what gemma4 answered for open_issues when the server could not enforce the schema
+    d = normalize({"open_issues": [{"issue": "Alarm latency is TBD", "description": "not defined yet"}],
+                   "key_points": ["a", None, ""], "summary": None,
+                   "requirements": [{"id": None, "text": "The HMI shall beep."}, "not an object"]})
+    assert d["open_issues"] == ["Alarm latency is TBD: not defined yet"]
+    assert d["key_points"] == ["a"] and d["summary"] == ""
+    assert d["requirements"] == [{"id": "", "text": "The HMI shall beep."}]

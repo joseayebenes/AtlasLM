@@ -181,19 +181,24 @@ def _analyze_all(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str, 
 
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {pool.submit(one, s): s for s in sections}
-        for n, fut in enumerate(as_completed(futures), 1):
-            s = futures[fut]
-            try:
-                s["analysis"], seconds = fut.result()
-                result = f"{len(s['analysis']['requirements'])} req." + (" (cache)" if s["id"] in cached else "")
-            except Exception as e:
-                if is_connection_error(e):
-                    pool.shutdown(wait=False, cancel_futures=True)
-                    raise FatalError(f"connection error with the LLM: {diagnose(e)}") from e
-                errors += 1
-                s["analysis"] = an.normalize({})
-                s["analysis_error"] = f"{type(e).__name__}: {e}"
-                result, seconds = f"ERROR: {e}", 0.0
-            log.info("  [%d/%d] %s %s — %s (%.0fs, total %.0fs)", n, len(sections), s["id"], s["title"][:50],
-                     result, seconds, time.time() - t0)
+        try:
+            for n, fut in enumerate(as_completed(futures), 1):
+                s = futures[fut]
+                try:
+                    s["analysis"], seconds = fut.result()
+                    result = f"{len(s['analysis']['requirements'])} req." + (" (cache)" if s["id"] in cached else "")
+                except Exception as e:
+                    if is_connection_error(e):
+                        raise FatalError(f"connection error with the LLM: {diagnose(e)}") from e
+                    errors += 1
+                    s["analysis"] = an.normalize({})
+                    s["analysis_error"] = f"{type(e).__name__}: {e}"
+                    result, seconds = f"ERROR: {e}", 0.0
+                log.info("  [%d/%d] %s %s — %s (%.0fs, total %.0fs)", n, len(sections), s["id"], s["title"][:50],
+                         result, seconds, time.time() - t0)
+        except BaseException:
+            # fatal error or Ctrl+C: the sections not started yet are cancelled (otherwise
+            # leaving the `with` would wait for all of them); only the ones in progress finish
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
     return errors

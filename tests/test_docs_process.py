@@ -91,3 +91,22 @@ def test_a_connection_error_is_fatal_and_keeps_the_previous_output(docs_samples,
     with pytest.raises(FatalError, match="credentials"):
         process_document(md, out, DocsOptions(lang="French"), llm=service, cache_dir=tmp_path / "cache")
     assert (out / "index.md").exists() and not (tmp_path / "hmi.tmp").exists()
+
+
+def test_ctrl_c_does_not_go_on_with_the_pending_sections(docs_samples, tmp_path, fake_llm, monkeypatch):
+    import time
+    from atlas.docs import analysis
+    calls = []
+
+    def interrupted(*args, **kwargs):          # Ctrl+C during the first section
+        calls.append(1)
+        if len(calls) == 1:
+            raise KeyboardInterrupt
+        time.sleep(0.3)                         # the next one is a request in progress
+        return analysis.normalize({})
+
+    monkeypatch.setattr(analysis, "analyze_section", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        process_document(docs_samples / "hmi_manual.md", tmp_path / "hmi", DocsOptions(), llm=fake_llm[0], workers=1)
+    # the one in progress finishes; the other two of the 4 sections are never started
+    assert len(calls) <= 2 and not (tmp_path / "hmi.tmp").exists()

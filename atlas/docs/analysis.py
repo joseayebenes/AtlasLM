@@ -107,25 +107,30 @@ def lang_rule(lang: str) -> str:
 
 
 def normalize(d: dict) -> dict:
-    """Guarantees keys and types even if the model skips the schema."""
+    """Guarantees keys and types even if the model skips the schema (servers without
+    structured output): an object where a text was expected becomes its values joined."""
     def as_list(x):
         return x if isinstance(x, list) else []
 
+    def text(x) -> str:
+        if isinstance(x, dict):
+            return ": ".join(t for t in (text(v) for v in x.values()) if t)
+        return str(x).strip() if x is not None else ""
+
+    def texts(x) -> list[str]:
+        return [t for t in (text(i) for i in as_list(x)) if t]
+
     def objects(x, keys):
-        out = []
-        for o in as_list(x):
-            if isinstance(o, dict):
-                out.append({k: str(o.get(k, "") or "").strip() for k in keys})
-        return out
+        return [{k: text(o.get(k, "")) for k in keys} for o in as_list(x) if isinstance(o, dict)]
 
     return {
-        "summary": str(d.get("summary", "") or "").strip(),
-        "key_points": [str(x).strip() for x in as_list(d.get("key_points")) if str(x).strip()],
+        "summary": text(d.get("summary", "")),
+        "key_points": texts(d.get("key_points")),
         "requirements": [r for r in objects(d.get("requirements"), ["id", "text"]) if r["text"]],
         "definitions": [x for x in objects(d.get("definitions"), ["term", "definition"]) if x["term"]],
         "entities": [x for x in objects(d.get("entities"), ["name", "kind", "description"]) if x["name"]],
-        "references": [str(x).strip() for x in as_list(d.get("references")) if str(x).strip()],
-        "open_issues": [str(x).strip() for x in as_list(d.get("open_issues")) if str(x).strip()],
+        "references": texts(d.get("references")),
+        "open_issues": texts(d.get("open_issues")),
     }
 
 

@@ -3,13 +3,13 @@ from atlas import plugins
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
 
-def test_registro_y_descubrimiento():
+def test_registry_and_discovery():
     plugins.load_plugins()
     assert "database" in plugins.available("requirements")
     assert "text" in plugins.available("extractor")
 
 
-def test_anadir_y_desactivar_un_analizador():
+def test_add_and_disable_an_analyzer():
     class Cpp(CodeAnalyzer):
         name, extensions = "cpp", (".cpp", ".h")
 
@@ -18,7 +18,7 @@ def test_anadir_y_desactivar_un_analizador():
 
     plugins.register("code_analyzer", "cpp", Cpp)
     assert plugins.get("code_analyzer", "cpp") is Cpp
-    with pytest.raises(LookupError, match="desactivado"):
+    with pytest.raises(LookupError, match="disabled"):
         plugins.get("code_analyzer", "cpp", disabled=["code_analyzer:cpp"])
-    with pytest.raises(LookupError, match="disponibles"):
+    with pytest.raises(LookupError, match="available"):
         plugins.get("code_analyzer", "cobol")

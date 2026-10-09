@@ -1,1 +1,1 @@
-"""Índice y búsqueda híbrida: pendiente de migración desde legacy/doc_rag.py (fase 1 del plan)."""
+"""Index and hybrid search: to be migrated from legacy/doc_rag.py (phase 1 of the plan)."""

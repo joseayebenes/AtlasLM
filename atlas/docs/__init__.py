@@ -1,5 +1,5 @@
-"""Documentos: extractores de texto como plugins. La estructura, el análisis y los
-Markdown siguen en legacy/pdf_struct.py hasta su migración (fase 1 del plan)."""
+"""Documents: text extractors as plugins. Structure, analysis and Markdown output stay
+in legacy/pdf_struct.py until it is migrated (phase 1 of the plan)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,7 +12,7 @@ class MarkitdownExtractor(DocumentExtractor):
     extensions = (".pdf", ".docx", ".pptx", ".xlsx", ".html")
 
     def extract(self, path: Path) -> str:
-        from markitdown import MarkItDown   # dependencia opcional [docs]
+        from markitdown import MarkItDown   # optional dependency [docs]
         return MarkItDown().convert(str(path)).text_content
 
 

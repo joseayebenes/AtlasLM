@@ -1,12 +1,12 @@
-"""Almacén del workspace: un único atlas.db con los datos de cada fuente (el libro de
-registro del motor vive en el mismo fichero, tabla `ledger`)."""
+"""Workspace store: a single atlas.db with the data of every source (the engine's ledger
+lives in the same file, in the `ledger` table)."""
 from __future__ import annotations
 
 import json
 import sqlite3
 from pathlib import Path
 
-ESQUEMA = """
+SCHEMA = """
 CREATE TABLE IF NOT EXISTS requirements (
     id TEXT PRIMARY KEY, module TEXT, text TEXT, parent TEXT, attributes TEXT, hash TEXT, raw_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_req_module ON requirements(module);
@@ -25,11 +25,11 @@ class Store:
         self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
-        self.db.executescript(ESQUEMA)
+        self.db.executescript(SCHEMA)
 
-    # --- requisitos ---------------------------------------------------------
+    # --- requirements -------------------------------------------------------
     def replace_module(self, module: str, reqs: list, links: list, hashes: dict[str, str]) -> None:
-        with self.db:                                   # transacción: todo o nada
+        with self.db:                                   # transaction: all or nothing
             self.db.execute("DELETE FROM requirements WHERE module=?", (module,))
             self.db.execute("DELETE FROM links WHERE module=?", (module,))
             self.db.executemany(
@@ -57,7 +57,7 @@ class Store:
         d["links_in"] = [dict(x) for x in self.db.execute("SELECT source, type FROM links WHERE target=?", (d["id"],))]
         return d
 
-    # --- código -------------------------------------------------------------
+    # --- code ---------------------------------------------------------------
     def put_code_unit(self, unit) -> None:
         from dataclasses import asdict
         with self.db:

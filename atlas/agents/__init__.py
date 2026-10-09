@@ -1,1 +1,1 @@
-"""Agentes ADK: fase 5 del plan."""
+"""ADK agents: phase 5 of the plan."""

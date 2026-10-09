@@ -1,23 +1,23 @@
-"""Motor de procesamiento incremental y recuperable.
+"""Incremental, recoverable processing engine.
 
-Un `Step` declara sus unidades, cómo calcular la huella de cada una y cómo procesarla.
-El `Runner` consulta el `Ledger` (SQLite): si la huella no ha cambiado y la unidad está
-ok, la omite; si no, la procesa. Los errores propios de una unidad se anotan y se sigue;
-los fatales (conexión, credenciales, cupo agotado) paran la ejecución dejando el estado
-guardado. Volver a ejecutar reanuda. Las unidades que desaparecen se marcan obsoletas y,
-opcionalmente, se podan.
+A `Step` declares its units, how to compute the fingerprint of each one and how to
+process it. The `Runner` checks the `Ledger` (SQLite): if the fingerprint has not changed
+and the unit is ok, it skips it; otherwise it processes it. Errors of a single unit are
+recorded and the run goes on; fatal ones (connection, credentials, exhausted quota) stop
+the run with the state saved. Running again resumes. Units that disappear are marked
+stale and, optionally, pruned.
 
     from atlas.pipeline import Step, Runner, Ledger, FatalError
 
-    paso = Step(
+    step = Step(
         name="code.parse",
         units=lambda ctx: [str(p) for p in Path("src").glob("*.adb")],
         fingerprint=lambda ctx, u: sha256_file(u) + cfg.fingerprint("sources.code"),
-        run=lambda ctx, u: analizar(u),            # idempotente; escribe de forma atómica
-        prune=lambda ctx, u: borrar_resultados(u), # opcional: qué hacer con una unidad desaparecida
+        run=lambda ctx, u: analyze(u),             # idempotent; writes atomically
+        prune=lambda ctx, u: delete_results(u),    # optional: what to do with a vanished unit
         depends_on=["docs.sections"],
     )
-    Runner(ledger=Ledger(workspace / "atlas.db"), steps=[paso], context=ctx).run()
+    Runner(ledger=Ledger(workspace / "atlas.db"), steps=[step], context=ctx).run()
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 
 class FatalError(Exception):
-    """Error tras el que no tiene sentido seguir con la siguiente unidad."""
+    """Error after which it makes no sense to go on with the next unit."""
 
 
 class WorkspaceLocked(RuntimeError):
@@ -49,17 +49,17 @@ class WorkspaceLocked(RuntimeError):
 def sha256_file(path: str | Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
-        for bloque in iter(lambda: f.read(1 << 20), b""):
-            h.update(bloque)
+        for block in iter(lambda: f.read(1 << 20), b""):
+            h.update(block)
     return h.hexdigest()
 
 
-def sha256_text(*partes: Any) -> str:
-    return hashlib.sha256("|".join(str(p) for p in partes).encode("utf-8")).hexdigest()
+def sha256_text(*parts: Any) -> str:
+    return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
 def atomic_write(path: str | Path, content: str | bytes) -> None:
-    """Escritura atómica: fichero temporal + renombrado."""
+    """Atomic write: temporary file + rename."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -83,9 +83,9 @@ class Step:
 
 
 class Ledger:
-    """Estado de cada (paso, unidad) en SQLite. Una transacción por escritura."""
+    """State of each (step, unit) in SQLite. One transaction per write."""
 
-    ESTADOS = ("ok", "error", "cuarentena", "obsoleta", "en_curso")
+    STATUSES = ("ok", "error", "quarantined", "stale", "running")
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -110,7 +110,7 @@ class Ledger:
 
     def mark(self, step: str, unit: str, status: str, fingerprint: str | None = None,
              output_hash: str | None = None, error: str | None = None, attempts: int | None = None) -> None:
-        ahora = datetime.now().isoformat(timespec="seconds")
+        now = datetime.now().isoformat(timespec="seconds")
         with self.lock:
             prev = self.get(step, unit)
             att = attempts if attempts is not None else (prev["attempts"] if prev else 0)
@@ -120,7 +120,7 @@ class Ledger:
                 " status=excluded.status, output_hash=excluded.output_hash, attempts=excluded.attempts,"
                 " error=excluded.error, finished=excluded.finished",
                 (step, unit, fingerprint if fingerprint is not None else (prev["fingerprint"] if prev else None),
-                 status, output_hash, att, (error or "")[:500], prev["started"] if prev else ahora, ahora))
+                 status, output_hash, att, (error or "")[:500], prev["started"] if prev else now, now))
             self.db.commit()
 
     def delete(self, step: str, unit: str) -> None:
@@ -136,7 +136,7 @@ class Ledger:
 
     def pending(self) -> list[dict]:
         return [dict(r) for r in self.db.execute(
-            "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','cuarentena','en_curso')"
+            "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','quarantined','running')"
             " ORDER BY step, unit")]
 
 
@@ -159,32 +159,32 @@ class Runner:
                  on_error: str = "continue", max_attempts: int = 3, retry_quarantined: bool = False,
                  prune_missing: bool = True, lock_path: str | Path | None = None):
         self.ledger, self.context = ledger, context
-        self.steps = self._ordenar(steps)
+        self.steps = self._sort(steps)
         self.workers = max(1, workers)
         self.on_error, self.max_attempts = on_error, max_attempts
         self.retry_quarantined, self.prune_missing = retry_quarantined, prune_missing
         self.lock_path = Path(lock_path) if lock_path else ledger.path.with_suffix(".lock")
 
     @staticmethod
-    def _ordenar(steps: list[Step]) -> list[Step]:
-        """Orden topológico por depends_on (estable respecto al orden dado)."""
-        por_nombre = {s.name: s for s in steps}
-        hechos, orden = set(), []
+    def _sort(steps: list[Step]) -> list[Step]:
+        """Topological order by depends_on (stable with respect to the given order)."""
+        by_name = {s.name: s for s in steps}
+        done, order = set(), []
 
-        def visitar(s: Step, pila: tuple = ()):
-            if s.name in hechos:
+        def visit(s: Step, stack: tuple = ()):
+            if s.name in done:
                 return
-            if s.name in pila:
-                raise ValueError(f"dependencia circular entre pasos: {' -> '.join(pila + (s.name,))}")
+            if s.name in stack:
+                raise ValueError(f"circular dependency between steps: {' -> '.join(stack + (s.name,))}")
             for dep in s.depends_on:
-                if dep in por_nombre:
-                    visitar(por_nombre[dep], pila + (s.name,))
-            hechos.add(s.name)
-            orden.append(s)
+                if dep in by_name:
+                    visit(by_name[dep], stack + (s.name,))
+            done.add(s.name)
+            order.append(s)
 
         for s in steps:
-            visitar(s)
-        return orden
+            visit(s)
+        return order
 
     def run(self, only: Iterable[str] | None = None) -> RunReport:
         rep, t0 = RunReport(), time.time()
@@ -196,7 +196,7 @@ class Runner:
                     self._run_step(step, rep)
                 except FatalError as e:
                     rep.fatal = f"{step.name}: {e}"
-                    log.error("ejecución detenida en %s: %s (el estado queda guardado)", step.name, e)
+                    log.error("run stopped at %s: %s (the state is saved)", step.name, e)
                     break
         rep.seconds = time.time() - t0
         return rep
@@ -211,8 +211,8 @@ class Runner:
                     os.write(fd, str(os.getpid()).encode())
                     os.close(fd)
                 except FileExistsError:
-                    raise WorkspaceLocked(f"otro proceso está ejecutando este workspace ({runner.lock_path});"
-                                          f" si no es así, borra el fichero de bloqueo") from None
+                    raise WorkspaceLocked(f"another process is running this workspace ({runner.lock_path});"
+                                          f" if that is not the case, delete the lock file") from None
                 return self
 
             def __exit__(self, *a):
@@ -224,78 +224,78 @@ class Runner:
         return _Lock()
 
     def _run_step(self, step: Step, rep: RunReport) -> None:
-        unidades = list(step.units(self.context))
-        previas = self.ledger.units(step.name)
-        pendientes: list[tuple[str, str]] = []
-        for u in unidades:
+        units = list(step.units(self.context))
+        previous = self.ledger.units(step.name)
+        pending: list[tuple[str, str]] = []
+        for u in units:
             fp = step.fingerprint(self.context, u)
-            prev = previas.get(u)
+            prev = previous.get(u)
             if prev and prev["status"] == "ok" and prev["fingerprint"] == fp:
                 rep.skipped[step.name] = rep.skipped.get(step.name, 0) + 1
                 continue
-            if prev and prev["status"] == "cuarentena" and prev["fingerprint"] == fp and not self.retry_quarantined:
+            if prev and prev["status"] == "quarantined" and prev["fingerprint"] == fp and not self.retry_quarantined:
                 rep.quarantined[step.name] = rep.quarantined.get(step.name, 0) + 1
                 continue
-            pendientes.append((u, fp))
+            pending.append((u, fp))
 
-        # Unidades desaparecidas: obsoletas y, si procede, podadas
-        actuales = set(unidades)
-        for u, prev in previas.items():
-            if u not in actuales and prev["status"] != "obsoleta":
+        # Vanished units: stale and, if requested, pruned
+        current = set(units)
+        for u, prev in previous.items():
+            if u not in current and prev["status"] != "stale":
                 if self.prune_missing:
                     if step.prune:
                         step.prune(self.context, u)
                     self.ledger.delete(step.name, u)
                 else:
-                    self.ledger.mark(step.name, u, "obsoleta")
+                    self.ledger.mark(step.name, u, "stale")
                 rep.pruned[step.name] = rep.pruned.get(step.name, 0) + 1
 
-        log.info("%s: %d unidades, %d por procesar, %d al día", step.name, len(unidades),
-                 len(pendientes), rep.skipped.get(step.name, 0))
-        if not pendientes:
+        log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
+                 len(pending), rep.skipped.get(step.name, 0))
+        if not pending:
             return
 
         fatal: list[Exception] = []
-        resultado_lock = threading.Lock()
+        result_lock = threading.Lock()
 
-        def procesar(u: str, fp: str) -> None:
+        def process(u: str, fp: str) -> None:
             if fatal:
                 return
             prev = self.ledger.get(step.name, u)
-            intentos = (prev["attempts"] if prev and prev["fingerprint"] == fp else 0)
-            # la huella se guarda al empezar: si el proceso muere, la unidad queda 'en_curso'
-            self.ledger.mark(step.name, u, "en_curso", fingerprint=fp, attempts=intentos)
+            attempts = (prev["attempts"] if prev and prev["fingerprint"] == fp else 0)
+            # the fingerprint is saved on start: if the process dies, the unit stays 'running'
+            self.ledger.mark(step.name, u, "running", fingerprint=fp, attempts=attempts)
             try:
-                salida = step.run(self.context, u)
+                output = step.run(self.context, u)
                 self.ledger.mark(step.name, u, "ok", fingerprint=fp,
-                                 output_hash=sha256_text(json.dumps(salida, sort_keys=True, default=str))[:16]
-                                 if salida is not None else None, attempts=intentos)
-                with resultado_lock:
+                                 output_hash=sha256_text(json.dumps(output, sort_keys=True, default=str))[:16]
+                                 if output is not None else None, attempts=attempts)
+                with result_lock:
                     rep.processed[step.name] = rep.processed.get(step.name, 0) + 1
             except Exception as e:
                 if step.is_fatal(e):
-                    self.ledger.mark(step.name, u, "error", fingerprint=fp, error=f"fatal: {e}", attempts=intentos)
+                    self.ledger.mark(step.name, u, "error", fingerprint=fp, error=f"fatal: {e}", attempts=attempts)
                     fatal.append(e)
                     return
-                intentos += 1
-                estado = "cuarentena" if intentos >= self.max_attempts else "error"
-                self.ledger.mark(step.name, u, estado, fingerprint=fp,
-                                 error=f"{type(e).__name__}: {e}", attempts=intentos)
-                with resultado_lock:
-                    clave = "quarantined" if estado == "cuarentena" else "errors"
-                    getattr(rep, clave)[step.name] = getattr(rep, clave).get(step.name, 0) + 1
+                attempts += 1
+                status = "quarantined" if attempts >= self.max_attempts else "error"
+                self.ledger.mark(step.name, u, status, fingerprint=fp,
+                                 error=f"{type(e).__name__}: {e}", attempts=attempts)
+                with result_lock:
+                    key = "quarantined" if status == "quarantined" else "errors"
+                    getattr(rep, key)[step.name] = getattr(rep, key).get(step.name, 0) + 1
                 log.warning("%s %s: %s", step.name, u, e)
                 if self.on_error == "stop":
-                    fatal.append(FatalError(f"on_error = stop tras fallar {u}: {e}"))
+                    fatal.append(FatalError(f"on_error = stop after {u} failed: {e}"))
 
         if step.parallel and self.workers > 1:
             with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                futuros = [pool.submit(procesar, u, fp) for u, fp in pendientes]
-                for f in as_completed(futuros):
+                futures = [pool.submit(process, u, fp) for u, fp in pending]
+                for f in as_completed(futures):
                     f.result()
         else:
-            for u, fp in pendientes:
-                procesar(u, fp)
+            for u, fp in pending:
+                process(u, fp)
                 if fatal:
                     break
         if fatal:

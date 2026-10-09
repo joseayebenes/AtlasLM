@@ -1,1 +1,1 @@
-"""Servidor MCP unificado: fase 1/5 del plan (hoy: legacy/ada_graph_mcp.py y legacy/doc_rag.py mcp)."""
+"""Unified MCP server: phases 1/5 of the plan (today: legacy/ada_graph_mcp.py and legacy/doc_rag.py mcp)."""

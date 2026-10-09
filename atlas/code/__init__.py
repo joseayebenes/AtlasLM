@@ -1,9 +1,10 @@
-"""Analizadores de código. Cada lenguaje es un plugin `CodeAnalyzer` registrado con su
-nombre; [sources.code] languages = ["ada"] elige cuáles se usan.
+"""Code analyzers. Each language is a `CodeAnalyzer` plugin registered under its name;
+[sources.code] languages = ["ada"] picks the ones in use.
 
-El analizador de Ada envuelve el `ada_graph.py` existente (tree-sitter-ada). Para añadir
-otro lenguaje: subclase de CodeAnalyzer + `register("code_analyzer", "cpp", MiClase)`,
-en un módulo propio declarado en [plugins] modules o por entry point.
+The Ada analyzer wraps the existing `ada_graph.py` (tree-sitter-ada), whose API is still
+in Spanish (`analizar`, `subprogramas`, `tipos`) until it is migrated. To add another
+language: a CodeAnalyzer subclass + `register("code_analyzer", "cpp", MyClass)`, in its
+own module declared in [plugins] modules or by entry point.
 """
 from __future__ import annotations
 
@@ -20,7 +21,7 @@ class AdaAnalyzer(CodeAnalyzer):
 
     def _legacy(self):
         try:
-            import ada_graph  # el script actual, instalado aparte o en legacy/
+            import ada_graph  # the current script, installed separately or in legacy/
         except ImportError:
             sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "legacy"))
             import ada_graph
@@ -28,8 +29,8 @@ class AdaAnalyzer(CodeAnalyzer):
 
     def analyze_file(self, path: Path, source: bytes) -> CodeUnit:
         ag = self._legacy()
-        patron = re.compile(self.config.get("req_regex", r"(?i)\bReq\s*:\s*([^\n]+)"))
-        info = ag.analizar(Path(path), patron)
+        req_pattern = re.compile(self.config.get("req_regex", r"(?i)\bReq\s*:\s*([^\n]+)"))
+        info = ag.analizar(Path(path), req_pattern)
         return CodeUnit(
             file=str(path), unit=info["unit"], language="ada", imports=info["withs"],
             subprograms=[{"name": s["name"], "start_line": s["start_line"], "end_line": s["end_line"],

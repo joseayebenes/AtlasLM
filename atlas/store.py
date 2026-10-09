@@ -75,6 +75,10 @@ class Store:
             self.db.execute("INSERT OR REPLACE INTO code_units VALUES (?,?,?,?)",
                             (unit.file, unit.unit, unit.language, json.dumps(asdict(unit), ensure_ascii=False)))
 
+    def code_units(self) -> list[dict]:
+        """Every analysed file (CodeUnit as a dict), by file."""
+        return [json.loads(r["data"]) for r in self._query("SELECT data FROM code_units ORDER BY file")]
+
     def delete_code_unit(self, file: str) -> None:
         with self.lock, self.db:
             self.db.execute("DELETE FROM code_units WHERE file=?", (file,))

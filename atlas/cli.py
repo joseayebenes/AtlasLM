@@ -3,6 +3,7 @@
     atlas run      [atlas.toml]     incremental, resumable processing
     atlas status   [atlas.toml]     state of the ledger and of the data
     atlas sections [atlas.toml]     sections each document would have, without the model
+    atlas graph    [atlas.toml]     report of the code graph (calls, requirements, unresolved)
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
@@ -285,17 +286,53 @@ def index_step(ctx) -> Step:
                 prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
 
 
+GRAPH_VERSION = "graph-1"   # change it when the building of the graph changes
+GRAPH_EXPORTS = ("graphml", "json")
+
+
+def graph_step(ctx) -> Step:
+    """One unit, "code": the code graph is rebuilt whole (seconds) when any file changes."""
+    from atlas.graph import GraphStore, build_code_graph, export_graph
+    exports = ctx.cfg["graph"]["exports"]
+    unknown = sorted(set(exports) - set(GRAPH_EXPORTS))
+    if unknown:
+        raise ConfigError(f"[graph] unknown exports {unknown} (valid: {', '.join(GRAPH_EXPORTS)})")
+    prefix = ctx.cfg.workspace / "graph" / "code"
+
+    def fingerprint(ctx, unit: str) -> str:
+        units = ctx.store.code_units()
+        return f"{sha256_text(json.dumps(units, sort_keys=True))}|{ctx.cfg.fingerprint('graph')}|{GRAPH_VERSION}"
+
+    def run(ctx, unit: str):
+        G, stats = build_code_graph(ctx.store.code_units())
+        GraphStore(ctx.store.path).replace("code", G, stats)
+        for old in prefix.parent.glob(f"{prefix.name}.*"):
+            old.unlink()
+        export_graph(G, prefix, exports, stats)
+        log.info("code graph: %d nodes, %d edges (%d subprograms, %d requirements, %d unresolved calls)",
+                 stats["nodes"], stats["edges"], stats["subprograms"], stats["requirements"],
+                 stats["unresolved_calls"])
+        return {k: v for k, v in stats.items() if not k.startswith("top_")}
+
+    def prune(ctx, unit: str) -> None:
+        GraphStore(ctx.store.path).delete("code")
+        for old in prefix.parent.glob(f"{prefix.name}.*"):
+            old.unlink()
+
+    return Step(name="graph.build", units=lambda ctx: ["code"] if ctx.store.code_units() else [],
+                fingerprint=fingerprint, run=run, prune=prune, depends_on=["code.parse"], parallel=False)
+
+
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
-    builders = {"doors": doors_step, "code": code_step, "docs": docs_step, "index": index_step}
+    builders = {"doors": doors_step, "code": code_step, "docs": docs_step, "graph": graph_step,
+                "index": index_step}
     out = []
     for name in wanted:
         if name in builders:
             s = builders[name](ctx)
             if s:
                 out.append(s)
-        elif name == "graph":
-            log.warning("step '%s' not migrated yet (see PLAN.md); skipped", name)
         else:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
     return out
@@ -324,7 +361,9 @@ def status(cfg: Config) -> int:
     ledger = Ledger(ctx.store.path)
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
+    from atlas.graph import GraphStore
     from atlas.index import IndexStore
+    print("graph:", GraphStore(ctx.store.path).counts())
     print("index:", IndexStore(ctx.store.path).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
     pending = ledger.pending()
@@ -358,6 +397,33 @@ def sections(cfg: Config) -> int:
                     print(f"    {len(lines):5d}  {reason}" + "".join(f"\n           {x}" for x in lines[:3]))
                 print("  If your headings have another format, set heading_regex (group 1 = number, "
                       "group 2 = title).")
+    return 0
+
+
+def graph(cfg: Config) -> int:
+    """The report of the last build of the code graph."""
+    from atlas.graph import GraphStore
+    ctx = _context(cfg)
+    s = GraphStore(ctx.store.path).builds().get("code")
+    if not s:
+        print("no code graph yet: run `atlas run` with \"code\" and \"graph\" in [pipeline] steps")
+        return 1
+    print(f"code graph of {s['built_at']}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
+          f"{s['types']} types, {s['variables']} variables, {s['externals']} externals, "
+          f"{s['requirements']} requirements) from {s['files']} files")
+    c = s["edges_by_kind"]
+    print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
+          f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+    print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
+          f"without a requirement: {s['subprograms_without_requirement']} | unresolved calls: {s['unresolved_calls']}")
+    for title, key in (("Most called", "top_called"), ("Requirements traced by most elements", "top_requirements"),
+                       ("Most frequent unresolved calls (external libraries or names not captured)",
+                        "top_unresolved")):
+        if s[key]:
+            print(f"\n{title}:")
+            for name, n in s[key]:
+                print(f"  {n:5d}  {name}")
+    print(f"\nexported to {cfg.workspace / 'graph'}")
     return 0
 
 
@@ -402,7 +468,8 @@ def main(argv: list[str] | None = None) -> None:
         print(__doc__)
         sys.exit(0)
     action, rest = argv[0], argv[1:]
-    actions = {"run": run, "status": status, "sections": sections, "plugins": list_plugins, "check": check}
+    actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
+               "check": check}
     with_text = {"search": search, "ask": ask}
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")

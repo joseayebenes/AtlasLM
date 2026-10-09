@@ -46,26 +46,16 @@ lang = "Spanish"
 min_chars = 300
 
 [sources.doors]
-adapter = "database"
+adapter = "exchange"                        # la base de intercambio de requisitos (atlas.doors.exchange)
 modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
 
-[sources.doors.database]
-driver = "sqlite"
-path = "examples/samples/doors.sqlite"
-modules_query = "SELECT DISTINCT module FROM requirements ORDER BY module"
-requirements_query = "SELECT * FROM requirements WHERE module = :module ORDER BY id"
-links_query = "SELECT source_id, target_id, link_type FROM links WHERE source_module = :module"
-snapshot_query = "SELECT COUNT(*) || '|' || MAX(updated_at) FROM requirements WHERE module = :module"
+[sources.doors.exchange]
+path = "examples/samples/requirements.sqlite"   # la rellena tools/doors_export (aquí, make_samples.py)
+kinds = ["requirement", "heading", "information"]
 
-[sources.doors.convention]
-id_column = "id"
-text_column = "text"
-module_column = "module"
-parent_column = "parent"
-attribute_columns = ["status", "verification"]
+[sources.doors.convention]                  # cómo casan los IDs con documentos y código
 id_pattern = "^(?:SRS|SSS)-\\d{4}$"
 id_normalize = "upper"
-link_columns = { source = "source_id", target = "target_id", type = "link_type" }
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
 inline_reference_type = "references"
 

@@ -170,3 +170,51 @@ patterns = ["*.md"]
     assert "'documents': 1, 'records'" in capsys.readouterr().out
     with pytest.raises(ConfigError, match="kinds"):
         run(load_config(toml(extra + '[index]\nkinds = ["chunk", "pages"]\n')))
+
+
+def test_graph_step_and_report(toml, samples, tmp_path, capsys):
+    import shutil
+    import pytest
+    from atlas.cli import graph, status
+    from atlas.config import ConfigError
+    from atlas.graph import KnowledgeGraph
+    pytest.importorskip("tree_sitter_ada")
+    ada = tmp_path / "ada"
+    shutil.copytree(samples / "ada", ada)
+    extra = f'''
+[pipeline]
+steps = ["code", "graph"]
+[sources.code]
+roots = ["{ada.as_posix()}"]
+languages = ["ada"]
+'''
+    cfg = load_config(toml(extra))
+
+    def go():
+        assert run(cfg) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert go()["processed"] == {"code.parse": 5, "graph.build": 1}
+    exported = cfg.workspace / "graph"
+    assert (exported / "code.graphml").exists() and (exported / "code.json").exists()
+    assert go()["skipped"] == {"code.parse": 5, "graph.build": 1}
+
+    # a new call in one file: that file is analysed again and the graph rebuilt
+    body = ada / "src" / "logger.adb"
+    body.write_text(body.read_text().replace("Counter := Counter + 1;", "Counter := Counter + 1;\n      Log (\"id\");"))
+    assert go()["processed"] == {"code.parse": 1, "graph.build": 1}
+    g = KnowledgeGraph.from_config(cfg)
+    assert [i["id"] for i in g.callers("logger.log")["items"]] == ["logger.next_id", "tracks.delete_track",
+                                                                   "tracks.update"]
+    assert graph(cfg) == 0
+    out = capsys.readouterr().out
+    assert "6 subprograms" not in out and "5 subprograms" in out and "ada.text_io.put_line" in out
+    assert status(cfg) == 0 and "graph: {'nodes': 21" in capsys.readouterr().out
+
+    # without code, the graph goes too
+    shutil.rmtree(ada / "src")
+    shutil.rmtree(ada / "tests")
+    assert go()["pruned"] == {"code.parse": 5, "graph.build": 1}
+    assert not list(exported.glob("code.*")) and graph(cfg) == 1
+    with pytest.raises(ConfigError, match="exports"):
+        run(load_config(toml(extra + '[graph]\nexports = ["svg"]\n')))

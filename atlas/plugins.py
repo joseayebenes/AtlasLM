@@ -48,6 +48,7 @@ class CodeUnit:
     variables: list[dict] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)        # withs / includes
     tests: list[dict] = field(default_factory=list)         # {name, covers:[...], reqs:[...]}
+    declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, line, doc, reqs}
 
 
 class CodeAnalyzer(ABC):

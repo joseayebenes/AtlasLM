@@ -66,7 +66,7 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
                "min_chars": int, "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "convention": dict,
                 "modules": list, "attributes": list}
-CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str,
+CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool}
 
 DEFAULTS: dict[str, dict[str, Any]] = {

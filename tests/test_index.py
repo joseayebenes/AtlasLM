@@ -112,12 +112,17 @@ def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):
     assert tools.search("alarm", kind="pages")["error"] == "unknown kind 'pages'"
     assert {r["kind"] for r in tools.search("track", k=50, kind="requirement")["results"]} == {"requirement"}
     assert len(tools.search("track", k=50)["results"]) == 20                       # at most 20
-    section = tools.get_section("HMI", "3")                                      # part of the title; 3 = 003
-    assert section["section"] == "003" and "raise an alarm" in section["markdown"]
+    section = tools.get_section("HMI", "3")                    # part of the title; its number in the document
+    assert (section["section"], section["title"]) == ("004", "3 Logging") and "30 days" in section["markdown"]
+    assert tools.get_section("hmi_manual.md", "003")["title"] == "2 Alarms"         # the ID of a search result
+    assert tools.get_section("hmi_manual.md", "alarms")["section"] == "003"         # the title without number
+    chapter = tools.get_section("spec_with_bookmarks.pdf", "2")                     # a chapter: its sections
+    assert chapter == {"error": "section '2' is ambiguous",
+                       "sections": [f"00{n}: 2.{n - 4} Function group 2.{n - 4}" for n in (5, 6, 7)]}
     missing = tools.get_section("manual.pdf", "003")
     assert missing == {"error": "document 'manual.pdf' is not indexed",
                        "documents": ["hmi_manual.md", "spec_with_bookmarks.pdf"]}
-    assert "003-2-alarms" in tools.get_section("hmi_manual.md", "099")["sections"]
+    assert "003: 2 Alarms" in tools.get_section("hmi_manual.md", "099")["sections"]
     req = tools.get_requirement("SRS-0102")                    # not in DOORS here: only the documents
     assert "official" not in req and req["documents"][0]["cite"].startswith("hmi_manual.md › 2 Alarms")
     assert tools.get_requirement("SRS-9999") == {"error": "requirement 'SRS-9999' not found", "similar": []}

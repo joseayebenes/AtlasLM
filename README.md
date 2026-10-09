@@ -376,6 +376,9 @@ Cambios respecto a los servidores anteriores:
   padre y enlaces. Si el ID no existe, sugiere IDs parecidos.
 - `read_file` es el de `CodeTools`, que solo lee dentro de `[sources.code] roots`. El de
   `ada_graph_mcp.py` leía cualquier fichero.
+- `get_section` acepta el ID que da `search` (`"004"`) y también el número o el título que
+  la sección tiene en el documento (`"3"`, `"2.1"`, `"Logging"`). Si el número es el de un
+  capítulo repartido en varias secciones, devuelve la lista de esas secciones.
 - Todas responden con un diccionario JSON. Un problema llega como una respuesta con `error`
   (y a menudo con sugerencias), no como un fallo.
 

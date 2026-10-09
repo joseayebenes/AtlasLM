@@ -19,6 +19,8 @@ They are registered as "tool" plugins with these names, for [agents.*] tools and
 """
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -44,6 +46,34 @@ MAX_SECTION_CHARS = 20000   # characters of a section
 
 def _failed(e: openai.APIError) -> dict:
     return {"error": f"the model server failed: {diagnose(e)}"}
+
+
+def _heading(f: Path) -> dict:
+    """id, title, titles of the subsections merged into it and path (the titles above it) of
+    a section file, from its front matter."""
+    out = {"id": f.name.split("-", 1)[0], "title": "", "includes": [], "path": []}
+    with open(f, encoding="utf-8") as lines:
+        if lines.readline().strip() == "---":
+            for line in lines:
+                key, _, value = line.partition(":")
+                if line.strip() == "---":
+                    break
+                if key in ("title", "includes", "path"):
+                    try:
+                        out[key] = json.loads(value)
+                    except ValueError:
+                        pass
+    return out
+
+
+def _asks_for(wanted: str, title: str) -> bool:
+    """Whether `wanted` names a section with that title: the whole title, its number ("3",
+    "2.1") or the title without its number, in any case."""
+    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
+    wanted, title = norm(wanted), norm(title)
+    number, _, rest = title.partition(" ")
+    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
+    return bool(wanted) and wanted in names
 
 
 class DocTools:
@@ -91,8 +121,10 @@ class DocTools:
                              "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
 
     def get_section(self, document: str, section: str) -> dict:
-        """The whole Markdown of a section (summary, requirements and its original text), by
-        the `document` and `section` of a search result."""
+        """The whole Markdown of a section (summary, requirements and its original text).
+        `document` and `section` as a search result gives them ("004"), or the number or
+        title the section has in the document ("3", "2.1", "Logging"); a chapter made of
+        several sections answers with the list of them."""
         docs = self.index.documents()
         found = [d for d in docs if document in (d["name"], d["doc"])] or \
                 [d for d in docs if document.strip() and document.strip().lower() in d["title"].lower()]
@@ -101,15 +133,19 @@ class DocTools:
         if len(found) > 1:
             return {"error": f"'{document}' is ambiguous", "documents": [d["name"] for d in found]}
         d = found[0]
-        sid = section.strip().zfill(3) if section.strip().isdigit() else section.strip()
         files = sorted((Path(d["out_dir"]) / "sections").glob("*.md"))
-        hits = [f for f in files if f.name.startswith(f"{sid}-")]
-        if not hits:
-            return {"error": f"section '{section}' is not in {d['name']}",
-                    "sections": [f.stem for f in files][:100]}
-        text = hits[0].read_text(encoding="utf-8")
-        return {"document": d["name"], "section": sid, "file": str(hits[0]), "markdown": text[:MAX_SECTION_CHARS],
-                "truncated": len(text) > MAX_SECTION_CHARS}
+        heads = {f: _heading(f) for f in files}
+        hits = [f for f in files if heads[f]["id"] == section.strip()] or \
+               [f for f in files if _asks_for(section, heads[f]["title"])] or \
+               [f for f in files if any(_asks_for(section, t) for t in heads[f]["includes"])] or \
+               [f for f in files if any(_asks_for(section, t) for t in heads[f]["path"])]
+        if len(hits) != 1:
+            listed = [f"{heads[f]['id']}: {heads[f]['title']}" for f in (hits or files)]
+            return {"error": f"section '{section}' is " + ("ambiguous" if hits else f"not in {d['name']}"),
+                    "sections": listed[:100]}
+        h, text = heads[hits[0]], hits[0].read_text(encoding="utf-8")
+        return {"document": d["name"], "section": h["id"], "title": h["title"], "file": str(hits[0]),
+                "markdown": text[:MAX_SECTION_CHARS], "truncated": len(text) > MAX_SECTION_CHARS}
 
     def get_requirement(self, req_id: str) -> dict:
         """A requirement by its exact ID: its official text, module, attributes, parent and

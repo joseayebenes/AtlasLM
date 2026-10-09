@@ -13,7 +13,7 @@ están en `legacy/` y se migran módulo a módulo en la fase 1.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 17 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 18 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo

@@ -949,8 +949,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `atlas/cli.py`: `run`, `status`, `plugins`, `check`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 18 pruebas (configuración, plugins, DOORS, reanudación tras corte, cuarentena,
-  poda, dependencias, CLI, servidor falso, `atlas check` con modelos que razonan y, solo si
+- `tests/`: 19 pruebas (configuración, plugins, DOORS, reanudación tras corte, cuarentena,
+  poda, dependencias, varios hilos sobre el mismo atlas.db, CLI, servidor falso, `atlas check` con modelos que razonan y, solo si
   Ollama está en marcha, un agente ADK que usa herramientas).
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.

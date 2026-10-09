@@ -81,3 +81,19 @@ def test_dependency_order_and_cycles(tmp_path):
     with pytest.raises(ValueError, match="circular"):
         Runner(Ledger(tmp_path / "db2"), [_step("a", [], {}, None, depends_on=["b"]),
                                            _step("b", [], {}, None, depends_on=["a"])])
+
+
+def test_parallel_units_share_the_ledger_and_store_safely(tmp_path):
+    from atlas.plugins import CodeUnit
+    from atlas.store import Store
+    store = Store(tmp_path / "ws")
+    ledger = Ledger(store.path)                 # same atlas.db as the store, like the CLI
+    units = [f"u{i}" for i in range(300)]
+
+    def run(ctx, u):
+        store.put_code_unit(CodeUnit(file=u, unit=u, language="ada"))
+        return store.counts()
+
+    rep = Runner(ledger, [_step("p", units, {u: "1" for u in units}, run)], workers=8).run()
+    assert rep.processed == {"p": 300} and not rep.errors
+    assert ledger.summary() == {"p": {"ok": 300}} and store.counts()["code_units"] == 300

@@ -25,10 +25,13 @@ run-dev:        ## procesamiento con Ollama local
 status:
 	$(PY) -m atlas.cli status atlas.dev.toml
 
+sections:       ## secciones de cada documento de atlas.dev.toml, sin llamar al modelo
+	$(PY) -m atlas.cli sections atlas.dev.toml
+
 check:          ## prueba de conexión con el modelo local
 	$(PY) -m atlas.cli check atlas.dev.toml
 
 clean:
 	rm -rf workspace-dev workspace-test examples/samples .pytest_cache
 
-.PHONY: install samples fake test test-ollama run-test run-dev status check clean
+.PHONY: install samples fake test test-ollama run-test run-dev status sections check clean

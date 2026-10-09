@@ -9,6 +9,7 @@ base_url = "http://localhost:11434/v1"     # Ollama. LM Studio: http://localhost
 model = "gemma4:12b"                       # en un Mac de 16 GB: gemma4:12b o gemma4:e4b
 api_key = "local"
 max_tokens = 8192
+reasoning_effort = "none"                  # gemma4 razona por defecto: una sección tarda minutos en vez de segundos
 
 [embeddings]
 model = "embeddinggemma"
@@ -32,9 +33,9 @@ disabled = []                               # p. ej. ["code_analyzer:ada"]
 name = "normas"
 paths = ["examples/samples/docs"]
 patterns = ["*.pdf"]
-analysis = "regex"                          # requisitos por expresión regular, sin LLM
-req_regex = "(?i)\\bReq\\s*:\\s*([^\\n]+)"
-structure = "auto"
+analysis = "regex"                          # llm | regex | none; regex: requisitos sin LLM
+req_regex = "(?i)\\bReq\\s*:\\s*(\\S+)"     # grupo 1 = ID; el texto sigue hasta el final de la frase
+structure = "auto"                          # auto | bookmarks | headings | size
 
 [[sources.docs]]
 name = "manuales"

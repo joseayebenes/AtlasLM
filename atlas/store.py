@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS links (
     source TEXT, target TEXT, type TEXT, module TEXT, PRIMARY KEY (source, target, type));
 CREATE TABLE IF NOT EXISTS code_units (
     file TEXT PRIMARY KEY, unit TEXT, language TEXT, data TEXT);
+CREATE TABLE IF NOT EXISTS documents (
+    unit TEXT PRIMARY KEY, source TEXT, path TEXT, out_dir TEXT UNIQUE, title TEXT, data TEXT);
 """
 
 
@@ -77,6 +79,27 @@ class Store:
         with self.lock, self.db:
             self.db.execute("DELETE FROM code_units WHERE file=?", (file,))
 
+    # --- documents ----------------------------------------------------------
+    def put_document(self, unit: str, source: str, path: str, out_dir: str, title: str, data: dict) -> None:
+        """A processed document: where its output is (structure.json and the Markdown) and
+        a summary of it."""
+        with self.lock, self.db:
+            self.db.execute("INSERT OR REPLACE INTO documents VALUES (?,?,?,?,?,?)",
+                            (unit, source, path, out_dir, title, json.dumps(data, ensure_ascii=False)))
+
+    def document(self, unit: str) -> dict | None:
+        rows = self._query("SELECT * FROM documents WHERE unit=?", (unit,))
+        return {**dict(rows[0]), "data": json.loads(rows[0]["data"] or "{}")} if rows else None
+
+    def document_owning(self, out_dir: str) -> str | None:
+        """The unit whose output is in `out_dir`, if any."""
+        rows = self._query("SELECT unit FROM documents WHERE out_dir=?", (out_dir,))
+        return rows[0]["unit"] if rows else None
+
+    def delete_document(self, unit: str) -> None:
+        with self.lock, self.db:
+            self.db.execute("DELETE FROM documents WHERE unit=?", (unit,))
+
     def counts(self) -> dict[str, int]:
         return {t: self._query(f"SELECT COUNT(*) FROM {t}")[0][0]
-                for t in ("requirements", "links", "code_units")}
+                for t in ("requirements", "links", "code_units", "documents")}

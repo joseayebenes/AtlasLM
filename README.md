@@ -5,7 +5,8 @@ configurable por fichero, importable como librería y orquestada con Google ADK.
 repositorio es el **esqueleto de la fase 0 del plan** (`legacy/PLAN.md`): motor
 incremental, configuración validada, sistema de plugins, lector de DOORS desde base de
 datos, analizador Ada, datos de ejemplo, servidor falso y pruebas. Los scripts anteriores
-están en `legacy/` y se migran módulo a módulo en la fase 1.
+están en `legacy/` y se migran módulo a módulo en la fase 1. Ya está migrado
+`pdf_struct.py`, que ahora es `atlas.docs`.
 
 ## Puesta en marcha en un Mac (Apple Silicon)
 
@@ -13,7 +14,7 @@ están en `legacy/` y se migran módulo a módulo en la fase 1.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 18 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 44 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -50,6 +51,13 @@ modelo razona antes de contestar (gemma4 lo hace por defecto), `check` lo indica
 (`OK: 'ok' (reasoning model: …)`). Ese razonamiento cuenta dentro de `max_tokens`. Si el
 modelo agota el presupuesto razonando sin llegar a contestar, `check` falla y lo explica.
 
+`atlas.dev.toml` desactiva el razonamiento con `[llm] reasoning_effort = "none"` (`check` y
+el análisis de documentos lo envían en cada petición). Con razonamiento, `gemma4:12b`
+tardaba entre 1 y 8 minutos en cada sección del manual de ejemplo. Sin él tarda unos 15 s,
+y el manual entero, 48 s, con los tres requisitos literales. Esa versión de Ollama tampoco
+acepta `response_format` con esquema JSON (responde 501): el análisis sigue sin él y saca
+el JSON de la respuesta.
+
 ### Agentes ADK con Ollama
 
 ```bash
@@ -77,6 +85,7 @@ a la versión 2.x; el resto del proyecto funciona igual.
 ```bash
 python -m atlas.cli run      atlas.dev.toml   # procesamiento incremental y reanudable
 python -m atlas.cli status   atlas.dev.toml   # libro de registro y datos
+python -m atlas.cli sections atlas.dev.toml   # secciones de cada documento, sin llamar al modelo
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
 python -m atlas.cli check    atlas.dev.toml   # conexión con el modelo
 ```
@@ -88,10 +97,10 @@ Prueba el motor sin modelo:
 
 ```bash
 python tests/fakes/fake_api.py --port 8770 &      # en otra terminal
-python -m atlas.cli run atlas.test.toml           # primera vez: procesa todo
+python -m atlas.cli run atlas.test.toml           # primera vez: DOORS, Ada y documentos
 python -m atlas.cli run atlas.test.toml           # segunda vez: todo "al día", 0 peticiones
-# cambia un .adb o un requisito en examples/samples/doors.sqlite y vuelve a ejecutar:
-# solo se reprocesa esa unidad
+# cambia un .adb, un requisito en examples/samples/doors.sqlite o hmi_manual.md y vuelve a
+# ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones cambiadas)
 ```
 
 ## Estructura
@@ -101,13 +110,14 @@ atlas/
 ├── config.py       carga y validación de atlas.toml, ${VAR}, huellas por sección
 ├── plugins.py      interfaces (CodeAnalyzer, RequirementsAdapter, DocumentExtractor, Tool) y registro
 ├── pipeline/       motor incremental: Step, Ledger (SQLite), Runner, cuarentena, poda, bloqueo
-├── store.py        atlas.db: requisitos, enlaces, unidades de código
-├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos
+├── store.py        atlas.db: requisitos, enlaces, unidades de código, documentos
+├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos;
+│                   structured.py: respuestas JSON con reparación
 ├── doors/          adaptador "database": consultas y convención configurables, diff
 ├── code/           analizador "ada" (envuelve legacy/ada_graph.py)
-├── docs/           extractores "markitdown" y "text" (la estructura y el análisis siguen en legacy/)
+├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
 ├── graph/ index/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
-└── cli.py          run | status | plugins | check
+└── cli.py          run | status | sections | plugins | check
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
                             test_agents_ollama.py, la prueba de agentes con Ollama
@@ -116,8 +126,9 @@ legacy/                     scripts actuales + README y PLAN del proyecto
 
 ## Idioma
 
-El código está en inglés: nombres, comentarios, docstrings y mensajes de la línea de
-comandos. La documentación está en español: este README, `legacy/PLAN.md`,
+El código está en inglés: nombres, comentarios, docstrings, mensajes de la línea de
+comandos y los ficheros que genera (los Markdown de cada documento; el contenido de los
+resúmenes sigue `lang`). La documentación está en español: este README, `legacy/PLAN.md`,
 `legacy/README.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el español
 hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
 
@@ -130,6 +141,39 @@ hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
   `requirements`, `links`) y `adapter = "nombre"` en `[sources.doors]`.
 - **Otro formato de documento**: una clase `DocumentExtractor` por extensión.
 - **Quitar algo**: `[plugins] disabled = ["code_analyzer:ada"]`, o no activarlo en la fuente.
+
+## Documentos
+
+Cada `[[sources.docs]]` es un grupo de documentos (PDF, Markdown, Word...) con su forma de
+procesarlos:
+
+| Clave | Valores | Para qué |
+|---|---|---|
+| `paths`, `patterns` | carpetas o ficheros; `["*.pdf"]` | qué documentos (las carpetas se recorren enteras) |
+| `analysis` | `llm` (por defecto), `regex`, `none` | `llm`: el modelo saca resumen, requisitos, glosario, entidades y pendientes por sección. `regex`: solo requisitos, sin modelo. `none`: solo la estructura |
+| `req_regex` | `(?i)\bReq\s*:\s*(\S+)` | en `regex`, marca cada requisito; el grupo 1 es su ID y el texto sigue hasta el final de la frase |
+| `structure` | `auto`, `bookmarks`, `headings`, `size` | de dónde salen las secciones: marcadores del PDF, títulos numerados del texto o bloques de tamaño fijo |
+| `heading_regex` | grupo 1 = número, grupo 2 = título | si los títulos tienen un formato que no se reconoce |
+| `max_chars`, `min_chars` | 12000, 300 | tamaño máximo de sección; las más cortas se unen a la anterior |
+| `lang` | `"Spanish"` | idioma de los resúmenes (vacío: el del documento) |
+
+Cada documento se escribe en `<workspace>/docs/<fuente>/<nombre>_<extensión>/`: `index.md`,
+`sections/`, `requirements.md` (con la verificación de cada requisito contra el texto),
+`glossary.md`, `entities.md`, `open_issues.md` y `structure.json` (todo junto, para el
+índice y el grafo). Los análisis de sección se guardan en `<workspace>/docs/.cache`: un
+documento modificado solo vuelve al modelo con las secciones cuyo texto ha cambiado. Si
+falla alguna, el documento se escribe igual y queda en error para reintentarla en la
+siguiente ejecución.
+
+Antes de procesar documentos nuevos, `atlas sections` muestra qué secciones saldrían, de
+dónde sale la estructura y por qué se aceptan o rechazan las líneas que parecen títulos.
+
+Como librería, sin motor ni CLI:
+
+```python
+from atlas.docs import DocsOptions, process_document
+data = process_document("spec.pdf", "out/spec", DocsOptions(analysis="regex"))
+```
 
 ## DOORS desde una base de datos
 

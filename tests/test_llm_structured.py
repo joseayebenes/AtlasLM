@@ -1,0 +1,75 @@
+import json
+
+import pytest
+
+from atlas.llm import JsonLlm, TruncatedResponse, parse_json, repair_json
+
+KEYS = ["summary", "requirements"]
+SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}, "requirements": {"type": "array"}},
+          "required": KEYS}
+
+
+def test_parse_json_finds_the_answer_among_prose_and_blocks():
+    text = 'Thinking about {braces}...\n```json\n{"summary": "s", "requirements": [{"id": "R1"}]}\n```\nDone.'
+    assert parse_json(text, KEYS) == {"summary": "s", "requirements": [{"id": "R1"}]}
+    with pytest.raises(ValueError):
+        parse_json("no json here", KEYS)
+    with pytest.raises(ValueError):                    # an inner object is not the answer
+        parse_json('{"id": "R1", "text": "t"}', KEYS)
+
+
+def test_repair_json_keeps_what_was_complete():
+    cut = '{"summary": "s", "requirements": [{"id": "R1", "text": "a"}, {"id": "R2", "te'
+    assert repair_json(cut, KEYS) == {"summary": "s", "requirements": [{"id": "R1", "text": "a"}, {"id": "R2"}]}
+    assert repair_json('{"summary": "s", "requirements": [],}', KEYS) == {"summary": "s", "requirements": []}
+    assert repair_json("nothing", KEYS) is None
+
+
+def test_ask_json_against_the_fake_api(fake_llm, fake_chats):
+    service, control = fake_llm
+    llm = JsonLlm(service)
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"] == [{"id": "SRS-0001", "text": "The TMF shall work."}]
+
+    # prose: one request for a correction, which the fake answers with JSON
+    control.write_text(json.dumps({"section_fail_if": ["broken"]}))
+    failures = []
+    before = fake_chats()
+    d = llm.ask_json("system", "<section>broken</section>", SCHEMA, "section",
+                     on_failure=lambda attempt, text, finish: failures.append(attempt))
+    assert d["summary"] and fake_chats() - before == 2 and failures == [1]
+
+    # prose again after the correction: it gives up
+    control.write_text(json.dumps({"prose": True}))
+    failures.clear()
+    with pytest.raises(RuntimeError, match="valid JSON"):
+        llm.ask_json("system", "<section>x</section>", SCHEMA, "section",
+                     on_failure=lambda attempt, text, finish: failures.append(attempt))
+    assert failures == [1, 2]
+
+    # an answer cut by length is never taken as good
+    control.write_text(json.dumps({"reasoning_tokens": 100}))
+    service.max_tokens = 50
+    with pytest.raises(TruncatedResponse):
+        JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+
+
+def test_servers_without_structured_output(fake_llm, fake_chats):
+    service, control = fake_llm
+    control.write_text(json.dumps({"no_structured_output": True}))
+    llm = JsonLlm(service)
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"][0]["id"] == "SRS-0001" and llm.schema_ok is False
+    before = fake_chats()                       # from then on, no request with the schema
+    llm.ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert fake_chats() - before == 1
+
+
+def test_reasoning_can_be_turned_off(fake_llm):
+    service, control = fake_llm
+    control.write_text(json.dumps({"reasoning_tokens": 100}))
+    service.max_tokens = 50                      # all of it would go to reasoning
+    with pytest.raises(TruncatedResponse):
+        JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+    service.reasoning_effort = "none"
+    assert JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")["summary"]

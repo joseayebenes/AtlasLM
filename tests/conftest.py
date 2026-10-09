@@ -16,8 +16,8 @@ def samples():
     """Sample data (generated if missing)."""
     from examples import make_samples
     d = ROOT / "examples" / "samples"
-    if not (d / "doors.sqlite").exists():
-        make_samples.ada(); make_samples.doors()
+    if not (d / "requirements.sqlite").exists():
+        make_samples.ada(); make_samples.doors(); make_samples.exchange()
     return d
 
 

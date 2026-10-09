@@ -7,6 +7,8 @@ documents, code or DOORS:
   samples/docs/hmi_manual.md                a Markdown file with requirements
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
+  samples/requirements.sqlite               the same requirements in the exchange database of atlas
+                                            (atlas.doors.exchange), with headings and hierarchy
 
 Requires: pip install pymupdf
 """
@@ -182,9 +184,41 @@ def doors() -> None:
     print("created", path, len(rows), "requirements,", len(links), "links")
 
 
+def exchange() -> None:
+    """The requirements of doors() in the exchange database, as a filler would leave them:
+    each module under a heading object, attributes, hierarchy and typed links."""
+    import sys
+    sys.path.insert(0, str(ROOT.parents[1]))
+    from atlas.doors.exchange import ExchangeWriter
+    source = sqlite3.connect(ROOT / "doors.sqlite")
+    source.row_factory = sqlite3.Row
+    path = ROOT / "requirements.sqlite"
+    path.unlink(missing_ok=True)
+    with ExchangeWriter(path, filler="examples/make_samples.py") as w:
+        for module, heading in (("SSS_MISSION", "Mission capabilities"), ("SRS_TMS", "Track management"),
+                                ("SRS_TMS_OLD", "Obsolete requirements")):
+            prefix = module.split("_")[0]
+            top = f"{prefix}-{'0900' if module != 'SRS_TMS_OLD' else '0901'}"
+            reqs = [{"id": top, "heading": heading, "kind": "heading", "level": 1, "outline": "1", "source_key": "0"}]
+            for n, r in enumerate(source.execute("SELECT * FROM requirements WHERE module = ? ORDER BY id",
+                                                 (module,)), 1):
+                rid = r["id"].upper()
+                reqs.append({"id": rid, "text": r["text"], "parent": (r["parent"] or top).upper(),
+                             "level": 3 if r["parent"] else 2,
+                             "outline": f"1.{n}", "source_key": str(n),
+                             "attributes": {"status": r["status"], "verification": r["verification"]}})
+            links = [{"source": l["source_id"], "target": l["target_id"], "type": l["link_type"],
+                      "target_module": l["target_module"]}
+                     for l in source.execute("SELECT * FROM links WHERE source_module = ?", (module,))]
+            w.replace_module(module, reqs, links, source=f"/Mission/{module}")
+    source.close()
+    print("created", path)
+
+
 if __name__ == "__main__":
     ada()
     doors()
+    exchange()
     try:
         pdfs()
     except ImportError:

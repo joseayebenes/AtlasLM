@@ -64,7 +64,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
                "min_chars": int, "enabled": bool}
-DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "convention": dict,
+DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool}

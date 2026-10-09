@@ -8,6 +8,7 @@ The control file is re-read on every request; keys:
   emb_409_after: N                 -> 409 "rate limit" on embeddings from request N on
   emb_fail_if: ["text"]            -> 400 if any text in the batch contains the string
   section_fail_if: ["text"]        -> prose answer (not JSON) if the section contains the string
+  prose: true                      -> prose answer (not JSON) to every chat request
   slow: seconds                    -> delay per request
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty
@@ -50,7 +51,9 @@ class H(BaseHTTPRequestHandler):
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         stats["chat"] += 1
         user = body["messages"][-1]["content"]
-        if "<section>" in user:
+        if c.get("prose"):
+            content = "Sorry, I cannot produce JSON."
+        elif "<section>" in user:
             sec = user.split("<section>")[-1].split("</section>")[0]; flat = " ".join(sec.split())
             if any(k in flat for k in c.get("section_fail_if", [])):
                 content = "Sorry, I cannot produce JSON."

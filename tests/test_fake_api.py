@@ -1,27 +1,6 @@
 import json
-import socket
-import subprocess
-import sys
-import time
-import urllib.request
-from pathlib import Path
 
 import pytest
-
-
-@pytest.fixture
-def fake(tmp_path):
-    sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
-    control = tmp_path / "faults.json"; control.write_text("{}")
-    proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / "fakes" / "fake_api.py"),
-                             "--port", str(port), "--control", str(control)])
-    for _ in range(50):
-        try:
-            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.2); break
-        except Exception:
-            time.sleep(0.1)
-    yield f"http://127.0.0.1:{port}/v1", control
-    proc.terminate(); proc.wait(timeout=5)
 
 
 def _service(url):

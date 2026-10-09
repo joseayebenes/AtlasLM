@@ -1,4 +1,8 @@
+import socket
+import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,3 +48,27 @@ inline_reference_regex = "\\\\b(?:SRS|SSS)-\\\\d{{4}}\\\\b"
 ''', encoding="utf-8")
         return p
     return _make
+
+
+@pytest.fixture
+def fake(tmp_path):
+    """tests/fakes/fake_api.py on a free port. Yields (base_url, control file)."""
+    sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+    control = tmp_path / "faults.json"; control.write_text("{}")
+    proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / "fakes" / "fake_api.py"),
+                             "--port", str(port), "--control", str(control)])
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.2); break
+        except Exception:
+            time.sleep(0.1)
+    yield f"http://127.0.0.1:{port}/v1", control
+    proc.terminate(); proc.wait(timeout=5)
+
+
+@pytest.fixture
+def fake_llm(fake):
+    """ServiceConfig pointing at the fake API, and its control file."""
+    from atlas.llm import NetConfig, ServiceConfig
+    url, control = fake
+    return ServiceConfig(base_url=url, model="fake", api_key="x", net=NetConfig(proxy="", no_proxy="*")), control

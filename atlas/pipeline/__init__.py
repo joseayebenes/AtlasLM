@@ -148,6 +148,64 @@ class Ledger:
             " ORDER BY step, unit")]
 
 
+class _WorkspaceLock:
+    """One process per workspace. The lock is the operating system's on the lock file
+    (flock on POSIX, msvcrt.locking on Windows), not the file itself: the system releases
+    it when the process ends, however it ends (kill -9, a crash, a power cut), so a killed
+    run never leaves the workspace blocked. The file stays, with the PID of the process
+    that holds the lock, only for the error message."""
+
+    WINDOWS_OFFSET = 1 << 20     # Windows locks a byte range: one byte far from the PID
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.fd: int | None = None
+
+    def _acquire(self, fd: int) -> bool:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, self.WINDOWS_OFFSET, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def __enter__(self) -> "_WorkspaceLock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o644)
+        if not self._acquire(fd):
+            os.close(fd)
+            try:
+                pid = self.path.read_text(encoding="ascii", errors="replace").strip() or "?"
+            except OSError:
+                pid = "?"
+            raise WorkspaceLocked(f"another process (PID {pid}) is running this workspace ({self.path})")
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        self.fd = fd
+        return self
+
+    def __exit__(self, *exc) -> None:
+        # The file is not deleted: a process waiting on it could otherwise end up holding
+        # the lock of a deleted file while another one creates a new file and locks it.
+        fd, self.fd = self.fd, None
+        if fd is None:
+            return
+        try:
+            os.ftruncate(fd, 0)
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, self.WINDOWS_OFFSET, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        finally:
+            os.close(fd)                 # on POSIX this releases the flock
+
+
 @dataclass
 class RunReport:
     processed: dict[str, int] = field(default_factory=dict)
@@ -209,27 +267,8 @@ class Runner:
         rep.seconds = time.time() - t0
         return rep
 
-    def _lock(self):
-        runner = self
-
-        class _Lock:
-            def __enter__(self):
-                try:
-                    fd = os.open(runner.lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    os.write(fd, str(os.getpid()).encode())
-                    os.close(fd)
-                except FileExistsError:
-                    raise WorkspaceLocked(f"another process is running this workspace ({runner.lock_path});"
-                                          f" if that is not the case, delete the lock file") from None
-                return self
-
-            def __exit__(self, *a):
-                try:
-                    os.remove(runner.lock_path)
-                except FileNotFoundError:
-                    pass
-
-        return _Lock()
+    def _lock(self) -> "_WorkspaceLock":
+        return _WorkspaceLock(self.lock_path)
 
     def _run_step(self, step: Step, rep: RunReport) -> None:
         units = list(step.units(self.context))

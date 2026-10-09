@@ -408,7 +408,7 @@ def graph(cfg: Config) -> int:
     if not s:
         print("no code graph yet: run `atlas run` with \"code\" and \"graph\" in [pipeline] steps")
         return 1
-    print(f"code graph of {s['built_at']}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
+    print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
           f"{s['types']} types, {s['variables']} variables, {s['externals']} externals, "
           f"{s['requirements']} requirements) from {s['files']} files")
     c = s["edges_by_kind"]

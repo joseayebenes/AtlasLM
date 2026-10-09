@@ -8,7 +8,7 @@ pytest.importorskip("tree_sitter_ada")
 nx = pytest.importorskip("networkx")
 
 from atlas.code import AdaAnalyzer, requirement_pattern  # noqa: E402
-from atlas.graph import GraphStore, KnowledgeGraph, build_code_graph, export_graph  # noqa: E402
+from atlas.graph import GraphStore, GraphTools, KnowledgeGraph, build_code_graph, export_graph  # noqa: E402
 
 SAME_NAMES = {   # two packages with an Update and a Reset each
     "alpha.ads": "package Alpha is\n   -- Req: SYS-1\n   procedure Update;\n   procedure Spec_Only;\nend Alpha;\n",
@@ -102,6 +102,29 @@ def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
     assert g.find_symbol("delete")["items"][0]["id"] == "tracks.delete_track"
     assert g.search_docs("radar track")["items"][0]["id"] == "tracks.track"
     assert g.node("nothing")["error"] and g.unit_info("logger")["withs"] == ["ada.text_io"]
+
+
+
+def test_graph_tools_follow_the_builds(sample_graph, tmp_path):
+    from atlas import plugins
+    from atlas.graph.tools import TOOL_NAMES
+    G, stats = sample_graph
+    tools = GraphTools(tmp_path / "atlas.db")                 # a long-lived process: atlas serve
+    assert tools.callers("logger.log")["error"].startswith("there is no code graph yet")
+    store = GraphStore(tmp_path / "atlas.db")                 # atlas run, on another connection
+    store.replace("code", G, stats)
+    assert [i["id"] for i in tools.callers("logger.log")["items"]] == ["tracks.delete_track", "tracks.update"]
+    assert tools.graph() is tools.graph()                     # read once per build
+    G.add_edge("logger.next_id", "logger.log", kind="calls")
+    store.replace("code", G, stats)                           # same statistics: the build time tells them apart
+    assert [i["id"] for i in tools.callers("logger.log")["items"]] == ["logger.next_id", "tracks.delete_track",
+                                                                       "tracks.update"]
+    assert tools.trace("srs-0004")["requirement"] == "SRS-0004"
+    assert tools.search_code_docs("radar track")["items"][0]["id"] == "tracks.track"
+    store.delete("code")
+    assert "error" in tools.get_node("tracks.update")
+    plugins.load_plugins()
+    assert set(TOOL_NAMES) <= set(plugins.available("tool")) and "read_file" not in TOOL_NAMES
 
 
 LEGACY = Path(__file__).resolve().parents[1] / "legacy"

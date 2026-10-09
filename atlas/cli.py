@@ -3,6 +3,8 @@
     atlas run      [atlas.toml]     incremental, resumable processing
     atlas status   [atlas.toml]     state of the ledger and of the data
     atlas sections [atlas.toml]     sections each document would have, without the model
+    atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
+    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     (phase 5) MCP server
@@ -14,6 +16,7 @@ import json
 import logging
 import shutil
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -221,16 +224,77 @@ def docs_step(ctx) -> Step | None:
                 parallel=False)
 
 
+class IndexIncomplete(RuntimeError):
+    """Some records of a document got no vector. The rest is indexed; the unit stays in
+    error so that the next run embeds what is missing."""
+
+
+INDEX_VERSION = "index-1"   # change it when the records or the index tables change
+
+
+def index_options(ctx) -> dict:
+    """The validated [index] options for index_document."""
+    from atlas.index import KINDS
+    ic = ctx.cfg["index"]
+    unknown = sorted(set(ic["kinds"]) - set(KINDS))
+    if unknown:
+        raise ConfigError(f"[index] unknown kinds {unknown} (valid: {', '.join(KINDS)})")
+    if ic["chunk_chars"] < 200 or not 0 <= ic["chunk_overlap"] < ic["chunk_chars"] // 2:
+        raise ConfigError("[index] chunk_chars must be at least 200 and chunk_overlap between 0 and "
+                          "half of chunk_chars")
+    return {"chunk_chars": ic["chunk_chars"], "chunk_overlap": ic["chunk_overlap"], "kinds": ic["kinds"]}
+
+
+def index_step(ctx) -> Step:
+    """One unit per processed document (docs.process): its structure.json is indexed."""
+    from atlas.index import Index
+    from atlas.llm import from_config
+    options = index_options(ctx)
+    embed_model = from_config(ctx.cfg).embeddings.model
+    shared: dict = {}
+    lock = threading.Lock()            # documents are indexed in parallel
+
+    def index() -> Index:              # created on first use: no embeddings client otherwise
+        with lock:
+            if "index" not in shared:
+                shared["index"] = Index.from_config(ctx.cfg)
+        return shared["index"]
+
+    def structure(unit: str) -> Path:
+        return Path(ctx.store.document(unit)["out_dir"]) / "structure.json"
+
+    def units(ctx) -> list[str]:
+        return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+
+    def fingerprint(ctx, unit: str) -> str:
+        return f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+
+    def run(ctx, unit: str):
+        d = ctx.store.document(unit)
+        name = Path(d["path"]).name             # what citations show, unless another document has it
+        if any(x["name"] == name and x["doc"] != unit for x in index().documents()):
+            name = d["path"]
+        res = index().add_document(json.loads(structure(unit).read_text(encoding="utf-8")), doc=unit,
+                                   name=name, out_dir=d["out_dir"], **options)
+        if res["missing"]:
+            raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
+                                  f"failed batches); they are embedded on the next run")
+        return {"records": res["records"], "kinds": res["kinds"]}
+
+    return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
+                prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
+
+
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
-    builders = {"doors": doors_step, "code": code_step, "docs": docs_step}
+    builders = {"doors": doors_step, "code": code_step, "docs": docs_step, "index": index_step}
     out = []
     for name in wanted:
         if name in builders:
             s = builders[name](ctx)
             if s:
                 out.append(s)
-        elif name in ("graph", "index"):
+        elif name == "graph":
             log.warning("step '%s' not migrated yet (see PLAN.md); skipped", name)
         else:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
@@ -260,6 +324,8 @@ def status(cfg: Config) -> int:
     ledger = Ledger(ctx.store.path)
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
+    from atlas.index import IndexStore
+    print("index:", IndexStore(ctx.store.path).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
     pending = ledger.pending()
     for p in pending[:30]:
@@ -295,6 +361,29 @@ def sections(cfg: Config) -> int:
     return 0
 
 
+def search(cfg: Config, query: str) -> int:
+    from atlas.index import Index, cite
+    _context(cfg)
+    hits = Index.from_config(cfg).search(query, k=8)
+    if not hits:
+        print("nothing found (has `atlas run` indexed any document?)")
+    for i, h in enumerate(hits, 1):
+        print(f"\n[{i}] {cite(h)}\n    {h['text'][:400]}")
+    return 0
+
+
+def ask(cfg: Config, question: str) -> int:
+    from atlas.index import Index
+    _context(cfg)
+    res = Index.from_config(cfg).answer(question)
+    print(res["answer"])
+    if res["sources"]:
+        print("\nSources:")
+    for s in res["sources"]:
+        print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+    return 0
+
+
 def list_plugins(cfg: Config) -> int:
     _context(cfg)
     for kind, names in plugins.describe().items():
@@ -312,12 +401,17 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
-    action, path = argv[0], (argv[1] if len(argv) > 1 else "atlas.toml")
+    action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "plugins": list_plugins, "check": check}
-    if action not in actions:
+    with_text = {"search": search, "ask": ask}
+    if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
+    if action in with_text and not rest:
+        sys.exit(f"usage: atlas {action} TEXT [atlas.toml]")
     try:
-        sys.exit(actions[action](load_config(path)))
+        if action in with_text:
+            sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0]))
+        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

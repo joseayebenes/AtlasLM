@@ -91,6 +91,10 @@ class Store:
         rows = self._query("SELECT * FROM documents WHERE unit=?", (unit,))
         return {**dict(rows[0]), "data": json.loads(rows[0]["data"] or "{}")} if rows else None
 
+    def documents(self) -> list[dict]:
+        return [{**dict(r), "data": json.loads(r["data"] or "{}")}
+                for r in self._query("SELECT * FROM documents ORDER BY unit")]
+
     def document_owning(self, out_dir: str) -> str | None:
         """The unit whose output is in `out_dir`, if any."""
         rows = self._query("SELECT unit FROM documents WHERE out_dir=?", (out_dir,))

@@ -7,8 +7,8 @@ incremental, configuración validada, sistema de plugins, lector de DOORS desde 
 datos, analizador Ada, datos de ejemplo, servidor falso y pruebas. Los scripts anteriores
 están en `legacy/` y se migran módulo a módulo en la fase 1. Ya están migrados
 `pdf_struct.py` (ahora `atlas.docs`), `doc_rag.py` (`atlas.index`), `ada_graph.py`
-(`atlas.code` y `atlas.graph`) y las consultas de `ada_graph_mcp.py` (`atlas.graph`).
-Falta el servidor MCP (`atlas.mcp`).
+(`atlas.code` y `atlas.graph`) y los dos servidores MCP, `ada_graph_mcp.py` y el modo `mcp`
+de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 
 ## Puesta en marcha en un Mac (Apple Silicon)
 
@@ -16,7 +16,7 @@ Falta el servidor MCP (`atlas.mcp`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 90 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 96 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -93,6 +93,7 @@ python -m atlas.cli search "track deletion latency" atlas.dev.toml   # búsqueda
 python -m atlas.cli ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
 python -m atlas.cli check    atlas.dev.toml   # conexión con el modelo
+python -m atlas.cli serve    atlas.dev.toml   # servidor MCP (stdio) para OpenCode, VS Code...
 ```
 
 Toda la configuración está en el TOML; la línea de comandos solo elige acción y fichero.
@@ -126,10 +127,13 @@ atlas/
 │                   herramientas de ficheros para agentes de código
 ├── docs/           documentos (era pdf_struct.py): extractores, estructura, análisis y Markdown
 ├── index/          índice (era doc_rag.py): registros, embeddings con caché, FTS5, búsqueda
-│                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db
-├── graph/          grafo de código en atlas.db, consultas (eran ada_graph*.py), GraphML y JSON
-├── agents/ mcp/    pendientes (fases 1 y 5 del plan)
-└── cli.py          run | status | sections | graph | search | ask | plugins | check
+│                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db;
+│                   herramientas de documentos para agentes y MCP
+├── graph/          grafo de código en atlas.db, consultas (eran ada_graph*.py), GraphML y JSON;
+│                   herramientas del grafo para agentes y MCP
+├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
+├── agents/         pendiente (fase 5 del plan)
+└── cli.py          run | status | sections | graph | search | ask | plugins | check | serve
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requirements.sqlite)
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
@@ -348,3 +352,97 @@ inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # "see SSS-0012" en el t
 
 Para leer directamente otra base con consultas propias queda el adaptador `database`
 (`[sources.doors.database]`, SQLite u ODBC; ver `atlas/doors/__init__.py`).
+
+## Servidor MCP
+
+`atlas serve` arranca un servidor MCP por stdio con las herramientas de documentos,
+requisitos y código, para OpenCode, VS Code o cualquier otro cliente MCP. Sustituye a los
+dos servidores anteriores (`doc_rag.py mcp` y `ada_graph_mcp.py`). Sus herramientas son los
+plugins `tool` que usarán los agentes ADK, con los mismos nombres:
+
+| Grupo | Herramientas | Clase |
+|---|---|---|
+| Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
+| Grafo de código | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `list_requirements`, `untraced` | `atlas.graph.GraphTools` |
+| Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
+
+Cambios respecto a los servidores anteriores:
+- Tres herramientas cambian de nombre para que no se confundan:
+  - `search_docs` de `doc_rag.py` es `search`;
+  - `search_docs` de `ada_graph_mcp.py` (busca en los comentarios del código) es
+    `search_code_docs`;
+  - `requirement` (el código que cita un requisito) es `trace`.
+- `get_requirement` devuelve también el texto oficial de DOORS, con su módulo, atributos,
+  padre y enlaces. Si el ID no existe, sugiere IDs parecidos.
+- `read_file` es el de `CodeTools`, que solo lee dentro de `[sources.code] roots`. El de
+  `ada_graph_mcp.py` leía cualquier fichero.
+- Todas responden con un diccionario JSON. Un problema llega como una respuesta con `error`
+  (y a menudo con sugerencias), no como un fallo.
+
+Qué herramientas ofrece el servidor:
+- Con `[mcp] tools = []`, que es el valor por defecto, ofrece las de las fuentes
+  configuradas:
+  - con `[[sources.docs]]`, las de documentos;
+  - con solo `[sources.doors]`, `get_requirement`;
+  - con `[sources.code]`, las del grafo y `read_file`.
+- Con una lista, ofrece exactamente esas herramientas.
+- `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
+  y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
+  puede pedir confirmación antes de usarlas.
+- `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
+  apaga el servidor.
+
+El servidor responde con lo que hay en el workspace. Puedes lanzar `atlas run` con el
+servidor arrancado: el grafo y los vectores se vuelven a leer cuando cambian, sin
+reiniciarlo.
+
+Las rutas de `atlas.toml` son relativas a la carpeta desde la que se lanza atlas, así que el
+cliente tiene que arrancar el servidor en la carpeta del proyecto (`cwd`). El servidor
+arranca en medio segundo y escribe su registro por stderr, porque stdout es el canal del
+protocolo.
+
+OpenCode (`opencode.json` en la carpeta del proyecto):
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "atlas": {
+      "type": "local",
+      "command": ["/ruta/al/proyecto/.venv/bin/atlas", "serve", "atlas.toml"],
+      "cwd": ".",
+      "enabled": true
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`):
+
+```json
+{
+  "servers": {
+    "atlas": {
+      "type": "stdio",
+      "command": "${workspaceFolder}/.venv/bin/atlas",
+      "args": ["serve", "atlas.toml"],
+      "cwd": "${workspaceFolder}"
+    }
+  }
+}
+```
+
+En Windows, el ejecutable es `.venv\Scripts\atlas.exe`. Si `atlas.toml` lee secretos del
+entorno (`${GW_KEY}`), pásalos con `environment` en OpenCode o con `env` o `envFile` en
+VS Code.
+
+Las herramientas también se usan sin MCP:
+
+```python
+from atlas.config import load_config
+from atlas.graph import GraphTools
+from atlas.index import DocTools
+cfg = load_config("atlas.dev.toml")
+DocTools.from_config(cfg).get_requirement("SRS-0004")    # DOORS y documentos
+GraphTools.from_config(cfg).trace("SRS-0004")            # el código que lo cita
+```

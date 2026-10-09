@@ -71,3 +71,13 @@ def test_pages_follow_the_page_breaks():
     text = "1 First\n\nbody one\n\f2 Second\n\nbody two\n\fmore of two"
     s = detect_sections(text)
     assert [(x["title"], x["page_start"], x["page_end"]) for x in s] == [("1 First", 1, 1), ("2 Second", 2, 3)]
+
+
+def test_template_lines_at_page_edges_are_not_headers():
+    pages = []
+    for n in range(1, 9):
+        body = [f"Req: SRS-{n}{k} The TMF shall process event {k} of" for k in range(6)]
+        pages.append("\n".join(["ACME - Confidential", f"Doc 7 Issue {n}"] + body + [f"Page {n} of 8"]))
+    text, removed = clean_headers("\f".join(pages))
+    assert removed == 3 * 8 and "Confidential" not in text and "Page 3 of 8" not in text
+    assert text.count("Req: SRS-") == 6 * 8         # the first and last ones of each page stay

@@ -170,15 +170,19 @@ def split_in_two(text: str) -> list[str]:
 
 
 def merge_analyses(parts: list[dict]) -> dict:
+    """Joins the analyses of the pieces of a split section. Requirements are deduplicated
+    by ID, or by text if they have none (as in `consolidate`)."""
     out = normalize({})
     out["summary"] = " ".join(p["summary"] for p in parts if p["summary"])
     out["key_points"] = [k for p in parts for k in p["key_points"]][:10]
-    for field, key in (("requirements", "text"), ("definitions", "term"), ("entities", "name")):
+    keys = {"requirements": lambda r: r["id"].upper() or r["text"].lower(),
+            "definitions": lambda d: d["term"].lower(), "entities": lambda e: e["name"].lower()}
+    for field, key in keys.items():
         seen = set()
         for p in parts:
             for x in p[field]:
-                if x[key].lower() not in seen:
-                    seen.add(x[key].lower())
+                if key(x) not in seen:
+                    seen.add(key(x))
                     out[field].append(x)
     for field in ("references", "open_issues"):
         out[field] = list(dict.fromkeys(x for p in parts for x in p[field]))
@@ -282,7 +286,9 @@ def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
     Each match starts a requirement. Its ID is the first word of group 1 (without
     brackets or punctuation); without groups, it has no ID and the text starts at the
     match. The text runs from the ID to the next match, a blank line or the end of a line
-    that closes a sentence, whichever comes first, with the lines joined."""
+    that closes a sentence, whichever comes first, with the lines joined. A blank line
+    does not end an unfinished sentence that goes on in lower case after it (a page break
+    in the middle of the sentence)."""
     pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
     matches = list(pattern.finditer(body))
     out = []
@@ -295,14 +301,21 @@ def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
             rid, start = "", m.start()
         end = matches[k + 1].start() if k + 1 < len(matches) else len(body)
         lines: list[str] = []
-        for line in body[start:end].split("\n"):
-            if not line.strip():
-                if lines:
+        chunk = body[start:end].split("\n")
+        i = 0
+        while i < len(chunk):
+            if not chunk[i].strip():
+                j = i
+                while j < len(chunk) and not chunk[j].strip():
+                    j += 1
+                if lines and not (j < len(chunk) and chunk[j].strip()[0].islower()):
                     break
+                i = j
                 continue
-            lines.append(line.strip())
-            if _SENTENCE_END.search(line):
+            lines.append(chunk[i].strip())
+            if _SENTENCE_END.search(chunk[i]):
                 break
+            i += 1
         text = " ".join(lines).lstrip(" -–—:")
         if text:
             out.append({"id": rid, "text": text})

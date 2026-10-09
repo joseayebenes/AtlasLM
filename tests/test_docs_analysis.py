@@ -17,6 +17,10 @@ def test_regex_requirements_boundaries():
         {"id": "SRS-0003", "text": "The TMF shall restart within 5 s."}]
     # group 1 with the whole line, as in the example TOMLs: same result
     assert regex_requirements(body, r"(?i)\bReq\s*:\s*([^\n]+)") == reqs
+    # a page break (blank lines) in the middle of a sentence does not end it
+    assert regex_requirements("Req: R-1 The TMF shall go\n\n\ninto safe mode.\n\nReq: R-2 The TMF shall stop\n\n"
+                              "Unrelated paragraph.", r"Req: (\S+)") == \
+        [{"id": "R-1", "text": "The TMF shall go into safe mode."}, {"id": "R-2", "text": "The TMF shall stop"}]
     # without a group the text starts at the match and has no ID
     assert regex_requirements("Intro.\nThe HMI shall beep.\n", r"The \w+ shall")[0] == \
         {"id": "", "text": "The HMI shall beep."}
@@ -41,7 +45,10 @@ def test_verify_consolidate_and_merge():
                                  "sections": ["001", "002"]}]
     assert cons["open_issues"] == [{"text": "latency TBD", "section": "001", "section_title": "One"}]
     merged = merge_analyses([a, b])
-    assert [r["text"] for r in merged["requirements"]] == ["The TMF shall log.", "duplicate by ID"]
+    assert [r["text"] for r in merged["requirements"]] == ["The TMF shall log."]
+    # same text with another ID: two requirements
+    c = normalize({"requirements": [{"id": "R-2", "text": "The TMF shall log."}]})
+    assert [r["id"] for r in merge_analyses([a, c])["requirements"]] == ["R-1", "R-2"]
     assert split_in_two("one\n\ntwo\n\nthree") == ["one\n\ntwo", "three"]
 
 

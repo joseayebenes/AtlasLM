@@ -32,7 +32,12 @@ def legacy():
     try:
         import pdf_struct
         import conexion
+        # the one intended difference: clean_headers no longer removes body lines that
+        # follow a template when they fall at the edge of a page
+        from atlas.docs.structure import clean_headers
+        original, pdf_struct.limpiar_cabeceras = pdf_struct.limpiar_cabeceras, clean_headers
         yield pdf_struct, conexion
+        pdf_struct.limpiar_cabeceras = original
     finally:
         sys.path.remove(str(LEGACY))
 

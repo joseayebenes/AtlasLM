@@ -61,18 +61,24 @@ def numbered_heading(line: str, pattern: re.Pattern) -> tuple[int, str] | None:
 def clean_headers(text: str) -> tuple[str, int]:
     """Removes repeated page headers and footers (short lines at the start or the end of
     many pages, compared with the digits replaced by #). Besides cleaning the text, it
-    keeps a page number from being taken as a heading. Returns (text, lines removed)."""
+    keeps a page number from being taken as a heading. Returns (text, lines removed).
+
+    A line that is just as frequent in the middle of the pages is body text that follows a
+    template ("Req: SRS-0012 The TMF shall..."), not a header, even if it falls at the edge
+    of some pages: it is kept."""
     pages = text.split("\f")
     if len(pages) < 4:
         return text, 0
     norm = lambda l: re.sub(r"\d+", "#", " ".join(l.split()).lower())
-    count: Counter = Counter()
+    at_edges: Counter = Counter()
+    in_body: Counter = Counter()
     for page in pages:
         lines = [l for l in page.split("\n") if l.strip()]
         for l in set(norm(x) for x in lines[:3] + lines[-3:] if len(x.strip()) <= 120):
-            count[l] += 1
+            at_edges[l] += 1
+        in_body.update(norm(x) for x in lines[3:-3])
     threshold = max(3, int(len(pages) * 0.3))
-    repeated = {l for l, n in count.items() if n >= threshold}
+    repeated = {l for l, n in at_edges.items() if n >= threshold and in_body[l] < n}
     if not repeated:
         return text, 0
     removed, new_pages = 0, []

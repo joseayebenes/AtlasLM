@@ -11,9 +11,13 @@ def test_regex_analysis_without_a_model(docs_samples, tmp_path):
     pytest.importorskip("markitdown")
     out = tmp_path / "out" / "spec"
     data = process_document(docs_samples / "spec_with_bookmarks.pdf", out, DocsOptions(analysis="regex"))
-    tagged = set(re.findall(r"Req: (SRS-\d{4})", (out / "_extracted_text.md").read_text()))
-    assert {r["id"] for r in data["requirements"]} == tagged and len(tagged) > 100
-    assert all(r["status"] == "literal" for r in data["requirements"])
+    import pymupdf
+    in_pdf = {x for page in pymupdf.open(docs_samples / "spec_with_bookmarks.pdf")
+              for x in re.findall(r"SRS-\d{4}", page.get_text())}
+    assert {r["id"] for r in data["requirements"]} == in_pdf and len(in_pdf) > 100
+    complete = re.compile(r"The TMF shall process track event \d of group [\d.]+ within \d+ ms after "
+                          r"reception \(see SSS-\d{4}\)\.")
+    assert all(r["status"] == "literal" and complete.fullmatch(r["text"]) for r in data["requirements"])
     assert data["errors"] == 0 and data["model"] == "" and data["analysis_mode"] == "regex"
     assert data["structure_info"]["source"].startswith("PDF bookmarks")
     for name in ("index.md", "requirements.md", "glossary.md", "entities.md", "open_issues.md"):

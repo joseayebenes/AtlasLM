@@ -19,6 +19,9 @@ test-ollama:    ## prueba de agente ADK contra Ollama local (se omite si no est√
 run-test:       ## procesamiento incremental sobre las muestras (sin modelo)
 	$(PY) -m atlas.cli run atlas.test.toml
 
+large:          ## proyecto sint√©tico grande (examples/large) y tres ejecuciones medidas con el servidor falso
+	$(PY) examples/large_project.py
+
 run-dev:        ## procesamiento con Ollama local
 	$(PY) -m atlas.cli run atlas.dev.toml
 
@@ -35,6 +38,6 @@ serve:          ## servidor MCP (stdio) de atlas.dev.toml; normalmente lo arranc
 	$(PY) -m atlas.cli serve atlas.dev.toml
 
 clean:
-	rm -rf workspace-dev workspace-test examples/samples .pytest_cache
+	rm -rf workspace-dev workspace-test examples/samples examples/large .pytest_cache
 
-.PHONY: install samples fake test test-ollama run-test run-dev status sections check serve clean
+.PHONY: install samples fake test test-ollama run-test large run-dev status sections check serve clean

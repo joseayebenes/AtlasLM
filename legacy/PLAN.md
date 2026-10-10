@@ -744,7 +744,7 @@ Estado:
     leer tras cada construcción y los vectores del índice tras cada cambio de otra conexión.
     Antes, el servidor seguía con los datos con los que arrancó.
 
-### Fase 2 — Motor incremental completo (≈ 6 días)
+### Fase 2 — Motor incremental completo (≈ 6 días) — **completa**
 
 - Todos los pasos de documentos, código e índice registrados en el `Runner` con sus
   huellas y dependencias; `embed_cache` y caché de secciones integradas.
@@ -753,9 +753,23 @@ Estado:
   `embeddings.model` → solo vectores; borrar un fichero → poda.
 
 Aceptación:
-- [ ] Segunda ejecución sin cambios: 0 peticiones a la API y < 1 minuto en el proyecto de
+- [x] Segunda ejecución sin cambios: 0 peticiones a la API y < 1 minuto en el proyecto de
       prueba grande.
-- [ ] Un PDF modificado en una página reprocesa solo las secciones con texto distinto.
+- [x] Un PDF modificado en una página reprocesa solo las secciones con texto distinto.
+
+Estado (10 de octubre de 2026). El proyecto de prueba grande es sintético y lo genera
+`examples/large_project.py` (`make large`): 20 PDFs con marcadores (260 páginas), 300
+paquetes Ada y 60 pruebas (660 ficheros), y 500 SSS y 5000 SRS en la base de intercambio. Con
+el servidor falso, analizando los PDFs con el modelo:
+
+| Ejecución | Tiempo | Peticiones |
+|---|---|---|
+| primera | 17,5 s | 540 al modelo, 207 de embeddings (12 060 textos) |
+| segunda, sin cambios | 0,1 s | ninguna |
+| tras cambiar un plazo en una página de un PDF | 1,5 s | 1 al modelo (esa sección), 2 textos embebidos |
+
+`tests/test_large.py` comprueba lo mismo con una copia pequeña del proyecto. Falta repetirlo
+con el proyecto real, donde la primera ejecución depende sobre todo del modelo.
 
 ### Fase 3 — DOORS (≈ 5 días)
 
@@ -1128,10 +1142,11 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `plugins`, `check`, `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 108 pruebas:
+- `tests/`: 109 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
-    varios hilos sobre el mismo atlas.db;
+    varios hilos sobre el mismo atlas.db, y la segunda ejecución y un PDF cambiado en una
+    página sobre una copia pequeña del proyecto grande sintético;
   - CLI, servidor falso y `atlas check` con modelos que razonan;
   - documentos: estructura, análisis, caché, división de secciones, paso `docs.process` y
     equivalencia con `pdf_struct.py`;

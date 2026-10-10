@@ -77,7 +77,7 @@ class KnowledgeGraph:
             if is_req(u) and is_req(v):
                 (self._tree if e.get("kind") == "contains" else self._links).add_edge(u, v, kind=e.get("kind"))
         self.doors = any(d.get("kind") == "module" for _, d in G.nodes(data=True))
-        self._covering: dict[str, set[str]] = {}
+        self._covering: dict[str, set[str]] | None = None
         self._groups: list[set[str]] | None = None
 
     @classmethod
@@ -163,13 +163,14 @@ class KnowledgeGraph:
     def covering_tests(self, nodes) -> list[str]:
         """Tests that call, directly or not, any of these code elements (or convert to
         their type, or use their variable)."""
-        out: set[str] = set()
-        for n in nodes:
-            if n not in self._covering:
-                self._covering[n] = {m for m in (nx.ancestors(self._deps, n) if n in self._deps else ())
-                                     if self._kind(m) == "test"}
-            out |= self._covering[n]
-        return sorted(out)
+        if self._covering is None:      # once, from the tests: there are far fewer tests than elements
+            covering: dict[str, set[str]] = defaultdict(set)
+            for t, d in self.G.nodes(data=True):
+                if d.get("kind") == "test" and t in self._deps:
+                    for m in nx.descendants(self._deps, t):
+                        covering[m].add(t)
+            self._covering = covering
+        return sorted({t for n in nodes for t in self._covering.get(n, ())})
 
     def _tests_for(self, r: str) -> list[dict]:
         tagged = self._tests_of(r)

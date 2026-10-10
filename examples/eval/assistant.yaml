@@ -1,0 +1,76 @@
+# Evaluation set of the assistant over the samples (atlas.dev.toml): atlas eval atlas.dev.toml
+# Each answer must contain the texts of `expect` (in any case) and the agent must call `tools`.
+- id: trace-srs-0004
+  question: Which system requirement does SRS-0004 satisfy, and which Ada subprograms implement and test it?
+  expect: [SSS-0005, delete_track, test_tracks]
+  tools: [trace]
+- id: requirements-of-update
+  question: Which requirements does the subprogram tracks.update implement?
+  expect: [SRS-0002, SRS-0003]
+- id: code-of-srs-0001
+  question: Which code element implements SRS-0001?
+  expect: [tracks.track]
+- id: impact-of-log
+  question: If I change Logger.Log, which subprograms are affected?
+  expect: [delete_track, update]
+  tools: [impact]
+- id: tests-of-srs-0004
+  question: Which tests verify SRS-0004?
+  expect: [test_tracks]
+- id: days-of-logs
+  question: ¿Cuántos días hay que guardar los registros de la HMI? Cita la fuente.
+  expect: ["30", hmi_manual]
+- id: alarms-to-be-defined
+  question: What is still to be defined in the alarms section of the HMI manual?
+  expect: [latenc, TBD]
+- id: system-requirement-of-srs-0010
+  question: Which system requirement does SRS-0010 satisfy?
+  expect: [SSS-0011]
+- id: parent-of-srs-0007
+  question: What is the parent of SRS-0007 in DOORS?
+  expect: [SRS-0006]
+- id: reference-in-srs-0005
+  question: Which other requirement does the text of SRS-0005 refer to?
+  expect: [SRS-0004]
+- id: verification-of-srs-0003
+  question: What is the verification method of SRS-0003?
+  expect: [Analysis]
+- id: status-of-srs-0002
+  question: What is the status of SRS-0002 in DOORS?
+  expect: [Draft]
+- id: global-used-by-update
+  question: Which package-level variable does tracks.update use?
+  expect: [trk_db]
+- id: type-converted-by-update
+  question: To which type does tracks.update convert a value?
+  expect: [hour_range]
+- id: what-delete-writes
+  question: Which variable does Delete_Track write to? Look at its code.
+  expect: [trk_db]
+- id: callee-of-log
+  question: Which subprogram does Logger.Log call?
+  expect: [put_line]
+- id: requirement-of-log
+  question: Which requirement does logger.log implement?
+  expect: [SRS-0103]
+- id: document-of-srs-0102
+  question: Which document states SRS-0102, and what does it require?
+  expect: [hmi_manual, alarm]
+- id: deadline-of-srs-0001
+  question: What deadline does SRS-0001 set in DOORS?
+  expect: ["499"]
+- id: callers-of-delete
+  question: Which subprograms call tracks.delete_track?
+  expect: [test_tracks]
+- id: where-is-delete
+  question: In which file is Delete_Track implemented, and at which lines?
+  expect: [tracks.adb, "11"]
+- id: system-requirement-es
+  question: ¿Qué requisito de sistema satisface SRS-0002?
+  expect: [SSS-0003]
+- id: software-requirements-of-sss-0005
+  question: Which software requirements satisfy SSS-0005?
+  expect: [SRS-0004, SRS-0016]
+- id: section-of-srs-0004
+  question: In which section of spec_with_bookmarks.pdf is SRS-0004 stated?
+  expect: ["1.1"]

@@ -14,6 +14,7 @@
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
 """
@@ -675,6 +676,25 @@ def agent(cfg: Config, name: str, question: str) -> int:
     return 1 if res["stopped"] else 0
 
 
+def evaluate(cfg: Config) -> int:
+    from atlas.agents.evaluate import evaluate_sets
+
+    def show(r: dict) -> None:
+        missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
+        print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+              f"[{', '.join(r['calls'])}]" + (f"  missing: {', '.join(missing)}" if missing else "")
+              + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+
+    try:
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
+    except ImportError as e:
+        sys.exit(str(e))
+    for name, res in results.items():
+        print(f"\n{name}: {res['passed']} of {res['total']} right ({res['rate']:.0%}), "
+              f"median {res['median_seconds']:.0f} s; written to {cfg.workspace / 'reports' / f'eval-{name}.json'}")
+    return 0
+
+
 def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     return check_connection(from_config(cfg))
@@ -697,7 +717,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "check": check, "serve": serve}
+               "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,
                  "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

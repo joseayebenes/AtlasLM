@@ -330,3 +330,51 @@ def test_ask_atlas_is_the_assistant_as_a_tool(workspace, monkeypatch):
     assert res["answer"] == "tracks.update implements SRS-0002 and SRS-0003."
     assert res["calls"] == [{"name": "trace_code", "args": {"name": "Update"}}]
     assert "SRS-0002" in stub.requests[1]["messages"][-1]["content"]           # the result of trace_code
+
+
+def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monkeypatch):
+    from atlas.agents.evaluate import evaluate, evaluate_sets, load_cases
+    monkeypatch.chdir(workspace.path.parent)
+    cases_file = tmp_path / "set.yaml"
+    cases_file.write_text("- id: trace\n  question: Who implements SRS-0004?\n  expect: [delete_track, SSS-0005]\n"
+                          "  tools: [trace]\n- id: wrong\n  question: And SRS-0002?\n  expect: SRS-0002\n")
+    cases = load_cases(cases_file)
+    assert cases[1] == {"id": "wrong", "question": "And SRS-0002?", "expect": ["SRS-0002"], "tools": [],
+                        "agent": "assistant"}
+    client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "tracks.Delete_Track, through SSS-0005.",
+                         "I do not know."])
+    res = evaluate(cases, workspace, client=client)
+    assert (res["passed"], res["total"], res["rate"], res["by_case"]) == (1, 2, 0.5, {"trace": "1/1", "wrong": "0/1"})
+    assert res["results"][1]["missing"] == ["SRS-0002"] and res["results"][1]["missing_tools"] == []
+    assert res["results"][0]["calls"] == ["trace"]
+
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("- id: a\n  question: q\n")
+    with pytest.raises(ConfigError, match="a case has id, question and expect"):
+        load_cases(bad)
+    with pytest.raises(ConfigError, match=r"\[agents.eval\] sets"):
+        evaluate_sets(workspace)
+    monkeypatch.setitem(workspace["agents"], "eval", {"sets": [str(cases_file)], "runs": 2})
+    out = evaluate_sets(workspace, client=StubClient(["delete_track SSS-0005"] * 4))
+    assert out["set"]["total"] == 4 and (workspace.workspace / "reports" / "eval-set.json").exists()
+
+
+def test_the_app_for_adk_web(workspace, monkeypatch):
+    """adk web and adk run load examples/adk/atlas_agent: an agent of the project, written
+    only as a Markdown file, is there without touching the code or the TOML."""
+    import importlib.util
+    from pathlib import Path
+    _agent(workspace.path.parent / "agents", "tracer.md", tools="[trace, gaps, build_context]")
+
+    def load(agent):
+        monkeypatch.setenv("ATLAS_CONFIG", str(workspace.path))
+        monkeypatch.setenv("ATLAS_AGENT", agent)
+        path = Path(__file__).resolve().parents[1] / "examples" / "adk" / "atlas_agent" / "agent.py"
+        spec = importlib.util.spec_from_file_location("atlas_adk_agent", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.root_agent
+
+    assert load("assistant").name == "assistant" and len(load("assistant").tools) == 8
+    tracer = load("tracer")
+    assert tracer.name == "tracer" and [t.__name__ for t in tracer.tools] == ["trace", "gaps", "build_context"]

@@ -662,7 +662,7 @@ Aceptación:
 - [x] Un TOML con una clave mal escrita falla al cargar indicando sección y clave
       (`test_unknown_key_fails_with_context`).
 
-### Fase 1 — Migración de lo existente a módulos (≈ 8 días)
+### Fase 1 — Migración de lo existente a módulos (≈ 8 días) — **completa**
 
 - `atlas.docs` ← `pdf_struct.py`: extracción, limpieza, estructura (marcadores, títulos,
   tamaño), análisis con reparación y división, Markdown. Modo `analysis = "regex" | "none"`
@@ -758,7 +758,8 @@ Aceptación:
 Aceptación:
 - [ ] Reimportar el mismo módulo no cambia nada; un requisito editado se actualiza solo él
       y sus enlaces (ya verificado en el esqueleto con SQLite).
-- [ ] `get_requirement("SRS-123")` devuelve texto, atributos, padre, enlaces y módulo.
+- [x] `get_requirement("SRS-123")` devuelve texto, atributos, padre, enlaces y módulo
+      (herramienta `get_requirement` de `atlas.index.DocTools`, también por MCP).
 - [ ] La misma configuración funciona contra la base de datos real cambiando solo
       `[sources.doors.database]`.
 
@@ -794,6 +795,15 @@ Aceptación:
   con las herramientas de la librería y la configuración de OpenCode y VS Code, ya está
   hecho en la fase 1).
 - Conjuntos de evaluación iniciales (20-30 casos) y `adk eval` en `pytest`.
+
+Medido ya (10 de octubre de 2026): un agente ADK con `gemma4:12b` que solo tiene las
+herramientas de `atlas serve`, por MCP, respondió a cuatro preguntas (trazabilidad,
+impacto, documentos y una sección), tres veces cada una:
+- sin razonamiento, 12 de 12 bien, con una mediana de 14 s;
+- con razonamiento, 9 de 12 bien, con una mediana de 58 s. Los tres fallos se inventaron
+  los subprogramas en vez de llamar a `trace`.
+
+Los agentes empiezan, por tanto, con el razonamiento apagado.
 
 Aceptación:
 - [ ] Desde OpenCode, `build_context` devuelve en una llamada un paquete ≤ 4000 tokens con
@@ -1039,7 +1049,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 98 pruebas:
+- `tests/`: 99 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
@@ -1057,8 +1067,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
     real, incluido un `atlas run` con el servidor arrancado;
   - requisitos: contrato de la base de intercambio, adaptador `exchange`, y exportador de
     DOORS con un DOORS simulado, desde la descarga hasta `atlas run`;
-  - solo si Ollama está en marcha, dos agentes ADK: uno que traza un requisito y otro que
-    edita código.
+  - solo si Ollama está en marcha, tres agentes ADK: uno que traza un requisito, otro que
+    edita código y otro que solo tiene las herramientas de `atlas serve`, por MCP.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

@@ -16,7 +16,7 @@ de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 96 pruebas sin modelo (+2 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 96 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -81,6 +81,13 @@ Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
 fueron correctas y tardaron 40-80 s; las otras salieron vacías o con ficheros inventados.
 Sin razonamiento, acertó 5 de 5 en 8-14 s. Al instalar `[agents]`, litellm baja `openai`
 a la versión 2.x; el resto del proyecto funciona igual.
+
+La tercera prueba da al agente solo las herramientas de `atlas serve`, por MCP, como
+OpenCode o VS Code. Antes, procesa un PDF y el Ada de ejemplo con los embeddings de Ollama.
+Tarda unos dos minutos. Con cuatro preguntas repetidas tres veces (trazabilidad, impacto,
+documentos y una sección), el agente acertó 12 de 12 sin razonamiento, con una mediana de
+14 s. Con razonamiento acertó 9 de 12, con una mediana de 58 s: en las tres de trazabilidad
+no llamó a `trace` y se inventó los subprogramas.
 
 ## Comandos
 

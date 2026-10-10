@@ -224,3 +224,43 @@ test_patterns = ["**/tests/**"]
     assert "trace" in [c["name"] for c in res["calls"]], res
     assert "SSS-0005" in res["answer"] and "delete_track" in res["answer"].lower(), res["answer"]
     assert "test_tracks" in res["answer"].lower(), res["answer"]
+
+
+def test_requirement_verification_finds_the_deadline_that_differs(ollama, toml, docs_samples, tmp_path):
+    """The verification of a requirement against the documents: SRS-0001 says 499 ms in DOORS
+    and 301 ms in the specification. gemma4 found it and cited both, in about 35 s."""
+    pytest.importorskip("markitdown")
+    import contextlib
+    import io
+    import shutil
+    from atlas.agents.verify import verify
+    from atlas.cli import run
+    from atlas.index import Index
+    base_url, api_key, model = ollama
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    shutil.copy(docs_samples / "spec_with_bookmarks.pdf", docs)
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "docs", "graph", "index"]
+[[sources.docs]]
+name = "specs"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    res = verify("SRS-0001", cfg, index=Index.from_config(cfg))
+    assert res["verdict"] == "inconsistent", res
+    assert any("499" in i["official"] and "301" in i["document"] and "spec_with_bookmarks" in i["source"]
+               for i in res["issues"]), res

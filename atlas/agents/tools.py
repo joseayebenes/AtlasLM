@@ -1,7 +1,9 @@
 """Tools of atlas.agents for agents and the MCP server.
 
-    build_context    everything about a requirement, a code element or a unit, in one
-                     Markdown package within a budget of tokens, without a model
+    build_context        everything about a requirement, a code element or a unit, in one
+                         Markdown package within a budget of tokens, without a model
+    verify_requirement   whether the official text of a requirement and the documents agree,
+                         judged by the agent requirement_verifier (needs the model)
 
 They are registered as "tool" plugins with these names, for agent files and [mcp] tools.
 """
@@ -15,19 +17,20 @@ from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context",)
+TOOL_NAMES = ("build_context", "verify_requirement")
 
 
 class AgentTools:
-    def __init__(self, graph: GraphTools):
+    def __init__(self, graph: GraphTools, cfg=None):
         self.graph = graph
+        self.cfg = cfg
 
     @classmethod
     def for_context(cls, context: Any) -> "AgentTools":
         """One instance per context, over the graph tools of that context."""
         tools = getattr(context, "_agent_tools", None)
         if tools is None:
-            tools = cls(GraphTools.for_context(context))
+            tools = cls(GraphTools.for_context(context), context.cfg)
             setattr(context, "_agent_tools", tools)
         return tools
 
@@ -38,6 +41,23 @@ class AgentTools:
         Call it before changing code, instead of many searches."""
         g = self.graph.graph()
         return build_context(g, target, budget_tokens) if g is not None else {"error": NO_GRAPH}
+
+    def verify_requirement(self, req_id: str) -> dict:
+        """Whether the official text of a requirement (DOORS) and the documents say the same:
+        verdict (consistent | inconsistent | no_documentation), the inconsistencies (value,
+        condition, contradiction, scope, undefined) with the words of each text and their
+        source, and the values that differ. Asks the model: slower than trace."""
+        import openai
+        from atlas.agents.verify import verify
+        from atlas.index import Index
+        from atlas.llm.connection import diagnose
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        try:
+            return verify(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
+        except openai.APIError as e:
+            return {"error": f"the model server failed: {diagnose(e)}"}
 
 
 register_methods(AgentTools, TOOL_NAMES)

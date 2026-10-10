@@ -5,6 +5,9 @@
     model.py         AtlasLlm: an ADK model over the client of atlas.llm (proxy, TLS, limits)
     runtime.py       build_agent and run_agent: the agent of a file as an ADK LlmAgent, with
                      its tools (the "tool" plugins) and at most max_steps calls to the model
+    context.py       build_context: a Markdown package about a requirement, code or a unit
+    verify.py        verification of requirements against the documentation
+    tools.py         build_context and verify_requirement as "tool" plugins
 
     from atlas.agents.runtime import run_agent
     run_agent("assistant", "Which tests verify SRS-0004?", cfg)["answer"]

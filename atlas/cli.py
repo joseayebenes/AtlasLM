@@ -6,6 +6,7 @@
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
@@ -570,6 +571,29 @@ def matrix(cfg: Config, module: str) -> int:
     return 0
 
 
+def verify(cfg: Config, target: str) -> int:
+    """Each requirement against the documentation: the inconsistencies on the screen, and the
+    report in <workspace>/reports."""
+    from atlas.agents.verify import verify_all
+    from atlas.index import Index
+    ctx = _context(cfg)
+    index = Index.from_config(cfg) if ctx.store.documents() else None
+    res = verify_all(target, cfg, index=index)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    c = res["counts"]
+    print(f"{len(res['results'])} requirements: {c['inconsistent']} inconsistent, {c['consistent']} consistent, "
+          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)")
+    for r in res["results"]:
+        if r.get("verdict") == "inconsistent":
+            print(f"\n{r['id']}: {r.get('summary', '')}")
+            for i in r["issues"]:
+                print(f"  - {i['type']}: DOORS «{i['official']}» / «{i['document']}» ({i['source']})")
+    print(f"\nwritten {res['files'][0]} and {res['files'][1]}")
+    return 0
+
+
 def search(cfg: Config, query: str) -> int:
     from atlas.index import Index, cite
     _context(cfg)
@@ -650,7 +674,7 @@ def main(argv: list[str] | None = None) -> None:
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix}
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

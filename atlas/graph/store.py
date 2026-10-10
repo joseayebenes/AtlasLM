@@ -21,7 +21,12 @@ from pathlib import Path
 
 import networkx as nx
 
-__all__ = ["GraphStore", "export_graph"]
+__all__ = ["GraphStore", "export_graph", "to_mermaid"]
+
+# Mermaid shape of each kind of node: (opening, closing)
+SHAPES = {"requirement": ('(["', '"])'), "heading": ('(["', '"])'), "information": ('(["', '"])'),
+          "test": ('[["', '"]]'), "document": ('[/"', '"/]'), "section": ('[/"', '"/]'), "module": ('[("', '")]'),
+          "external": ('>"', '"]')}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS graph_nodes (origin TEXT, id TEXT, kind TEXT, data TEXT, PRIMARY KEY (origin, id));
@@ -90,6 +95,24 @@ class GraphStore:
                     "edges": self.db.execute("SELECT COUNT(*) FROM graph_edges").fetchone()[0]}
 
 
+def to_mermaid(G: nx.DiGraph, center: str = "") -> str:
+    """A Mermaid flowchart of a (small) graph: one shape per kind of node, the kind of each
+    edge as its label, and `center` highlighted."""
+    ids = {n: f"n{i}" for i, n in enumerate(G.nodes)}
+    lines = ["flowchart LR"]
+    for n, d in G.nodes(data=True):
+        kind = d.get("kind", "")
+        label = d.get("name", n) if kind == "section" else n
+        label = f"{label}<br/><small>{kind}</small>".replace('"', "#quot;")
+        opening, closing = SHAPES.get(kind, ('["', '"]'))
+        lines.append(f"    {ids[n]}{opening}{label}{closing}")
+    for u, v, e in G.edges(data=True):
+        lines.append(f"    {ids[u]} -->|{e.get('kind', '')}| {ids[v]}")
+    if center in ids:
+        lines.append(f"    style {ids[center]} stroke-width:3px")
+    return "\n".join(lines) + "\n"
+
+
 def _scalar(v):
     if isinstance(v, list) and not any(isinstance(x, (list, dict)) for x in v):
         return ";".join(map(str, v))
@@ -97,9 +120,9 @@ def _scalar(v):
 
 
 def export_graph(G: nx.DiGraph, prefix: str | Path, formats: list[str], stats: dict | None = None) -> list[Path]:
-    """Writes `<prefix>.graphml` (Gephi, yEd, NetworkX) and/or `<prefix>.json` (nodes and
-    edges, easy to give to a model). GraphML only takes scalars: a list of scalars becomes
-    "a;b", and any other list or dict its JSON."""
+    """Writes `<prefix>.graphml` (Gephi, yEd, NetworkX), `<prefix>.json` (nodes and edges,
+    easy to give to a model) and/or `<prefix>.mmd` (Mermaid, for a small subgraph). GraphML
+    only takes scalars: a list of scalars becomes "a;b", and any other list or dict its JSON."""
     prefix = Path(prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     written = []
@@ -117,5 +140,9 @@ def export_graph(G: nx.DiGraph, prefix: str | Path, formats: list[str], stats: d
                                     "nodes": [{"id": n, **d} for n, d in G.nodes(data=True)],
                                     "edges": [{"source": u, "target": v, **d} for u, v, d in G.edges(data=True)]},
                                    indent=1, ensure_ascii=False), encoding="utf-8")
+        written.append(path)
+    if "mermaid" in formats:
+        path = prefix.with_suffix(".mmd")
+        path.write_text(to_mermaid(G), encoding="utf-8")
         written.append(path)
     return written

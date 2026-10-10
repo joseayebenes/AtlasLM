@@ -91,8 +91,8 @@ def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
     g = KnowledgeGraph.open(tmp_path / "atlas.db")
     assert g.read_source("Delete_Track")["source"].splitlines()[0].endswith("procedure Delete_Track (I : Integer) is")
     assert g.read_source("track")["source"].startswith("type Track is record")
-    assert [i["id"] for i in g.requirement("srs-0004")["traced_by"]["items"]] == \
-        ["test_tracks.test_tracks", "tracks.delete_track"]
+    assert [i["id"] for i in g.trace("srs-0004")["implemented_by"]["items"]] == \
+        ["test_tracks.test_tracks", "tracks.delete_track"]                # without test_patterns, no tests
     assert g.call_chain("test_tracks", "log")["path"] is None             # a unit is not in the call graph
     assert g.call_chain("test_tracks.test_tracks", "log")["path"] == \
         ["test_tracks.test_tracks", "tracks.delete_track", "logger.log"]
@@ -119,7 +119,7 @@ def test_graph_tools_follow_the_builds(sample_graph, tmp_path):
     store.replace("code", G, stats)                           # same statistics: the build time tells them apart
     assert [i["id"] for i in tools.callers("logger.log")["items"]] == ["logger.next_id", "tracks.delete_track",
                                                                        "tracks.update"]
-    assert tools.trace("srs-0004")["requirement"] == "SRS-0004"
+    assert tools.trace("srs-0004")["id"] == "SRS-0004"
     assert tools.search_code_docs("radar track")["items"][0]["id"] == "tracks.track"
     store.delete("code")
     assert "error" in tools.get_node("tracks.update")
@@ -255,3 +255,101 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     assert "tracks.delete_track" not in store.load() and not _edges(store.load(), "mentions")
     assert build_doors_graph([], [])[1]["nodes"] == 0
 
+
+def test_trace_and_trace_code(unified):
+    _, g, _ = unified
+    t = g.trace("srs-0004")
+    assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
+    assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
+    assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
+                               "text": "The TMF shall delete a track within 300 ms.",
+                               "values_differ": {"doors": ["320"], "document": ["300"]}}]
+    assert [i["id"] for i in t["implemented_by"]["items"]] == ["tracks.delete_track"]
+    assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    assert g.trace("SRS-0003")["parent"] == "SRS-0002" and g.trace("SRS-0002")["children"] == ["SRS-0003"]
+    assert g.trace("SSS-0005")["links_in"] == [{"id": "SRS-0004", "type": "satisfies"}]
+    t = g.trace("SRS-0103")                                       # in the code and a document, not in DOORS
+    assert t["in_doors"] is False and "values_differ" not in t["documents"][0]
+    assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "calls"}]   # test -> delete_track -> log
+    assert g.trace("SRS-004")["similar"][0] == "SRS-0004"
+
+    c = g.trace_code("Delete_Track")
+    assert [r["id"] for r in c["requirements"]] == ["SRS-0004"] and c["tests"] == ["test_tracks.test_tracks"]
+    assert c["callees"]["calls"] == ["logger.log"] and c["documents"][0]["via"] == "mentions"
+    c = g.trace_code("test_tracks.test_tracks")
+    assert c["covers"] == ["SRS-0004", "SRS-0103"] and "logger.log" in c["exercises"]
+    assert [r["id"] for r in g.trace_code("tracks")["requirements"]] == ["SRS-0001", "SRS-0002", "SRS-0003",
+                                                                         "SRS-0004"]
+    assert "use trace" in g.trace_code("SRS-0004")["error"]
+
+
+def test_impact_of_code_and_of_requirements(unified):
+    _, g, _ = unified
+    i = g.impact("Logger.Log")
+    assert [(x["id"], x["distance"]) for x in i["items"]] == [("tracks.delete_track", 1), ("tracks.update", 1),
+                                                             ("test_tracks.test_tracks", 2)]
+    assert [r["id"] for r in i["requirements"]] == ["SRS-0103", "SRS-0004", "SRS-0002", "SRS-0003", "SSS-0005",
+                                                    "SSS-0099", "SSS-0006"]
+    assert i["requirements"][4]["via"] == ["SRS-0004"] and i["tests"] == ["test_tracks.test_tracks"]
+    assert [d["id"] for d in i["documents"]] == ["doc:spec.pdf#002", "doc:spec.pdf#001"]
+    assert [x["id"] for x in g.impact("trk_db")["items"]] == ["tracks.delete_track", "tracks.update",
+                                                              "test_tracks.test_tracks"]    # who uses a global
+    r = g.impact("SSS-0006")
+    assert [x["id"] for x in r["requirements"]] == ["SRS-0002", "SRS-0003"]       # satisfied by, then its child
+    assert [x["id"] for x in r["items"]] == ["tracks.update"] and r["tests"] == []
+    assert "impact takes" in g.impact("doc:spec.pdf")["error"]
+
+
+def test_matrix_and_gaps(unified):
+    _, g, _ = unified
+    m = g.matrix("SRS")
+    assert [r["id"] for r in m["rows"]] == ["SRS-0001", "SRS-0002", "SRS-0003", "SRS-0004"]     # DOORS order
+    assert m["rows"][3] == {"id": "SRS-0004", "text": "The TMF shall delete a track within 320 ms.",
+                            "verification": "Test", "derived": [], "code": ["tracks.delete_track"],
+                            "tests": ["test_tracks.test_tracks"], "covering_tests": [],
+                            "documents": ["spec.pdf §1 Tracks"]}
+    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
+    assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+    m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
+    assert [(r["id"], r["derived"], r["code"]) for r in m["rows"]] == [("SSS-0005", ["SRS-0004"], []),
+                                                                      ("SSS-0006", ["SRS-0002"], [])]
+    assert m["summary"]["with_code"] == 2 and m["gaps"]["without_tests"]["items"] == ["SSS-0006"]
+    assert g.matrix("NOPE")["modules"] == ["SRS", "SSS"]
+    page = g.matrix("SRS", limit=2, offset=2)
+    assert [r["id"] for r in page["rows"]] == ["SRS-0003", "SRS-0004"] and not page["truncated"]
+
+    gaps = g.gaps()
+    assert gaps["requirements_without_code"]["count"] == 0
+    assert gaps["requirements_without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003", "SSS-0006"]
+    assert gaps["code_without_requirement"]["items"] == ["logger.next_id"]
+    assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
+    assert gaps["stated_in_documents_not_in_doors"]["items"] == [{"id": "SRS-0103", "documents": ["spec.pdf §2 Logs"]}]
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320"],
+                                               "document": ["300"]}]
+    assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
+    assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
+    assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
+
+
+def test_neighbors_and_communities(unified, tmp_path):
+    from atlas.graph import find_communities
+    _, g, _ = unified
+    n = g.neighbors("SRS-0004")
+    assert {x["id"] for x in n["nodes"]} == {"SRS-0004", "SSS-0005", "SSS-0099", "module:SRS", "doc:spec.pdf#001",
+                                             "tracks.delete_track", "test_tracks.test_tracks"}
+    assert {"source": "tracks.delete_track", "target": "SRS-0004", "kind": "implements"} in n["edges"]
+    n = g.neighbors("SRS-0004", depth=2, kinds="implements,verifies")
+    assert {x["id"] for x in n["nodes"]} == {"SRS-0004", "tracks.delete_track", "test_tracks.test_tracks"}
+    assert g.neighbors("tracks", depth=2, limit=3)["truncated"]
+    mermaid = g.neighbors("SRS-0004", format="mermaid")["mermaid"]
+    assert mermaid.startswith("flowchart LR") and '(["SRS-0004' in mermaid and "-->|implements|" in mermaid
+    assert "error" in g.neighbors("SRS-0004", format="svg")
+    paths = export_graph(g.G, tmp_path / "out" / "atlas", ["graphml", "mermaid"])
+    assert nx.read_graphml(paths[0]).nodes["SSS-0005"]["attributes"] == '{"status": "Approved"}'
+    assert paths[1].read_text().startswith("flowchart LR")
+
+    groups = find_communities(g.G)
+    assert groups == find_communities(g.G) and "logger.log" in groups and "ada.text_io.put_line" not in groups
+    c = g.communities()
+    assert c["count"] == len(set(groups.values())) and sum(x["size"] for x in c["items"]) == len(groups)
+    assert c["items"][0]["size"] >= c["items"][-1]["size"]

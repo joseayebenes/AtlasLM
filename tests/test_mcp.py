@@ -26,21 +26,23 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     pytest.importorskip("mcp")
     from atlas.mcp import create_server, default_tools, tool_names
     plugins.load_plugins()
-    assert default_tools(load_config(toml())) == ["get_requirement"]          # only [sources.doors]
+    assert default_tools(load_config(toml())) == ["get_requirement", "trace", "matrix", "gaps", "list_requirements",
+                                                  "neighbors"]                # only [sources.doors]: its traceability
+    assert default_tools(load_config(toml('[pipeline]\nsteps = ["doors"]\n'))) == ["get_requirement"]   # no graph
 
     code = f'[sources.code]\nroots = ["{tmp_path.as_posix()}"]\n'
     docs = f'[[sources.docs]]\nname = "d"\npaths = ["{tmp_path.as_posix()}"]\n'
     cfg = load_config(toml(code + docs))
     names = tool_names(cfg)
     assert names[:5] == ["list_documents", "search", "get_section", "get_requirement", "ask_docs"]
-    assert {"find_symbol", "impact", "trace", "read_file"} <= set(names)
+    assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "read_file"} <= set(names)
     assert not {"edit_file", "write_file", "grep"} & set(names)              # knowledge; the editor edits
     server = create_server(cfg)
     tools = _tools(server)
     assert list(tools) == names
     assert tools["impact"]["inputSchema"]["required"] == ["name"]
     assert tools["impact"]["annotations"]["readOnlyHint"] is True
-    assert tools["impact"]["description"].startswith("Every subprogram that calls `name`, directly or")
+    assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
     assert "find_symbol -> get_node" in server.instructions and "edit_file" not in server.instructions
 
     # a list of its own, writing tools included; repeated names count once
@@ -84,6 +86,7 @@ patterns = ["*.pdf", "*.md"]
 analysis = "regex"
 [sources.code]
 roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
 '''))
     assert run(cfg) == 0
     return cfg, ada, docs
@@ -123,10 +126,22 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
                 answer = await call(session, "ask_docs", question="When does the HMI raise an alarm?")
                 assert "[1]" in answer["answer"] and answer["sources"][0]["doc"] == "hmi_manual.md"
 
-                # code: graph and files
+                # the graph: traceability of DOORS, documents, code and tests
                 traced = await call(session, "trace", req_id="SRS-0004")
-                assert [i["id"] for i in traced["traced_by"]["items"]] == ["test_tracks.test_tracks",
-                                                                            "tracks.delete_track"]
+                assert traced["in_doors"] and {"id": "SSS-0005", "type": "satisfies"} in traced["links_out"]
+                assert traced["documents"][0]["document"] == "spec_with_bookmarks.pdf"
+                assert [i["id"] for i in traced["implemented_by"]["items"]] == ["tracks.delete_track"]
+                assert traced["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+                matrix = await call(session, "matrix", module="SRS_TMS", limit=4)
+                assert [r["code"] for r in matrix["rows"]] == [["tracks.track"], ["tracks.update"], ["tracks.update"],
+                                                                ["tracks.delete_track"]]
+                assert matrix["summary"]["with_tests"] == 1 and "SRS-0002" in matrix["gaps"]["without_tests"]["items"]
+                gaps = await call(session, "gaps")
+                assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
+                impact = await call(session, "impact", name="Logger.Log")
+                assert {"SRS-0103", "SRS-0004", "SSS-0005"} <= {r["id"] for r in impact["requirements"]}
+
+                # code and files
                 source = await call(session, "read_source", name="Delete_Track")
                 assert "procedure Delete_Track" in source["source"]
                 assert (await call(session, "read_file", path=source["file"], end=2))["end"] == 2
@@ -148,7 +163,7 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
 
     anyio.run(client)
     log = errlog.read_text()
-    assert "MCP server over" in log and "21 tools" in log                     # logs go to stderr
+    assert "MCP server over" in log and "26 tools" in log                     # logs go to stderr
 
 
 def test_serve_turned_off(toml):

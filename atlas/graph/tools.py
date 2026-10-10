@@ -1,14 +1,17 @@
-"""Code graph tools for agents and the MCP server (the MCP of legacy/ada_graph_mcp.py).
+"""Graph tools for agents and the MCP server (the MCP of legacy/ada_graph_mcp.py, and the
+traceability of code, DOORS and documents).
 
 They are the queries of KnowledgeGraph, with the names agents see:
 
-    graph_stats        size of the graph and statistics of its last build
+    graph_stats        size of the graph and statistics of its last builds
     find_symbol        elements by name                 get_node      everything about one
     search_code_docs   elements by their comment        read_source   its numbered source
     callers / callees / impact / call_chain             calls, direct and transitive
     unit_info / type_users / variable_users             what a unit defines, who uses a type or global
-    trace              the code that cites a requirement
-    list_requirements / untraced                        requirements cited in the code, code without any
+    trace / trace_code everything about a requirement / the traceability of a code element
+    matrix / gaps      traceability matrix of a DOORS module / what traceability lacks
+    list_requirements / untraced                        requirements of the graph, code without any
+    neighbors / communities                             a subgraph (JSON or Mermaid) / groups of code
 
 `search_docs` and `requirement` of ada_graph_mcp.py are `search_code_docs` and `trace` here,
 so as not to be confused with the document tools. Its `read_file` is not here: the one of
@@ -28,11 +31,12 @@ from atlas.graph.knowledge import MAX_LIST, KnowledgeGraph
 from atlas.graph.store import GraphStore
 from atlas.plugins import register_methods
 
-__all__ = ["GraphTools", "TOOL_NAMES"]
+__all__ = ["GraphTools", "TOOL_NAMES", "TRACE_TOOLS"]
 
 TOOL_NAMES = ("graph_stats", "find_symbol", "search_code_docs", "get_node", "callers", "callees", "impact",
-              "call_chain", "read_source", "unit_info", "type_users", "variable_users", "trace",
-              "list_requirements", "untraced")
+              "call_chain", "read_source", "unit_info", "type_users", "variable_users", "trace", "trace_code",
+              "matrix", "gaps", "list_requirements", "untraced", "neighbors", "communities")
+TRACE_TOOLS = ("trace", "matrix", "gaps", "list_requirements", "neighbors")    # those that need no code
 
 NO_GRAPH = "there is no graph yet: run `atlas run` with \"graph\" in [pipeline] steps"
 
@@ -75,14 +79,15 @@ class GraphTools:
 
     # --- tools ----------------------------------------------------------------
     def graph_stats(self) -> dict:
-        """Size of the code graph by kind of element, and the statistics of its last build."""
+        """Size of the graph (code, requirements, documents) by kind of node, and the
+        statistics of its last builds."""
         return self._ask(lambda g: g.stats())
 
     def find_symbol(self, query: str, kind: str = "", limit: int = 20) -> dict:
-        """Code elements whose identifier contains `query` (any case). kind: subprogram |
-        type | variable | constant | unit | requirement | external. Start here: the other
-        tools take the identifier (tracks.update), or a simple name (Update) if only one
-        element has it."""
+        """Nodes whose identifier contains `query` (any case). kind: subprogram | test |
+        type | variable | constant | unit | external | requirement | module | document |
+        section. Start here: the other tools take the identifier (tracks.update), or a
+        simple name (Update) if only one element has it."""
         return self._ask(lambda g: g.find_symbol(query, kind, limit))
 
     def search_code_docs(self, text: str, limit: int = 20) -> dict:
@@ -104,8 +109,10 @@ class GraphTools:
         return self._ask(lambda g: g.callees(name, limit))
 
     def impact(self, name: str, depth: int = 3, limit: int = MAX_LIST) -> dict:
-        """Every subprogram that calls `name`, directly or transitively, up to `depth`
-        levels, nearest first: what to review before changing it."""
+        """What changing a code element or a requirement affects. Code: every subprogram
+        that depends on it, directly or transitively, up to `depth` levels, nearest first,
+        and the requirements, tests and document sections affected. Requirement: the
+        requirements derived from it, their code, tests and sections."""
         return self._ask(lambda g: g.impact(name, depth, limit))
 
     def call_chain(self, source: str, target: str) -> dict:
@@ -130,17 +137,47 @@ class GraphTools:
         return self._ask(lambda g: g.variable_users(name, limit))
 
     def trace(self, req_id: str, limit: int = MAX_LIST) -> dict:
-        """The code that cites a requirement ID in its comments: subprograms, types and tests."""
-        return self._ask(lambda g: g.requirement(req_id, limit))
+        """Everything about a requirement ID: its DOORS text and attributes, parent,
+        children and links; the document sections that state it (with the values that
+        differ from DOORS); the code that implements it; the tests that verify or cover it."""
+        return self._ask(lambda g: g.trace(req_id, limit))
 
-    def list_requirements(self, prefix: str = "", limit: int = 100) -> dict:
-        """Requirement IDs cited in the code (optionally those starting with `prefix`), with
-        how many elements cite each one."""
-        return self._ask(lambda g: g.list_requirements(prefix, limit))
+    def trace_code(self, name: str, limit: int = MAX_LIST) -> dict:
+        """Traceability of a code element: the requirements it implements, its callers and
+        callees, the tests that exercise it and the document sections about it."""
+        return self._ask(lambda g: g.trace_code(name, limit))
+
+    def matrix(self, module: str = "", limit: int = 50, offset: int = 0) -> dict:
+        """Traceability matrix of a DOORS module (empty: every requirement): requirement ->
+        code -> tests -> documents, a summary, and the requirements without code or tests.
+        `limit` and `offset` page the rows."""
+        return self._ask(lambda g: g.matrix(module, limit, offset))
+
+    def gaps(self, module: str = "", limit: int = MAX_LIST) -> dict:
+        """What traceability lacks: requirements without code or tests, subprograms that
+        cite no requirement, IDs of the code or the documents that are not in DOORS, and
+        values (deadlines, limits) that differ between DOORS and the documents."""
+        return self._ask(lambda g: g.gaps(module, limit))
+
+    def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:
+        """Requirements of the graph (optionally those whose ID starts with `prefix`, or
+        those of a DOORS module), with how many code elements, tests and sections each has."""
+        return self._ask(lambda g: g.list_requirements(prefix, module, limit))
 
     def untraced(self, kind: str = "subprogram", limit: int = MAX_LIST) -> dict:
         """Code elements (subprogram | type) that cite no requirement."""
         return self._ask(lambda g: g.untraced(kind, limit))
+
+    def neighbors(self, name: str, depth: int = 1, kinds: str = "", limit: int = 60, format: str = "json") -> dict:
+        """The subgraph around a node (code, requirement, module, document or section), up to
+        `depth` steps: nodes and edges, or a Mermaid diagram with format="mermaid". `kinds`
+        keeps only some kinds of edge, e.g. "calls,implements"."""
+        return self._ask(lambda g: g.neighbors(name, depth, kinds, limit, format))
+
+    def communities(self, limit: int = 20) -> dict:
+        """Groups of code that work together (functional modules found by Louvain), largest
+        first, with their units, main elements and requirements."""
+        return self._ask(lambda g: g.communities(limit))
 
 
 register_methods(GraphTools, TOOL_NAMES)

@@ -3,7 +3,9 @@
     atlas run      [atlas.toml]     incremental, resumable processing
     atlas status   [atlas.toml]     state of the ledger and of the data
     atlas sections [atlas.toml]     sections each document would have, without the model
-    atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents)
+    atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
+    atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
+    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
@@ -296,7 +298,7 @@ def graph_step(ctx) -> Step:
     when what it is built from changes; then the whole graph is exported."""
     from atlas.doors import normalize_id
     from atlas.graph import (GraphStore, build_code_graph, build_docs_graph, build_doors_graph, code_names,
-                             document_names, export_graph)
+                             document_names, export_graph, find_communities)
     exports = ctx.cfg["graph"]["exports"]
     unknown = sorted(set(exports) - set(GRAPH_EXPORTS))
     if unknown:
@@ -332,7 +334,13 @@ def graph_step(ctx) -> Step:
 
     def build(ctx, unit: str):
         if unit == "code":
-            return build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+            G, stats = build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+            if ctx.cfg["graph"]["communities"]:          # in the node, for the exports (Gephi colours)
+                groups = find_communities(G)
+                for n, group in groups.items():
+                    G.nodes[n]["community"] = group
+                stats["communities"] = len(set(groups.values()))
+            return G, stats
         if unit == "doors":
             return build_doors_graph(ctx.store.requirements(), ctx.store.links())
         return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
@@ -439,8 +447,8 @@ def sections(cfg: Config) -> int:
 
 
 def graph(cfg: Config) -> int:
-    """The report of the last build of every part of the graph."""
-    from atlas.graph import GraphStore
+    """The report of the last build of every part of the graph, and of its gaps."""
+    from atlas.graph import GraphStore, KnowledgeGraph
     ctx = _context(cfg)
     builds = GraphStore(ctx.store.path).builds()
     if not builds:
@@ -456,7 +464,8 @@ def graph(cfg: Config) -> int:
               f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
         print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
               f"without a requirement: {s['subprograms_without_requirement']} | "
-              f"unresolved calls: {s['unresolved_calls']}")
+              f"unresolved calls: {s['unresolved_calls']}"
+              + (f" | groups of code (communities): {s['communities']}" if "communities" in s else ""))
         for title, key in (("Most called", "top_called"), ("Requirements traced by most elements", "top_requirements"),
                            ("Most frequent unresolved calls (external libraries or names not captured)",
                             "top_unresolved")):
@@ -474,7 +483,56 @@ def graph(cfg: Config) -> int:
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
+    gaps = KnowledgeGraph.open(ctx.store.path).gaps()
+    print("\ntraceability gaps (atlas matrix MODULE for the detail):")
+    for key, value in gaps.items():
+        if isinstance(value, dict):
+            print(f"  {value['count']:5d}  {key.replace('_', ' ')}")
     print(f"\nexported to {cfg.workspace / 'graph'}")
+    return 0
+
+
+def trace(cfg: Config, req_id: str) -> int:
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    res = KnowledgeGraph.open(ctx.store.path).trace(req_id)
+    print(json.dumps(res, ensure_ascii=False, indent=1))
+    return 1 if "error" in res else 0
+
+
+def matrix(cfg: Config, module: str) -> int:
+    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph,
+    as CSV (for a spreadsheet) and Markdown, and its summary and gaps on the screen."""
+    import csv
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    module = "" if module == "*" else module
+    res = KnowledgeGraph.open(ctx.store.path).matrix(module, limit=10**9)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
+    cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
+    prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    with open(prefix.with_suffix(".csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(columns)
+        w.writerows([cell(row.get(c, "")) for c in columns] for row in res["rows"])
+    sm, gaps = res["summary"], res["gaps"]
+    md = [f"# Traceability matrix: {res['module']}", "",
+          f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
+          f"{sm['with_documents']} in documents.", "",
+          "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
+    md += ["| " + " | ".join(cell(row.get(c, "")).replace("|", "\\|") for c in columns) + " |" for row in res["rows"]]
+    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
+        md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
+    prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(md[2])
+    for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
+        items = gaps[key]["items"]
+        print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
+    print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
     return 0
 
 
@@ -531,7 +589,7 @@ def main(argv: list[str] | None = None) -> None:
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask}
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix}
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
     if action in with_text and not rest:

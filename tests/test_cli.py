@@ -221,10 +221,11 @@ languages = ["ada"]
 
 
 def test_graph_of_doors_code_and_documents(toml, samples, docs_samples, tmp_path, capsys):
-    """The three parts of the graph, each rebuilt only when what it is built from changes."""
+    """The three parts of the graph, each rebuilt only when what it is built from changes,
+    and the traceability commands."""
     import shutil
     import pytest
-    from atlas.cli import graph
+    from atlas.cli import graph, matrix, trace
     from atlas.graph import KnowledgeGraph
     pytest.importorskip("tree_sitter_ada")
     pytest.importorskip("markitdown")
@@ -243,6 +244,8 @@ name = "manuals"
 paths = ["{docs.as_posix()}"]
 patterns = ["*.md"]
 analysis = "regex"
+[graph]
+communities = true
 '''
     cfg = load_config(toml(extra))
 
@@ -252,10 +255,10 @@ analysis = "regex"
 
     assert go()["processed"] == {"doors.requirements": 3, "code.parse": 5, "docs.process": 1, "graph.build": 3}
     assert go()["skipped"]["graph.build"] == 3
-    G = KnowledgeGraph.from_config(cfg).G
-    assert G.nodes["SRS-0004"]["module"] == "SRS_TMS" and G.nodes["test_tracks.test_tracks"]["kind"] == "test"
-    assert G.edges["test_tracks.test_tracks", "SRS-0004"]["kind"] == "verifies"
-    assert G.edges["doc:hmi_manual.md#003", "SRS-0102"]["kind"] == "declares"    # SRS_TMS_OLD and the manual
+    g = KnowledgeGraph.from_config(cfg)
+    assert g.trace("SRS-0004")["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    assert g.trace("SRS-0102")["documents"][0]["title"] == "2 Alarms"        # SRS_TMS_OLD and the manual
+    assert g.G.nodes["logger.log"]["community"] >= 0 and g.build_stats["code"]["communities"] >= 1
 
     manual = docs / "hmi_manual.md"                     # a document changes: only its part of the graph
     manual.write_text(manual.read_text().replace("30 days", "60 days"))
@@ -268,6 +271,18 @@ analysis = "regex"
     assert graph(cfg) == 0
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
+    assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
+    assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
+    assert trace(cfg, "SRS-9999") == 1
+    capsys.readouterr()
+    assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
+    written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
+    assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
+                                                  "documents"
+    assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+    assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
+    assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()
+    capsys.readouterr()
 
     manual.unlink()                                     # no documents: their part of the graph goes
     assert go()["pruned"] == {"docs.process": 1, "graph.build": 1}

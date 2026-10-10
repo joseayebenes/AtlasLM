@@ -8,7 +8,8 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 
 [mcp] tools chooses the tools. When it is empty, the server offers those of the configured
 sources: the document tools with [[sources.docs]] (with only [sources.doors],
-get_requirement), and the graph tools and read_file with [sources.code]. edit_file and
+get_requirement), the graph tools and read_file with [sources.code], and without code the
+traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step. edit_file and
 write_file are only offered when listed: atlas provides knowledge and the editor edits.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
@@ -41,9 +42,11 @@ INSTRUCTIONS = {
             "citation; `get_section` reads a whole section; `get_requirement` gives the exact text of a "
             "requirement ID, from DOORS and from the documents; `ask_docs` writes an answer with citations. "
             "Cite document and section.",
-    "graph": "Code graph: identifiers are `unit.name` in lower case. Usual flow: find_symbol -> get_node "
-             "-> callers / callees / impact -> read_source. `trace` gives the code that cites a requirement; "
-             "`untraced`, the code that cites none.",
+    "graph": "Graph of code, requirements and documents: code identifiers are `unit.name` in lower case. "
+             "Usual flow: find_symbol -> get_node -> callers / callees / impact -> read_source. `trace` gives "
+             "everything about a requirement (DOORS, documents, code, tests); `trace_code`, the requirements "
+             "and tests of a code element; `impact`, what a change affects; `matrix` and `gaps`, the "
+             "traceability of a DOORS module and what it lacks.",
     "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
              "can be read.",
     "edit": "edit_file and write_file only change a file after a read_file of it; check the diff they return.",
@@ -74,12 +77,15 @@ def default_tools(cfg: Config) -> list[str]:
         names += DOC_TOOLS
     elif _enabled(sources.get("doors")):
         names.append("get_requirement")
-    if _enabled(sources.get("code")):
+    code = _enabled(sources.get("code"))
+    if code or ("graph" in cfg["pipeline"]["steps"] and (_enabled(sources.get("doors")) or
+                                                          any(_enabled(d) for d in sources.get("docs", [])))):
         try:
-            from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
-            names += GRAPH_TOOLS
+            from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS, TRACE_TOOLS
+            names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names]
         except ImportError as e:            # networkx, of the [code] extra
             log.warning("no graph tools: %s", e)
+    if code:
         names.append("read_file")
     return names
 

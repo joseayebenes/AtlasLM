@@ -32,7 +32,7 @@ from atlas.code.ada import PREDEFINED_TYPES
 from atlas.doors import normalize_id
 from atlas.plugins import CodeUnit
 
-__all__ = ["CODE_KINDS", "build_code_graph", "is_test_file"]
+__all__ = ["CODE_KINDS", "build_code_graph", "find_communities", "is_test_file"]
 
 CODE_KINDS = ("unit", "subprogram", "test", "type", "variable", "constant")
 DECLARED = ("subprogram", "type", "variable")      # what a unit declares, by resolution order
@@ -191,3 +191,16 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
     }
     return G, stats
 
+
+def find_communities(G: nx.DiGraph) -> dict[str, int]:
+    """Groups of code that work together: Louvain (with a fixed seed, so that the groups do
+    not change from one build to the next) over the code graph without direction, with its
+    calls, conversions, uses, withs and what each unit defines; externals are left out, or
+    a library that everything calls would join it all. node -> group, 0 the largest."""
+    code = nx.Graph()
+    for u, v, e in G.edges(data=True):
+        if e.get("kind") in ("calls", "converts", "uses", "withs", "defines") and \
+                G.nodes[u].get("kind") in CODE_KINDS and G.nodes[v].get("kind") in CODE_KINDS:
+            code.add_edge(u, v)
+    groups = sorted(nx.community.louvain_communities(code, seed=0), key=lambda g: (-len(g), min(g))) if code else []
+    return {n: i for i, group in enumerate(groups) for n in group}

@@ -1,9 +1,11 @@
 """The graph in the workspace atlas.db, and its export.
 
-Every loader writes its own part of the graph under an `origin` ("code" today; documents
-and DOORS in phase 4) and replaces it whole in one transaction. Loading merges every
-origin into one NetworkX graph: a node that two origins share (a requirement found in the
-code and in DOORS) gets the attributes of both.
+Every loader writes its own part of the graph under an `origin` ("code", "doors", "docs")
+and replaces it whole in one transaction. Loading merges every origin into one NetworkX
+graph: a node that two origins share (a requirement found in the code and in DOORS) gets
+the attributes of both, and the kind of the last origin that gives one (by name: DOORS
+says whether an ID is a heading). A node that no loaded origin gives a kind to (the code
+element a document mentions, when there is no code graph) is dropped with its edges.
 
     graph_nodes    origin, id, kind, data (JSON with the other attributes)
     graph_edges    origin, source, target, kind
@@ -65,12 +67,15 @@ class GraphStore:
         with self.lock:
             for _, n, kind, data in self.db.execute(f"SELECT * FROM graph_nodes {where} ORDER BY origin, id", params):
                 if n in G:
-                    G.nodes[n].update({k: v for k, v in json.loads(data).items() if v not in ("", None, [])})
+                    G.nodes[n].update({k: v for k, v in json.loads(data).items() if v not in ("", None, [], {})})
+                    if kind:
+                        G.nodes[n]["kind"] = kind
                 else:
                     G.add_node(n, kind=kind, **json.loads(data))
             for _, u, v, kind in self.db.execute(f"SELECT * FROM graph_edges {where} ORDER BY origin, source, target",
                                                  params):
                 G.add_edge(u, v, kind=kind)
+        G.remove_nodes_from([n for n, d in G.nodes(data=True) if not d.get("kind")])
         return G
 
     def builds(self) -> dict[str, dict]:
@@ -85,16 +90,23 @@ class GraphStore:
                     "edges": self.db.execute("SELECT COUNT(*) FROM graph_edges").fetchone()[0]}
 
 
+def _scalar(v):
+    if isinstance(v, list) and not any(isinstance(x, (list, dict)) for x in v):
+        return ";".join(map(str, v))
+    return json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict)) else v
+
+
 def export_graph(G: nx.DiGraph, prefix: str | Path, formats: list[str], stats: dict | None = None) -> list[Path]:
     """Writes `<prefix>.graphml` (Gephi, yEd, NetworkX) and/or `<prefix>.json` (nodes and
-    edges, easy to give to a model). GraphML only takes scalars: lists become "a;b"."""
+    edges, easy to give to a model). GraphML only takes scalars: a list of scalars becomes
+    "a;b", and any other list or dict its JSON."""
     prefix = Path(prefix)
     prefix.parent.mkdir(parents=True, exist_ok=True)
     written = []
     if "graphml" in formats:
         flat = nx.DiGraph()
         for n, d in G.nodes(data=True):
-            flat.add_node(n, **{k: ";".join(map(str, v)) if isinstance(v, list) else v for k, v in d.items()})
+            flat.add_node(n, **{k: _scalar(v) for k, v in d.items()})
         flat.add_edges_from(G.edges(data=True))
         path = prefix.with_suffix(".graphml")
         nx.write_graphml(flat, path)

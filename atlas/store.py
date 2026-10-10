@@ -68,6 +68,16 @@ class Store:
             d["links_in"] = [dict(x) for x in self._query("SELECT source, type FROM links WHERE target=?", (d["id"],))]
             return d
 
+    def requirements(self) -> list[dict]:
+        """Every requirement, by module and ID, with its attributes."""
+        return [{**dict(r), "attributes": json.loads(r["attributes"] or "{}")}
+                for r in self._query("SELECT * FROM requirements ORDER BY module, id")]
+
+    def links(self) -> list[dict]:
+        """Every link, in the order they were read (the links of the source before the
+        references found in the text)."""
+        return [dict(r) for r in self._query("SELECT source, target, type, module FROM links ORDER BY rowid")]
+
     def requirement_ids(self, contains: str, limit: int = 10) -> list[str]:
         """IDs that contain a text (any case): suggestions for an ID that is not there."""
         return [r["id"] for r in self._query("SELECT id FROM requirements WHERE UPPER(id) LIKE ? ORDER BY id LIMIT ?",

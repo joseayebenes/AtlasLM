@@ -34,7 +34,7 @@ TOOL_NAMES = ("graph_stats", "find_symbol", "search_code_docs", "get_node", "cal
               "call_chain", "read_source", "unit_info", "type_users", "variable_users", "trace",
               "list_requirements", "untraced")
 
-NO_GRAPH = "there is no code graph yet: run `atlas run` with \"code\" and \"graph\" in [pipeline] steps"
+NO_GRAPH = "there is no graph yet: run `atlas run` with \"graph\" in [pipeline] steps"
 
 
 class GraphTools:

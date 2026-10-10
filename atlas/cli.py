@@ -3,7 +3,7 @@
     atlas run      [atlas.toml]     incremental, resumable processing
     atlas status   [atlas.toml]     state of the ledger and of the data
     atlas sections [atlas.toml]     sections each document would have, without the model
-    atlas graph    [atlas.toml]     report of the code graph (calls, requirements, unresolved)
+    atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents)
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
@@ -286,41 +286,79 @@ def index_step(ctx) -> Step:
                 prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
 
 
-GRAPH_VERSION = "graph-1"   # change it when the building of the graph changes
+GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
 
 def graph_step(ctx) -> Step:
-    """One unit, "code": the code graph is rebuilt whole (seconds) when any file changes."""
-    from atlas.graph import GraphStore, build_code_graph, export_graph
+    """One unit per part of the graph (its origin): "code" (code.parse), "doors"
+    (doors.requirements) and "docs" (docs.process). Each one is rebuilt whole (seconds)
+    when what it is built from changes; then the whole graph is exported."""
+    from atlas.doors import normalize_id
+    from atlas.graph import (GraphStore, build_code_graph, build_docs_graph, build_doors_graph, code_names,
+                             document_names, export_graph)
     exports = ctx.cfg["graph"]["exports"]
     unknown = sorted(set(exports) - set(GRAPH_EXPORTS))
     if unknown:
         raise ConfigError(f"[graph] unknown exports {unknown} (valid: {', '.join(GRAPH_EXPORTS)})")
-    prefix = ctx.cfg.workspace / "graph" / "code"
+    folder = ctx.cfg.workspace / "graph"
+    test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
+    id_normalize = ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {}).get("id_normalize", "upper")
+    normalize = lambda rid: normalize_id(rid, id_normalize)
+    settings = f"{ctx.cfg.fingerprint('graph')}|{test_patterns}|{id_normalize}|{GRAPH_VERSION}"
+
+    def documents(ctx) -> list[dict]:
+        docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+        names = document_names(docs)
+        return [{**d, "name": names[d["unit"]],
+                 "structure": json.loads((Path(d["out_dir"]) / "structure.json").read_text(encoding="utf-8"))}
+                for d in docs]
+
+    def units(ctx) -> list[str]:
+        present = {"code": bool(ctx.store.code_units()), "doors": ctx.store.counts()["requirements"] > 0,
+                   "docs": any((Path(d["out_dir"]) / "structure.json").exists() for d in ctx.store.documents())}
+        return [origin for origin, there in present.items() if there]
 
     def fingerprint(ctx, unit: str) -> str:
-        units = ctx.store.code_units()
-        return f"{sha256_text(json.dumps(units, sort_keys=True))}|{ctx.cfg.fingerprint('graph')}|{GRAPH_VERSION}"
+        if unit == "code":
+            data = ctx.store.code_units()
+        elif unit == "doors":
+            data = [ctx.store.requirements(), ctx.store.links()]
+        else:
+            docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+            data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
+            data.append(sorted(code_names(ctx.store.code_units()).items()))    # what the sections can mention
+        return f"{sha256_text(json.dumps(data, sort_keys=True, default=str))}|{settings}"
+
+    def build(ctx, unit: str):
+        if unit == "code":
+            return build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+        if unit == "doors":
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links())
+        return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
+
+    def export(store: GraphStore) -> None:
+        for old in [*folder.glob("atlas.*"), *folder.glob("code.*")]:        # code.*: before graph-2
+            old.unlink()
+        if store.builds():
+            stats = {o: {k: v for k, v in b.items() if not k.startswith("top_")} for o, b in store.builds().items()}
+            export_graph(store.load(), folder / "atlas", exports, stats)
 
     def run(ctx, unit: str):
-        G, stats = build_code_graph(ctx.store.code_units())
-        GraphStore(ctx.store.path).replace("code", G, stats)
-        for old in prefix.parent.glob(f"{prefix.name}.*"):
-            old.unlink()
-        export_graph(G, prefix, exports, stats)
-        log.info("code graph: %d nodes, %d edges (%d subprograms, %d requirements, %d unresolved calls)",
-                 stats["nodes"], stats["edges"], stats["subprograms"], stats["requirements"],
-                 stats["unresolved_calls"])
+        G, stats = build(ctx, unit)
+        store = GraphStore(ctx.store.path)
+        store.replace(unit, G, stats)
+        export(store)
+        log.info("graph %s: %s", unit, ", ".join(f"{v} {k}" for k, v in stats.items() if isinstance(v, int)))
         return {k: v for k, v in stats.items() if not k.startswith("top_")}
 
     def prune(ctx, unit: str) -> None:
-        GraphStore(ctx.store.path).delete("code")
-        for old in prefix.parent.glob(f"{prefix.name}.*"):
-            old.unlink()
+        store = GraphStore(ctx.store.path)
+        store.delete(unit)
+        export(store)
 
-    return Step(name="graph.build", units=lambda ctx: ["code"] if ctx.store.code_units() else [],
-                fingerprint=fingerprint, run=run, prune=prune, depends_on=["code.parse"], parallel=False)
+    return Step(name="graph.build", units=units, fingerprint=fingerprint, run=run, prune=prune,
+                depends_on=["code.parse", "doors.requirements", "docs.process"], parallel=False)
 
 
 def steps(ctx) -> list[Step]:
@@ -401,28 +439,41 @@ def sections(cfg: Config) -> int:
 
 
 def graph(cfg: Config) -> int:
-    """The report of the last build of the code graph."""
+    """The report of the last build of every part of the graph."""
     from atlas.graph import GraphStore
     ctx = _context(cfg)
-    s = GraphStore(ctx.store.path).builds().get("code")
-    if not s:
-        print("no code graph yet: run `atlas run` with \"code\" and \"graph\" in [pipeline] steps")
+    builds = GraphStore(ctx.store.path).builds()
+    if not builds:
+        print("no graph yet: run `atlas run` with \"graph\" in [pipeline] steps")
         return 1
-    print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} subprograms, "
-          f"{s['types']} types, {s['variables']} variables, {s['externals']} externals, "
-          f"{s['requirements']} requirements) from {s['files']} files")
-    c = s["edges_by_kind"]
-    print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
-          f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
-    print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
-          f"without a requirement: {s['subprograms_without_requirement']} | unresolved calls: {s['unresolved_calls']}")
-    for title, key in (("Most called", "top_called"), ("Requirements traced by most elements", "top_requirements"),
-                       ("Most frequent unresolved calls (external libraries or names not captured)",
-                        "top_unresolved")):
-        if s[key]:
-            print(f"\n{title}:")
-            for name, n in s[key]:
-                print(f"  {n:5d}  {name}")
+    s = builds.get("code")
+    if s:
+        print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} "
+              f"subprograms, {s['tests']} tests, {s['types']} types, {s['variables']} variables, {s['externals']} "
+              f"externals, {s['requirements']} requirements) from {s['files']} files ({s['test_files']} of tests)")
+        c = s["edges_by_kind"]
+        print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
+              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+        print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
+              f"without a requirement: {s['subprograms_without_requirement']} | "
+              f"unresolved calls: {s['unresolved_calls']}")
+        for title, key in (("Most called", "top_called"), ("Requirements traced by most elements", "top_requirements"),
+                           ("Most frequent unresolved calls (external libraries or names not captured)",
+                            "top_unresolved")):
+            if s[key]:
+                print(f"\n{title}:")
+                for name, n in s[key]:
+                    print(f"  {n:5d}  {name}")
+    s = builds.get("doors")
+    if s:
+        print(f"\nDOORS of {s['built_at'][:19]}: {s['modules']} modules, {s['requirements']} requirements, "
+              f"{s['headings']} headings; links: "
+              + ", ".join(f"{n} {k}" for k, n in s["edges_by_kind"].items() if k != "contains")
+              + (f"; {s['linked_outside']} IDs linked from modules that were not read" if s["linked_outside"] else ""))
+    s = builds.get("docs")
+    if s:
+        print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
+              f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
     print(f"\nexported to {cfg.workspace / 'graph'}")
     return 0
 

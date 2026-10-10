@@ -15,6 +15,7 @@ from pathlib import Path
 
 import networkx as nx
 
+from atlas.graph.build import CODE_KINDS
 from atlas.graph.store import GraphStore
 
 __all__ = ["KnowledgeGraph"]
@@ -31,7 +32,7 @@ class KnowledgeGraph:
         self._lower = {n.lower(): n for n in G.nodes}
         self._by_name: dict[str, list[str]] = defaultdict(list)
         for n, d in G.nodes(data=True):
-            if d.get("name") and d.get("kind") not in ("requirement", "external"):
+            if d.get("name") and d.get("kind") in CODE_KINDS:
                 self._by_name[d["name"].lower()].append(n)
         self._calls = nx.DiGraph((u, v) for u, v, e in G.edges(data=True) if e.get("kind") == "calls")
 
@@ -221,14 +222,16 @@ class KnowledgeGraph:
         return err or self.listing(self._edges(n, "uses", incoming=True), limit)
 
     def requirement(self, req_id: str, limit: int = MAX_LIST) -> dict:
-        """Elements traced to a requirement ID (any case)."""
+        """Elements that cite a requirement ID (any case): the code that implements it and
+        the tests that verify it."""
         r = self._lower.get(req_id.strip().lower())
         if r is None or self.G.nodes[r].get("kind") != "requirement":
             key = req_id.strip().upper()
             return {"error": f"requirement '{req_id}' not found",
                     "similar": sorted(n for n, d in self.G.nodes(data=True)
                                       if d.get("kind") == "requirement" and key in n.upper())[:10]}
-        return {"requirement": r, "traced_by": self.listing(self._edges(r, "traces", incoming=True), limit)}
+        return {"requirement": r, "traced_by": self.listing(sorted(self._edges(r, "implements", incoming=True) +
+                                                                   self._edges(r, "verifies", incoming=True)), limit)}
 
     def list_requirements(self, prefix: str = "", limit: int = 100) -> dict:
         """Requirements of the graph (optionally by prefix), with how many elements trace each one."""

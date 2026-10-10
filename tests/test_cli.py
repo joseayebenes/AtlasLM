@@ -196,7 +196,7 @@ languages = ["ada"]
 
     assert go()["processed"] == {"code.parse": 5, "graph.build": 1}
     exported = cfg.workspace / "graph"
-    assert (exported / "code.graphml").exists() and (exported / "code.json").exists()
+    assert (exported / "atlas.graphml").exists() and (exported / "atlas.json").exists()
     assert go()["skipped"] == {"code.parse": 5, "graph.build": 1}
 
     # a new call in one file: that file is analysed again and the graph rebuilt
@@ -215,6 +215,61 @@ languages = ["ada"]
     shutil.rmtree(ada / "src")
     shutil.rmtree(ada / "tests")
     assert go()["pruned"] == {"code.parse": 5, "graph.build": 1}
-    assert not list(exported.glob("code.*")) and graph(cfg) == 1
+    assert not list(exported.glob("atlas.*")) and graph(cfg) == 1
     with pytest.raises(ConfigError, match="exports"):
         run(load_config(toml(extra + '[graph]\nexports = ["svg"]\n')))
+
+
+def test_graph_of_doors_code_and_documents(toml, samples, docs_samples, tmp_path, capsys):
+    """The three parts of the graph, each rebuilt only when what it is built from changes."""
+    import shutil
+    import pytest
+    from atlas.cli import graph
+    from atlas.graph import KnowledgeGraph
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("markitdown")
+    ada, docs = tmp_path / "ada", tmp_path / "docs"
+    shutil.copytree(samples / "ada", ada)
+    docs.mkdir()
+    shutil.copy(docs_samples / "hmi_manual.md", docs / "hmi_manual.md")
+    extra = f'''
+[pipeline]
+steps = ["doors", "code", "docs", "graph"]
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+patterns = ["*.md"]
+analysis = "regex"
+'''
+    cfg = load_config(toml(extra))
+
+    def go(config=cfg):
+        assert run(config) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert go()["processed"] == {"doors.requirements": 3, "code.parse": 5, "docs.process": 1, "graph.build": 3}
+    assert go()["skipped"]["graph.build"] == 3
+    G = KnowledgeGraph.from_config(cfg).G
+    assert G.nodes["SRS-0004"]["module"] == "SRS_TMS" and G.nodes["test_tracks.test_tracks"]["kind"] == "test"
+    assert G.edges["test_tracks.test_tracks", "SRS-0004"]["kind"] == "verifies"
+    assert G.edges["doc:hmi_manual.md#003", "SRS-0102"]["kind"] == "declares"    # SRS_TMS_OLD and the manual
+
+    manual = docs / "hmi_manual.md"                     # a document changes: only its part of the graph
+    manual.write_text(manual.read_text().replace("30 days", "60 days"))
+    assert go()["processed"] == {"docs.process": 1, "graph.build": 1}
+    assert go(load_config(toml(extra.replace('["**/tests/**"]', "[]"))))["processed"] == \
+        {"code.parse": 5, "graph.build": 3}            # what a test is changes the whole graph
+    assert KnowledgeGraph.from_config(cfg).G.nodes["test_tracks.test_tracks"]["kind"] == "subprogram"
+    go()
+
+    assert graph(cfg) == 0
+    out = capsys.readouterr().out
+    assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
+
+    manual.unlink()                                     # no documents: their part of the graph goes
+    assert go()["pruned"] == {"docs.process": 1, "graph.build": 1}
+    assert not [n for n, d in KnowledgeGraph.from_config(cfg).G.nodes(data=True) if d["kind"] == "section"]
+    assert (cfg.workspace / "graph" / "atlas.graphml").exists()

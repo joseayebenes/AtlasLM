@@ -126,3 +126,48 @@ def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):
     req = tools.get_requirement("SRS-0102")                    # not in DOORS here: only the documents
     assert "official" not in req and req["documents"][0]["cite"].startswith("hmi_manual.md › 2 Alarms")
     assert tools.get_requirement("SRS-9999") == {"error": "requirement 'SRS-9999' not found", "similar": []}
+
+
+MODULE = [   # rows of Store.requirements() for a module read with the exchange adapter
+    {"id": "SRS-0900", "module": "SRS_TMS", "text": "Track management", "parent": None,
+     "attributes": {"kind": "heading", "heading": "Track management", "outline": "1"}},
+    {"id": "SRS-0910", "module": "SRS_TMS", "text": "Deletion", "parent": "SRS-0900",
+     "attributes": {"kind": "heading", "heading": "Deletion", "outline": "1.1"}},
+    {"id": "SRS-0004", "module": "SRS_TMS", "text": "The TMF shall delete a lost track within 320 ms.",
+     "parent": "SRS-0910", "attributes": {"kind": "requirement", "status": "Approved"}},
+    {"id": "SRS-0005", "module": "SRS_TMS", "text": "Deleted tracks shall be logged.", "parent": "SRS-0004",
+     "attributes": {"kind": "requirement"}},
+    {"id": "SRS-0911", "module": "SRS_TMS", "text": "A track is lost after three missed scans.",
+     "parent": "SRS-0910", "attributes": {"kind": "information"}},
+    {"id": "SRS-0001", "module": "SRS_TMS", "text": "Every track has an identifier.", "parent": None,
+     "attributes": {}},                                               # the database adapter: no kind
+]
+
+
+def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddings):
+    from atlas.index import DocTools, requirement_records
+    from atlas.store import Store
+    records = requirement_records("SRS_TMS", MODULE)
+    assert [(r["kind"], r.get("ref", "")) for r in records] == [("requirement", "SRS-0004"),
+                                                               ("requirement", "SRS-0005"), ("chunk", ""),
+                                                               ("requirement", "SRS-0001")]
+    assert records[0]["path"] == "1 Track management > 1.1 Deletion" and records[0]["section_id"] == "SRS-0910"
+    assert records[1]["section_title"] == "1.1 Deletion"            # under a requirement: the heading above it
+    assert records[0]["embed_text"] == ("SRS_TMS > 1 Track management > 1.1 Deletion > requirement\n"
+                                        "SRS-0004: The TMF shall delete a lost track within 320 ms.")
+    assert records[3]["path"] == "" and records[3]["embed_text"].startswith("SRS_TMS > requirement\n")
+    assert [r["kind"] for r in requirement_records("SRS_TMS", MODULE, kinds=["chunk"])] == ["chunk"]
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    assert idx.add_module("SRS_TMS", MODULE)["kinds"] == {"requirement": 3, "chunk": 1}
+    hit = idx.search("SRS-0004", k=1)[0]
+    assert (hit["doc"], hit["doc_name"], hit["ref"]) == ("doors:SRS_TMS", "SRS_TMS", "SRS-0004")
+    tools = DocTools(idx, Store(tmp_path))
+    assert tools.search("SRS-0004", k=1)["results"][0]["cite"] == "SRS_TMS › 1.1 Deletion (requirement)"
+    assert [d["source"] for d in tools.list_documents()["documents"]] == ["DOORS", "document"]
+    assert "DOORS module" in tools.get_section("SRS_TMS", "1")["error"]
+    assert "not found" in tools.get_requirement("SRS-0004")["error"]  # its DOORS record is not a document
+    assert {h["document"] for h in tools.search("track", k=20, document="SRS_TMS")["results"]} == {"SRS_TMS"}
+    idx.remove_document("doors:SRS_TMS")
+    assert [d["name"] for d in idx.documents()] == ["hmi_manual.md"]

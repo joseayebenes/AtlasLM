@@ -1,7 +1,8 @@
 """Document tools for agents and the MCP server (the MCP of legacy/doc_rag.py).
 
-    list_documents    the indexed documents, with their summary
-    search            hybrid search in the documents (exact IDs + meaning + keywords)
+    list_documents    the indexed documents and DOORS modules, with their summary
+    search            hybrid search in the documents and in the requirements of DOORS
+                      (exact IDs + meaning + keywords)
     get_section       the Markdown of a section
     get_requirement   a requirement by its ID: its official text (DOORS) and the documents
                       that state it
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import openai
 
-from atlas.index.records import KINDS
+from atlas.index.records import DOORS_PREFIX, KINDS
 from atlas.index.search import cite
 from atlas.llm.connection import diagnose
 from atlas.plugins import register_methods
@@ -97,19 +98,24 @@ class DocTools:
         return tools
 
     def list_documents(self) -> dict:
-        """The indexed documents: name (what `document` takes in search and get_section),
-        title, number of indexed passages and summary."""
+        """The indexed documents and DOORS modules: name (what `document` takes in search
+        and get_section), title, source (document | DOORS), number of indexed passages and
+        summary."""
         docs = self.index.documents()
         return {"count": len(docs),
-                "documents": [{"name": d["name"], "title": d["title"], "records": d["records"],
+                "documents": [{"name": d["name"], "title": d["title"],
+                               "source": "DOORS" if d["doc"].startswith(DOORS_PREFIX) else "document",
+                               "records": d["records"],
                                "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
                               for d in docs]}
 
     def search(self, query: str, k: int = 8, document: str = "", kind: str = "") -> dict:
-        """Hybrid search in the documents: exact IDs, meaning and keywords. `document` limits
-        it to one document (its name or part of its title); `kind` to one kind of passage:
-        chunk | section_summary | requirement | definition | open_issue | overview. Each
-        result has its citation, its document and section (for get_section) and its text."""
+        """Hybrid search in the documents and in the requirements of DOORS: exact IDs,
+        meaning and keywords. `document` limits it to one document or DOORS module (its name
+        or part of its title); `kind` to one kind of passage: chunk | section_summary |
+        requirement | definition | open_issue | overview. Each result has its citation, its
+        document and section (for get_section; for a DOORS requirement, get_requirement with
+        its ref) and its text."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:
@@ -133,6 +139,9 @@ class DocTools:
         if len(found) > 1:
             return {"error": f"'{document}' is ambiguous", "documents": [d["name"] for d in found]}
         d = found[0]
+        if d["doc"].startswith(DOORS_PREFIX):
+            return {"error": f"{d['name']} is a DOORS module, not a document: get_requirement gives a "
+                             f"requirement of it by its ID"}
         files = sorted((Path(d["out_dir"]) / "sections").glob("*.md"))
         heads = {f: _heading(f) for f in files}
         hits = [f for f in files if heads[f]["id"] == section.strip()] or \
@@ -152,7 +161,7 @@ class DocTools:
         links in the requirements database (DOORS), and the passages of the documents that
         state it, with their citation."""
         official = self.store.requirement(req_id.strip()) if self.store else None
-        in_docs = self.index.requirement(req_id)
+        in_docs = [h for h in self.index.requirement(req_id) if not h["doc"].startswith(DOORS_PREFIX)]
         if not official and not in_docs:
             return {"error": f"requirement '{req_id}' not found",
                     "similar": self.store.requirement_ids(req_id) if self.store else []}

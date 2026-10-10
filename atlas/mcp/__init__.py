@@ -8,8 +8,9 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 
 [mcp] tools chooses the tools. When it is empty, the server offers those of the configured
 sources: the document tools with [[sources.docs]] (with only [sources.doors],
-get_requirement), the graph tools and read_file with [sources.code], and without code the
-traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step. edit_file and
+get_requirement, and search when "index" is a step), the graph tools and read_file with
+[sources.code], and without code the traceability tools of the graph (trace, matrix,
+gaps...) when "graph" is a step. edit_file and
 write_file are only offered when listed: atlas provides knowledge and the editor edits.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
@@ -75,8 +76,8 @@ def default_tools(cfg: Config) -> list[str]:
     names: list[str] = []
     if any(_enabled(d) for d in sources.get("docs", [])):
         names += DOC_TOOLS
-    elif _enabled(sources.get("doors")):
-        names.append("get_requirement")
+    elif _enabled(sources.get("doors")):     # its requirements are in the index too
+        names += ["search", "get_requirement"] if "index" in cfg["pipeline"]["steps"] else ["get_requirement"]
     code = _enabled(sources.get("code"))
     if code or ("graph" in cfg["pipeline"]["steps"] and (_enabled(sources.get("doors")) or
                                                           any(_enabled(d) for d in sources.get("docs", [])))):

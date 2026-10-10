@@ -1,4 +1,5 @@
-"""Search records of a document, built from its structure.json (atlas.docs).
+"""Search records of a document, built from its structure.json (atlas.docs), and of a
+DOORS module, built from its requirements (atlas.doors).
 
 Each document is indexed at several granularities, each one a `kind`:
 
@@ -12,14 +13,18 @@ Each document is indexed at several granularities, each one a `kind`:
 `text` is what is shown and `embed_text` what is embedded and searched: it carries the
 document title and the section path, and each chunk also the summary of its section
 (contextual retrieval), so that a loose paragraph is still found by what it is about.
+
+A DOORS module is indexed as one more document: each requirement is a `requirement` record
+and each information object a `chunk`, with the headings above it as its path.
 """
 from __future__ import annotations
 
 import re
 from typing import Iterable
 
-__all__ = ["KINDS", "build_records", "chunk_text", "reflow"]
+__all__ = ["DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "reflow", "requirement_records"]
 
+DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
 KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
 
 
@@ -103,6 +108,45 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
         records.append({"kind": "open_issue", "text": p["text"], "section_id": p["section"],
                         "section_title": p.get("section_title", ""),
                         "embed_text": f"{title} > open issue (TBD)\n{p['text']}"})
+    if kinds is not None:
+        wanted = set(kinds)
+        records = [r for r in records if r["kind"] in wanted]
+    return records
+
+
+def requirement_records(module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> list[dict]:
+    """Records of a DOORS module from its rows in atlas.db (Store.requirements): one
+    `requirement` per requirement, with its ID in `ref`, and one `chunk` per information
+    object. The headings above each one are its path; the nearest, its section."""
+    by_id = {r["id"]: r for r in requirements}
+    kind_of = lambda r: (r.get("attributes") or {}).get("kind", "requirement")
+
+    def title(r: dict) -> str:
+        a = r.get("attributes") or {}
+        return " ".join(x for x in (str(a.get("outline") or ""), a.get("heading") or r["text"]) if x).strip()
+
+    records = []
+    for r in requirements:
+        if kind_of(r) == "heading" or not r["text"]:
+            continue
+        above, parent, seen = [], r.get("parent"), set()
+        while parent and parent in by_id and parent not in seen:
+            seen.add(parent)
+            if kind_of(by_id[parent]) == "heading":
+                above.append(by_id[parent])
+            parent = by_id[parent].get("parent")
+        above.reverse()
+        path = " > ".join(title(h) for h in above)
+        base = {"section_id": above[-1]["id"] if above else "", "section_title": title(above[-1]) if above else "",
+                "path": path}
+        header = " > ".join(x for x in (module, path) if x)
+        if kind_of(r) == "information":
+            records.append({**base, "kind": "chunk", "seq": 0, "text": r["text"],
+                            "embed_text": f"{header}\n\n{r['text']}"})
+        else:
+            text = f"{r['id']}: {r['text']}"
+            records.append({**base, "kind": "requirement", "ref": r["id"], "text": text,
+                            "embed_text": f"{header} > requirement\n{text}"})
     if kinds is not None:
         wanted = set(kinds)
         records = [r for r in records if r["kind"] in wanted]

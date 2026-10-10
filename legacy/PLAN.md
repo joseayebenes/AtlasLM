@@ -785,7 +785,9 @@ cambia es quién la rellena, y la correspondencia con la fuente la hace ese rell
 - **Probado.** Todo, con un DOORS simulado que habla el mismo protocolo, hasta `atlas run`.
 - **Pendiente.** Validar en DOORS real la DXL nueva de jerarquía y enlaces
   (`doors_download.py --check`) y una descarga completa de un módulo grande. La jerarquía ya
-  está en el grafo (fase 4); faltan los requisitos de DOORS en el índice.
+  está en el grafo (fase 4), y los requisitos, en el índice: paso `index.requirements`, un
+  documento por módulo con un registro `requirement` por requisito, con la ruta de sus
+  encabezados.
 
 ### Fase 4 — Grafo unificado y trazabilidad (≈ 7 días) — **completa**
 
@@ -1126,15 +1128,15 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `plugins`, `check`, `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 106 pruebas:
+- `tests/`: 108 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
   - CLI, servidor falso y `atlas check` con modelos que razonan;
   - documentos: estructura, análisis, caché, división de secciones, paso `docs.process` y
     equivalencia con `pdf_struct.py`;
-  - índice: registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, paso
-    `index.documents` y equivalencia con `doc_rag.py`;
+  - índice: registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, pasos
+    `index.documents` e `index.requirements` (DOORS), y equivalencia con `doc_rag.py`;
   - código y grafo: etiquetas, análisis Ada, nombres repetidos en dos paquetes,
     almacenamiento, exportación, consultas, paso `graph.build` y equivalencia con
     `ada_graph.py`;

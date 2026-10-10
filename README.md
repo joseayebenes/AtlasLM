@@ -16,7 +16,7 @@ de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 103 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 105 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -218,7 +218,15 @@ El paso `index` de `atlas run` indexa cada documento procesado a varias granular
 - definiciones;
 - pendientes.
 
-`[index] kinds` elige cuáles. Una búsqueda combina tres listas con Reciprocal Rank Fusion:
+Los requisitos de DOORS también se indexan (paso `index.requirements`): cada módulo es un
+documento más del índice, con el nombre del módulo. Cada requisito es un registro de tipo
+`requirement` con los encabezados que tiene encima como ruta, y cada objeto de información,
+un fragmento. Así, `search` encuentra un requisito aunque no aparezca en ningún documento, y
+su cita queda como `SRS_TMS › 1.1 Deletion (requirement)`. `get_requirement` sigue dando el
+texto oficial aparte, y en sus documentos no repite el de DOORS.
+
+`[index] kinds` elige qué se indexa. Una búsqueda combina tres listas con Reciprocal Rank
+Fusion:
 
 - los IDs exactos que aparecen en la consulta;
 - la similitud de los vectores (`[embeddings]`);
@@ -457,7 +465,8 @@ Qué herramientas ofrece el servidor:
 - Con `[mcp] tools = []`, que es el valor por defecto, ofrece las de las fuentes
   configuradas:
   - con `[[sources.docs]]`, las de documentos;
-  - con solo `[sources.doors]`, `get_requirement`;
+  - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
+    pasos;
   - con `[sources.code]`, las del grafo y `read_file`;
   - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
     `list_requirements` y `neighbors`), si `graph` está entre los pasos.

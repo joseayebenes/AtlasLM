@@ -26,9 +26,9 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     pytest.importorskip("mcp")
     from atlas.mcp import create_server, default_tools, tool_names
     plugins.load_plugins()
-    assert default_tools(load_config(toml())) == ["get_requirement", "trace", "matrix", "gaps", "list_requirements",
-                                                  "neighbors"]                # only [sources.doors]: its traceability
-    assert default_tools(load_config(toml('[pipeline]\nsteps = ["doors"]\n'))) == ["get_requirement"]   # no graph
+    assert default_tools(load_config(toml())) == ["search", "get_requirement", "trace", "matrix", "gaps",
+                                                  "list_requirements", "neighbors"]   # only [sources.doors]
+    assert default_tools(load_config(toml('[pipeline]\nsteps = ["doors"]\n'))) == ["get_requirement"]   # no index
 
     code = f'[sources.code]\nroots = ["{tmp_path.as_posix()}"]\n'
     docs = f'[[sources.docs]]\nname = "d"\npaths = ["{tmp_path.as_posix()}"]\n'
@@ -114,10 +114,16 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
                 assert {"search", "get_requirement", "trace", "callers", "read_file"} <= set(names)
 
                 # documents and DOORS
-                hit = (await call(session, "search", query="SRS-0102 alarm", k=3))["results"][0]
+                hits = (await call(session, "search", query="SRS-0102 alarm", k=3))["results"]
+                hit = next(h for h in hits if h["document"] == "hmi_manual.md")
                 assert hit["ref"] == "SRS-0102" and hit["cite"].startswith("hmi_manual.md › 2 Alarms")
+                assert {"SRS_TMS_OLD", "hmi_manual.md"} <= {h["document"] for h in hits if h["ref"] == "SRS-0102"}
                 section = await call(session, "get_section", document=hit["document"], section=hit["section"])
                 assert "raise an alarm when a track is lost" in section["markdown"]
+                assert "DOORS module" in (await call(session, "get_section", document="SRS_TMS", section="1"))["error"]
+                listed = (await call(session, "list_documents"))["documents"]
+                assert {"name": "SRS_TMS", "source": "DOORS"}.items() <= next(d for d in listed
+                                                                              if d["name"] == "SRS_TMS").items()
                 req = await call(session, "get_requirement", req_id="srs-0004")
                 assert req["id"] == "SRS-0004" and req["official"]["module"] == "SRS_TMS"
                 assert {"target": "SSS-0005", "type": "satisfies"} in req["official"]["links_out"]

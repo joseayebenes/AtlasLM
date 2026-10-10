@@ -27,7 +27,7 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     from atlas.mcp import create_server, default_tools, tool_names
     plugins.load_plugins()
     assert default_tools(load_config(toml())) == ["search", "get_requirement", "trace", "matrix", "gaps",
-                                                  "list_requirements", "neighbors"]   # only [sources.doors]
+                                                  "list_requirements", "neighbors", "build_context"]  # only DOORS
     assert default_tools(load_config(toml('[pipeline]\nsteps = ["doors"]\n'))) == ["get_requirement"]   # no index
 
     code = f'[sources.code]\nroots = ["{tmp_path.as_posix()}"]\n'
@@ -35,7 +35,8 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     cfg = load_config(toml(code + docs))
     names = tool_names(cfg)
     assert names[:5] == ["list_documents", "search", "get_section", "get_requirement", "ask_docs"]
-    assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "read_file"} <= set(names)
+    assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "build_context",
+            "read_file"} <= set(names)
     assert not {"edit_file", "write_file", "grep"} & set(names)              # knowledge; the editor edits
     server = create_server(cfg)
     tools = _tools(server)
@@ -44,10 +45,13 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert tools["impact"]["annotations"]["readOnlyHint"] is True
     assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
     assert "find_symbol -> get_node" in server.instructions and "edit_file" not in server.instructions
+    assert "`build_context` gives in one call" in server.instructions
 
     # a list of its own, writing tools included; repeated names count once
-    tools = _tools(create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search"]\n'))))
-    assert list(tools) == ["search", "edit_file"]
+    server = create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search", "ask_atlas"]\n')))
+    tools = _tools(server)
+    assert list(tools) == ["search", "edit_file", "ask_atlas"]
+    assert "`ask_atlas` asks the assistant" in server.instructions
     assert tools["edit_file"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
     with pytest.raises(ConfigError, match=r"unknown tools \['graph_query'\]"):
         create_server(load_config(toml('[mcp]\ntools = ["search", "graph_query"]\n')))
@@ -146,6 +150,8 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
                 assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
                 impact = await call(session, "impact", name="Logger.Log")
                 assert {"SRS-0103", "SRS-0004", "SSS-0005"} <= {r["id"] for r in impact["requirements"]}
+                package = await call(session, "build_context", target="SRS-0004")
+                assert package["tokens"] <= 4000 and "procedure Delete_Track" in package["markdown"]
 
                 # code and files
                 source = await call(session, "read_source", name="Delete_Track")
@@ -169,7 +175,7 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
 
     anyio.run(client)
     log = errlog.read_text()
-    assert "MCP server over" in log and "26 tools" in log                     # logs go to stderr
+    assert "MCP server over" in log and "27 tools" in log                     # logs go to stderr
 
 
 def test_serve_turned_off(toml):

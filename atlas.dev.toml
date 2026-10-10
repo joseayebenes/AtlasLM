@@ -75,11 +75,14 @@ communities = false                         # true: grupo de código (Louvain) e
 chunk_chars = 1200
 chunk_overlap = 200
 
-[agents]
-model = "gemma4:12b"
-[agents.assistant]
-tools = ["search", "get_requirement", "trace", "graph_query", "read_source"]
-max_steps = 8
+[agents]                                    # agentes: ficheros Markdown (atlas/agents/builtin y dirs)
+model = "gemma4:12b"                        # vacío: el de [llm]
+dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
+[agents.assistant]                          # retoques de un agente sin tocar su fichero
+max_steps = 10
+[agents.eval]                               # atlas eval: preguntas con respuesta conocida
+sets = ["examples/eval/assistant.yaml"]
+runs = 1                                    # veces que se hace cada pregunta
 
 [mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...
 enabled = true

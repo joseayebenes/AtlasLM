@@ -6,9 +6,15 @@
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
+    atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
+    atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
+    atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
+    atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
 """
@@ -568,6 +574,51 @@ def matrix(cfg: Config, module: str) -> int:
     return 0
 
 
+def verify(cfg: Config, target: str) -> int:
+    """Each requirement against the documentation: the inconsistencies on the screen, and the
+    report in <workspace>/reports."""
+    from atlas.agents.verify import verify_all
+    from atlas.index import Index
+    ctx = _context(cfg)
+    index = Index.from_config(cfg) if ctx.store.documents() else None
+    res = verify_all(target, cfg, index=index)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    c = res["counts"]
+    print(f"{len(res['results'])} requirements: {c['inconsistent']} inconsistent, {c['consistent']} consistent, "
+          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)")
+    for r in res["results"]:
+        if r.get("verdict") == "inconsistent":
+            print(f"\n{r['id']}: {r.get('summary', '')}")
+            for i in r["issues"]:
+                print(f"  - {i['type']}: DOORS «{i['official']}» / «{i['document']}» ({i['source']})")
+    print(f"\nwritten {res['files'][0]} and {res['files'][1]}")
+    return 0
+
+
+def impact(cfg: Config, name: str) -> int:
+    from atlas.agents.reports import impact_report
+    _context(cfg)
+    res = impact_report(name, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; similar: {', '.join(res['similar'])}" if res.get("similar") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
+def coverage(cfg: Config, module: str) -> int:
+    from atlas.agents.reports import coverage_report
+    _context(cfg)
+    res = coverage_report("" if module == "*" else module, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
 def search(cfg: Config, query: str) -> int:
     from atlas.index import Index, cite
     _context(cfg)
@@ -598,6 +649,52 @@ def list_plugins(cfg: Config) -> int:
     return 0
 
 
+def list_agents(cfg: Config) -> int:
+    from atlas.agents.definitions import BUILTIN, load_definitions
+    _context(cfg)
+    for d in load_definitions(cfg).values():
+        source = "built-in" if Path(d.source).parent == BUILTIN else d.source
+        print(f"{d.name:22s} {source}\n    {d.description}\n    tools: {', '.join(d.tools) or '-'}"
+              f" | model: {d.model or cfg['agents']['model'] or cfg.get('llm', {}).get('model', '') or '-'}"
+              f" | max_steps: {d.max_steps}")
+    return 0
+
+
+def agent(cfg: Config, name: str, question: str) -> int:
+    from atlas.agents.runtime import run_agent
+    try:
+        res = run_agent(name, question, cfg, _context(cfg))
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    print(res["answer"] or "(no answer)")
+    if res["stopped"]:
+        print(f"\n(stopped after the most calls to the model of the agent, max_steps)")
+    if res["calls"]:
+        print("\nTools called:")
+    for c in res["calls"]:
+        print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    return 1 if res["stopped"] else 0
+
+
+def evaluate(cfg: Config) -> int:
+    from atlas.agents.evaluate import evaluate_sets
+
+    def show(r: dict) -> None:
+        missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
+        print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+              f"[{', '.join(r['calls'])}]" + (f"  missing: {', '.join(missing)}" if missing else "")
+              + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+
+    try:
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
+    except ImportError as e:
+        sys.exit(str(e))
+    for name, res in results.items():
+        print(f"\n{name}: {res['passed']} of {res['total']} right ({res['rate']:.0%}), "
+              f"median {res['median_seconds']:.0f} s; written to {cfg.workspace / 'reports' / f'eval-{name}.json'}")
+    return 0
+
+
 def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     return check_connection(from_config(cfg))
@@ -620,8 +717,16 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix}
+               "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,
+                 "impact": impact, "coverage": coverage}
+    if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
+        if len(rest) < 2:
+            sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")
+        try:
+            sys.exit(agent(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1]))
+        except ConfigError as e:
+            sys.exit(f"configuration: {e}")
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
     if action in with_text and not rest:

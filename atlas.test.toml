@@ -74,11 +74,11 @@ communities = false                         # true: grupo de código (Louvain) e
 chunk_chars = 1200
 chunk_overlap = 200
 
-[agents]
-model = "fake"
-[agents.assistant]
-tools = ["search", "get_requirement", "trace", "graph_query", "read_source"]
-max_steps = 8
+[agents]                                    # agentes: ficheros Markdown (atlas/agents/builtin y dirs)
+model = "fake"                              # vacío: el de [llm]
+dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
+[agents.assistant]                          # retoques de un agente sin tocar su fichero
+max_steps = 10
 
 [mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...
 enabled = true

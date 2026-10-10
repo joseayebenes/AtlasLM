@@ -1,12 +1,11 @@
 """ADK agents against a local Ollama: real tool calling over the sample data.
 
-Skipped unless the [agents] extra (google-adk, litellm) is installed and the Ollama of
-atlas.dev.toml is running with its [agents] model pulled. Run only these with
+Skipped unless the [agents] extra (google-adk) is installed and the Ollama of atlas.dev.toml
+is running with its [agents] model pulled. The model is AtlasLlm, over atlas.llm. Run only these with
 `pytest -m ollama`, or leave them out with `pytest -m "not ollama"`.
 """
 import asyncio
 import json
-import os
 import re
 import urllib.request
 from pathlib import Path
@@ -21,19 +20,15 @@ QUESTION = ("Which system requirement (SSS) does SRS-0004 satisfy, and in which 
             "is SRS-0004 implemented and tested?")
 SAMPLE_ADA_FILES = {"tracks.ads", "tracks.adb", "logger.ads", "logger.adb", "test_tracks.adb"}
 
-pytestmark = [pytest.mark.ollama,                      # noise from ADK and litellm imports:
+pytestmark = [pytest.mark.ollama,                      # noise from ADK imports:
               pytest.mark.filterwarnings("ignore:.*EXPERIMENTAL.*:UserWarning"),
               pytest.mark.filterwarnings("ignore:.*ReadOnly.*:UserWarning")]
-
-# litellm downloads its model price list on import unless told to use the bundled one.
-os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 
 @pytest.fixture(scope="module")
 def ollama():
     """(base_url, api_key, model) of atlas.dev.toml, or skip if it cannot be used."""
     pytest.importorskip("google.adk", reason="needs the [agents] extra")
-    pytest.importorskip("litellm", reason="needs the [agents] extra")
     cfg = load_config(ROOT / "atlas.dev.toml")
     base_url, model = cfg["llm"]["base_url"], cfg["agents"]["model"]
     try:
@@ -83,11 +78,13 @@ EDIT_INSTRUCTION = ("You change code with the tools. Find the code with grep, re
 
 
 def _model(ollama):
-    from google.adk.models.lite_llm import LiteLlm
+    from atlas.agents.model import AtlasLlm
+    from atlas.llm import NetConfig, ServiceConfig
     base_url, api_key, model_name = ollama
     # gemma4 reasons by default. With reasoning on, 3 out of 10 runs ended with an empty
     # or invented answer; with it off, 5 out of 5 were right and about 4x faster.
-    return LiteLlm(model=f"openai/{model_name}", api_base=base_url, api_key=api_key, reasoning_effort="none")
+    return AtlasLlm.from_service(ServiceConfig(base_url=base_url, model=model_name, api_key=api_key,
+                                               reasoning_effort="none", net=NetConfig(proxy="", no_proxy="*")))
 
 
 async def _ask(model, tools: list, question: str, instruction: str = TRACE_INSTRUCTION) -> tuple[list[str], str]:
@@ -196,3 +193,74 @@ roots = ["{(samples / 'ada').as_posix()}"]
     cited = set(re.findall(r"\b(?:tracks|logger|test_tracks)\.\w+", answer.lower()))
     assert cited <= {"tracks.delete_track", "tracks.update", "test_tracks.test_tracks", "logger.log",
                      "logger.next_id", "tracks.adb", "tracks.ads", "test_tracks.adb"}, answer
+
+
+def test_the_assistant_of_atlas(ollama, toml, samples):
+    """The built-in assistant (atlas/agents/builtin/assistant.md) with its own tools, as
+    `atlas agent assistant` runs it, over the DOORS and the graph of the samples."""
+    pytest.importorskip("tree_sitter_ada")
+    import contextlib
+    import io
+    from atlas.agents.runtime import run_agent
+    from atlas.cli import run
+    base_url, api_key, model = ollama
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code", "graph"]
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    res = run_agent("assistant", QUESTION.replace("Ada files", "Ada subprograms"), cfg)
+    assert "trace" in [c["name"] for c in res["calls"]], res
+    assert "SSS-0005" in res["answer"] and "delete_track" in res["answer"].lower(), res["answer"]
+    assert "test_tracks" in res["answer"].lower(), res["answer"]
+
+
+def test_requirement_verification_finds_the_deadline_that_differs(ollama, toml, docs_samples, tmp_path):
+    """The verification of a requirement against the documents: SRS-0001 says 499 ms in DOORS
+    and 301 ms in the specification. gemma4 found it and cited both, in about 35 s."""
+    pytest.importorskip("markitdown")
+    import contextlib
+    import io
+    import shutil
+    from atlas.agents.verify import verify
+    from atlas.cli import run
+    from atlas.index import Index
+    base_url, api_key, model = ollama
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    shutil.copy(docs_samples / "spec_with_bookmarks.pdf", docs)
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "docs", "graph", "index"]
+[[sources.docs]]
+name = "specs"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    res = verify("SRS-0001", cfg, index=Index.from_config(cfg))
+    assert res["verdict"] == "inconsistent", res
+    assert any("499" in i["official"] and "301" in i["document"] and "spec_with_bookmarks" in i["source"]
+               for i in res["issues"]), res

@@ -37,5 +37,8 @@ roots = ["C:/src/tms"]
 languages = ["ada"]
 test_patterns = ["**/tests/**"]       # sus subprogramas son pruebas: verifican y cubren requisitos
 
+[agents]                             # agentes: ficheros Markdown con cabecera YAML (ver README)
+dirs = ["agents"]                    # los .md del proyecto, junto a este fichero
+
 [mcp]                                # atlas serve atlas.toml: servidor MCP para OpenCode, VS Code...
 tools = []                           # vacío: las de las fuentes; edit_file y write_file solo si se piden

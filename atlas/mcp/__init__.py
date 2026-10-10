@@ -10,8 +10,9 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 sources: the document tools with [[sources.docs]] (with only [sources.doors],
 get_requirement, and search when "index" is a step), the graph tools and read_file with
 [sources.code], and without code the traceability tools of the graph (trace, matrix,
-gaps...) when "graph" is a step. edit_file and
-write_file are only offered when listed: atlas provides knowledge and the editor edits.
+gaps...) when "graph" is a step; build_context with the graph. ask_atlas and
+verify_requirement (which need the model, and ask_atlas also ADK) are only offered when
+listed. So are edit_file and write_file: atlas provides knowledge and the editor edits.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
@@ -48,6 +49,11 @@ INSTRUCTIONS = {
              "everything about a requirement (DOORS, documents, code, tests); `trace_code`, the requirements "
              "and tests of a code element; `impact`, what a change affects; `matrix` and `gaps`, the "
              "traceability of a DOORS module and what it lacks.",
+    "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
+               "(requirements, signatures, callers, tests, documents and source): use it before changing code.",
+    "agents": "`ask_atlas` asks the assistant of atlas, which searches by itself and answers with citations "
+              "(slower: use it for questions that need several searches); `verify_requirement` checks with the "
+              "model whether a requirement and the documents agree.",
     "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
              "can be read.",
     "edit": "edit_file and write_file only change a file after a read_file of it; check the diff they return.",
@@ -83,7 +89,7 @@ def default_tools(cfg: Config) -> list[str]:
                                                           any(_enabled(d) for d in sources.get("docs", [])))):
         try:
             from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS, TRACE_TOOLS
-            names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names]
+            names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names] + ["build_context"]
         except ImportError as e:            # networkx, of the [code] extra
             log.warning("no graph tools: %s", e)
     if code:
@@ -111,13 +117,14 @@ def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS}
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "context": ("build_context",),
+              "agents": ("ask_atlas", "verify_requirement")}
     try:
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
         groups["graph"] = GRAPH_TOOLS
     except ImportError:
         pass
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "files", "edit")
+    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "agents", "files", "edit")
                                   if g in groups and set(groups[g]) & set(names)]
     return "\n\n".join(parts)
 

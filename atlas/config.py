@@ -56,8 +56,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
-    "agents": {"model": str, "assistant": dict, "context_builder": dict, "impact_analyst": dict,
-               "coverage_auditor": dict, "eval": dict},
+    "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
 }
 
@@ -66,6 +65,8 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
                "min_chars": int, "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
+AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
+                "temperature": float}                             # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool}
 
@@ -79,6 +80,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
+    "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
 }
 
@@ -147,9 +149,15 @@ def load_config(path: str | Path) -> Config:
     for section in data:
         if section not in SCHEMA:
             raise ConfigError(f"unknown section [{section}] (valid: {', '.join(SCHEMA)})")
+    agents = data.get("agents", {})
+    data["agents"] = {k: v for k, v in agents.items() if k in SCHEMA["agents"] or not isinstance(v, dict)}
     for section, schema in SCHEMA.items():
         if section in data:
             _validate(data[section], schema, section)
+    for name, table in agents.items():              # [agents.<name>]: retouches an agent
+        if name not in SCHEMA["agents"] and isinstance(table, dict):
+            _validate(table, AGENT_SCHEMA, f"agents.{name}")
+            data["agents"][name] = table
     sources = data.get("sources", {})
     for i, d in enumerate(sources.get("docs", [])):
         _validate(d, DOCS_SCHEMA, f"sources.docs[{i}]")

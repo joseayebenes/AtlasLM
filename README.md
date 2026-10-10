@@ -16,7 +16,7 @@ de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 106 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 118 pruebas sin modelo (+5 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -63,24 +63,29 @@ el JSON de la respuesta.
 ### Agentes ADK con Ollama
 
 ```bash
-pip install -e ".[agents]"                       # google-adk y litellm
+pip install -e ".[agents]"                       # google-adk
 OLLAMA_CONTEXT_LENGTH=16384 ollama serve         # en otra terminal
 make test-ollama                                 # o: python -m pytest -q -m ollama
 ```
 
-`tests/test_agents_ollama.py` monta un `LlmAgent` de ADK con LiteLLM sobre la URL y el
-modelo de `atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Le da dos herramientas
-sobre las muestras: `get_requirement`, que usa el adaptador de DOORS, y `trace`, que busca
-las etiquetas `Req:` en el Ada. Comprueba que el agente usa las dos, que responde con el
-requisito y los ficheros correctos y que no se inventa ficheros. Se omite sola si falta el
-extra `[agents]`, si Ollama no responde o si el modelo no está descargado. Para excluirla:
-`python -m pytest -m "not ollama"`.
+`tests/test_agents_ollama.py` prueba los agentes contra la URL y el modelo de
+`atlas.dev.toml` (`[llm] base_url`, `[agents] model`), con `AtlasLlm` (sección
+[Agentes](#agentes)). Son cinco pruebas:
+- un agente con dos herramientas propias sobre las muestras (`get_requirement` y una `trace`
+  que busca las etiquetas `Req:`): usa las dos, responde con el requisito y los ficheros
+  correctos y no se inventa ficheros;
+- un cambio preciso en el Ada con las herramientas de ficheros;
+- un agente con las herramientas de `atlas serve` por MCP;
+- el asistente de serie, como lo ejecuta `atlas agent assistant`;
+- la verificación de un requisito con la documentación.
+
+Se omiten solas si falta el extra `[agents]`, si Ollama no responde o si el modelo no está
+descargado. Para excluirlas: `python -m pytest -m "not ollama"`.
 
 Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
-(`reasoning_effort="none"`, como hace la prueba). Con razonamiento, 7 de 10 respuestas
-fueron correctas y tardaron 40-80 s; las otras salieron vacías o con ficheros inventados.
-Sin razonamiento, acertó 5 de 5 en 8-14 s. Al instalar `[agents]`, litellm baja `openai`
-a la versión 2.x; el resto del proyecto funciona igual.
+(`reasoning_effort: none`, como hacen los agentes de serie). Con razonamiento, 7 de 10
+respuestas fueron correctas y tardaron 40-80 s; las otras salieron vacías o con ficheros
+inventados. Sin razonamiento, acertó 5 de 5 en 8-14 s.
 
 La tercera prueba da al agente solo las herramientas de `atlas serve`, por MCP, como
 OpenCode o VS Code. Antes, procesa un PDF y el Ada de ejemplo con los embeddings de Ollama.
@@ -105,6 +110,12 @@ python -m atlas.cli matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de 
 python -m atlas.cli search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
 python -m atlas.cli ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
+python -m atlas.cli agents   atlas.dev.toml   # agentes (ficheros Markdown): de serie y del proyecto
+python -m atlas.cli agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente
+python -m atlas.cli verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación, con el modelo
+python -m atlas.cli impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
+python -m atlas.cli coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
+python -m atlas.cli eval     atlas.dev.toml   # evaluación de los agentes con preguntas de respuesta conocida
 python -m atlas.cli check    atlas.dev.toml   # conexión con el modelo
 python -m atlas.cli serve    atlas.dev.toml   # servidor MCP (stdio) para OpenCode, VS Code...
 ```
@@ -153,9 +164,14 @@ atlas/
 │                   ada_graph*.py) y trazabilidad; GraphML, JSON y Mermaid; herramientas
 │                   del grafo para agentes y MCP
 ├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
-├── agents/         pendiente (fase 5 del plan)
-└── cli.py          run | status | sections | graph | trace | matrix | search | ask | plugins | check | serve
+├── agents/         agentes en ficheros Markdown (builtin/), AtlasLlm para ADK, build_context,
+│                   verificación de requisitos, informes y evaluación
+└── cli.py          run | status | sections | graph | trace | matrix | verify | impact | coverage |
+                    search | ask | plugins | agents | agent | eval | check | serve
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requirements.sqlite)
+examples/large_project.py   proyecto grande sintético y medición del motor (make large)
+examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
+examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
                             test_agents_ollama.py, la prueba de agentes con Ollama
@@ -450,6 +466,7 @@ plugins `tool` que usarán los agentes ADK, con los mismos nombres:
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
+| Agentes | `build_context`, `verify_requirement`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
 - Tres herramientas cambian de nombre para que no se confundan:
@@ -476,7 +493,10 @@ Qué herramientas ofrece el servidor:
     pasos;
   - con `[sources.code]`, las del grafo y `read_file`;
   - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
-    `list_requirements` y `neighbors`), si `graph` está entre los pasos.
+    `list_requirements` y `neighbors`), si `graph` está entre los pasos;
+  - con el grafo, `build_context`.
+- `verify_requirement` y `ask_atlas` necesitan el modelo (y `ask_atlas`, también ADK): solo
+  se ofrecen si están en la lista.
 - Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
@@ -538,3 +558,74 @@ cfg = load_config("atlas.dev.toml")
 DocTools.from_config(cfg).get_requirement("SRS-0004")    # DOORS y documentos
 GraphTools.from_config(cfg).trace("SRS-0004")            # DOORS, documentos, código y pruebas
 ```
+
+## Agentes
+
+Los agentes se definen en ficheros Markdown, como los subagentes de Claude Code. Cada fichero
+es un agente: una cabecera YAML y, en el cuerpo, sus instrucciones.
+
+```markdown
+---
+name: tracer
+description: Traza requisitos y dice qué falta.
+tools: [trace, gaps, build_context]
+model: gemma4:12b          # opcional: [agents] model, o si no [llm] model
+max_steps: 6               # opcional: llamadas al modelo como mucho en una respuesta
+reasoning_effort: none     # opcional: "none" apaga el razonamiento
+temperature: 0.1           # opcional
+---
+You trace requirements of an engineering project...
+```
+
+Vienen de serie, en `atlas/agents/builtin/`, cuatro agentes:
+- `assistant`, con herramientas de documentos, DOORS y código;
+- `requirement_verifier`, `impact_analyst` y `coverage_auditor`, sin herramientas: redactan
+  el paso final de un flujo fijo.
+
+Los del proyecto van en las carpetas de `[agents] dirs` (`agents/` junto a `atlas.toml`, por
+defecto). Un fichero con el nombre de uno de serie lo sustituye. `[agents.<nombre>]` en el
+TOML retoca un campo sin tocar el fichero (`max_steps = 10`). `atlas agents` los lista.
+
+Un agente se ejecuta con ADK sobre `AtlasLlm`, un modelo de ADK que usa el cliente de
+`atlas.llm`: el mismo proxy, TLS, límite de peticiones y reintentos que el resto, sin
+LiteLLM. Sus herramientas son los plugins `tool` con esos nombres, las mismas funciones que
+ofrece `atlas serve`.
+
+```bash
+atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml
+ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso, en el navegador
+```
+
+Lo que viene además de los agentes:
+
+| Pieza | Qué hace | Modelo |
+|---|---|---|
+| `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
+| `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
+| `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |
+| `atlas coverage` | informe de los huecos de trazabilidad de un módulo | `coverage_auditor` |
+| `ask_atlas` | el asistente como herramienta de `atlas serve`: una llamada para el cliente | `assistant` |
+
+En la verificación y en los informes, el grafo encuentra los datos sin modelo, y el agente
+solo juzga o redacta. Los informes van a `<workspace>/reports/` y
+guardan, tras el texto del modelo, los datos de los que sale. La verificación guarda sus
+juicios en caché: verificar otra vez solo pregunta por lo que ha cambiado.
+
+Con `gemma4:12b`, `atlas verify SRS-0001` encuentra que DOORS dice 499 ms y la
+especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log` tarda
+37 s y `atlas coverage SRS_TMS`, 46 s.
+
+`atlas eval` hace las preguntas de los conjuntos de `[agents.eval] sets` (YAML) y las puntúa
+sin modelo. Un caso está bien si la respuesta contiene los textos esperados (IDs,
+identificadores, valores) y el agente ha llamado a las herramientas esperadas.
+`examples/eval/assistant.yaml` tiene 24 casos sobre las muestras. Con `gemma4:12b` sin
+razonamiento, el asistente acertó 23 de 24 (96 %), con una mediana de 11 s por pregunta. El
+fallo dijo bien qué faltaba por definir en las alarmas, pero contestó en español y sin el
+literal «TBD» que pedía el caso.
+
+```toml
+[agents.eval]
+sets = ["examples/eval/assistant.yaml"]
+runs = 3                   # veces que se hace cada pregunta: los modelos no responden siempre igual
+```
+

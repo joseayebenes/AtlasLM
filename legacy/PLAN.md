@@ -627,6 +627,9 @@ de ADK que delega en los clientes de `atlas.llm`. Como alternativa de menor esfu
 LiteLLM con las variables de proxy/CA y un `before_model_callback` que pase por el
 `RateLimiter` antes de cada llamada.
 
+Hecho en la fase 5 con `AtlasLlm` (`atlas/agents/model.py`). Traduce la conversación y las
+herramientas de ADK a la API de chat de OpenAI. LiteLLM ya no hace falta.
+
 ### 8.3 Herramientas
 
 Las herramientas son funciones de la librería con firmas tipadas y descripciones cortas;
@@ -651,6 +654,15 @@ conocida, trayectoria de herramientas esperada y criterios sobre la respuesta fi
 (citas correctas, IDs exactos). Se ejecutan con `adk eval` y en `pytest`. Además,
 `atlas eval` mide la recuperación sin modelo (acierto@k del índice y del grafo), que es lo
 que más condiciona el resultado.
+
+Hecho en la fase 5 de otra manera. `adk eval` compara la respuesta con un texto de
+referencia (ROUGE) y exige la secuencia exacta de herramientas. Aquí importa que los IDs y
+los valores citados sean los correctos, digan lo que digan las palabras. Por eso `atlas
+eval` hace las preguntas de conjuntos en YAML (`examples/eval/`) y puntúa sin modelo:
+- un caso está bien si la respuesta contiene los textos esperados;
+- y si el agente ha llamado a las herramientas esperadas.
+
+La medición de la recuperación sin modelo sigue pendiente.
 
 ---
 
@@ -848,7 +860,7 @@ Estado (10 de octubre de 2026):
   requisito con una sola llamada a `trace`.
 - **Pendiente.** Probarlo con un proyecto real.
 
-### Fase 5 — ADK (≈ 8 días)
+### Fase 5 — ADK (≈ 8 días) — **completa**
 
 - `AtlasLlm` sobre `atlas.llm` (o LiteLLM + callback de cupo).
 - Herramientas `FunctionTool` a partir de la librería; `assistant`, `context_builder`,
@@ -894,14 +906,41 @@ una mediana de 18 s.
 Los agentes empiezan, por tanto, con el razonamiento apagado.
 
 Aceptación:
-- [ ] Desde OpenCode, `build_context` devuelve en una llamada un paquete ≤ 4000 tokens con
-      requisitos, firmas, grafo y pruebas del módulo pedido.
-- [ ] `adk eval` del asistente ≥ 80 % de respuestas con citas correctas sobre el conjunto.
-- [ ] Un agente nuevo se añade escribiendo solo un fichero `.md` (cabecera e
+- [x] Desde OpenCode, `build_context` devuelve en una llamada un paquete ≤ 4000 tokens con
+      requisitos, firmas, grafo y pruebas del módulo pedido. Comprobado con un cliente MCP
+      real sobre `atlas serve`; falta verlo dentro de OpenCode.
+- [x] `adk eval` del asistente ≥ 80 % de respuestas con citas correctas sobre el conjunto.
+      Medido con `atlas eval`: 23 de 24 (96 %), con una mediana de 11 s.
+- [x] Un agente nuevo se añade escribiendo solo un fichero `.md` (cabecera e
       instrucciones), sin tocar el código ni el TOML, y funciona en `adk web` y `adk run`.
-- [ ] La verificación de requisitos encuentra en las muestras las cifras que difieren entre
+- [x] La verificación de requisitos encuentra en las muestras las cifras que difieren entre
       DOORS y la especificación (SRS-0001: 499 ms en DOORS, 301 ms en el PDF) y cita las dos
       fuentes.
+
+Estado (10 de octubre de 2026). Todo en `atlas/agents/`:
+- **Agentes en Markdown.** `definitions.py`. Vienen de serie, en `builtin/`, `assistant`,
+  `requirement_verifier`, `impact_analyst` y `coverage_auditor`. Los del proyecto van en
+  `[agents] dirs`, y `[agents.<nombre>]` los retoca. `atlas agents` los lista.
+- **Ejecución.** `AtlasLlm` (`model.py`) y `runtime.py`: el agente de un fichero se
+  convierte en un `LlmAgent` con los plugins `tool` de su lista y un máximo de `max_steps`
+  llamadas al modelo. `atlas agent NOMBRE "pregunta"` lo ejecuta, y
+  `examples/adk/atlas_agent` lo abre en `adk web` o `adk run`.
+- **`build_context`** (`context.py`). Es el `context_builder`, sin modelo: un paquete en
+  Markdown con requisitos, firmas, llamadores, pruebas, documentos y código, que cabe en un
+  presupuesto de tokens. Es herramienta de `atlas serve` por defecto.
+- **Verificación con la documentación** (`verify.py`, `atlas verify`, herramienta
+  `verify_requirement`). Las pruebas se reúnen sin modelo y el modelo juzga; los juicios se
+  guardan en caché.
+- **Informes** (`reports.py`). `atlas impact` y `atlas coverage`: el grafo encuentra los
+  datos y el agente redacta.
+- **`ask_atlas`.** El asistente como herramienta de `atlas serve` (si se pide en
+  `[mcp] tools`).
+- **Evaluación.** `atlas eval` (sección 8.4). En `examples/eval/assistant.yaml`, gemma4
+  acertó 23 de 24. El fallo contestó bien en el fondo, pero en español y sin el literal
+  «TBD».
+- **Sin hacer.** El agente `ingest` (los pasos del motor como herramientas para verlos en
+  `adk web`): `atlas run` ya lo cubre. Tampoco se condensa con el modelo el paquete de
+  `build_context`; se recorta por orden de importancia.
 
 ### Fase 6 — Consolidación (≈ 5 días)
 
@@ -1142,7 +1181,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `plugins`, `check`, `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 109 pruebas:
+- `tests/`: 123 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db, y la segunda ejecución y un PDF cambiado en una
@@ -1164,8 +1203,12 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
     real, incluido un `atlas run` con el servidor arrancado;
   - requisitos: contrato de la base de intercambio, adaptador `exchange`, y exportador de
     DOORS con un DOORS simulado, desde la descarga hasta `atlas run`;
-  - solo si Ollama está en marcha, tres agentes ADK: uno que traza un requisito, otro que
-    edita código y otro que solo tiene las herramientas de `atlas serve`, por MCP.
+  - agentes: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
+    `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación y
+    la app de `adk web`;
+  - solo si Ollama está en marcha, cinco pruebas de agentes ADK: uno que traza un requisito,
+    otro que edita código, otro que solo tiene las herramientas de `atlas serve` por MCP, el
+    asistente de serie y la verificación de un requisito.
 - `tests/fakes/fake_api.py`: API OpenAI falsa con fallos inyectables.
 - `atlas.test.toml`, `atlas.dev.toml`, `atlas.toml`: los tres niveles de modelo.
 - `legacy/`: los scripts actuales, que las fases 1-5 migran.

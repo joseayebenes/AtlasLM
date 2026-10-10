@@ -16,7 +16,7 @@ de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 96 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 103 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -95,7 +95,9 @@ no llamó a `trace` y se inventó los subprogramas.
 python -m atlas.cli run      atlas.dev.toml   # procesamiento incremental y reanudable
 python -m atlas.cli status   atlas.dev.toml   # libro de registro y datos
 python -m atlas.cli sections atlas.dev.toml   # secciones de cada documento, sin llamar al modelo
-python -m atlas.cli graph    atlas.dev.toml   # informe del grafo de código
+python -m atlas.cli graph    atlas.dev.toml   # informe del grafo (código, DOORS, documentos) y de sus huecos
+python -m atlas.cli trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
+python -m atlas.cli matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
 python -m atlas.cli search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
 python -m atlas.cli ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
@@ -136,11 +138,12 @@ atlas/
 ├── index/          índice (era doc_rag.py): registros, embeddings con caché, FTS5, búsqueda
 │                   híbrida y respuesta citada; sus tablas van en el mismo atlas.db;
 │                   herramientas de documentos para agentes y MCP
-├── graph/          grafo de código en atlas.db, consultas (eran ada_graph*.py), GraphML y JSON;
-│                   herramientas del grafo para agentes y MCP
+├── graph/          grafo de código, DOORS y documentos en atlas.db; consultas (eran
+│                   ada_graph*.py) y trazabilidad; GraphML, JSON y Mermaid; herramientas
+│                   del grafo para agentes y MCP
 ├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
 ├── agents/         pendiente (fase 5 del plan)
-└── cli.py          run | status | sections | graph | search | ask | plugins | check | serve
+└── cli.py          run | status | sections | graph | trace | matrix | search | ask | plugins | check | serve
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requirements.sqlite)
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
@@ -250,8 +253,8 @@ El paso `code` analiza cada fichero Ada con tree-sitter y guarda en `atlas.db`:
 Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
 otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs.
 
-El paso `graph` construye con eso el grafo de código y lo exporta a `<workspace>/graph/`
-(`code.graphml` para Gephi o yEd, `code.json`).
+El paso `graph` construye con eso el grafo de código, que forma parte del grafo unificado
+(sección siguiente).
 
 Los elementos se identifican como `unidad.nombre` (`tracks.update`), así que dos paquetes
 pueden tener un `Update` cada uno. Cada `Nombre (...)` de un cuerpo se clasifica según lo
@@ -267,16 +270,72 @@ prefiriendo las que se importan con `with`. Si aún hay varias, la arista va a t
 que el análisis de impacto no se deje ninguna; `atlas graph` las cuenta como llamadas
 ambiguas.
 
-Como librería, las consultas son las del antiguo `ada_graph_mcp.py`:
+Los ficheros que casan con `[sources.code] test_patterns` (`["**/tests/**"]`) son pruebas:
+sus subprogramas son nodos `test`. Un elemento que cita un requisito lo implementa (arista
+`implements`); una prueba que lo cita lo verifica (`verifies`).
+
+Como librería, las consultas son las del antiguo `ada_graph_mcp.py`, más las de
+trazabilidad:
 
 ```python
 from atlas.config import load_config
 from atlas.graph import KnowledgeGraph
 g = KnowledgeGraph.from_config(load_config("atlas.dev.toml"))
-g.impact("Delete_Track", depth=3)          # quién lo llama, directa o indirectamente
-g.requirement("SRS-0004")                 # qué subprogramas y tipos lo trazan
+g.impact("Delete_Track", depth=3)          # lo que depende de él, y los requisitos y pruebas afectados
+g.trace("SRS-0004")                       # DOORS, documentos, código y pruebas del requisito
 g.read_source("tracks.update")            # el código, con números de línea
 ```
+
+## Grafo y trazabilidad
+
+El paso `graph` junta en un solo grafo el código, los requisitos de DOORS y los documentos.
+Cada parte se construye por separado y solo cuando cambia aquello de lo que sale:
+
+| Parte | Sale de | Nodos | Aristas |
+|---|---|---|---|
+| `code` | `code.parse` | unidades, subprogramas, pruebas, tipos, variables, requisitos citados | `defines`, `calls`, `converts`, `uses`, `withs`, `implements`, `verifies` |
+| `doors` | `doors.requirements` | módulos (`module:SRS_TMS`), requisitos, encabezados | `contains` (módulo y jerarquía) y un enlace por cada enlace de DOORS, con su tipo (`satisfies`...) |
+| `docs` | `docs.process` | documentos (`doc:hmi_manual.md`) y secciones (`doc:hmi_manual.md#003`) | `contains`, `declares` (la sección declara el requisito) y `mentions` (la sección nombra un elemento de código) |
+
+Un requisito es el mismo nodo en las tres partes. Sus IDs se normalizan igual que los de
+DOORS (`[sources.doors.convention] id_normalize`; mayúsculas por defecto), así que
+`Req: srs-0004` en el código y `SRS-0004` en DOORS se encuentran. Una sección nombra un
+elemento de código cuando escribe su nombre completo (`Tracks.Delete_Track`) o un nombre con
+guion bajo que solo tiene un elemento (`Delete_Track`). Las palabras sueltas, como `Update`,
+son demasiado comunes para contar.
+
+El grafo completo se exporta a `<workspace>/graph/atlas.graphml` (Gephi, yEd) y
+`atlas.json`. Con `[graph] communities = true`, cada elemento de código lleva su grupo
+(Louvain), para colorearlo en Gephi.
+
+Consultas de trazabilidad, sin modelo:
+
+| Consulta | Devuelve |
+|---|---|
+| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; el código que lo implementa; las pruebas que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código) |
+| `trace_code(nombre)` | requisitos, llamadores, llamados, pruebas y secciones de un elemento de código; de una prueba, el código que ejercita y los requisitos que cubre |
+| `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas y secciones afectados, incluidos los requisitos que esos satisfacen en DOORS; de un requisito: los que derivan de él, su código, pruebas y secciones |
+| `matrix(módulo)` | requisito → código → pruebas → documentos, con resumen y huecos |
+| `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
+| `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
+| `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
+
+Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta como
+implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
+enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
+
+`atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.csv` (para una
+hoja de cálculo) y `.md`, y muestra el resumen y los huecos; `atlas matrix "*"` la hace con
+todos los requisitos. Con las muestras:
+
+```
+40 requirements: 4 with code, 1 with tests, 40 in documents.
+without code (36): SRS-0005, SRS-0006, …
+```
+
+La comparación de cifras es el primer paso de la verificación de requisitos con la
+documentación: el texto de DOORS de SRS-0004 dice 320 ms y el del PDF de ejemplo, 401 ms.
+La fase 5 añade un paso con el modelo que juzga el resto de incongruencias.
 
 ### Herramientas para agentes de código
 
@@ -370,7 +429,7 @@ plugins `tool` que usarán los agentes ADK, con los mismos nombres:
 | Grupo | Herramientas | Clase |
 |---|---|---|
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
-| Grafo de código | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `list_requirements`, `untraced` | `atlas.graph.GraphTools` |
+| Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
 
 Cambios respecto a los servidores anteriores:
@@ -378,7 +437,8 @@ Cambios respecto a los servidores anteriores:
   - `search_docs` de `doc_rag.py` es `search`;
   - `search_docs` de `ada_graph_mcp.py` (busca en los comentarios del código) es
     `search_code_docs`;
-  - `requirement` (el código que cita un requisito) es `trace`.
+  - `requirement` (el código que cita un requisito) es `trace`, que ahora da también DOORS,
+    documentos y pruebas.
 - `get_requirement` devuelve también el texto oficial de DOORS, con su módulo, atributos,
   padre y enlaces. Si el ID no existe, sugiere IDs parecidos.
 - `read_file` es el de `CodeTools`, que solo lee dentro de `[sources.code] roots`. El de
@@ -394,7 +454,9 @@ Qué herramientas ofrece el servidor:
   configuradas:
   - con `[[sources.docs]]`, las de documentos;
   - con solo `[sources.doors]`, `get_requirement`;
-  - con `[sources.code]`, las del grafo y `read_file`.
+  - con `[sources.code]`, las del grafo y `read_file`;
+  - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
+    `list_requirements` y `neighbors`), si `graph` está entre los pasos.
 - Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
@@ -454,5 +516,5 @@ from atlas.graph import GraphTools
 from atlas.index import DocTools
 cfg = load_config("atlas.dev.toml")
 DocTools.from_config(cfg).get_requirement("SRS-0004")    # DOORS y documentos
-GraphTools.from_config(cfg).trace("SRS-0004")            # el código que lo cita
+GraphTools.from_config(cfg).trace("SRS-0004")            # DOORS, documentos, código y pruebas
 ```

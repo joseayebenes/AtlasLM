@@ -16,7 +16,7 @@ de `doc_rag.py`, que ahora son uno solo (`atlas.mcp`, `atlas serve`).
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
 python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                         # 105 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
+python -m pytest -q                         # 106 pruebas sin modelo (+3 de agentes si Ollama está en marcha)
 ```
 
 ### Tres niveles de modelo
@@ -124,6 +124,13 @@ python -m atlas.cli search "alarm latency" atlas.test.toml
 # ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones cambiadas y
 # los textos nuevos del índice)
 ```
+
+Para medir el motor con un proyecto grande, `make large` genera uno sintético en
+`examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
+procesa tres veces con el servidor falso. Resultados:
+- la primera ejecución tarda 17,5 s;
+- la segunda, sin cambios, 0,1 s y sin ninguna petición;
+- tras cambiar un plazo en una página de un PDF, 1,5 s y una sola petición al modelo.
 
 ## Estructura
 

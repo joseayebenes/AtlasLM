@@ -177,3 +177,32 @@ def test_genai_schemas_become_json_schemas():
     assert to_tools(request) == [{"type": "function", "function": {"name": "f", "description": "F.", "parameters": {
         "type": "object", "required": ["x"], "properties": {"x": {"type": "string", "description": "an x"},
                                                             "ys": {"type": "array", "items": {"type": "integer"}}}}}}]
+
+
+def test_build_context_fits_a_budget(workspace, monkeypatch):
+    from atlas.agents.tools import AgentTools
+    monkeypatch.chdir(workspace.path.parent)
+    plugins.load_plugins()
+    context = SimpleNamespace(cfg=workspace, disabled=[])
+    tools = plugins.get("tool", "build_context")(context)
+    assert isinstance(AgentTools.for_context(context), AgentTools)
+
+    req = tools.run(target="srs-0004")
+    assert (req["target"], req["kind"], req["truncated"], req["omitted"]) == ("SRS-0004", "requirement", False, [])
+    md = req["markdown"]
+    for text in ("## Requirement", "satisfies SSS-0005", "## Code that implements it",
+                 "`procedure Delete_Track (I : Integer) is`", "`test_tracks.test_tracks` (cites it)",
+                 "Logger.Log (\"delete\");"):
+        assert text in md, text
+    assert md.index("## Requirement") < md.index("## Code that implements it") < md.index("## Source")
+
+    unit = tools.run(target="tracks")
+    assert unit["kind"] == "unit" and "Requirements: SRS-0002, SRS-0003" in unit["markdown"]
+    assert "```\n    1 | package Tracks is" in unit["markdown"]
+    element = tools.run(target="Delete_Track")
+    assert "## Called by" in element["markdown"] and "Uses: tracks.trk_db" in element["markdown"]
+    assert "## Exercises" in tools.run(target="test_tracks.test_tracks")["markdown"]
+
+    small = tools.run(target="tracks", budget_tokens=200)
+    assert small["truncated"] and small["tokens"] <= 200 and "Spec" in small["omitted"]
+    assert "not in the graph" in tools.run(target="nothing")["error"]

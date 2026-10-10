@@ -48,6 +48,8 @@ INSTRUCTIONS = {
              "everything about a requirement (DOORS, documents, code, tests); `trace_code`, the requirements "
              "and tests of a code element; `impact`, what a change affects; `matrix` and `gaps`, the "
              "traceability of a DOORS module and what it lacks.",
+    "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
+               "(requirements, signatures, callers, tests, documents and source): use it before changing code.",
     "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
              "can be read.",
     "edit": "edit_file and write_file only change a file after a read_file of it; check the diff they return.",
@@ -83,7 +85,7 @@ def default_tools(cfg: Config) -> list[str]:
                                                           any(_enabled(d) for d in sources.get("docs", [])))):
         try:
             from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS, TRACE_TOOLS
-            names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names]
+            names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names] + ["build_context"]
         except ImportError as e:            # networkx, of the [code] extra
             log.warning("no graph tools: %s", e)
     if code:
@@ -111,13 +113,13 @@ def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS}
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "context": ("build_context",)}
     try:
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
         groups["graph"] = GRAPH_TOOLS
     except ImportError:
         pass
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "files", "edit")
+    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "files", "edit")
                                   if g in groups and set(groups[g]) & set(names)]
     return "\n\n".join(parts)
 

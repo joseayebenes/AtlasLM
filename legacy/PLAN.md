@@ -537,6 +537,16 @@ Consultas que el módulo `graph` ofrece como funciones (y los agentes como herra
 | `neighbors(node, kinds, depth)` | subgrafo para explorar o dibujar |
 | `export(format)` | GraphML (Gephi), JSON, Mermaid de un subgrafo |
 
+En la fase 4 las aristas quedaron con estos nombres:
+- `implements` (código → requisito) y `verifies` (prueba → requisito), por los comentarios
+  `Req:`;
+- `declares` (sección → requisito) y `mentions` (sección → código);
+- `contains` (módulo, jerarquía de DOORS y documento);
+- en los enlaces de DOORS, el tipo de cada enlace.
+
+`covers` no se guarda: se deduce de las llamadas de cada prueba. Las consultas están en
+`atlas.graph.KnowledgeGraph` y, con los mismos nombres, en las herramientas de `atlas serve`.
+
 Los IDs de requisito se normalizan (mayúsculas, guiones) para que coincidan entre DOORS,
 documentos y comentarios `Req:` del código. La **matriz de huecos** es el entregable más
 útil para certificación y sale sin ninguna llamada al modelo.
@@ -774,10 +784,10 @@ cambia es quién la rellena, y la correspondencia con la fuente la hace ese rell
   2. publicación con `mapping.toml`, que no necesita DOORS.
 - **Probado.** Todo, con un DOORS simulado que habla el mismo protocolo, hasta `atlas run`.
 - **Pendiente.** Validar en DOORS real la DXL nueva de jerarquía y enlaces
-  (`doors_download.py --check`) y una descarga completa de un módulo grande. Faltan además
-  la jerarquía en el grafo y los requisitos en el índice.
+  (`doors_download.py --check`) y una descarga completa de un módulo grande. La jerarquía ya
+  está en el grafo (fase 4); faltan los requisitos de DOORS en el índice.
 
-### Fase 4 — Grafo unificado y trazabilidad (≈ 7 días)
+### Fase 4 — Grafo unificado y trazabilidad (≈ 7 días) — **completa**
 
 - Cargadores de documentos, DOORS y código al mismo grafo; aristas `implemented_by`
   (comentarios `Req:`), `documents`, `verified_by`/`covers` (pruebas por patrón).
@@ -789,9 +799,38 @@ cambia es quién la rellena, y la correspondencia con la fuente la hace ese rell
   fase 5.
 
 Aceptación:
-- [ ] `matrix("SRS_TMS")` produce la matriz requisito → código → prueba y la lista de
-      huecos, verificada a mano sobre una muestra.
-- [ ] `impact` sobre un subprograma devuelve llamadores transitivos y requisitos afectados.
+- [x] `matrix("SRS_TMS")` produce la matriz requisito → código → prueba y la lista de
+      huecos, verificada a mano sobre una muestra (las muestras de `examples/`: SRS-0001 a
+      SRS-0004 con su código y SRS-0004 con su prueba; falta repetirlo con un módulo real).
+- [x] `impact` sobre un subprograma devuelve llamadores transitivos y requisitos afectados
+      (y los requisitos que estos satisfacen en DOORS, las pruebas y las secciones).
+
+Estado (10 de octubre de 2026):
+- **Construcción.** `graph.build` tiene una unidad por origen: `code`, `doors` y `docs`.
+  Cada una se reconstruye solo cuando cambia aquello de lo que sale.
+  - Las pruebas son los subprogramas de los ficheros que casan con `test_patterns`.
+  - Los IDs del código y de los documentos se normalizan como los de DOORS.
+  - Los nombres de las aristas están en la sección 7.
+- **Consultas.** `trace`, `trace_code`, `impact`, `matrix`, `gaps`, `neighbors` y
+  `communities`, también como herramientas de `atlas serve`. En la CLI, `atlas trace ID`,
+  `atlas matrix MÓDULO` (CSV y Markdown) y el informe de huecos de `atlas graph`.
+- **Exportación.** El grafo completo en GraphML y JSON; los subgrafos de `neighbors`, en
+  Mermaid.
+- **Criterio de implementación.** Un requisito cuyos derivados de otro módulo tienen código
+  (un SSS a través de sus SRS) cuenta como implementado. Los enlaces dentro del mismo módulo
+  no cuentan.
+- **Comparación de cifras.** El texto de DOORS se compara con el de los documentos en
+  `trace` y en `gaps`.
+- **Rendimiento.** Medido con un proyecto sintético: 5000 SRS, 500 SSS, 3000
+  subprogramas, 300 pruebas y 1000 secciones (10 422 nodos y 36 324 aristas).
+  - Construir, guardar y cargar el grafo: menos de 0,3 s.
+  - `trace` o `impact`: milisegundos. La primera consulta que necesita saber qué pruebas
+    cubren cada elemento lo calcula una vez (0,3 s).
+  - La matriz de los 5000 SRS: 0,35 s; `gaps`: 0,2 s; las comunidades: 0,3 s.
+- **Agentes.** Con las 26 herramientas de `atlas serve`, `gemma4:12b` sin razonamiento
+  acertó 12 de 12 en las cuatro preguntas de la fase 1 (mediana de 18 s), y traza un
+  requisito con una sola llamada a `trace`.
+- **Pendiente.** Probarlo con un proyecto real.
 
 ### Fase 5 — ADK (≈ 8 días)
 
@@ -832,6 +871,9 @@ impacto, documentos y una sección), tres veces cada una:
 - sin razonamiento, 12 de 12 bien, con una mediana de 14 s;
 - con razonamiento, 9 de 12 bien, con una mediana de 58 s. Los tres fallos se inventaron
   los subprogramas en vez de llamar a `trace`.
+
+Repetido tras la fase 4, con 26 herramientas en vez de 21: 12 de 12 sin razonamiento, con
+una mediana de 18 s.
 
 Los agentes empiezan, por tanto, con el razonamiento apagado.
 
@@ -1070,8 +1112,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `tools/doors_export/`: exportador de DOORS a la base de intercambio (descarga y
   publicación con `mapping.toml`).
 - `atlas/code/`: analizador Ada (`ada_graph.py` migrado en la fase 1).
-- `atlas/graph/`: grafo de código en `atlas.db`, consultas de `ada_graph_mcp.py` y
-  exportación, con el paso `graph.build` (fase 1).
+- `atlas/graph/`: grafo de código, DOORS y documentos en `atlas.db`, consultas de
+  `ada_graph_mcp.py`, trazabilidad y exportación, con el paso `graph.build` (fases 1 y 4).
 - `atlas/docs/`: `pdf_struct.py` migrado en la fase 1 (extracción, estructura, análisis
   `llm | regex | none` y Markdown), con el paso `docs.process`.
 - `atlas/index/`: `doc_rag.py` migrado en la fase 1 (registros, embeddings con caché, FTS5,
@@ -1080,11 +1122,11 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `atlas.toml`; `atlas check` reconoce los modelos que razonan.
 - `atlas/mcp/`: servidor MCP con las herramientas de documentos, grafo y ficheros
   (`ada_graph_mcp.py` y el modo `mcp` de `doc_rag.py`, migrados en la fase 1).
-- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `search`, `ask`, `plugins`, `check`,
-  `serve`.
+- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `trace`, `matrix`, `search`, `ask`,
+  `plugins`, `check`, `serve`.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 99 pruebas:
+- `tests/`: 106 pruebas:
   - configuración, plugins y DOORS;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
     varios hilos sobre el mismo atlas.db;
@@ -1096,6 +1138,9 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   - código y grafo: etiquetas, análisis Ada, nombres repetidos en dos paquetes,
     almacenamiento, exportación, consultas, paso `graph.build` y equivalencia con
     `ada_graph.py`;
+  - grafo unificado y trazabilidad: pruebas e IDs normalizados, los tres orígenes juntos,
+    `trace`, `trace_code`, `impact`, `matrix`, `gaps`, `neighbors`, comunidades, y el paso
+    `graph.build` incremental por origen con `atlas trace` y `atlas matrix`;
   - herramientas de ficheros: confinamiento, lectura, búsqueda, reglas de edición,
     codificación y tolerancia a los fallos de los modelos pequeños;
   - servidor MCP: herramientas según la configuración, y `atlas serve` con un cliente MCP

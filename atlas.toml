@@ -35,6 +35,7 @@ inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
 [sources.code]
 roots = ["C:/src/tms"]
 languages = ["ada"]
+test_patterns = ["**/tests/**"]       # sus subprogramas son pruebas: verifican y cubren requisitos
 
 [mcp]                                # atlas serve atlas.toml: servidor MCP para OpenCode, VS Code...
 tools = []                           # vacío: las de las fuentes; edit_file y write_file solo si se piden

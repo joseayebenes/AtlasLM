@@ -84,10 +84,14 @@ a la versión 2.x; el resto del proyecto funciona igual.
 
 La tercera prueba da al agente solo las herramientas de `atlas serve`, por MCP, como
 OpenCode o VS Code. Antes, procesa un PDF y el Ada de ejemplo con los embeddings de Ollama.
-Tarda unos dos minutos. Con cuatro preguntas repetidas tres veces (trazabilidad, impacto,
-documentos y una sección), el agente acertó 12 de 12 sin razonamiento, con una mediana de
-14 s. Con razonamiento acertó 9 de 12, con una mediana de 58 s: en las tres de trazabilidad
-no llamó a `trace` y se inventó los subprogramas.
+Tarda unos dos minutos con el modelo en frío. Se hicieron cuatro preguntas, tres veces cada
+una: trazabilidad, impacto, documentos y una sección.
+- Sin razonamiento, el agente acertó 12 de 12, con una mediana de 14 s.
+- Con razonamiento, acertó 9 de 12, con una mediana de 58 s. En las tres de trazabilidad no
+  llamó a `trace` y se inventó los subprogramas.
+- Tras la fase 4 (26 herramientas), sin razonamiento: 12 de 12, con una mediana de 18 s.
+  `trace` ya da los enlaces de DOORS, el código y las pruebas, así que basta con esa
+  llamada; la prueba ya no exige también `get_requirement`.
 
 ## Comandos
 

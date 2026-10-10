@@ -68,7 +68,8 @@ test_patterns = ["**/tests/**"]
 summaries = "none"
 
 [graph]
-exports = ["graphml", "json"]
+exports = ["graphml", "json"]               # grafo completo en <workspace>/graph/atlas.*
+communities = false                         # true: grupo de código (Louvain) en cada nodo, para Gephi
 
 [index]
 chunk_chars = 1200

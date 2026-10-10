@@ -783,6 +783,10 @@ cambia es quién la rellena, y la correspondencia con la fuente la hace ese rell
   (comentarios `Req:`), `documents`, `verified_by`/`covers` (pruebas por patrón).
 - Consultas `trace`, `trace_code`, `impact`, `matrix`, `gaps`, `neighbors`; comunidades.
 - Exportación GraphML, JSON y Mermaid de subgrafos.
+- Comparación sin modelo del texto oficial de cada requisito (DOORS) con lo que dicen los
+  documentos: `trace` pone los textos uno junto a otro y `gaps` señala los requisitos con
+  cifras distintas (plazos, límites, unidades). Es la base del paso de verificación de la
+  fase 5.
 
 Aceptación:
 - [ ] `matrix("SRS_TMS")` produce la matriz requisito → código → prueba y la lista de
@@ -798,6 +802,17 @@ Aceptación:
   con las herramientas de la librería y la configuración de OpenCode y VS Code, ya está
   hecho en la fase 1).
 - Conjuntos de evaluación iniciales (20-30 casos) y `adk eval` en `pytest`.
+- Verificación de cada requisito con la documentación (petición del 10 de octubre de 2026).
+  Uno de los pasos de los agentes comprueba, para cada requisito que tenga documentación,
+  que el texto oficial y los documentos dicen lo mismo, y señala las incongruencias:
+  - valores distintos (plazos, límites, unidades);
+  - condiciones que faltan o sobran;
+  - secciones que dicen otra cosa;
+  - requisitos que se contradicen entre sí.
+
+  Parte de la comparación sin modelo de la fase 4. El modelo juzga el resto y cita las dos
+  fuentes de cada incongruencia. Encaja en `coverage_auditor` o en un agente propio
+  (`requirement_verifier`), con un informe de incongruencias junto al de huecos.
 - Agentes configurables con ficheros Markdown, como los subagentes de Claude Code
   (`.claude/agents/*.md`). Petición del 10 de octubre de 2026. Propuesta:
   - cada fichero es un agente: una cabecera YAML con `name`, `description`, `tools`,
@@ -826,6 +841,9 @@ Aceptación:
 - [ ] `adk eval` del asistente ≥ 80 % de respuestas con citas correctas sobre el conjunto.
 - [ ] Un agente nuevo se añade escribiendo solo un fichero `.md` (cabecera e
       instrucciones), sin tocar el código ni el TOML, y funciona en `adk web` y `adk run`.
+- [ ] La verificación de requisitos encuentra en las muestras las cifras que difieren entre
+      DOORS y la especificación (SRS-0001: 499 ms en DOORS, 301 ms en el PDF) y cita las dos
+      fuentes.
 
 ### Fase 6 — Consolidación (≈ 5 días)
 

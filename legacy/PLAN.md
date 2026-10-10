@@ -601,6 +601,9 @@ flowchart LR
 | `coverage_auditor` | flujo fijo | `gaps()` y `matrix()` del grafo; informe de huecos de trazabilidad; sin LLM salvo para redactar el resumen | opcional |
 | `ingest` | flujo fijo | ejecuta los pasos del motor incremental como herramientas, para verlos en `adk web`; equivalente a `atlas run` | no |
 
+Los agentes con modelo se definirán en ficheros Markdown con cabecera YAML, como los
+subagentes de Claude Code (fase 5).
+
 Los flujos fijos usan los agentes de flujo de ADK (secuencial, paralelo, bucle; en las
 versiones recientes su sustituto `Workflow`), no un LLM que decida los pasos: con un modelo
 pequeño es más fiable y más barato.
@@ -795,6 +798,18 @@ Aceptación:
   con las herramientas de la librería y la configuración de OpenCode y VS Code, ya está
   hecho en la fase 1).
 - Conjuntos de evaluación iniciales (20-30 casos) y `adk eval` en `pytest`.
+- Agentes configurables con ficheros Markdown, como los subagentes de Claude Code
+  (`.claude/agents/*.md`). Petición del 10 de octubre de 2026. Propuesta:
+  - cada fichero es un agente: una cabecera YAML con `name`, `description`, `tools`,
+    `model` y `max_steps`, y el cuerpo, que son las instrucciones del agente;
+  - atlas los busca en las carpetas de `[agents] dirs` (por ejemplo, `agents/` en el
+    proyecto) y crea el `LlmAgent` sin tocar código;
+  - los agentes de serie se entregan también como ficheros, que se pueden copiar y cambiar;
+  - `[agents.<nombre>]` del TOML sirve solo para retocar uno ya definido.
+
+  Así, cada uno cambia las instrucciones y las herramientas de un agente sin programar. Los
+  flujos fijos (`context_builder`, `impact_analyst`...) siguen en código; un fichero puede
+  definir el agente con modelo que usan al final.
 
 Medido ya (10 de octubre de 2026): un agente ADK con `gemma4:12b` que solo tiene las
 herramientas de `atlas serve`, por MCP, respondió a cuatro preguntas (trazabilidad,
@@ -809,6 +824,8 @@ Aceptación:
 - [ ] Desde OpenCode, `build_context` devuelve en una llamada un paquete ≤ 4000 tokens con
       requisitos, firmas, grafo y pruebas del módulo pedido.
 - [ ] `adk eval` del asistente ≥ 80 % de respuestas con citas correctas sobre el conjunto.
+- [ ] Un agente nuevo se añade escribiendo solo un fichero `.md` (cabecera e
+      instrucciones), sin tocar el código ni el TOML, y funciona en `adk web` y `adk run`.
 
 ### Fase 6 — Consolidación (≈ 5 días)
 

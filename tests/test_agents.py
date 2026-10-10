@@ -1,4 +1,9 @@
 """atlas.agents: agents defined in Markdown files, run with ADK over atlas.llm."""
+import contextlib
+import io
+import json
+from types import SimpleNamespace
+
 import pytest
 
 from atlas import plugins
@@ -35,7 +40,8 @@ def test_the_agents_come_from_markdown_files(toml, tmp_path):
     _agent(agents, "my_assistant.md", name="assistant", tools="search, get_requirement", body="Only search.")
     cfg = load_config(toml("[agents.tracer]\nmax_steps = 3\nmodel = \"other\"\n"))
     found = load_definitions(cfg)
-    assert found["assistant"].tools == ["search", "get_requirement"] and found["assistant"].instruction == "Only search."
+    assert found["assistant"].tools == ["search", "get_requirement"]
+    assert found["assistant"].instruction == "Only search."
     assert (found["tracer"].max_steps, found["tracer"].model, found["tracer"].tools) == (3, "other", ["trace"])
     assert found["tracer"].source == str(agents / "tracer.md")
     assert set(load_definitions(load_config(toml('[agents]\ndirs = []\n')))) == set(builtin)
@@ -69,3 +75,105 @@ def test_atlas_agents_lists_them(toml, capsys):
     out = capsys.readouterr().out
     assert "assistant              built-in" in out and "tools: search, get_section" in out
     assert BUILTIN.name == "builtin"
+
+
+# --- running them with ADK over AtlasLlm ---------------------------------------------------
+
+class StubClient:
+    """An OpenAI client that answers with scripted turns and keeps the requests: a dict is a
+    turn of tool calls ({name: args}), a string the final answer."""
+
+    def __init__(self, turns):
+        self.turns, self.requests = list(turns), []
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        self.requests.append(kwargs)
+        turn = self.turns.pop(0)
+        if isinstance(turn, dict):
+            arguments = lambda a: a if isinstance(a, str) else json.dumps(a)
+            calls = [SimpleNamespace(id=f"call_{i}", type="function",
+                                     function=SimpleNamespace(name=n, arguments=arguments(a)))
+                     for i, (n, a) in enumerate(turn.items())]
+            message, finish = SimpleNamespace(content=None, tool_calls=calls), "tool_calls"
+        else:
+            message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
+                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110))
+
+
+@pytest.fixture
+def workspace(toml, samples):
+    """DOORS and the graph of the Ada samples, as `atlas run` leaves them."""
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from atlas.cli import run
+    cfg = load_config(toml(f'''
+[pipeline]
+steps = ["doors", "code", "graph"]
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    return cfg
+
+
+def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatch):
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
+                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}]}
+
+    first, second = client.requests
+    assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file
+    assert first["messages"][0]["role"] == "system" and "engineering project" in first["messages"][0]["content"]
+    assert first["messages"][-1] == {"role": "user", "content": "Who implements SRS-0004?"}
+    tools = {t["function"]["name"]: t["function"] for t in first["tools"]}
+    assert list(tools) == load_definitions(workspace)["assistant"].tools
+    assert tools["trace"]["parameters"]["required"] == ["req_id"]
+    assert tools["trace"]["description"].startswith("Everything about a requirement ID")
+    call, result = second["messages"][-2:]
+    assert call["role"] == "assistant" and call["tool_calls"][0]["function"]["name"] == "trace"
+    assert result["role"] == "tool" and result["tool_call_id"] == "call_0"
+    assert "tracks.delete_track" in result["content"] and "SSS-0005" in result["content"]
+
+
+def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
+    from atlas.agents import model
+    from atlas.agents.runtime import run_agent
+    from atlas.cli import main
+    cfg = workspace
+    cut = '{"req_id": "SRS-0004"'                                # a small model cut the JSON
+    client = StubClient([{"trace": cut}, {"trace": cut}, {"trace": cut}, "never"])
+    monkeypatch.setitem(cfg["agents"], "assistant", {"max_steps": 2})
+    res = run_agent("assistant", "Trace SRS-0004", cfg, client=client)
+    assert res["stopped"] and len(client.requests) == 2
+    assert res["calls"][0] == {"name": "trace", "args": {"req_id": "SRS-0004"}}
+
+    # atlas agent, over the client of atlas.llm
+    stub = StubClient(["Nothing to trace."])
+    monkeypatch.setattr(model, "create_client", lambda service: (stub, None))
+    with pytest.raises(SystemExit) as end:
+        main(["agent", "assistant", "Hello", str(workspace.path)])
+    assert end.value.code == 0 and stub.requests[0]["messages"][-1]["content"] == "Hello"
+    with pytest.raises(SystemExit, match="there is no agent 'nobody'"):
+        main(["agent", "nobody", "Hello", str(workspace.path)])
+
+
+def test_genai_schemas_become_json_schemas():
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from atlas.agents.model import to_tools
+    declaration = types.FunctionDeclaration(name="f", description="F.", parameters=types.Schema(
+        type=types.Type.OBJECT, required=["x"], properties={
+            "x": types.Schema(type=types.Type.STRING, description="an x"),
+            "ys": types.Schema(type=types.Type.ARRAY, items=types.Schema(type=types.Type.INTEGER))}))
+    request = LlmRequest(config=types.GenerateContentConfig(tools=[types.Tool(function_declarations=[declaration])]))
+    assert to_tools(request) == [{"type": "function", "function": {"name": "f", "description": "F.", "parameters": {
+        "type": "object", "required": ["x"], "properties": {"x": {"type": "string", "description": "an x"},
+                                                            "ys": {"type": "array", "items": {"type": "integer"}}}}}}]

@@ -10,6 +10,7 @@
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
+    atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
 """
@@ -610,6 +611,22 @@ def list_agents(cfg: Config) -> int:
     return 0
 
 
+def agent(cfg: Config, name: str, question: str) -> int:
+    from atlas.agents.runtime import run_agent
+    try:
+        res = run_agent(name, question, cfg, _context(cfg))
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    print(res["answer"] or "(no answer)")
+    if res["stopped"]:
+        print(f"\n(stopped after the most calls to the model of the agent, max_steps)")
+    if res["calls"]:
+        print("\nTools called:")
+    for c in res["calls"]:
+        print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    return 1 if res["stopped"] else 0
+
+
 def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     return check_connection(from_config(cfg))
@@ -634,6 +651,13 @@ def main(argv: list[str] | None = None) -> None:
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix}
+    if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
+        if len(rest) < 2:
+            sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")
+        try:
+            sys.exit(agent(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1]))
+        except ConfigError as e:
+            sys.exit(f"configuration: {e}")
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
     if action in with_text and not rest:

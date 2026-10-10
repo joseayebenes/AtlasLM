@@ -48,8 +48,10 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert "`build_context` gives in one call" in server.instructions
 
     # a list of its own, writing tools included; repeated names count once
-    tools = _tools(create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search"]\n'))))
-    assert list(tools) == ["search", "edit_file"]
+    server = create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search", "ask_atlas"]\n')))
+    tools = _tools(server)
+    assert list(tools) == ["search", "edit_file", "ask_atlas"]
+    assert "`ask_atlas` asks the assistant" in server.instructions
     assert tools["edit_file"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
     with pytest.raises(ConfigError, match=r"unknown tools \['graph_query'\]"):
         create_server(load_config(toml('[mcp]\ntools = ["search", "graph_query"]\n')))

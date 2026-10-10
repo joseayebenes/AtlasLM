@@ -317,3 +317,16 @@ def test_impact_and_coverage_reports(workspace):
     assert "- SRS-0005" in data and "- … and 21 more" in data and "SRS-0040" not in data      # 15 of 36
     assert "- SRS-0040" in (workspace.workspace / "reports" / "coverage-SRS_TMS.md").read_text()
     assert coverage_report("NOPE", workspace, llm=writer)["modules"] == ["SRS_TMS", "SRS_TMS_OLD", "SSS_MISSION"]
+
+
+def test_ask_atlas_is_the_assistant_as_a_tool(workspace, monkeypatch):
+    from atlas.agents import model
+    monkeypatch.chdir(workspace.path.parent)
+    stub = StubClient([{"trace_code": {"name": "Update"}}, "tracks.update implements SRS-0002 and SRS-0003."])
+    monkeypatch.setattr(model, "create_client", lambda service: (stub, None))
+    plugins.load_plugins()
+    context = SimpleNamespace(cfg=workspace, store=None, disabled=[])
+    res = plugins.get("tool", "ask_atlas")(context).run(question="What does Update implement?")
+    assert res["answer"] == "tracks.update implements SRS-0002 and SRS-0003."
+    assert res["calls"] == [{"name": "trace_code", "args": {"name": "Update"}}]
+    assert "SRS-0002" in stub.requests[1]["messages"][-1]["content"]           # the result of trace_code

@@ -1,6 +1,7 @@
 """Index and hybrid search over the documents (legacy/doc_rag.py).
 
     records.py      search records of a document (overview, sections, chunks, requirements...)
+                    and of a DOORS module (its requirements)
     embeddings.py   Embedder: vectors through the [embeddings] connection
     store.py        IndexStore: records, vectors, FTS5 and embeddings cache in atlas.db
     search.py       hybrid search (IDs + vectors + BM25, merged with RRF) and cited answers
@@ -23,7 +24,7 @@ from typing import Iterable
 import numpy as np
 
 from atlas.index.embeddings import Embedder
-from atlas.index.records import KINDS, build_records, chunk_text
+from atlas.index.records import DOORS_PREFIX, KINDS, build_records, chunk_text, requirement_records
 from atlas.index.search import answer, build_context, cite, search
 from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
@@ -31,8 +32,8 @@ from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context", "build_records",
-           "chunk_text", "cite", "index_document", "search"]
+__all__ = ["DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context",
+           "build_records", "chunk_text", "cite", "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +47,25 @@ def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, 
     A connection error raises FatalError (what was embedded stays in the cache)."""
     if not data["sections"] or "body" not in data["sections"][0]:
         raise ValueError(f"{name}: structure.json without the text of the sections")
-    records = build_records(data, chunk_chars, chunk_overlap, kinds)
+    return _index_records(store, embedder, build_records(data, chunk_chars, chunk_overlap, kinds),
+                          {"doc": doc, "name": name, "title": data["title"], "out_dir": out_dir,
+                           "overview": data.get("overview", {})})
+
+
+def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
+                 kinds: Iterable[str] | None = None) -> dict:
+    """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
+    "doors:<module>", named after the module. Same batches, cache and result as
+    index_document."""
+    records = requirement_records(module, requirements, kinds)
+    summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
+    return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
+                                                     "title": f"{module} (DOORS)", "out_dir": "",
+                                                     "overview": {"summary": summary}})
+
+
+def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
+    name = doc["name"]
     keys = [embedder.key(r["embed_text"]) for r in records]
     vectors = store.cache_get(keys)
     missing = [i for i, k in enumerate(keys) if k not in vectors]
@@ -69,9 +88,7 @@ def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, 
             log.warning("  batch %d/%d failed: %s", n, len(batches), e)
 
     ok = [i for i, k in enumerate(keys) if k in vectors]
-    store.replace_document({"doc": doc, "name": name, "title": data["title"], "out_dir": out_dir,
-                            "overview": data.get("overview", {}), "embed_model": embedder.model},
-                           [records[i] for i in ok],
+    store.replace_document({**doc, "embed_model": embedder.model}, [records[i] for i in ok],
                            np.vstack([vectors[keys[i]] for i in ok]) if ok else np.zeros((0, 1), np.float32))
     kinds_done = Counter(records[i]["kind"] for i in ok)
     log.info("indexed '%s': %s%s", name, dict(kinds_done),
@@ -108,6 +125,10 @@ class Index:
     def add_document(self, data: dict, doc: str, name: str, out_dir: str = "", **options) -> dict:
         """See index_document (options: chunk_chars, chunk_overlap, kinds)."""
         return index_document(self.store, self.embedder, data, doc, name, out_dir, **options)
+
+    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
+        """See index_module."""
+        return index_module(self.store, self.embedder, module, requirements, kinds)
 
     def remove_document(self, doc: str) -> None:
         self.store.delete_document(doc)

@@ -288,3 +288,31 @@ communities = true
     assert go()["pruned"] == {"docs.process": 1, "graph.build": 1}
     assert not [n for n, d in KnowledgeGraph.from_config(cfg).G.nodes(data=True) if d["kind"] == "section"]
     assert (cfg.workspace / "graph" / "atlas.graphml").exists()
+
+
+def test_doors_requirements_are_indexed(toml, fake, fake_stats, capsys):
+    from atlas.cli import search
+    extra = f'''
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "index"]
+'''
+    cfg = load_config(toml(extra))
+
+    def go(config=cfg):
+        assert run(config) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert go()["processed"] == {"doors.requirements": 3, "index.requirements": 3}
+    embedded = fake_stats()["emb_texts"]
+    assert go()["skipped"] == {"doors.requirements": 3, "index.requirements": 3}
+    assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
+    assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
+    assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}

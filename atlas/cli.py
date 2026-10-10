@@ -288,6 +288,41 @@ def index_step(ctx) -> Step:
                 prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
 
 
+def index_requirements_step(ctx) -> Step:
+    """One unit per DOORS module read by doors.requirements: its requirements are indexed
+    as one more document ("doors:<module>"), so that search finds them too."""
+    from atlas.index import DOORS_PREFIX, Index
+    from atlas.llm import from_config
+    kinds = index_options(ctx)["kinds"]
+    embed_model = from_config(ctx.cfg).embeddings.model
+    shared: dict = {}
+    lock = threading.Lock()
+
+    def index() -> Index:
+        with lock:
+            if "index" not in shared:
+                shared["index"] = Index.from_config(ctx.cfg)
+        return shared["index"]
+
+    def units(ctx) -> list[str]:          # nothing to index if neither kind is wanted
+        return ctx.store.modules() if {"requirement", "chunk"} & set(kinds) else []
+
+    def fingerprint(ctx, module: str) -> str:
+        rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
+        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+
+    def run(ctx, module: str):
+        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        if res["missing"]:
+            raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
+                                  f"failed batches); they are embedded on the next run")
+        return {"records": res["records"], "kinds": res["kinds"]}
+
+    return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
+                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
+                depends_on=["doors.requirements"])
+
+
 GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
@@ -371,16 +406,13 @@ def graph_step(ctx) -> Step:
 
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
-    builders = {"doors": doors_step, "code": code_step, "docs": docs_step, "graph": graph_step,
-                "index": index_step}
+    builders = {"doors": [doors_step], "code": [code_step], "docs": [docs_step], "graph": [graph_step],
+                "index": [index_step, index_requirements_step]}
     out = []
     for name in wanted:
-        if name in builders:
-            s = builders[name](ctx)
-            if s:
-                out.append(s)
-        else:
+        if name not in builders:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
+        out += [s for s in (build(ctx) for build in builders[name]) if s]
     return out
 
 

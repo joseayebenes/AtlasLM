@@ -278,3 +278,42 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert "## SRS-0001" in (documented.workspace / "reports" / "verify-SRS_TMS.md").read_text()
     assert "neither a requirement nor a module" in verify_all("NOPE", documented, llm=judge, graph=g)["error"]
     assert verify_command(documented, "SSS-0001") == 0 and "1 requirements: 0 inconsistent" in capsys.readouterr().out
+
+
+# --- reports written by an agent from the graph -----------------------------------------------
+
+class StubWriter:
+    def __init__(self, text):
+        self.text, self.prompts = text, []
+
+    def ask_text(self, system, user):
+        self.prompts.append((system, user))
+        return self.text
+
+
+def test_impact_and_coverage_reports(workspace):
+    from atlas.agents.reports import coverage_report, impact_report
+    writer = StubWriter("**Change**: Logger.Log.")
+    res = impact_report("Logger.Log", workspace, llm=writer)
+    system, data = writer.prompts[0]
+    assert system.startswith("You write the impact analysis") and res["node"] == "logger.log"
+    assert "- tracks.delete_track (subprogram, distance 1" in data
+    assert "- test_tracks.test_tracks (test, distance 2" in data
+    assert "- SRS-0004 (SRS_TMS): The TMF shall process track event 4" in data
+    assert "[through tracks.delete_track]" in data
+    assert "- SSS-0005 (SSS_MISSION)" in data and "[through SRS-0004]" in data
+    assert "- SRS-0103 (not in DOORS)" in data
+    written = (workspace.workspace / "reports" / "impact-logger.log.md").read_text()
+    assert written.startswith("**Change**: Logger.Log.") and "## Data of the graph" in written
+    req = impact_report("SSS-0005", workspace, llm=writer)
+    assert "- tracks.delete_track" in writer.prompts[1][1] and req["node"] == "SSS-0005"
+    assert "not in the graph" in impact_report("nothing", workspace, llm=writer)["error"]
+
+    writer = StubWriter("**State**: 4 of 40 with code.")
+    res = coverage_report("SRS_TMS", workspace, llm=writer)
+    system, data = writer.prompts[0]
+    assert system.startswith("You audit the traceability") and res["summary"]["requirements"] == 40
+    assert res["gaps"]["requirements_without_code"] == 36 and "requirements without tests (39):" in data
+    assert "- SRS-0005" in data and "- … and 21 more" in data and "SRS-0040" not in data      # 15 of 36
+    assert "- SRS-0040" in (workspace.workspace / "reports" / "coverage-SRS_TMS.md").read_text()
+    assert coverage_report("NOPE", workspace, llm=writer)["modules"] == ["SRS_TMS", "SRS_TMS_OLD", "SSS_MISSION"]

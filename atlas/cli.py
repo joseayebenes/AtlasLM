@@ -7,6 +7,8 @@
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
+    atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
+    atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
@@ -594,6 +596,28 @@ def verify(cfg: Config, target: str) -> int:
     return 0
 
 
+def impact(cfg: Config, name: str) -> int:
+    from atlas.agents.reports import impact_report
+    _context(cfg)
+    res = impact_report(name, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; similar: {', '.join(res['similar'])}" if res.get("similar") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
+def coverage(cfg: Config, module: str) -> int:
+    from atlas.agents.reports import coverage_report
+    _context(cfg)
+    res = coverage_report("" if module == "*" else module, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
 def search(cfg: Config, query: str) -> int:
     from atlas.index import Index, cite
     _context(cfg)
@@ -674,7 +698,8 @@ def main(argv: list[str] | None = None) -> None:
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify}
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,
+                 "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

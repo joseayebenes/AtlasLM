@@ -7,6 +7,7 @@
                      its tools (the "tool" plugins) and at most max_steps calls to the model
     context.py       build_context: a Markdown package about a requirement, code or a unit
     verify.py        verification of requirements against the documentation
+    reports.py       impact_report and coverage_report: the graph finds, an agent writes
     tools.py         build_context and verify_requirement as "tool" plugins
 
     from atlas.agents.runtime import run_agent

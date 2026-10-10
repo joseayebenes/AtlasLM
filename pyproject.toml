@@ -7,7 +7,7 @@ name = "atlaslm"
 version = "0.0.1"
 description = "Base de conocimiento de ingeniería: documentos, requisitos, código y grafo, con agentes ADK"
 requires-python = ">=3.10"
-dependencies = ["openai>=1.40", "numpy>=1.24", "tomli>=2.0; python_version < '3.11'"]
+dependencies = ["openai>=1.40", "numpy>=1.24", "pyyaml>=6", "tomli>=2.0; python_version < '3.11'"]
 
 [project.optional-dependencies]
 docs = ["markitdown[pdf]", "pymupdf"]
@@ -25,6 +25,9 @@ atlas = "atlas.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["atlas*"]
+
+[tool.setuptools.package-data]
+"atlas.agents" = ["builtin/*.md"]            # los agentes de serie
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

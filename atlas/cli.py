@@ -9,6 +9,7 @@
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
+    atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
 """
@@ -598,6 +599,17 @@ def list_plugins(cfg: Config) -> int:
     return 0
 
 
+def list_agents(cfg: Config) -> int:
+    from atlas.agents.definitions import BUILTIN, load_definitions
+    _context(cfg)
+    for d in load_definitions(cfg).values():
+        source = "built-in" if Path(d.source).parent == BUILTIN else d.source
+        print(f"{d.name:22s} {source}\n    {d.description}\n    tools: {', '.join(d.tools) or '-'}"
+              f" | model: {d.model or cfg['agents']['model'] or cfg.get('llm', {}).get('model', '') or '-'}"
+              f" | max_steps: {d.max_steps}")
+    return 0
+
+
 def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     return check_connection(from_config(cfg))
@@ -620,7 +632,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "check": check, "serve": serve}
+               "agents": list_agents, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix}
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")

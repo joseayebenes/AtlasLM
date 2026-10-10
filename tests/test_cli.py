@@ -196,7 +196,7 @@ languages = ["ada"]
 
     assert go()["processed"] == {"code.parse": 5, "graph.build": 1}
     exported = cfg.workspace / "graph"
-    assert (exported / "code.graphml").exists() and (exported / "code.json").exists()
+    assert (exported / "atlas.graphml").exists() and (exported / "atlas.json").exists()
     assert go()["skipped"] == {"code.parse": 5, "graph.build": 1}
 
     # a new call in one file: that file is analysed again and the graph rebuilt
@@ -215,6 +215,76 @@ languages = ["ada"]
     shutil.rmtree(ada / "src")
     shutil.rmtree(ada / "tests")
     assert go()["pruned"] == {"code.parse": 5, "graph.build": 1}
-    assert not list(exported.glob("code.*")) and graph(cfg) == 1
+    assert not list(exported.glob("atlas.*")) and graph(cfg) == 1
     with pytest.raises(ConfigError, match="exports"):
         run(load_config(toml(extra + '[graph]\nexports = ["svg"]\n')))
+
+
+def test_graph_of_doors_code_and_documents(toml, samples, docs_samples, tmp_path, capsys):
+    """The three parts of the graph, each rebuilt only when what it is built from changes,
+    and the traceability commands."""
+    import shutil
+    import pytest
+    from atlas.cli import graph, matrix, trace
+    from atlas.graph import KnowledgeGraph
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("markitdown")
+    ada, docs = tmp_path / "ada", tmp_path / "docs"
+    shutil.copytree(samples / "ada", ada)
+    docs.mkdir()
+    shutil.copy(docs_samples / "hmi_manual.md", docs / "hmi_manual.md")
+    extra = f'''
+[pipeline]
+steps = ["doors", "code", "docs", "graph"]
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+patterns = ["*.md"]
+analysis = "regex"
+[graph]
+communities = true
+'''
+    cfg = load_config(toml(extra))
+
+    def go(config=cfg):
+        assert run(config) == 0
+        return json.loads(capsys.readouterr().out)
+
+    assert go()["processed"] == {"doors.requirements": 3, "code.parse": 5, "docs.process": 1, "graph.build": 3}
+    assert go()["skipped"]["graph.build"] == 3
+    g = KnowledgeGraph.from_config(cfg)
+    assert g.trace("SRS-0004")["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    assert g.trace("SRS-0102")["documents"][0]["title"] == "2 Alarms"        # SRS_TMS_OLD and the manual
+    assert g.G.nodes["logger.log"]["community"] >= 0 and g.build_stats["code"]["communities"] >= 1
+
+    manual = docs / "hmi_manual.md"                     # a document changes: only its part of the graph
+    manual.write_text(manual.read_text().replace("30 days", "60 days"))
+    assert go()["processed"] == {"docs.process": 1, "graph.build": 1}
+    assert go(load_config(toml(extra.replace('["**/tests/**"]', "[]"))))["processed"] == \
+        {"code.parse": 5, "graph.build": 3}            # what a test is changes the whole graph
+    assert KnowledgeGraph.from_config(cfg).G.nodes["test_tracks.test_tracks"]["kind"] == "subprogram"
+    go()
+
+    assert graph(cfg) == 0
+    out = capsys.readouterr().out
+    assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
+    assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
+    assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
+    assert trace(cfg, "SRS-9999") == 1
+    capsys.readouterr()
+    assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
+    written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
+    assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
+                                                  "documents"
+    assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+    assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
+    assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()
+    capsys.readouterr()
+
+    manual.unlink()                                     # no documents: their part of the graph goes
+    assert go()["pruned"] == {"docs.process": 1, "graph.build": 1}
+    assert not [n for n, d in KnowledgeGraph.from_config(cfg).G.nodes(data=True) if d["kind"] == "section"]
+    assert (cfg.workspace / "graph" / "atlas.graphml").exists()

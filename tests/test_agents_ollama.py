@@ -191,7 +191,7 @@ roots = ["{(samples / 'ada').as_posix()}"]
                 await toolset.close()
 
     calls, answer = asyncio.run(asyncio.wait_for(ask(), timeout=300))
-    assert {"get_requirement", "trace"} <= set(calls), calls
+    assert "trace" in calls, calls          # it gives the DOORS links too: get_requirement is optional
     assert "SSS-0005" in answer and "delete_track" in answer and "test_tracks" in answer, answer
     cited = set(re.findall(r"\b(?:tracks|logger|test_tracks)\.\w+", answer.lower()))
     assert cited <= {"tracks.delete_track", "tracks.update", "test_tracks.test_tracks", "logger.log",

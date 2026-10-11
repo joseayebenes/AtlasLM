@@ -74,10 +74,11 @@ def test_search_and_graph_are_scored_without_a_model(indexed, fake_stats):
     assert after["chat"] == before["chat"] and after["embeddings"] - before["embeddings"] == len(searches)
 
     assert res["graph"] == {"passed": 10, "total": 10, "rate": 1.0}
-    assert res["search"]["cases"] == len(searches) == 17
+    assert res["search"]["cases"] == len(searches) == 20
     assert set(res["search"]["lexical"]) == {"hit@1", "hit@3", "hit@5", "hit@10", "mrr"}
     by_id = {r["id"]: r for r in res["results"]}
-    for case in ("search-id-srs-0102", "search-logs-30-days", "search-doors-deadline", "search-section-logging"):
+    for case in ("search-id-srs-0102", "search-logs-30-days", "search-doors-deadline", "search-section-logging",
+                 "search-code-remove-track"):
         assert by_id[case]["lexical"]["rank"] == 1, case
     assert by_id["search-id-srs-0102"]["lexical"]["top"][0] == "hmi_manual.md › 2 Alarms (requirement SRS-0102)"
 

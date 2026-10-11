@@ -1,7 +1,7 @@
 """Index and hybrid search over the documents (legacy/doc_rag.py).
 
-    records.py      search records of a document (overview, sections, chunks, requirements...)
-                    and of a DOORS module (its requirements)
+    records.py      search records of a document (overview, sections, chunks, requirements...),
+                    of a DOORS module (its requirements) and of a code unit (its elements)
     embeddings.py   Embedder: vectors through the [embeddings] connection
     store.py        IndexStore: records, vectors, FTS5 and embeddings cache in atlas.db
     search.py       hybrid search (IDs + vectors + BM25, merged with RRF) and cited answers
@@ -26,7 +26,8 @@ from typing import Iterable
 import numpy as np
 
 from atlas.index.embeddings import Embedder
-from atlas.index.records import DOORS_PREFIX, KINDS, build_records, chunk_text, requirement_records
+from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
+                                  requirement_records)
 from atlas.index.search import answer, build_context, cite, search
 from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
@@ -34,9 +35,9 @@ from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context",
-           "build_records", "chunk_text", "cite", "embed_missing", "index_document", "index_module",
-           "requirement_records", "search"]
+__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
+           "build_context", "build_records", "chunk_text", "cite", "code_records", "embed_missing", "index_code",
+           "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +66,17 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": f"{module} (DOORS)", "out_dir": "",
                                                      "overview": {"summary": summary}})
+
+
+def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dict], sources: dict[str, str],
+               tests: Iterable[str] = (), chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+    """Indexes a code unit (its files, as code.parse leaves them; see code_records) as one
+    more document, "code:<unit>". Same batches, cache and result as index_document."""
+    records = code_records(unit, parts, sources, tests, chunk_chars, kinds)
+    files = ", ".join(sorted(p["file"] for p in parts))
+    return _index_records(store, embedder, records, {"doc": CODE_PREFIX + unit, "name": unit,
+                                                     "title": f"{unit} (code)", "out_dir": "",
+                                                     "overview": {"summary": f"code unit {unit}: {files}"}})
 
 
 def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
@@ -173,6 +185,11 @@ class Index:
     def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
         """See index_module."""
         return index_module(self.store, self.embedder, module, requirements, kinds)
+
+    def add_code(self, unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
+                 chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+        """See index_code."""
+        return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds)
 
     def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
         """See embed_missing."""

@@ -19,7 +19,10 @@ languages = ["ada"]
     assert run(cfg) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["processed"] == {} and rep["skipped"]["code.parse"] >= 4
+    assert rep["profile"]["code.parse"]["ran"] == 0 and rep["profile"]["code.parse"]["units"] >= 4
     assert status(cfg) == 0
+    out = capsys.readouterr().out
+    assert "last run:" in out and "previous runs:" in out and "code.parse" in out
 
 
 def test_docs_step_is_incremental_retries_and_prunes(toml, docs_samples, tmp_path, fake, fake_chats, capsys):

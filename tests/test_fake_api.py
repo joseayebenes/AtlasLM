@@ -54,3 +54,20 @@ def test_check_and_from_config_use_reasoning_effort(fake, capsys, tmp_path):
     assert conn.llm.reasoning_effort == "none"
     assert check(Connection(llm=conn.llm, embeddings=_service(url))) == 0
     assert "OK" in capsys.readouterr().out
+
+
+def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
+    url, control = fake
+    from atlas.llm import NetConfig, ServiceConfig, create_client, usage
+    cl, _ = create_client(ServiceConfig(base_url=url, model="fake", api_key="usage", net=NetConfig(
+        proxy="", no_proxy="*", adaptive=False, max_backoff=0.05, rate_limit_max_wait=0.2)))
+    before = usage()
+    cl.chat.completions.create(model="fake", messages=[{"role": "user", "content": "Reply with: ok"}])
+    cl.embeddings.create(model="fake", input=["a", "b"])
+    control.write_text(json.dumps({"emb_409_after": 0}))       # every embeddings request is rejected
+    with pytest.raises(Exception):
+        cl.embeddings.create(model="fake", input=["a"])
+    grown = {k: v - before[k] for k, v in usage().items()}
+    assert grown["chat"] == 1 and grown["other"] == 0 and grown["retried"] == 0
+    assert grown["rejected"] >= 2 and grown["embeddings"] == 1 + grown["rejected"]
+    assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0

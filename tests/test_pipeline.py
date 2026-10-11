@@ -145,3 +145,49 @@ def test_a_lock_file_left_by_an_old_version_does_not_block(tmp_path):
     (tmp_path / "atlas.lock").write_text("12345")          # O_EXCL lock of a killed run
     step = _step("s", ["a"], {"a": "1"}, lambda ctx, u: None)
     assert Runner(Ledger(tmp_path / "atlas.db"), [step]).run().processed == {"s": 1}
+
+
+def test_each_run_leaves_a_time_profile(tmp_path):
+    import time
+    meter = {"chat": 0, "wait_seconds": 0.0}
+
+    def run(ctx, u):
+        time.sleep(0.05 if u == "slow" else 0)
+        meter["chat"] += 1
+
+    step = _step("p", ["fast", "slow"], {"fast": "1", "slow": "1"}, run)
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [step], workers=2, meters=lambda: dict(meter), version="9.9").run()
+    prof = rep.profile["p"]
+    assert prof["units"] == 2 and prof["ran"] == 2 and prof["workers"] == 2
+    assert prof["slowest"][0]["unit"] == "slow" and prof["unit_seconds"]["max"] >= 0.05
+    assert prof["api"] == {"chat": 2} and prof["seconds"] >= prof["scan_seconds"]
+    assert ledger.get("p", "slow")["seconds"] >= 0.05 and ledger.get("p", "fast")["seconds"] < 0.05
+    again = Runner(ledger, [step], meters=lambda: dict(meter)).run()      # nothing to do
+    assert again.profile["p"]["ran"] == 0 and "api" not in again.profile["p"] and "slowest" not in again.profile["p"]
+    runs = ledger.runs()
+    assert [r["version"] for r in runs] == ["", "9.9"] and runs[1]["report"]["profile"]["p"]["ran"] == 2
+
+
+def test_the_profile_is_kept_when_a_step_stops(tmp_path):
+    def run(ctx, u):
+        raise FatalError("no connection")
+
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, run, parallel=False)]).run()
+    assert rep.fatal and rep.profile["p"]["ran"] == 1 and rep.profile["p"]["units"] == 2
+    assert ledger.runs()[0]["report"]["fatal"] == "p: no connection"
+
+
+def test_a_ledger_of_an_older_version_gets_the_new_columns(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "db")
+    db.executescript("""CREATE TABLE ledger (step TEXT NOT NULL, unit TEXT NOT NULL, fingerprint TEXT,
+        status TEXT, output_hash TEXT, attempts INTEGER DEFAULT 0, error TEXT, started TEXT, finished TEXT,
+        PRIMARY KEY (step, unit));
+        INSERT INTO ledger (step, unit, fingerprint, status) VALUES ('p', 'a', '1', 'ok');""")
+    db.close()
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, lambda ctx, u: None)]).run()
+    assert rep.skipped == {"p": 1} and rep.processed == {"p": 1}
+    assert ledger.get("p", "a")["seconds"] is None and ledger.get("p", "b")["seconds"] is not None

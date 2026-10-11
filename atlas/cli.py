@@ -427,17 +427,42 @@ def steps(ctx) -> list[Step]:
 # --------------------------------------------------------------------------
 
 def run(cfg: Config) -> int:
+    from atlas import __version__
+    from atlas.llm import usage
     ctx = _context(cfg)
     pc = cfg["pipeline"]
     runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
                     on_error=pc["on_error"], max_attempts=pc["max_attempts"],
-                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"])
+                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
+                    meters=usage, version=__version__)
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
     return 1 if rep.errors or rep.quarantined else 0
+
+
+def _api_text(api: dict) -> str:
+    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting' from the `api` of a profile."""
+    parts = [f"{api[k]:g} {k}" for k in ("chat", "embeddings", "other", "rejected", "retried") if api.get(k)]
+    if api.get("wait_seconds", 0) >= 0.1:
+        parts.append(f"{api['wait_seconds']:.1f} s waiting")
+    return ", ".join(parts)
+
+
+def print_profile(run: dict) -> None:
+    """The time profile of a run (Ledger.runs): one line per step."""
+    rep = run["report"]
+    print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
+          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else ""))
+    print(f"  {'step':20s} {'seconds':>8s} {'scan':>6s} {'units':>6s} {'ran':>6s}  slowest unit; API")
+    for step, p in rep.get("profile", {}).items():
+        slowest = p.get("slowest", [])
+        notes = [f"{Path(slowest[0]['unit'].split(':', 1)[-1]).name} ({slowest[0]['seconds']:.2f} s)"] if slowest else []
+        notes += [_api_text(p["api"])] if p.get("api") and _api_text(p["api"]) else []
+        print(f"  {step:20s} {p['seconds']:8.2f} {p['scan_seconds']:6.2f} {p['units']:6d} {p['ran']:6d}  "
+              + "; ".join(notes))
 
 
 def status(cfg: Config) -> int:
@@ -455,6 +480,18 @@ def status(cfg: Config) -> int:
         print(f"  {p['status']:11s} {p['step']:20s} {p['unit'][:60]}  {p['error'] or ''}")
     if len(pending) > 30:
         print(f"  … and {len(pending) - 30} more")
+    runs = ledger.runs(6)
+    if runs:
+        print_profile(runs[0])
+    if len(runs) > 1:
+        print("previous runs:")
+        for r in runs[1:]:
+            api = {}
+            for p in r["report"].get("profile", {}).values():
+                for k, v in p.get("api", {}).items():
+                    api[k] = api.get(k, 0) + v
+            print(f"  {r['started']}  atlas {r['version'] or '?':8s} {r['seconds']:8.1f} s  "
+                  f"{sum(r['report']['processed'].values())} processed" + (f"; {_api_text(api)}" if _api_text(api) else ""))
     return 0
 
 

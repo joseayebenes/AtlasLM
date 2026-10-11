@@ -59,6 +59,13 @@ tener en cuenta la sangría, siempre que la coincidencia sea única, y lo indica
 Con eso, un agente ADK con `gemma4:12b` cambió un mensaje de log en los ejemplos en 5
 intentos de 5, unos 20 s cada uno; sin esa tolerancia entraba en bucle.
 
+En los cambios de varias líneas, `gemma4:12b` copia además el listado de `read_file`: los
+números de línea (`    3 | `), una barra antes de cada salto de línea y algunos saltos como
+`\n`, tanto en el texto que busca como en el nuevo. Si el texto buscado trae esas marcas,
+`edit_file` las quita de los dos y lo intenta otra vez. En un experimento (poner una guarda en
+`Tracks.Update`), sin esta tolerancia el agente repitió la misma edición fallida hasta agotar
+`max_steps` en 2 ejecuciones de 2; con ella, hizo el cambio correcto en las 2.
+
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente
 `atlas run`.

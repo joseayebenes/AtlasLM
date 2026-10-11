@@ -28,6 +28,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   en el código. También como herramienta `link_requirement` de `atlas serve`, si se pide.
 
 ### Cambiado
+- `edit_file` tolera también el listado de `read_file` copiado en el texto: quita los números
+  de línea, las barras antes de cada salto de línea y los `\n` escritos como texto, en el
+  texto buscado y en el nuevo. Con `gemma4:12b`, un cambio de varias líneas pasó de 0 de 2 a
+  2 de 2.
 - Los PDF se extraen con pymupdf, y markitdown (pdfminer) queda como alternativa
   (`[plugins] disabled = ["extractor:pymupdf"]`). Es unas 30 veces más rápido (1,5 ms por
   página en vez de 45: la primera ejecución del proyecto grande baja de 17,2 a 6,1 s) y el

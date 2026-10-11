@@ -188,7 +188,8 @@ class CodeTools:
 
     def read_file(self, path: str, start: int = 1, end: int = 0) -> dict:
         """Lines `start` to `end` of a file, numbered (end 0 = up to 300 lines from start).
-        A file must be read before it is edited."""
+        A file must be read before it is edited. The numbers ("   12 | ") are not part of
+        the file: leave them out of the text given to edit_file."""
         p, err = self._resolve(path)
         if err:
             return err
@@ -309,11 +310,20 @@ class CodeTools:
 
 ESCAPES_NOTE = "the backslashes before quotes or n/t in old_text and new_text were read as plain characters"
 INDENT_NOTE = "old_text was found ignoring indentation, and new_text was re-indented like the file"
+LISTING_NOTE = ("the line numbers of read_file and the backslashes before line breaks were removed from old_text "
+                "and new_text: copy the text without them")
+LISTING = re.compile(r"(?m)^[ \t]*\d+ \|(?: |$)")      # "   12 | " at the start of a line, as read_file shows it
 
 
 def _unescape(s: str) -> str:
     """What a model meant when it escaped text that is not in a string: \\" -> ", \\n -> newline."""
     return re.sub(r'\\(["\'\\nt])', lambda m: {"n": "\n", "t": "\t"}.get(m.group(1), m.group(1)), s)
+
+
+def _unlist(s: str) -> str:
+    """What a model meant when it copied the listing of read_file into a text, with the line
+    numbers, a backslash before each line break and some line breaks written as \\n."""
+    return LISTING.sub("", _unescape(s.replace("\\\n", "\n")))
 
 
 def _occurrences(text: str, old: str, starts: list[int] | None = None) -> list[int]:
@@ -334,10 +344,13 @@ def _reindent(new_lines: list[str], old_indent: str, file_indent: str) -> list[s
 def _find(text: str, old: str, new: str, replace_all: bool) -> dict | None:
     """The text with the replacement done: {"text", "count", "notes"}, an error when it is
     ambiguous, or None when old is not there. Exact first; then, as small models often
-    get them wrong, with their escapes undone and ignoring indentation (whole lines)."""
+    get them wrong, with their escapes undone, without the line numbers of read_file they
+    copied (gemma4:12b in edits of several lines), and ignoring indentation (whole lines)."""
     tries = [(old, new, [])]
     if "\\" in old + new and (_unescape(old), _unescape(new)) != (old, new):
         tries.append((_unescape(old), _unescape(new), [ESCAPES_NOTE]))
+    if (LISTING.search(old) or "\\\n" in old) and (_unlist(old), _unlist(new)) != (old, new):
+        tries.append((_unlist(old), _unlist(new), [LISTING_NOTE]))
     ambiguous = "old_text appears {n} times (lines {lines}): add more surrounding text to make it unique, " \
                 "or use replace_all"
     for o, n, notes in tries:                                 # exact

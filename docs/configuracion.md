@@ -249,8 +249,8 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `sets` | lista | obligatoria para `atlas eval` | conjuntos de preguntas (YAML), relativos al fichero |
-| `runs` | entero | `1` | veces que se hace cada pregunta: los modelos no responden siempre igual |
+| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice y consultas del grafo |
+| `runs` | entero | `1` | veces que se hace cada pregunta a un agente: los modelos no responden siempre igual |
 
 ## [mcp]
 

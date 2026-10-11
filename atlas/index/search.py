@@ -57,9 +57,10 @@ def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
 
 
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
-           kinds: list[str] | None = None, llm: JsonLlm | None = None) -> list[dict]:
+           kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True) -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
-    its title) and `kinds` to some kinds of record; with `llm`, the query is rewritten first."""
+    its title) and `kinds` to some kinds of record; with `llm`, the query is rewritten first.
+    With dense=False there are no vectors (IDs and BM25 only): no request to any model."""
     allowed = store.allowed(document, kinds)
     queries, keywords = [query], []
     if llm is not None:
@@ -71,8 +72,9 @@ def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, docume
             log.warning("query rewriting failed, going on with the original one: %s", e)
     n = max(k * 3, 20)
     rankings = [store.by_ref(" ".join([query] + keywords), allowed)]
-    for q, qvec in zip(queries, embedder.queries(queries)):
-        rankings.append(store.dense(qvec, embedder.model, n, allowed))
+    for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
+        if dense:
+            rankings.append(store.dense(qvec, embedder.model, n, allowed))
         rankings.append(store.lexical(q, n, allowed))
     if keywords:
         rankings.append(store.lexical(" ".join(keywords), n, allowed))

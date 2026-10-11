@@ -185,8 +185,8 @@ class Index:
         return self.store.documents()
 
     def search(self, query: str, k: int = 8, document: str = "", kinds: list[str] | None = None,
-               rewrite: bool = False) -> list[dict]:
-        return search(self.store, self.embedder, query, k, document, kinds, self.llm if rewrite else None)
+               rewrite: bool = False, dense: bool = True) -> list[dict]:
+        return search(self.store, self.embedder, query, k, document, kinds, self.llm if rewrite else None, dense)
 
     def answer(self, question: str, k: int = 8, document: str = "", rewrite: bool = True) -> dict:
         return answer(self.store, self.embedder, self.llm, question, k, document, rewrite)

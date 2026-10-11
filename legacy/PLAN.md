@@ -662,7 +662,17 @@ eval` hace las preguntas de conjuntos en YAML (`examples/eval/`) y puntúa sin m
 - un caso está bien si la respuesta contiene los textos esperados;
 - y si el agente ha llamado a las herramientas esperadas.
 
-La medición de la recuperación sin modelo sigue pendiente.
+La recuperación sin modelo se mide desde después de la 0.1.0, con los mismos conjuntos:
+- un caso `search` busca en el índice dos veces, híbrida (IDs, vectores y BM25) y léxica (IDs
+  y BM25, sin ningún modelo), y anota en qué posición sale cada texto esperado: acierto@1, @3,
+  @5 y @10 y rango recíproco medio;
+- un caso con una consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`,
+  `search_code_docs`) acierta si el resultado contiene lo esperado.
+
+`examples/eval/retrieval.yaml` tiene 17 búsquedas y 10 consultas del grafo sobre las
+muestras. Con `embeddinggemma`: híbrida, acierto@1 76 %, @3 94 %, @5 100 %, MRR 0,86;
+léxica, 65 %, 82 %, 94 %, MRR 0,76; el grafo, 10 de 10. Las muestras son sintéticas y
+repetitivas: la cifra que vale es la de un conjunto escrito sobre el proyecto real.
 
 ---
 
@@ -1021,7 +1031,7 @@ Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 | 4. Configurable por fichero | la línea de comandos solo elige acción y fichero | cada clave en la guía de configuración, comprobado por las pruebas |
 | 5. Importable | cada módulo sin ADK, sin MCP y sin los demás | `examples/library`, ejecutados por las pruebas |
 | 6. Trazabilidad | `trace` en una llamada, y `impact` a la inversa | `tests/test_graph.py` y el ejemplo de trazabilidad |
-| 7. Evaluable | `atlas eval` | 23 de 24 con `gemma4:12b` (fase 5); la recuperación sin modelo sigue pendiente (8.4) |
+| 7. Evaluable | `atlas eval` | agentes: 23 de 24 con `gemma4:12b`; recuperación sin modelo (8.4): búsqueda híbrida con acierto@3 del 94 % y MRR 0,86, grafo 10 de 10 |
 
 ---
 
@@ -1064,7 +1074,7 @@ gantt
 | Integración sin API | ingesta completa | servidores falsos de chat y embeddings con fallos inyectables (ya existen): 409, respuestas cortadas, prosa, cortes de conexión |
 | Recuperación | reanudación tras `kill -9`, Ctrl+C y error fatal en cada paso | prueba que mata el proceso en puntos aleatorios y comprueba registro, ficheros y base de datos |
 | Incrementalidad | contadores de peticiones y unidades procesadas tras cada tipo de cambio | aserciones sobre el `Ledger` y el servidor falso |
-| Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo |
+| Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo (`atlas eval`, casos `search` y del grafo; hecho después de la 0.1.0) |
 | Agentes | trayectoria de herramientas y calidad de respuesta | `adk eval` con `.evalset.json`; umbral mínimo en `pytest` |
 | Rendimiento | tiempo y peticiones por fase sobre el proyecto real | perfil de cada ejecución en `atlas.db`, con la versión (`atlas status`; hecho en la fase 6) |
 
@@ -1261,7 +1271,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 165 pruebas, 160 sin modelo:
+- `tests/`: 168 pruebas, 163 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

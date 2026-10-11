@@ -6,6 +6,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas eval` mide también la recuperación, sin modelo: casos `search` (acierto@1, @3, @5 y
+  @10 y rango recíproco medio, con la búsqueda híbrida y con la léxica) y casos con una
+  consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`, `search_code_docs`).
+  `examples/eval/retrieval.yaml` tiene 27 casos sobre las muestras; con `embeddinggemma`, la
+  híbrida acierta a la primera en el 76 % y entre las tres primeras en el 94 %, y el grafo,
+  10 de 10. Cierra la meta 7 del plan.
+- `Index.search(..., dense=False)`: solo IDs y BM25, sin ninguna petición.
+
 ### Cambiado
 - Los PDF se extraen con pymupdf, y markitdown (pdfminer) queda como alternativa
   (`[plugins] disabled = ["extractor:pymupdf"]`). Es unas 30 veces más rápido (1,5 ms por
@@ -18,6 +27,7 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - La huella de `docs.process` incluye el extractor, y `atlas sections` dice cuál se usa.
 
 ### Al actualizar
+- El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.
 - Todos los documentos se vuelven a procesar una vez. El texto de cada sección de un PDF
   cambia (saltos de línea, posición de las cabeceras), así que la caché de análisis no sirve
   y, con `analysis = "llm"`, todas las secciones de los PDF vuelven al modelo. Los Markdown

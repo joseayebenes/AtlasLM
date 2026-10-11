@@ -42,7 +42,7 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 173 pruebas sin modelo (+6 de agentes con Ollama)
+python -m pytest -q                                # 174 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
 ### Tres niveles de modelo
@@ -98,6 +98,7 @@ atlas verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación
 atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
 atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
 atlas link SRS_TMS atlas.dev.toml      # código que puede implementar los requisitos sin código (propuestas)
+atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace todo lo que pide, obligación a obligación
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...

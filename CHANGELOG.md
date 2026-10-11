@@ -34,6 +34,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   argumentos, con `tool_path` y `command_timeout`. `atlas.dev.toml` los configura para GNAT
   instalado con Alire. `run_test` ejecuta código y solo se ofrece si se pide.
 - `examples/agents/`: dos agentes de proyecto que escriben, `implementer` y `tester`.
+- `atlas comply ID|MÓDULO` y el agente `compliance_checker`: si el código que implementa cada
+  requisito hace todo lo que pide, obligación a obligación (`met`, `not_met`, `partial`,
+  `cannot_tell`), con las líneas que lo deciden. El veredicto sale de las obligaciones, no
+  del modelo. Con `gemma4:12b` encontró un error de límite (`< 300.0` donde el requisito dice
+  «300 inclusive») en 3 de 3 ejecuciones. También como herramienta `check_compliance`, si se
+  pide. Es una ayuda para la inspección, no una prueba.
 
 ### Cambiado
 - `edit_file` tolera también el listado de `read_file` copiado en el texto: quita los números

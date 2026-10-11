@@ -12,8 +12,9 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete |
 | `verify.py` | la verificación de los requisitos con la documentación |
 | `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
+| `comply.py` | el cumplimiento del código con un requisito, obligación a obligación |
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
-| `tools.py` | `build_context`, `verify_requirement`, `link_requirement` y `ask_atlas` como plugins `tool` |
+| `tools.py` | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 
 ## Agentes en ficheros Markdown
@@ -34,10 +35,10 @@ temperature: 0.1           # opcional
 You trace requirements of an engineering project...
 ```
 
-Vienen de serie, en `builtin/`, cinco agentes:
+Vienen de serie, en `builtin/`, seis agentes:
 - `assistant`, con herramientas de documentos, DOORS y código, todas de lectura;
-- `requirement_verifier`, `req_linker`, `impact_analyst` y `coverage_auditor`, sin
-  herramientas: juzgan o redactan el paso final de un flujo fijo.
+- `requirement_verifier`, `req_linker`, `compliance_checker`, `impact_analyst` y
+  `coverage_auditor`, sin herramientas: juzgan o redactan el paso final de un flujo fijo.
 
 Los del proyecto van en las carpetas de `[agents] dirs` (`agents/` junto a `atlas.toml`, por
 defecto). Un fichero con el nombre de uno de serie lo sustituye. `[agents.<nombre>]` en el
@@ -58,6 +59,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 |---|---|---|
 | `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
+| `atlas comply` | si el código que implementa cada requisito hace todo lo que pide, obligación a obligación: cumplida, no cumplida, en parte o imposible de saber leyendo el código. También es la herramienta `check_compliance` | `compliance_checker` |
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |
 | `atlas coverage` | informe de los huecos de trazabilidad de un módulo | `coverage_auditor` |
 | `atlas link` | para cada requisito sin código, el código que puede implementarlo, con confianza (alta, media, baja), motivo y la etiqueta `Req:` que habría que añadir y dónde. No toca el código. También es la herramienta `link_requirement` | `req_linker` |
@@ -68,6 +70,45 @@ solo juzga o redacta. Los informes van a `<workspace>/reports/` y guardan, tras 
 del modelo, los datos de los que sale. La verificación guarda sus juicios en caché:
 verificar otra vez solo pregunta por lo que ha cambiado, y verifica varios requisitos a la
 vez (`[pipeline] workers`).
+
+## Cumplimiento del código
+
+`atlas comply ID|MÓDULO` (o `*`) juzga, para cada requisito con código, si ese código hace
+todo lo que el requisito pide. Sin modelo reúne:
+- el texto oficial, o el del documento que lo declara si no está en DOORS;
+- el código que lo cita con `Req:`, con su comentario y su fuente;
+- lo que ese código llama, con sus comentarios;
+- las pruebas que lo verifican o lo cubren.
+
+El agente `compliance_checker` divide el requisito en obligaciones (cada «shall», condición,
+valor, límite y unidad) y marca cada una:
+- `met`: el código la cumple, y cita las líneas que lo hacen;
+- `not_met`: no la cumple;
+- `partial`: la cumple solo en parte;
+- `cannot_tell`: no se puede saber leyendo el código (tiempos, rendimiento, código que no se
+  ve).
+
+El veredicto no lo decide el modelo: sale de las obligaciones. Es `does_not_comply` si alguna
+no se cumple o se cumple en parte, `cannot_tell` si queda alguna sin decidir y `complies` si
+se cumplen todas. Un requisito sin código queda como `no_code` sin preguntar, y los juicios
+se guardan en caché. El informe (`reports/comply-<objetivo>.md`) da cada obligación con su
+marca y su prueba.
+
+Es una ayuda para la inspección del código, no una prueba de que funciona: lo que leer el
+código no puede decidir se deja a las pruebas, y un modelo pequeño puede dar por buena una
+obligación que no lo es.
+
+En un experimento con `gemma4:12b`, 6 casos de respuesta conocida, 3 veces cada uno:
+- encontró las 3 veces un error de límite (`Speed < 300.0` donde el requisito dice «300
+  inclusive»);
+- vio las 3 veces que poner a 0 el Id sin poner a 0 el azimut cumple solo en parte;
+- marcó «within 320 ms» como imposible de saber leyendo el código;
+- en «keep logs for 30 days» dio por cumplido «keep logs» con un `Put_Line` a la salida
+  estándar, y dejó los 30 días como imposibles de saber: un juicio generoso.
+
+Con `atlas comply` sobre un `Classify` de cuatro ramas (prueba
+`test_compliance_checker_finds_a_wrong_boundary`), 3 de 3 ejecuciones: `does_not_comply`
+con `Speed < 300.0` y `complies` con `Speed <= 300.0`, unos 40 s cada una.
 
 ## Propuestas de enlaces
 
@@ -171,7 +212,7 @@ make test-ollama                                 # o: python -m pytest -q -m oll
 ```
 
 `tests/test_agents_ollama.py` prueba los agentes contra la URL y el modelo de
-`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son seis pruebas:
+`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son siete pruebas:
 - un agente con dos herramientas propias sobre las muestras (`get_requirement` y una `trace`
   que busca las etiquetas `Req:`): usa las dos, responde con el requisito y los ficheros
   correctos y no se inventa ficheros;
@@ -179,7 +220,8 @@ make test-ollama                                 # o: python -m pytest -q -m oll
 - un agente con las herramientas de `atlas serve` por MCP;
 - el asistente de serie, como lo ejecuta `atlas agent assistant`;
 - la verificación de un requisito con la documentación;
-- las propuestas de enlaces del `req_linker`, una que debe proponer y otra que no.
+- las propuestas de enlaces del `req_linker`, una que debe proponer y otra que no;
+- el cumplimiento de un `Classify` con un error de límite y sin él.
 
 Se omiten solas si falta el extra `[agents]`, si Ollama no responde o si el modelo no está
 descargado. Para excluirlas: `python -m pytest -m "not ollama"`.

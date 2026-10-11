@@ -1020,6 +1020,11 @@ Estado (11 de octubre de 2026), versión 0.1.0:
   1,5 ms por página en vez de 45, y el texto respeta el orden en que se escribió, así que el
   número de un título no se separa de él. En la muestra sin marcadores salen las 27
   subsecciones, y no 9. Ya no hace falta extraer en varios procesos.
+- **Después de la 0.1.0.** `atlas link` y el agente `req_linker`: para cada requisito sin
+  código, los candidatos salen sin modelo (lo que mencionan sus secciones, el código de los
+  requisitos enlazados y la búsqueda en el código indexado) y el agente propone los que lo
+  implementan, con confianza. El informe dice qué etiqueta `Req:` añadir y dónde; el código
+  no se toca.
 - **Después de la 0.1.0.** El código se indexa (paso `index.code`, registros `code_doc`):
   cada subprograma, tipo y variable con su comentario, sus requisitos y su código, por
   unidad (especificación y cuerpo juntos).
@@ -1274,7 +1279,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 170 pruebas, 165 sin modelo:
+- `tests/`: 172 pruebas, 166 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

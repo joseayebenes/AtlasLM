@@ -20,6 +20,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `kind = "code_doc"`. En el proyecto grande añade 1,3 s y 48 peticiones de embeddings.
 - `Index.search(..., dense=False)`: solo IDs y BM25, sin ninguna petición.
 
+- `atlas link ID|MÓDULO` y el agente `req_linker`: para cada requisito sin código, el código
+  que puede implementarlo, con confianza (alta, media, baja) y motivo. Los candidatos salen sin
+  modelo (el código que mencionan sus secciones, el de los requisitos enlazados y la búsqueda
+  en el código indexado), y el agente solo elige entre ellos. El informe
+  (`reports/link-<objetivo>.md`) dice qué etiqueta `Req:` añadir y dónde; no se escribe nada
+  en el código. También como herramienta `link_requirement` de `atlas serve`, si se pide.
+
 ### Cambiado
 - Los PDF se extraen con pymupdf, y markitdown (pdfminer) queda como alternativa
   (`[plugins] disabled = ["extractor:pymupdf"]`). Es unas 30 veces más rápido (1,5 ms por

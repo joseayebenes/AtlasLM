@@ -980,7 +980,7 @@ Estado (11 de octubre de 2026), versión 0.1.0:
 
   En el proyecto grande, 189 peticiones de embeddings en vez de 207. Con la API falsa, que
   contesta al instante, el tiempo es CPU (la extracción de los PDF, unos 50 ms por página)
-  y no cambia: entre 17 y 18 s.
+  y no cambia: entre 17 y 18 s. Con pymupdf, después de la 0.1.0, 6,1 s.
 - **Empaquetado.** Versión 0.1.0, rangos de versiones, ADK fijado a 2.11 y `truststore` como
   dependencia. Lo demás:
   - `constraints.txt`, con las versiones exactas probadas en una instalación limpia;
@@ -1016,7 +1016,7 @@ Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 | Meta | Cómo se comprueba | Resultado |
 |---|---|---|
 | 1. Procesar una vez | 80 PDF (1040 páginas, 2080 secciones), 20 910 requisitos y 3060 subprogramas | segunda ejecución sin cambios: 0,3 s y ninguna petición (la primera, 62 s) |
-| 2. Solo los cambios | `tests/test_large.py`, `test_cli.py`, `test_docs_process.py` | un plazo cambiado en una página del proyecto grande: 1,4 s, 1 petición al modelo y 2 textos embebidos |
+| 2. Solo los cambios | `tests/test_large.py`, `test_cli.py`, `test_docs_process.py` | un plazo cambiado en una página del proyecto grande: 0,9 s (1,4 s con markitdown), 1 petición al modelo y 2 textos embebidos |
 | 3. Recuperable | `tests/test_pipeline.py`: `kill -9`, Ctrl+C (también con varios hilos), errores fatales | se reanuda sin repetir unidades ni dejar escrituras a medias |
 | 4. Configurable por fichero | la línea de comandos solo elige acción y fichero | cada clave en la guía de configuración, comprobado por las pruebas |
 | 5. Importable | cada módulo sin ADK, sin MCP y sin los demás | `examples/library`, ejecutados por las pruebas |
@@ -1261,7 +1261,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 163 pruebas, 158 sin modelo:
+- `tests/`: 165 pruebas, 160 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

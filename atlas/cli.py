@@ -7,9 +7,11 @@
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
+    atlas link     ID|MODULE [atlas.toml]  code that may implement the requirements without code, with the
+                                           model; a report of proposals, the code is not changed; * = all
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
-    atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
+    atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
@@ -748,6 +750,29 @@ def verify(cfg: Config, target: str) -> int:
     return 0
 
 
+def link(cfg: Config, target: str) -> int:
+    """The code that may implement the requirements without code, judged by the agent
+    req_linker: the proposals on the screen and the report in <workspace>/reports. Nothing
+    is written in the code."""
+    from atlas.agents.link import link_all
+    from atlas.index import Index
+    ctx = _context(cfg)
+    index = Index.from_config(cfg) if ctx.store.code_units() else None
+    res = link_all(target, cfg, index=index)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    c = res["counts"]
+    print(f"{len(res['results'])} requirements: {c['proposed']} with a proposal, {c['none']} without a convincing "
+          f"candidate, {c['no_candidates']} without candidates ({res['asked']} asked to the model, the rest from "
+          f"the cache)")
+    for r in res["results"]:
+        for x in r.get("links", []):
+            print(f"\n{r['id']} -> {x['code']} ({x['confidence']}): {x['reason']}\n  add `{x['tag']}` at {x['tag_at']}")
+    print(f"\nnothing changed in the code; written {res['files'][0]} and {res['files'][1]}")
+    return 0
+
+
 def impact(cfg: Config, name: str) -> int:
     from atlas.agents.reports import impact_report
     _context(cfg)
@@ -912,7 +937,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link,
                  "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:

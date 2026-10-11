@@ -8,7 +8,7 @@
     context.py       build_context: a Markdown package about a requirement, code or a unit
     verify.py        verification of requirements against the documentation
     reports.py       impact_report and coverage_report: the graph finds, an agent writes
-    tools.py         build_context, verify_requirement and ask_atlas as "tool" plugins
+    tools.py         build_context, verify_requirement, link_requirement and ask_atlas as "tool" plugins
     evaluate.py      atlas eval: questions with a known answer, scored without a model
 
     from atlas.agents.runtime import run_agent

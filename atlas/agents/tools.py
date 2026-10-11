@@ -4,6 +4,8 @@
                          Markdown package within a budget of tokens, without a model
     verify_requirement   whether the official text of a requirement and the documents agree,
                          judged by the agent requirement_verifier (needs the model)
+    link_requirement     the code that may implement a requirement, proposed by the agent
+                         req_linker (needs the model); it changes nothing
     ask_atlas            a question to the agent assistant, which searches with its own tools
                          (needs the model and ADK): one call for the client, several behind
 
@@ -19,7 +21,7 @@ from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "verify_requirement", "ask_atlas")
+TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "ask_atlas")
 
 
 class AgentTools:
@@ -59,6 +61,23 @@ class AgentTools:
             return {"error": NO_GRAPH}
         try:
             return verify(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
+        except openai.APIError as e:
+            return {"error": f"the model server failed: {diagnose(e)}"}
+
+    def link_requirement(self, req_id: str) -> dict:
+        """The code elements that may implement a requirement, proposed by the agent
+        req_linker: for each one, a confidence (high | medium | low), the reason, the
+        evidence that made it a candidate and the `Req:` tag to add and where. It changes
+        nothing in the code. Asks the model: slower than trace."""
+        import openai
+        from atlas.agents.link import link
+        from atlas.index import Index
+        from atlas.llm.connection import diagnose
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        try:
+            return link(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
         except openai.APIError as e:
             return {"error": f"the model server failed: {diagnose(e)}"}
 

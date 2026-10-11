@@ -5,8 +5,8 @@
     writer.py      Markdown and structure.json
     process.py     a whole document: DocsOptions, process_document, preview
 
-Text extractors are plugins chosen by file extension: "markitdown" (PDF, Office, HTML) and
-"text" (Markdown and plain text).
+Text extractors are plugins chosen by file extension: "pymupdf" (PDF), "markitdown" (Office,
+HTML, and PDF when pymupdf is disabled) and "text" (Markdown and plain text).
 
     from atlas.docs import DocsOptions, process_document
     data = process_document("spec.pdf", "out/spec", DocsOptions(analysis="regex"))
@@ -20,8 +20,27 @@ from typing import Iterable
 from atlas import plugins
 from atlas.plugins import DocumentExtractor, register
 
-__all__ = ["DocsOptions", "MarkitdownExtractor", "TextExtractor", "extractor_for", "preview",
-           "process_document", "read_text"]
+__all__ = ["DocsOptions", "MarkitdownExtractor", "PymupdfExtractor", "TextExtractor", "extractor_for",
+           "preview", "process_document", "read_text"]
+
+
+class PymupdfExtractor(DocumentExtractor):
+    """PDF with pymupdf (MuPDF): some 30 times faster than pdfminer (markitdown), and the
+    text keeps the order in which it was written, so a heading number stays next to its
+    title. Each text block is a paragraph: blocks are separated by a blank line, as the
+    sections and the chunks of the index expect."""
+    name = "pymupdf"
+    extensions = (".pdf",)
+    priority = 10           # before markitdown; [plugins] disabled = ["extractor:pymupdf"] goes back to it
+
+    def extract(self, path: Path) -> str:
+        try:
+            import pymupdf                  # optional dependency [docs]
+        except ImportError:
+            import fitz as pymupdf          # pymupdf before 1.24.3
+        with pymupdf.open(str(path)) as doc:
+            return "\f".join("\n\n".join(b[4].strip() for b in page.get_text("blocks") if b[6] == 0 and b[4].strip())
+                             for page in doc)
 
 
 class MarkitdownExtractor(DocumentExtractor):
@@ -41,21 +60,22 @@ class TextExtractor(DocumentExtractor):
         return Path(path).read_text(encoding="utf-8", errors="replace")
 
 
+register("extractor", "pymupdf", PymupdfExtractor)
 register("extractor", "markitdown", MarkitdownExtractor)
 register("extractor", "text", TextExtractor)
 
 
 def extractor_for(path: str | Path, disabled: Iterable[str] = (), config: dict | None = None) -> DocumentExtractor:
-    """The first enabled extractor (by name) that handles the extension of `path`."""
+    """The enabled extractor that handles the extension of `path`: the one with the highest
+    priority, and among equals the first by name."""
     suffix = Path(path).suffix.lower()
     disabled = set(disabled)
-    for name in plugins.available("extractor"):
-        if f"extractor:{name}" in disabled:
-            continue
-        cls = plugins.get("extractor", name)
-        if suffix in cls.extensions:
-            return cls(config or {})
-    raise LookupError(f"no enabled extractor for '{suffix}' files ({path})")
+    found = [plugins.get("extractor", name) for name in plugins.available("extractor")
+             if f"extractor:{name}" not in disabled]
+    found = [cls for cls in found if suffix in cls.extensions]
+    if not found:
+        raise LookupError(f"no enabled extractor for '{suffix}' files ({path})")
+    return max(found, key=lambda cls: cls.priority)(config or {})
 
 
 def read_text(path: str | Path, disabled: Iterable[str] = ()) -> str:

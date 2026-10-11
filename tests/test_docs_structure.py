@@ -7,10 +7,10 @@ from atlas.docs.structure import (clean_headers, detect_sections, diagnose_headi
 
 @pytest.fixture(scope="module")
 def pdf_text():
-    pytest.importorskip("markitdown")
+    pytest.importorskip("pymupdf")
 
-    def _read(path):
-        return clean_headers(read_text(path))
+    def _read(path, disabled=()):
+        return clean_headers(read_text(path, disabled))
     return _read
 
 
@@ -29,19 +29,40 @@ def test_sections_from_the_pdf_bookmarks(docs_samples, pdf_text):
     assert document_title(text, pdf) == "Track Management Software Requirements Specification"
 
 
-def test_sections_from_numbered_headings_split_by_pdfminer(docs_samples, pdf_text):
+def test_sections_from_numbered_headings(docs_samples, pdf_text):
     pdf = docs_samples / "spec_without_bookmarks.pdf"
     text, _ = pdf_text(pdf)
     info = {}
     sections = prepare_sections(text, pdf=pdf, info=info)
-    assert info["source"] == "text headings (21 detected)"
+    # 3 chapters, 9 groups and 27 subsections (the table of contents is left out), and the preamble
+    assert info["source"] == "text headings (39 detected)"
+    assert len(sections) == 28 and sections[0]["title"] == "Preamble"
     paths = [" > ".join(s["path"]) for s in sections]
     assert "1 Chapter 1 Functions > 1.1 Function group 1.1 > 1.1.1 Track handling 1.1.1" in paths
+    # every requirement in its subsection, and each one whole (its two lines in one paragraph)
+    s112 = next(s for s in sections if s["title"] == "1.1.2 Track handling 1.1.2")
+    assert s112["body"].startswith("Req: SRS-0007 The TMF shall process track event 0 of\ngroup 1.1.2 within")
+    assert "\n\nReq: SRS-0008" in s112["body"]
     # the table of contents is not taken for headings
     assert any(r == "table of contents entry" for r in diagnose_headings(text))
     # forcing bookmarks on a PDF without them falls back to the headings and says so
     prepare_sections(text, pdf=pdf, structure="bookmarks", info=info)
     assert info["source"].startswith("the PDF has no usable bookmarks; headings used instead")
+
+
+def test_sections_from_numbered_headings_split_by_pdfminer(docs_samples, pdf_text):
+    """markitdown (pdfminer), when pymupdf is disabled: the numbers come apart from their
+    titles and are paired again; the headings that come before their number are lost, and
+    with them the second and third subsections of each group."""
+    pytest.importorskip("markitdown")
+    pdf = docs_samples / "spec_without_bookmarks.pdf"
+    text, _ = pdf_text(pdf, ["extractor:pymupdf"])
+    info = {}
+    sections = prepare_sections(text, pdf=pdf, info=info)
+    assert info["source"] == "text headings (21 detected)"
+    paths = [" > ".join(s["path"]) for s in sections]
+    assert "1 Chapter 1 Functions > 1.1 Function group 1.1 > 1.1.1 Track handling 1.1.1" in paths
+    assert "1 Chapter 1 Functions > 1.1 Function group 1.1 > 1.1.2 Track handling 1.1.2" not in paths
 
 
 def test_markdown_sizes_and_merging(docs_samples):

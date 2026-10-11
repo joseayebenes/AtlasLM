@@ -177,7 +177,7 @@ def docs_step(ctx) -> Step | None:
     sources = doc_sources(ctx)
     if not sources:
         return None
-    from atlas.docs import process_document
+    from atlas.docs import extractor_for, process_document
     from atlas.docs.analysis import PROMPT_VERSION
     from atlas.llm import JsonLlm, from_config
     by_name = {d["name"]: (d, options) for d, options in sources}
@@ -200,9 +200,11 @@ def docs_step(ctx) -> Step | None:
         return [f"{d['name']}:{f}" for d, _ in sources for f in doc_files(ctx, d)]
 
     def fingerprint(ctx, unit: str) -> str:
+        # the extractor too: another one gives another text (and other sections)
         name, f = unit.split(":", 1)
         d, options = by_name[name]
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
+                f"{extractor_for(f, ctx.disabled).name}|"
                 + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
 
     def out_dir(ctx, unit: str) -> Path:
@@ -554,7 +556,7 @@ def sections(cfg: Config) -> int:
         for f in doc_files(ctx, d):
             p = preview(f, options, ctx.disabled)
             print(f"\n[{d['name']}] {f} — '{p['title']}': {p['chars']} chars, {len(p['sections'])} sections")
-            print(f"  structure: {p['structure']}"
+            print(f"  extractor: {p['extractor']}; structure: {p['structure']}"
                   + (f"; {p['subdivided']} large sections subdivided by their headings" if p["subdivided"] else "")
                   + (f"; {p['removed_lines']} header/footer lines removed" if p["removed_lines"] else ""))
             for s in p["sections"]:

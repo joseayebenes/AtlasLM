@@ -109,9 +109,11 @@ class RequirementsAdapter(ABC):
 
 
 class DocumentExtractor(ABC):
-    """Turns a document into text (with \\f between pages if it has them)."""
+    """Turns a document into text (with \\f between pages if it has them). When several
+    enabled extractors handle an extension, the one with the highest `priority` is used."""
     name: str = ""
     extensions: tuple[str, ...] = ()
+    priority: int = 0
 
     def __init__(self, config: dict):
         self.config = config

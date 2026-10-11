@@ -942,7 +942,7 @@ Estado (10 de octubre de 2026). Todo en `atlas/agents/`:
   `adk web`): `atlas run` ya lo cubre. Tampoco se condensa con el modelo el paquete de
   `build_context`; se recorta por orden de importancia.
 
-### Fase 6 — Consolidación (≈ 5 días)
+### Fase 6 — Consolidación (≈ 5 días) — **hecha; falta la aceptación en Windows y con el proyecto real**
 
 - Rendimiento: paralelismo por paso, lotes de embeddings, perfiles de tiempo.
 - Documentación: README por módulo, guía de configuración, ejemplos; CHANGELOG.
@@ -950,8 +950,75 @@ Estado (10 de octubre de 2026). Todo en `atlas/agents/`:
 - Revisión de seguridad: secretos solo por entorno, nada sale del puesto salvo al gateway.
 
 Aceptación:
-- [ ] Instalación limpia en un puesto nuevo siguiendo solo la documentación.
-- [ ] Las metas medibles de la sección 1 se cumplen sobre el proyecto real.
+- [ ] Instalación limpia en un puesto nuevo siguiendo solo la documentación. Hecho en macOS:
+      `make check-install` sigue `docs/instalacion.md` en una carpeta nueva y sin red, desde
+      el wheelhouse; las pruebas pasan contra el wheel instalado en Python 3.10, 3.11, 3.12
+      y 3.13. Falta un puesto Windows; todas las dependencias tienen wheel para Windows de
+      64 bits con Python 3.12.
+- [ ] Las metas medibles de la sección 1 se cumplen sobre el proyecto real. Con proyectos
+      sintéticos se cumplen (tabla de abajo); falta el real.
+
+Estado (11 de octubre de 2026), versión 0.1.0:
+- **Perfiles de tiempo.** Cada ejecución guarda en `atlas.db` (tabla `runs`), con la versión,
+  el perfil de cada paso:
+  - tiempo total, tiempo de búsqueda de unidades y de preparación;
+  - unidades procesadas y las más lentas;
+  - lo que pidió a las API (`atlas.llm.usage()`): peticiones, rechazos, reintentos, espera
+    del limitador y del servidor.
+
+  `atlas status` lo muestra. Es el informe por versión de la sección 11.
+- **Paralelismo por paso.** `[pipeline.step_workers]`, y documentos en paralelo cuyas
+  secciones comparten `workers` peticiones al modelo (`JsonLlm(concurrency=...)`). Ctrl+C
+  cancela lo que no ha empezado y avisa a lo que está en marcha (`Runner.stopping`).
+- **Lotes de embeddings.** `Step.prepare` y `embed_missing`: lotes llenos entre documentos y
+  módulos, varios a la vez.
+- **Medido** con un modelo simulado de 1 s por petición, 4 hilos y 6 PDF: la primera
+  ejecución bajó de 68,1 a 51,6 s:
+  - `docs.process`, de 50,6 a 43,2 s (el mínimo son 40,5 s);
+  - los embeddings, de 30 a 26 peticiones;
+  - `index.requirements`, de 10,2 a 3,1 s.
+
+  En el proyecto grande, 189 peticiones de embeddings en vez de 207. Con la API falsa, que
+  contesta al instante, el tiempo es CPU (la extracción de los PDF, unos 50 ms por página)
+  y no cambia: entre 17 y 18 s.
+- **Empaquetado.** Versión 0.1.0, rangos de versiones, ADK fijado a 2.11 y `truststore` como
+  dependencia. Lo demás:
+  - `constraints.txt`, con las versiones exactas probadas en una instalación limpia;
+  - `make wheel`, `wheelhouse`, `wheelhouse-windows` y `check-install`;
+  - `atlas init` (plantilla comentada) y `atlas --version`.
+- **Seguridad** (`docs/seguridad.md`). Los secretos solo vienen del entorno: no carga una
+  clave para un servidor no local, ni contraseñas de proxy o de ODBC escritas tal cual.
+  Además:
+  - las huellas no incluyen secretos;
+  - las URL se muestran enmascaradas;
+  - una prueba con los ganchos de auditoría de Python comprueba que una ejecución
+    completa, búsquedas, respuestas y un agente solo se conectan a la API configurada;
+  - `pip-audit` no encuentra vulnerabilidades conocidas en las versiones fijadas.
+- **Documentación.**
+  - `docs/instalacion.md` y `docs/configuracion.md`; las pruebas comprueban que cada clave
+    del esquema está documentada y que los enlaces llevan a ficheros que existen;
+  - un README por módulo;
+  - ejemplos de librería en `examples/library`, que las pruebas ejecutan;
+  - `CHANGELOG.md`.
+- **Arreglos.** La caché de análisis de secciones no se escribía de forma atómica: un corte
+  podía dejar un fichero roto y la sección en error para siempre. Ahora se escribe de forma
+  atómica, y uno roto se vuelve a analizar.
+- **Sin hacer.** Extraer los PDF en varios procesos (la extracción es Python puro y ocupa
+  una CPU); pymupdf sería más rápido, pero cambia el texto extraído. `[sources.code]
+  summaries` y `[sources.doors] attributes` se aceptan sin efecto. Las rutas de las fuentes
+  son relativas a la carpeta desde la que se lanza atlas, y las demás, a la del fichero.
+
+Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
+
+| Meta | Cómo se comprueba | Resultado |
+|---|---|---|
+| 1. Procesar una vez | 80 PDF (1040 páginas, 2080 secciones), 20 910 requisitos y 3060 subprogramas | segunda ejecución sin cambios: 0,3 s y ninguna petición (la primera, 62 s) |
+| 2. Solo los cambios | `tests/test_large.py`, `test_cli.py`, `test_docs_process.py` | un plazo cambiado en una página del proyecto grande: 1,4 s, 1 petición al modelo y 2 textos embebidos |
+| 3. Recuperable | `tests/test_pipeline.py`: `kill -9`, Ctrl+C (también con varios hilos), errores fatales | se reanuda sin repetir unidades ni dejar escrituras a medias |
+| 4. Configurable por fichero | la línea de comandos solo elige acción y fichero | cada clave en la guía de configuración, comprobado por las pruebas |
+| 5. Importable | cada módulo sin ADK, sin MCP y sin los demás | `examples/library`, ejecutados por las pruebas |
+| 6. Trazabilidad | `trace` en una llamada, y `impact` a la inversa | `tests/test_graph.py` y el ejemplo de trazabilidad |
+| 7. Evaluable | `atlas eval` | 23 de 24 con `gemma4:12b` (fase 5); la recuperación sin modelo sigue pendiente (8.4) |
 
 ---
 
@@ -996,7 +1063,7 @@ gantt
 | Incrementalidad | contadores de peticiones y unidades procesadas tras cada tipo de cambio | aserciones sobre el `Ledger` y el servidor falso |
 | Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo |
 | Agentes | trayectoria de herramientas y calidad de respuesta | `adk eval` con `.evalset.json`; umbral mínimo en `pytest` |
-| Rendimiento | tiempo y peticiones por fase sobre el proyecto real | informe de `atlas status` guardado por versión |
+| Rendimiento | tiempo y peticiones por fase sobre el proyecto real | perfil de cada ejecución en `atlas.db`, con la versión (`atlas status`; hecho en la fase 6) |
 
 ---
 
@@ -1008,7 +1075,7 @@ gantt
 | Cupo de la API (28 pet./min) y latencia del modelo | ingestas de horas | normas por regex sin LLM, agrupación de secciones, paralelismo controlado por el limitador, ingesta nocturna; nada se repite |
 | Modelo pequeño poco fiable con herramientas | agentes que se pierden | flujos fijos, pocas herramientas, salida estructurada, `max_steps`, evaluación continua |
 | Cambios de API en ADK (p. ej. `SequentialAgent` → `Workflow`) | roturas al actualizar | versión fijada en `pyproject`, capa `atlas.agents` fina que aísla ADK del resto |
-| Dependencias nativas en Windows (tree-sitter, pymupdf) | fallos de instalación | versiones probadas y fijadas; `atlas.code` opcional; pruebas de instalación limpia |
+| Dependencias nativas en Windows (tree-sitter, pymupdf) | fallos de instalación | versiones probadas y fijadas; `atlas.code` opcional; pruebas de instalación limpia. Fase 6: todas tienen wheel para Windows de 64 bits con Python 3.12, y el wheelhouse instala sin red |
 | Títulos de los PDF con formatos no previstos | secciones gigantes y mal atribuidas | marcadores del PDF primero, diagnóstico de `--dry-run`, `heading_regex` por fuente |
 | IDs de requisito con variantes (mayúsculas, guiones) | enlaces de trazabilidad perdidos | normalización única y lista de IDs no resueltos en el informe de huecos |
 | Confidencialidad | datos fuera del puesto | solo gateway corporativo o local; secretos por entorno; nada de servicios externos |
@@ -1035,7 +1102,7 @@ gantt
 | ~~¿Cómo se accederá a DOORS: exportaciones periódicas (ReqIF/CSV) o el servidor MCP en vivo? ¿Qué atributos y tipos de enlace hay que conservar?~~ Resuelta: descarga por COM y DXL (`tools/doors_export`) a una base de intercambio. Se conservan todos los atributos no de sistema y todos los enlaces salientes, y `mapping.toml` elige cuáles pasan a atlas y con qué tipo | tú / administración de DOORS | fase 3 |
 | ¿Qué convención exacta tienen los IDs de requisito y cómo se referencian en el código y en los documentos? | tú | fase 4 |
 | ¿Qué framework de pruebas usa el código Ada (AUnit u otro) para enlazar prueba → requisito? | tú | no (fase 4 puede empezar con patrones de ruta) |
-| ¿Está `google-adk` (y LiteLLM) disponible en el repositorio pip interno y en qué versión? | IT | fase 5 |
+| ¿Está `google-adk` disponible en el repositorio pip interno y en qué versión? LiteLLM ya no hace falta (fase 5), y el wheelhouse de la fase 6 lo lleva todo si no lo está | IT | no |
 | ¿Hará falta otro lenguaje además de Ada en el primer año? | tú | no (la interfaz queda preparada) |
 | ¿Quién más va a importar la librería? Define cuánta estabilidad de API hay que prometer. | tú | no |
 
@@ -1161,7 +1228,8 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   sección.
 - `atlas/plugins.py`: interfaces y registro de la sección 14.
 - `atlas/pipeline/`: motor incremental (`Step`, `Ledger`, `Runner`) con reanudación,
-  cuarentena, poda, orden por dependencias y bloqueo del workspace.
+  cuarentena, poda, orden por dependencias y bloqueo del workspace; paralelismo por paso,
+  preparación común de las unidades (`prepare`) y perfiles de tiempo (fase 6).
 - `atlas/doors/`: base de intercambio de requisitos (`exchange.py`), adaptadores `exchange`
   y `database` (sección 15).
 - `tools/doors_export/`: exportador de DOORS a la base de intercambio (descarga y
@@ -1177,20 +1245,33 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   `atlas.toml`; `atlas check` reconoce los modelos que razonan.
 - `atlas/mcp/`: servidor MCP con las herramientas de documentos, grafo y ficheros
   (`ada_graph_mcp.py` y el modo `mcp` de `doc_rag.py`, migrados en la fase 1).
-- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `trace`, `matrix`, `search`, `ask`,
-  `plugins`, `check`, `serve`.
+- `atlas/agents/`: agentes ADK en ficheros Markdown, `AtlasLlm`, `build_context`,
+  verificación de requisitos, informes y evaluación (fase 5).
+- `atlas/cli.py`: `run`, `status`, `sections`, `graph`, `trace`, `matrix`, `verify`,
+  `impact`, `coverage`, `search`, `ask`, `plugins`, `agents`, `agent`, `eval`, `check`,
+  `serve` e `init` (con la plantilla de `atlas/templates/`).
+- `docs/`: instalación, configuración y seguridad; un `README.md` en cada módulo de
+  `atlas/`; `CHANGELOG.md` (fase 6).
+- Empaquetado (fase 6): `pyproject.toml` con versiones acotadas y ADK fijado,
+  `constraints.txt` (`tools/constraints.py`), `make wheel`, `wheelhouse`,
+  `wheelhouse-windows` y `check-install` (`tools/check_install.py`).
+- `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 123 pruebas:
-  - configuración, plugins y DOORS;
+- `tests/`: 163 pruebas, 158 sin modelo:
+  - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
+    y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,
-    varios hilos sobre el mismo atlas.db, y la segunda ejecución y un PDF cambiado en una
+    varios hilos sobre el mismo atlas.db, perfiles de tiempo, `step_workers`, Ctrl+C con
+    unidades en otros hilos, `prepare`, y la segunda ejecución y un PDF cambiado en una
     página sobre una copia pequeña del proyecto grande sintético;
-  - CLI, servidor falso y `atlas check` con modelos que razonan;
-  - documentos: estructura, análisis, caché, división de secciones, paso `docs.process` y
-    equivalencia con `pdf_struct.py`;
-  - índice: registros, búsqueda, caché de vectores, lotes fallidos, cambio de modelo, pasos
-    `index.documents` e `index.requirements` (DOORS), y equivalencia con `doc_rag.py`;
+  - CLI, `atlas init`, servidor falso, contadores de uso de la API, límite de concurrencia
+    de `JsonLlm` y `atlas check` con modelos que razonan;
+  - documentos: estructura, análisis, caché (también dañada), división de secciones, paso
+    `docs.process` con documentos en paralelo y equivalencia con `pdf_struct.py`;
+  - índice: registros, búsqueda, caché de vectores, lotes fallidos y lotes entre
+    documentos, cambio de modelo, pasos `index.documents` e `index.requirements` (DOORS), y
+    equivalencia con `doc_rag.py`;
   - código y grafo: etiquetas, análisis Ada, nombres repetidos en dos paquetes,
     almacenamiento, exportación, consultas, paso `graph.build` y equivalencia con
     `ada_graph.py`;
@@ -1206,6 +1287,10 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
   - agentes: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
     `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación y
     la app de `adk web`;
+  - seguridad: una ejecución completa, búsquedas, respuestas y un agente solo se conectan a
+    la API configurada (ganchos de auditoría de Python);
+  - documentación: cada clave del esquema está en la guía de configuración, los enlaces
+    llevan a ficheros que existen y los ejemplos de `examples/library` funcionan;
   - solo si Ollama está en marcha, cinco pruebas de agentes ADK: uno que traza un requisito,
     otro que edita código, otro que solo tiene las herramientas de `atlas serve` por MCP, el
     asistente de serie y la verificación de un requisito.

@@ -73,3 +73,28 @@ def test_reasoning_can_be_turned_off(fake_llm):
         JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
     service.reasoning_effort = "none"
     assert JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")["summary"]
+
+
+def test_concurrency_caps_the_requests_in_flight(fake_llm):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    from atlas.llm import JsonLlm
+    llm = JsonLlm(fake_llm[0], concurrency=2)
+    state, lock, real = {"now": 0, "max": 0}, threading.Lock(), llm.client.chat.completions.create
+
+    def create(**kwargs):
+        with lock:
+            state["now"] += 1
+            state["max"] = max(state["max"], state["now"])
+        time.sleep(0.05)
+        try:
+            return real(**kwargs)
+        finally:
+            with lock:
+                state["now"] -= 1
+
+    llm.client.chat.completions.create = create
+    with ThreadPoolExecutor(6) as pool:
+        answers = list(pool.map(lambda _: llm.ask_text("system", "Reply with: ok"), range(6)))
+    assert answers == ["ok"] * 6 and state["max"] == 2

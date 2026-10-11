@@ -145,3 +145,100 @@ def test_a_lock_file_left_by_an_old_version_does_not_block(tmp_path):
     (tmp_path / "atlas.lock").write_text("12345")          # O_EXCL lock of a killed run
     step = _step("s", ["a"], {"a": "1"}, lambda ctx, u: None)
     assert Runner(Ledger(tmp_path / "atlas.db"), [step]).run().processed == {"s": 1}
+
+
+def test_each_run_leaves_a_time_profile(tmp_path):
+    import time
+    meter = {"chat": 0, "wait_seconds": 0.0}
+
+    def run(ctx, u):
+        time.sleep(0.05 if u == "slow" else 0)
+        meter["chat"] += 1
+
+    step = _step("p", ["fast", "slow"], {"fast": "1", "slow": "1"}, run)
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [step], workers=2, meters=lambda: dict(meter), version="9.9").run()
+    prof = rep.profile["p"]
+    assert prof["units"] == 2 and prof["ran"] == 2 and prof["workers"] == 2
+    assert prof["slowest"][0]["unit"] == "slow" and prof["unit_seconds"]["max"] >= 0.05
+    assert prof["api"] == {"chat": 2} and prof["seconds"] >= prof["scan_seconds"]
+    assert ledger.get("p", "slow")["seconds"] >= 0.05 and ledger.get("p", "fast")["seconds"] < 0.05
+    again = Runner(ledger, [step], meters=lambda: dict(meter)).run()      # nothing to do
+    assert again.profile["p"]["ran"] == 0 and "api" not in again.profile["p"] and "slowest" not in again.profile["p"]
+    runs = ledger.runs()
+    assert [r["version"] for r in runs] == ["", "9.9"] and runs[1]["report"]["profile"]["p"]["ran"] == 2
+
+
+def test_the_profile_is_kept_when_a_step_stops(tmp_path):
+    def run(ctx, u):
+        raise FatalError("no connection")
+
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, run, parallel=False)]).run()
+    assert rep.fatal and rep.profile["p"]["ran"] == 1 and rep.profile["p"]["units"] == 2
+    assert ledger.runs()[0]["report"]["fatal"] == "p: no connection"
+
+
+def test_a_ledger_of_an_older_version_gets_the_new_columns(tmp_path):
+    import sqlite3
+    db = sqlite3.connect(tmp_path / "db")
+    db.executescript("""CREATE TABLE ledger (step TEXT NOT NULL, unit TEXT NOT NULL, fingerprint TEXT,
+        status TEXT, output_hash TEXT, attempts INTEGER DEFAULT 0, error TEXT, started TEXT, finished TEXT,
+        PRIMARY KEY (step, unit));
+        INSERT INTO ledger (step, unit, fingerprint, status) VALUES ('p', 'a', '1', 'ok');""")
+    db.close()
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, lambda ctx, u: None)]).run()
+    assert rep.skipped == {"p": 1} and rep.processed == {"p": 1}
+    assert ledger.get("p", "a")["seconds"] is None and ledger.get("p", "b")["seconds"] is not None
+
+
+def test_step_workers_and_ctrl_c_with_units_in_other_threads(tmp_path):
+    """Ctrl+C reaches only the main thread: the units that have not started are
+    cancelled instead of waited for, and `stopping` tells the running ones to stop."""
+    import time
+    seen, crash = [], {"on": True}
+
+    def run(ctx, u):
+        if u == "u00" and crash["on"]:
+            raise KeyboardInterrupt
+        seen.append(u)
+        time.sleep(0.05)
+
+    units = [f"u{i:02d}" for i in range(20)]
+    step = _step("p", units, {u: "1" for u in units}, run, workers=3)
+    ledger = Ledger(tmp_path / "db")
+    runner = Runner(ledger, [step], workers=1)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run()
+    assert runner.stopping.is_set() and len(seen) < 10 and ledger.get("p", "u00")["status"] == "running"
+    crash["on"] = False
+    done = len(seen)
+    rep = Runner(ledger, [step], workers=1).run()
+    assert rep.profile["p"]["workers"] == 3 and rep.processed == {"p": 20 - done} and rep.skipped == {"p": done}
+
+
+def test_prepare_gets_the_pending_units_and_is_only_a_head_start(tmp_path):
+    prepared, done = [], []
+    fingerprints = {"a": "1", "b": "1", "c": "1"}
+    behaviour = {"raise": None}
+
+    def prepare(ctx, units):
+        prepared.append(units)
+        if behaviour["raise"]:
+            raise behaviour["raise"]
+
+    step = _step("p", ["a", "b", "c"], fingerprints, lambda ctx, u: done.append(u), prepare=prepare)
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [step]).run()
+    assert prepared == [["a", "b", "c"]] and rep.profile["p"]["prepare_seconds"] >= 0
+    Runner(ledger, [step]).run()
+    assert len(prepared) == 1                                 # nothing pending: not called
+    fingerprints["b"] = "2"
+    behaviour["raise"] = ValueError("the batch service is down")
+    rep = Runner(ledger, [step]).run()                        # it fails: the unit does its own work
+    assert prepared[-1] == ["b"] and rep.processed == {"p": 1} and done[-1] == "b"
+    fingerprints["c"] = "2"
+    behaviour["raise"] = FatalError("no connection")
+    rep = Runner(ledger, [step]).run()
+    assert rep.fatal == "p: no connection" and done[-1] == "b" and ledger.get("p", "c")["fingerprint"] == "1"

@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import re
 import shutil
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, fields
@@ -27,7 +28,7 @@ from atlas.docs.structure import STRUCTURES, clean_headers, diagnose_headings, d
 from atlas.docs.writer import pages, write_document
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
-from atlas.pipeline import FatalError, atomic_write
+from atlas.pipeline import FatalError, Interrupted, atomic_write
 
 __all__ = ["DocsOptions", "preview", "process_document"]
 
@@ -97,11 +98,13 @@ def _replace_dir(tmp: Path, out: Path) -> None:
 def process_document(path: str | Path, out: str | Path, options: DocsOptions | None = None, *,
                      llm: ServiceConfig | JsonLlm | None = None, title: str | None = None,
                      cache_dir: str | Path | None = None, workers: int = 1,
-                     disabled: Iterable[str] = ()) -> dict:
+                     disabled: Iterable[str] = (), stop: threading.Event | None = None) -> dict:
     """Extracts, structures and analyses a document and writes its Markdown into `out`.
     Returns the content of structure.json plus `out_dir`, `errors` (sections, or the
     overview, whose analysis failed: processing again retries only those) and
-    `structure_info`. A connection error with the model raises FatalError."""
+    `structure_info`. A connection error with the model raises FatalError. Sections are
+    analysed `workers` at a time; when `stop` is set (the run was interrupted), no other
+    request starts and Interrupted is raised once the ones in flight end."""
     path, out = Path(path), Path(out)
     options = options or DocsOptions()
     if options.analysis == "llm":
@@ -138,7 +141,9 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
                 s["analysis"] = an.normalize({"requirements": an.regex_requirements(s["body"], pattern)})
         else:
             cache = Path(cache_dir) if cache_dir else out.parent / ".cache"
-            errors = _analyze_all(llm, sections, doc_title, options.lang, cache, tmp / "_llm_failures", workers)
+            errors = _analyze_all(llm, sections, doc_title, options.lang, cache, tmp / "_llm_failures", workers,
+                                  stop)
+            _check(stop, doc_title)
             try:
                 doc_overview = an.overview(llm, sections, doc_title, options.lang, options.max_chars, cache)
             except Exception as e:
@@ -165,10 +170,16 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
     return {**data, "out_dir": str(out), "errors": errors, "structure_info": info}
 
 
+def _check(stop: threading.Event | None, doc_title: str) -> None:
+    if stop is not None and stop.is_set():
+        raise Interrupted(f"'{doc_title}': the run was interrupted")
+
+
 def _analyze_all(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str, cache: Path,
-                 failures: Path, workers: int) -> int:
+                 failures: Path, workers: int, stop: threading.Event | None = None) -> int:
     """Analyses every section, in parallel, from the cache when possible. A section that
-    fails keeps an empty analysis and its error; a connection error stops everything."""
+    fails keeps an empty analysis and its error; a connection error stops everything, and
+    so does `stop`."""
     cached = {s["id"] for s in sections
               if (f := an.section_cache_file(cache, llm.model, s, doc_title, lang)) and f.exists()}
     log.info("analysis: %d of %d sections already in the cache; %d to process",
@@ -176,6 +187,7 @@ def _analyze_all(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str, 
     t0, errors = time.time(), 0
 
     def one(s: dict) -> tuple[dict, float]:
+        _check(stop, doc_title)
         t = time.monotonic()
         return an.analyze_section(llm, s, doc_title, lang, cache, failures), time.monotonic() - t
 

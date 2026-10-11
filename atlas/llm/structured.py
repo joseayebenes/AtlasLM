@@ -17,6 +17,7 @@ repaired so that the caller can split its input and ask again.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import re
@@ -115,13 +116,15 @@ class JsonLlm:
     """Chat client that answers with JSON objects (`ask_json`) or with text (`ask_text`).
     It asks for `response_format` with a JSON schema and, if the server does not accept
     it, goes on without it. Thread-safe: one instance can be shared by the workers that
-    analyse sections in parallel."""
+    analyse sections in parallel, and `concurrency` (0 = no limit) caps how many requests
+    of all of them are in flight at once (e.g. the sections of several documents that are
+    processed at the same time)."""
 
     # How servers say they do not support response_format: 400 (most), 422 (some vLLM
     # versions), 501 "structured output is unavailable" (Ollama with some models)
     NO_SCHEMA_STATUSES = (400, 422, 501)
 
-    def __init__(self, cfg: ServiceConfig):
+    def __init__(self, cfg: ServiceConfig, concurrency: int = 0):
         from openai import APIStatusError
         self.cfg = cfg
         self.client, self.proxy = create_client(cfg)
@@ -130,6 +133,11 @@ class JsonLlm:
         self.temperature = cfg.temperature
         self.schema_ok = True   # turned off if the server does not accept json_schema
         self._lock = threading.Lock()
+        self._slots = threading.BoundedSemaphore(concurrency) if concurrency > 0 else contextlib.nullcontext()
+
+    def _create(self, **kwargs):
+        with self._slots:
+            return self.client.chat.completions.create(**kwargs)
 
     def _kwargs(self, messages: list[dict]) -> dict:
         kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)
@@ -141,7 +149,7 @@ class JsonLlm:
 
     def ask_text(self, system: str, user: str) -> str:
         """A plain text answer (e.g. a cited answer for a person)."""
-        resp = self.client.chat.completions.create(**self._kwargs(
+        resp = self._create(**self._kwargs(
             [{"role": "system", "content": system}, {"role": "user", "content": user}]))
         return (resp.choices[0].message.content or "").strip()
 
@@ -152,7 +160,7 @@ class JsonLlm:
                 kwargs["response_format"] = {"type": "json_schema", "json_schema":
                                              {"name": name, "schema": schema}}
             try:
-                resp = self.client.chat.completions.create(**kwargs)
+                resp = self._create(**kwargs)
             except self._status_error as e:
                 if "response_format" in kwargs and e.status_code in self.NO_SCHEMA_STATUSES:
                     with self._lock:

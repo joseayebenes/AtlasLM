@@ -9,6 +9,7 @@
 
     from atlas.index import Index
     idx = Index.from_config(cfg)                    # the atlas.db of the workspace
+    idx.embed_missing(texts, workers=4)             # optional: many documents' texts in full batches
     hits = idx.search("track deletion latency", k=8)
     res = idx.answer("How long does a track take to be deleted?")
     print(res["answer"], [s["cite"] for s in res["sources"]])
@@ -18,6 +19,7 @@ from __future__ import annotations
 import logging
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Iterable
 
@@ -33,7 +35,8 @@ from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
 __all__ = ["DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context",
-           "build_records", "chunk_text", "cite", "index_document", "index_module", "requirement_records", "search"]
+           "build_records", "chunk_text", "cite", "embed_missing", "index_document", "index_module",
+           "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -62,6 +65,47 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": f"{module} (DOORS)", "out_dir": "",
                                                      "overview": {"summary": summary}})
+
+
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
+    """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
+    `workers` batches at a time, and saves each batch in the cache. The texts of many
+    documents go in the same batches: fewer requests than embedding each document on its
+    own (index_document then finds everything in the cache). Returns how many texts there
+    were, how many were in the cache, how many were embedded and the failed batches. A
+    connection error raises FatalError; the batches that finished stay in the cache."""
+    by_key: dict[str, str] = {}
+    for t in texts:
+        by_key.setdefault(embedder.key(t), t)               # each distinct text once
+    cached = store.cache_get(list(by_key))
+    missing = [(k, t) for k, t in by_key.items() if k not in cached]
+    batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
+    out = {"texts": len(by_key), "cached": len(cached), "embedded": 0, "failed_batches": []}
+    if not batches:
+        return out
+    log.info("embeddings: %d texts, %d in the cache, %d to compute in %d batches of up to %d (%s)",
+             len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
+
+    def one(batch: list[tuple[str, str]]) -> int:
+        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+        return len(batch)
+
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        futures = {pool.submit(one, b): n for n, b in enumerate(batches, 1)}
+        for f in as_completed(futures):
+            try:
+                out["embedded"] += f.result()
+            except Exception as e:
+                if is_connection_error(e):
+                    raise FatalError(f"connection error with the embeddings: {diagnose(e)}") from e
+                out["failed_batches"].append({"batch": futures[f], "error": f"{type(e).__name__}: {e}"[:500]})
+                log.warning("  batch %d/%d failed: %s", futures[f], len(batches), e)
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)      # the running batches end in the cache
+        raise
+    pool.shutdown()
+    return out
 
 
 def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
@@ -129,6 +173,10 @@ class Index:
     def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
         """See index_module."""
         return index_module(self.store, self.embedder, module, requirements, kinds)
+
+    def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
+        """See embed_missing."""
+        return embed_missing(self.store, self.embedder, texts, workers)
 
     def remove_document(self, doc: str) -> None:
         self.store.delete_document(doc)

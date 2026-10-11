@@ -494,27 +494,59 @@ def _http_module():
     return importlib.import_module(base.__module__.split(".")[0])
 
 
+# What went to the APIs since the process started, through every client: the time
+# profiles of `atlas run` keep what each step added.
+_USAGE: dict[str, float] = {"chat": 0, "embeddings": 0, "other": 0, "rejected": 0, "retried": 0,
+                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0}
+_USAGE_LOCK = threading.Lock()
+
+
+def _count(**deltas: float) -> None:
+    with _USAGE_LOCK:
+        for k, v in deltas.items():
+            _USAGE[k] += v
+
+
+def usage() -> dict[str, float]:
+    """Cumulative counters of the requests of this process to the APIs: requests sent by
+    endpoint (`chat`, `embeddings`, `other`), rate-limit rejections (`rejected`), retries
+    after 5xx or connection errors (`retried`), seconds waiting for the pace or a pause of
+    the limiter (`wait_seconds`) and for the server (`api_seconds`), and kilobytes sent
+    (`sent_kb`)."""
+    with _USAGE_LOCK:
+        return dict(_USAGE)
+
+
+def _endpoint(request) -> str:
+    path = request.url.path.rstrip("/")
+    return "chat" if path.endswith("/chat/completions") else "embeddings" if path.endswith("/embeddings") \
+        else "other"
+
+
 def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
     """HTTP transport that honours the limit and retries 409/429/5xx with growing waits,
     using Retry-After and the x-ratelimit-* headers if the server sends them."""
 
     class RateLimitedTransport(hx.BaseTransport):
         def handle_request(self, request):
-            tokens = 0
-            if lim.tpm:
-                try:
-                    tokens = len(request.content) // 4
-                except Exception:
-                    tokens = 0
+            try:
+                size = len(request.content)
+            except Exception:
+                size = 0
+            tokens = size // 4 if lim.tpm else 0
+            endpoint = _endpoint(request)
             retries = 0             # for server (5xx) or connection errors
             rejections = 0          # for rate limit (409/429): they do not count as retries
             waited_for_limit = 0.0  # total time waited for rate limit in this request
             connection_failures = 0
             while True:
+                queued = time.monotonic()
                 if lim.sem:
                     lim.sem.acquire()
                 try:
                     lim.wait(tokens)
+                    sent = time.monotonic()
+                    _count(**{endpoint: 1}, wait_seconds=sent - queued, sent_kb=size / 1024)
                     try:
                         resp = inner.handle_request(request)
                     except hx.ConnectError as e:
@@ -524,11 +556,15 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                         if _is_tls_error(e) or connection_failures > 2 or retries >= net.max_retries:
                             raise
                         resp = None
+                    finally:
+                        _count(api_seconds=time.monotonic() - sent)
                 finally:
                     if lim.sem:
                         lim.sem.release()
 
                 is_limit = resp is not None and resp.status_code in RATE_STATUSES
+                if is_limit:
+                    _count(rejected=1)
                 if resp is not None:
                     notice = _wait_from_headers(resp.headers)
                     if notice:                    # the server says no quota is left
@@ -568,6 +604,7 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                          f"{_human_time(net.rate_limit_max_wait)})")
                 else:
                     retries += 1
+                    _count(retried=1)
                     reason = f"HTTP {resp.status_code}" if resp is not None else "no connection"
                     _log(f"[API {label}] {reason}: retry {retries}/{net.max_retries} "
                          f"in {delay:.0f}s")
@@ -645,7 +682,7 @@ def describe(cfg: ServiceConfig) -> str:
     n = cfg.net
     tls = ("NOT verified" if n.insecure else
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
-    return (f"{cfg.base_url}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
+    return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"

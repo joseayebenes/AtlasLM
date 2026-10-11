@@ -17,6 +17,8 @@
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
+    atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
+    atlas --version
 """
 from __future__ import annotations
 
@@ -42,7 +44,8 @@ def _context(cfg: Config) -> SimpleNamespace:
     logging.getLogger("httpx").setLevel(logging.WARNING)     # one line per request otherwise
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
-    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
+    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
+                           stopping=threading.Event())     # set by the Runner when the run is interrupted
 
 
 # --------------------------------------------------------------------------
@@ -180,11 +183,17 @@ def docs_step(ctx) -> Step | None:
     by_name = {d["name"]: (d, options) for d, options in sources}
     root = ctx.cfg.workspace / "docs"
     model = from_config(ctx.cfg).llm.model
+    workers = step_workers(ctx, "docs")
     shared: dict = {}
+    lock = threading.Lock()             # documents are processed in parallel
+    reserved: dict[str, str] = {}       # output folder -> unit, for the documents of this run
 
     def llm() -> JsonLlm:
-        if "llm" not in shared:        # only when some source uses it, and only once
-            shared["llm"] = JsonLlm(from_config(ctx.cfg).llm)
+        # only when some source uses it, and only once. It is shared by the documents
+        # processed at the same time: `workers` sections of all of them at once.
+        with lock:
+            if "llm" not in shared:
+                shared["llm"] = JsonLlm(from_config(ctx.cfg).llm, concurrency=workers)
         return shared["llm"]
 
     def units(ctx) -> list[str]:
@@ -197,14 +206,17 @@ def docs_step(ctx) -> Step | None:
                 + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
 
     def out_dir(ctx, unit: str) -> Path:
-        """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it."""
+        """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it
+        (or is being processed into it at the same time)."""
         name, f = unit.split(":", 1)
         known = ctx.store.document(unit)
         if known:
             return Path(known["out_dir"])
         out = root / name / f"{Path(f).stem}_{Path(f).suffix.lstrip('.').lower()}"
-        if ctx.store.document_owning(str(out)) not in (None, unit):
-            out = out.with_name(f"{out.name}-{sha256_text(unit)[:8]}")
+        with lock:
+            if (ctx.store.document_owning(str(out)) or reserved.get(str(out), unit)) != unit:
+                out = out.with_name(f"{out.name}-{sha256_text(unit)[:8]}")
+            reserved[str(out)] = unit
         return out
 
     def run(ctx, unit: str):
@@ -212,8 +224,8 @@ def docs_step(ctx) -> Step | None:
         d, options = by_name[name]
         out = out_dir(ctx, unit)
         data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
-                                cache_dir=root / ".cache", workers=ctx.cfg["pipeline"]["workers"],
-                                disabled=ctx.disabled)
+                                cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
+                                stop=ctx.stopping)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"]}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
@@ -228,9 +240,9 @@ def docs_step(ctx) -> Step | None:
             shutil.rmtree(known["out_dir"], ignore_errors=True)
             ctx.store.delete_document(unit)
 
-    # sections are analysed in parallel inside each document (process_document's workers)
-    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune,
-                parallel=False)
+    # documents in parallel, and the sections of all of them `workers` at a time (llm()):
+    # the extraction of a PDF goes on while the model answers about the sections of others
+    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune)
 
 
 class IndexIncomplete(RuntimeError):
@@ -255,10 +267,12 @@ def index_options(ctx) -> dict:
 
 
 def index_step(ctx) -> Step:
-    """One unit per processed document (docs.process): its structure.json is indexed."""
-    from atlas.index import Index
+    """One unit per processed document (docs.process): its structure.json is indexed. The
+    texts of all the documents to index are embedded first, together, in full batches."""
+    from atlas.index import Index, build_records
     from atlas.llm import from_config
     options = index_options(ctx)
+    workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
@@ -290,16 +304,25 @@ def index_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
+    def prepare(ctx, units: list[str]) -> None:
+        texts = [r["embed_text"] for unit in units for r in build_records(
+            json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
+            options["chunk_overlap"], options["kinds"])]
+        index().embed_missing(texts, workers)
+
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
+                prune=lambda ctx, unit: index().remove_document(unit), prepare=prepare,
+                depends_on=["docs.process"])
 
 
 def index_requirements_step(ctx) -> Step:
     """One unit per DOORS module read by doors.requirements: its requirements are indexed
-    as one more document ("doors:<module>"), so that search finds them too."""
-    from atlas.index import DOORS_PREFIX, Index
+    as one more document ("doors:<module>"), so that search finds them too. Like
+    index.documents, the texts of all the modules to index are embedded first, together."""
+    from atlas.index import DOORS_PREFIX, Index, requirement_records
     from atlas.llm import from_config
     kinds = index_options(ctx)["kinds"]
+    workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     shared: dict = {}
     lock = threading.Lock()
@@ -324,8 +347,12 @@ def index_requirements_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
+    def prepare(ctx, modules: list[str]) -> None:
+        index().embed_missing([r["embed_text"] for m in modules
+                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
+                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,
                 depends_on=["doors.requirements"])
 
 
@@ -410,6 +437,26 @@ def graph_step(ctx) -> Step:
                 depends_on=["code.parse", "doors.requirements", "docs.process"], parallel=False)
 
 
+STEPS = ("doors", "code", "docs", "graph", "index")
+PARALLEL_STEPS = ("code", "docs", "index")      # the others process their units one by one
+
+
+def step_workers(ctx, name: str) -> int:
+    """Units of the step `name` processed at the same time: [pipeline.step_workers] or, if
+    it does not say, [pipeline] workers. In docs they are also the sections that are
+    analysed at the same time."""
+    per_step = ctx.cfg["pipeline"]["step_workers"]
+    for key, n in per_step.items():
+        if key not in STEPS:
+            raise ConfigError(f"[pipeline.step_workers] unknown step '{key}' (valid: {', '.join(PARALLEL_STEPS)})")
+        if key not in PARALLEL_STEPS:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' processes its units one by one "
+                              f"(valid: {', '.join(PARALLEL_STEPS)})")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' must be a positive integer")
+    return per_step.get(name, ctx.cfg["pipeline"]["workers"])
+
+
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
     builders = {"doors": [doors_step], "code": [code_step], "docs": [docs_step], "graph": [graph_step],
@@ -418,7 +465,10 @@ def steps(ctx) -> list[Step]:
     for name in wanted:
         if name not in builders:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
-        out += [s for s in (build(ctx) for build in builders[name]) if s]
+        for s in (build(ctx) for build in builders[name]):
+            if s:
+                s.workers = step_workers(ctx, name) if name in PARALLEL_STEPS else None
+                out.append(s)
     return out
 
 
@@ -427,17 +477,42 @@ def steps(ctx) -> list[Step]:
 # --------------------------------------------------------------------------
 
 def run(cfg: Config) -> int:
+    from atlas import __version__
+    from atlas.llm import usage
     ctx = _context(cfg)
     pc = cfg["pipeline"]
     runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
                     on_error=pc["on_error"], max_attempts=pc["max_attempts"],
-                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"])
+                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
+                    meters=usage, version=__version__, stopping=ctx.stopping)
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
     return 1 if rep.errors or rep.quarantined else 0
+
+
+def _api_text(api: dict) -> str:
+    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting' from the `api` of a profile."""
+    parts = [f"{api[k]:g} {k}" for k in ("chat", "embeddings", "other", "rejected", "retried") if api.get(k)]
+    if api.get("wait_seconds", 0) >= 0.1:
+        parts.append(f"{api['wait_seconds']:.1f} s waiting")
+    return ", ".join(parts)
+
+
+def print_profile(run: dict) -> None:
+    """The time profile of a run (Ledger.runs): one line per step."""
+    rep = run["report"]
+    print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
+          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else ""))
+    print(f"  {'step':20s} {'seconds':>8s} {'scan':>6s} {'units':>6s} {'ran':>6s}  slowest unit; API")
+    for step, p in rep.get("profile", {}).items():
+        slowest = p.get("slowest", [])
+        notes = [f"{Path(slowest[0]['unit'].split(':', 1)[-1]).name} ({slowest[0]['seconds']:.2f} s)"] if slowest else []
+        notes += [_api_text(p["api"])] if p.get("api") and _api_text(p["api"]) else []
+        print(f"  {step:20s} {p['seconds']:8.2f} {p['scan_seconds']:6.2f} {p['units']:6d} {p['ran']:6d}  "
+              + "; ".join(notes))
 
 
 def status(cfg: Config) -> int:
@@ -455,6 +530,18 @@ def status(cfg: Config) -> int:
         print(f"  {p['status']:11s} {p['step']:20s} {p['unit'][:60]}  {p['error'] or ''}")
     if len(pending) > 30:
         print(f"  … and {len(pending) - 30} more")
+    runs = ledger.runs(6)
+    if runs:
+        print_profile(runs[0])
+    if len(runs) > 1:
+        print("previous runs:")
+        for r in runs[1:]:
+            api = {}
+            for p in r["report"].get("profile", {}).values():
+                for k, v in p.get("api", {}).items():
+                    api[k] = api.get(k, 0) + v
+            print(f"  {r['started']}  atlas {r['version'] or '?':8s} {r['seconds']:8.1f} s  "
+                  f"{sum(r['report']['processed'].values())} processed" + (f"; {_api_text(api)}" if _api_text(api) else ""))
     return 0
 
 
@@ -710,12 +797,33 @@ def serve(cfg: Config) -> int:
     return 0
 
 
+TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
+
+
+def init(path: Path) -> int:
+    """Writes the template of atlas.toml in `path`, unless the file exists."""
+    if path.exists():
+        print(f"{path} already exists: it is not overwritten", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"created {path}: edit the sources and the model, then `atlas check {path.name}` and "
+          f"`atlas run {path.name}`")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
+    if argv[0] in ("-V", "--version", "version"):
+        from atlas import __version__
+        print(f"atlas {__version__}")
+        sys.exit(0)
     action, rest = argv[0], argv[1:]
+    if action == "init":
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,

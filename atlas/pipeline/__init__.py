@@ -7,6 +7,11 @@ recorded and the run goes on; fatal ones (connection, credentials, exhausted quo
 the run with the state saved. Running again resumes. Units that disappear are marked
 stale and, optionally, pruned.
 
+Each run leaves a time profile in its report and in the `runs` table of the ledger: per
+step, the seconds spent finding the work (units and fingerprints) and doing it, the slowest
+units and, with `meters`, what the step consumed of anything that counts (requests to the
+APIs, seconds waiting for the rate limit...).
+
     from atlas.pipeline import Step, Runner, Ledger, FatalError
 
     step = Step(
@@ -15,9 +20,11 @@ stale and, optionally, pruned.
         fingerprint=lambda ctx, u: sha256_file(u) + cfg.fingerprint("sources.code"),
         run=lambda ctx, u: analyze(u),             # idempotent; writes atomically
         prune=lambda ctx, u: delete_results(u),    # optional: what to do with a vanished unit
+        prepare=lambda ctx, units: warm_cache(units),  # optional: once, with the units to process
         depends_on=["docs.sections"],
     )
     Runner(ledger=Ledger(workspace / "atlas.db"), steps=[step], context=ctx).run()
+    Ledger(workspace / "atlas.db").runs()           # the last runs, with their profiles
 """
 
 from __future__ import annotations
@@ -42,6 +49,12 @@ class FatalError(Exception):
     """Error after which it makes no sense to go on with the next unit."""
 
 
+class Interrupted(BaseException):
+    """The run was interrupted (Ctrl+C) while units ran in other threads. A long unit that
+    watches `Runner.stopping` raises it to stop early; like a kill, the unit stays
+    'running' in the ledger and the next run does it again."""
+
+
 class WorkspaceLocked(RuntimeError):
     pass
 
@@ -59,10 +72,11 @@ def sha256_text(*parts: Any) -> str:
 
 
 def atomic_write(path: str | Path, content: str | bytes) -> None:
-    """Atomic write: temporary file + rename."""
+    """Atomic write: temporary file + rename. The temporary file is the thread's own, so
+    two threads can write the same file at the same time (the last one wins)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     if isinstance(content, str):
         tmp.write_text(content, encoding="utf-8")
     else:
@@ -80,6 +94,11 @@ class Step:
     depends_on: list[str] = field(default_factory=list)
     is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, FatalError)
     parallel: bool = True
+    workers: int | None = None      # units at the same time; None = those of the Runner
+    # Called once with the units about to be processed, before them: to do together what
+    # they all need (e.g. their embeddings in full batches). It is only a head start: if
+    # it fails, each unit does its own work (a fatal error does stop the run).
+    prepare: Callable[[Any, list[str]], None] | None = None
 
 
 class Ledger:
@@ -97,9 +116,14 @@ class Ledger:
             CREATE TABLE IF NOT EXISTS ledger (
                 step TEXT NOT NULL, unit TEXT NOT NULL, fingerprint TEXT, status TEXT,
                 output_hash TEXT, attempts INTEGER DEFAULT 0, error TEXT,
-                started TEXT, finished TEXT, PRIMARY KEY (step, unit));
+                started TEXT, finished TEXT, seconds REAL, PRIMARY KEY (step, unit));
             CREATE INDEX IF NOT EXISTS idx_ledger_status ON ledger(step, status);
+            CREATE TABLE IF NOT EXISTS runs (
+                id INTEGER PRIMARY KEY, started TEXT, seconds REAL, version TEXT, report TEXT);
         """)
+        if "seconds" not in {r["name"] for r in self.db.execute("PRAGMA table_info(ledger)")}:
+            self.db.execute("ALTER TABLE ledger ADD COLUMN seconds REAL")      # ledgers before 0.1.0
+            self.db.commit()
         # The connection is shared by the Runner's worker threads, and the sqlite3 module
         # does not serialise them: every read and write goes through this lock. Re-entrant
         # because mark() reads the previous row while holding it.
@@ -117,18 +141,21 @@ class Ledger:
         return {r["unit"]: r for r in self._query("SELECT * FROM ledger WHERE step=?", (step,))}
 
     def mark(self, step: str, unit: str, status: str, fingerprint: str | None = None,
-             output_hash: str | None = None, error: str | None = None, attempts: int | None = None) -> None:
+             output_hash: str | None = None, error: str | None = None, attempts: int | None = None,
+             seconds: float | None = None) -> None:
         now = datetime.now().isoformat(timespec="seconds")
         with self.lock:
             prev = self.get(step, unit)
             att = attempts if attempts is not None else (prev["attempts"] if prev else 0)
             self.db.execute(
-                "INSERT INTO ledger (step, unit, fingerprint, status, output_hash, attempts, error, started, finished)"
-                " VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(step, unit) DO UPDATE SET fingerprint=excluded.fingerprint,"
-                " status=excluded.status, output_hash=excluded.output_hash, attempts=excluded.attempts,"
-                " error=excluded.error, finished=excluded.finished",
+                "INSERT INTO ledger (step, unit, fingerprint, status, output_hash, attempts, error, started, finished,"
+                " seconds) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(step, unit) DO UPDATE SET"
+                " fingerprint=excluded.fingerprint, status=excluded.status, output_hash=excluded.output_hash,"
+                " attempts=excluded.attempts, error=excluded.error, finished=excluded.finished,"
+                " seconds=excluded.seconds",
                 (step, unit, fingerprint if fingerprint is not None else (prev["fingerprint"] if prev else None),
-                 status, output_hash, att, (error or "")[:500], prev["started"] if prev else now, now))
+                 status, output_hash, att, (error or "")[:500], prev["started"] if prev else now, now,
+                 None if seconds is None else round(seconds, 3)))
             self.db.commit()
 
     def delete(self, step: str, unit: str) -> None:
@@ -146,6 +173,19 @@ class Ledger:
         return [dict(r) for r in self._query(
             "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','quarantined','running')"
             " ORDER BY step, unit")]
+
+    def save_run(self, report: "RunReport", version: str = "") -> None:
+        with self.lock:
+            self.db.execute("INSERT INTO runs (started, seconds, version, report) VALUES (?,?,?,?)",
+                            (report.started, round(report.seconds, 2), version,
+                             json.dumps(report.as_dict(), ensure_ascii=False)))
+            self.db.commit()
+
+    def runs(self, limit: int = 10) -> list[dict]:
+        """The last runs, most recent first: started, seconds, version and report (with
+        the profile of each step)."""
+        return [{**dict(r), "report": json.loads(r["report"])} for r in self._query(
+            "SELECT started, seconds, version, report FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
 
 
 class _WorkspaceLock:
@@ -215,21 +255,39 @@ class RunReport:
     pruned: dict[str, int] = field(default_factory=dict)
     fatal: str | None = None
     seconds: float = 0.0
+    started: str = ""
+    profile: dict[str, dict] = field(default_factory=dict)      # by step: see Runner._run_step
 
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items()}
 
 
+SLOWEST = 3     # units listed in the profile of each step
+
+
 class Runner:
+    """Runs the steps in dependency order, the units of a parallel step in `workers`
+    threads (or the step's own `workers`). `meters` returns cumulative counters (requests
+    to the APIs, seconds waiting...): the profile of each step keeps what grew during it.
+    `version` is saved with each run, to compare profiles between versions.
+
+    `stopping` is set when the run is interrupted (Ctrl+C) with units running in other
+    threads: the units not started yet are cancelled, and the long ones can watch it and
+    raise Interrupted so as not to hold the end of the run."""
+
     def __init__(self, ledger: Ledger, steps: list[Step], context: Any = None, workers: int = 1,
                  on_error: str = "continue", max_attempts: int = 3, retry_quarantined: bool = False,
-                 prune_missing: bool = True, lock_path: str | Path | None = None):
+                 prune_missing: bool = True, lock_path: str | Path | None = None,
+                 meters: Callable[[], dict[str, float]] | None = None, version: str = "",
+                 stopping: threading.Event | None = None):
         self.ledger, self.context = ledger, context
         self.steps = self._sort(steps)
         self.workers = max(1, workers)
         self.on_error, self.max_attempts = on_error, max_attempts
         self.retry_quarantined, self.prune_missing = retry_quarantined, prune_missing
         self.lock_path = Path(lock_path) if lock_path else ledger.path.with_suffix(".lock")
+        self.meters, self.version = meters, version
+        self.stopping = stopping or threading.Event()
 
     @staticmethod
     def _sort(steps: list[Step]) -> list[Step]:
@@ -253,7 +311,8 @@ class Runner:
         return order
 
     def run(self, only: Iterable[str] | None = None) -> RunReport:
-        rep, t0 = RunReport(), time.time()
+        rep, t0 = RunReport(started=datetime.now().isoformat(timespec="seconds")), time.perf_counter()
+        self.stopping.clear()
         with self._lock():
             for step in self.steps:
                 if only and step.name not in set(only):
@@ -264,13 +323,49 @@ class Runner:
                     rep.fatal = f"{step.name}: {e}"
                     log.error("run stopped at %s: %s (the state is saved)", step.name, e)
                     break
-        rep.seconds = time.time() - t0
+            rep.seconds = time.perf_counter() - t0
+            self.ledger.save_run(rep, self.version)
         return rep
 
     def _lock(self) -> "_WorkspaceLock":
         return _WorkspaceLock(self.lock_path)
 
+    def _meter(self) -> dict[str, float]:
+        return dict(self.meters()) if self.meters else {}
+
     def _run_step(self, step: Step, rep: RunReport) -> None:
+        """Processes the pending units of a step and leaves its profile in the report: wall
+        seconds (`seconds`), of which `scan_seconds` went in finding the units and their
+        fingerprints and `prepare_seconds` in Step.prepare; the units (all, and those that
+        ran, well or not); the seconds of the units that ran (total, median, maximum) and
+        the slowest ones; and what the meters grew (`api`). Also when the step stops on a
+        fatal error."""
+        start, before = time.perf_counter(), self._meter()
+        workers = max(1, step.workers or self.workers) if step.parallel else 1
+        prof: dict[str, Any] = {"units": 0, "workers": workers}
+        durations: list[tuple[str, float]] = []
+        try:
+            self._process(step, rep, prof, durations, workers, start)
+        finally:
+            elapsed = time.perf_counter() - start
+            scan = prof.pop("scan_seconds", elapsed)          # not there if finding the units failed
+            prof = {"seconds": round(elapsed, 3), "scan_seconds": round(scan, 3), **prof, "ran": len(durations)}
+            if "prepare_seconds" in prof:
+                prof["prepare_seconds"] = round(prof["prepare_seconds"], 3)
+            if durations:
+                times = sorted(s for _, s in durations)
+                prof["unit_seconds"] = {"total": round(sum(times), 3), "median": round(times[len(times) // 2], 3),
+                                        "max": round(times[-1], 3)}
+                prof["slowest"] = [{"unit": u, "seconds": round(s, 3)}
+                                   for u, s in sorted(durations, key=lambda d: -d[1])[:SLOWEST]]
+            after = self._meter()
+            grown = {k: round(v - before.get(k, 0), 3) for k, v in after.items() if v != before.get(k, 0)}
+            if grown:
+                prof["api"] = grown
+            rep.profile[step.name] = prof
+
+    def _process(self, step: Step, rep: RunReport, prof: dict, durations: list[tuple[str, float]],
+                 workers: int, start: float) -> None:
         units = list(step.units(self.context))
         previous = self.ledger.units(step.name)
         pending: list[tuple[str, str]] = []
@@ -296,38 +391,57 @@ class Runner:
                 else:
                     self.ledger.mark(step.name, u, "stale")
                 rep.pruned[step.name] = rep.pruned.get(step.name, 0) + 1
+        prof.update(units=len(units), scan_seconds=time.perf_counter() - start)
 
         log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
                  len(pending), rep.skipped.get(step.name, 0))
         if not pending:
             return
+        if step.prepare:
+            t0 = time.perf_counter()
+            try:
+                step.prepare(self.context, [u for u, _ in pending])
+            except Exception as e:
+                if isinstance(e, FatalError):
+                    raise
+                if step.is_fatal(e):
+                    raise FatalError(str(e)) from e
+                log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
+            prof["prepare_seconds"] = time.perf_counter() - t0
 
         fatal: list[Exception] = []
         result_lock = threading.Lock()
 
         def process(u: str, fp: str) -> None:
-            if fatal:
+            if fatal or self.stopping.is_set():
                 return
             prev = self.ledger.get(step.name, u)
             attempts = (prev["attempts"] if prev and prev["fingerprint"] == fp else 0)
             # the fingerprint is saved on start: if the process dies, the unit stays 'running'
             self.ledger.mark(step.name, u, "running", fingerprint=fp, attempts=attempts)
+            t0 = time.perf_counter()
             try:
                 output = step.run(self.context, u)
+                took = time.perf_counter() - t0
                 self.ledger.mark(step.name, u, "ok", fingerprint=fp,
                                  output_hash=sha256_text(json.dumps(output, sort_keys=True, default=str))[:16]
-                                 if output is not None else None, attempts=attempts)
+                                 if output is not None else None, attempts=attempts, seconds=took)
                 with result_lock:
                     rep.processed[step.name] = rep.processed.get(step.name, 0) + 1
+                    durations.append((u, took))
             except Exception as e:
+                took = time.perf_counter() - t0
+                with result_lock:
+                    durations.append((u, took))
                 if step.is_fatal(e):
-                    self.ledger.mark(step.name, u, "error", fingerprint=fp, error=f"fatal: {e}", attempts=attempts)
+                    self.ledger.mark(step.name, u, "error", fingerprint=fp, error=f"fatal: {e}", attempts=attempts,
+                                     seconds=took)
                     fatal.append(e)
                     return
                 attempts += 1
                 status = "quarantined" if attempts >= self.max_attempts else "error"
                 self.ledger.mark(step.name, u, status, fingerprint=fp,
-                                 error=f"{type(e).__name__}: {e}", attempts=attempts)
+                                 error=f"{type(e).__name__}: {e}", attempts=attempts, seconds=took)
                 with result_lock:
                     key = "quarantined" if status == "quarantined" else "errors"
                     getattr(rep, key)[step.name] = getattr(rep, key).get(step.name, 0) + 1
@@ -335,11 +449,19 @@ class Runner:
                 if self.on_error == "stop":
                     fatal.append(FatalError(f"on_error = stop after {u} failed: {e}"))
 
-        if step.parallel and self.workers > 1:
-            with ThreadPoolExecutor(max_workers=self.workers) as pool:
-                futures = [pool.submit(process, u, fp) for u, fp in pending]
-                for f in as_completed(futures):
+        if workers > 1:
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                for f in as_completed([pool.submit(process, u, fp) for u, fp in pending]):
                     f.result()
+            except BaseException:
+                # Ctrl+C (only the main thread gets it): the units not started yet are
+                # cancelled, and the running ones are told to stop and waited for, so
+                # that none is still writing when the workspace lock is released
+                self.stopping.set()
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+            pool.shutdown()
         else:
             for u, fp in pending:
                 process(u, fp)

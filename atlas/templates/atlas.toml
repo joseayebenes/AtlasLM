@@ -1,0 +1,69 @@
+# atlas.toml — configuración de un proyecto de atlas, creada con `atlas init`.
+#
+# Toda la ejecución está en este fichero: la línea de comandos solo elige la acción
+# (atlas run, atlas status, atlas serve...) y el fichero. La referencia de cada clave está
+# en la guía de configuración (docs/configuracion.md en el repositorio de atlas).
+#
+# Los secretos nunca se escriben aquí: ${VARIABLE} lee el entorno y ${VARIABLE:-valor}
+# da un valor por defecto. atlas rechaza una clave de API escrita tal cual para un
+# servidor que no sea local, y una contraseña en la URL del proxy o en el DSN de ODBC.
+#
+# Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas; la del
+# workspace, a la de este fichero.
+
+[project]
+name = "mi-proyecto"
+workspace = "./workspace"              # atlas.db, salidas de documentos, grafo e informes
+
+# --- Modelos: cualquier API compatible con OpenAI ------------------------------------
+[llm]
+base_url = "http://localhost:11434/v1" # Ollama; el gateway corporativo: https://.../v1
+model = "gemma4:12b"
+api_key = "${ATLAS_API_KEY:-local}"    # en el gateway: export ATLAS_API_KEY=... (o setx en Windows)
+max_tokens = 8192
+reasoning_effort = "none"              # gemma4 razona por defecto y tarda minutos por sección
+
+[embeddings]
+model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]
+batch = 64                             # textos por petición
+
+[network]
+proxy = "${HTTPS_PROXY:-}"             # con usuario: "http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"
+no_proxy = "localhost,127.0.0.1,::1"
+ca_cert = ""                           # "system": el almacén de certificados de Windows o macOS
+requests_per_minute = 0                # 0 = sin límite; p. ej. 28 si el gateway admite 30
+
+# --- Procesamiento -------------------------------------------------------------------
+[pipeline]
+workers = 4                            # unidades a la vez; en docs, también peticiones al modelo
+steps = ["doors", "code", "docs", "graph", "index"]
+
+# --- Fuentes: activa las que tengas ------------------------------------------------
+[[sources.docs]]
+name = "documentos"
+paths = ["docs"]                       # carpetas (se recorren enteras) o ficheros
+patterns = ["*.pdf", "*.md"]
+analysis = "llm"                       # llm: resumen, requisitos y glosario; regex: solo requisitos; none
+lang = "Spanish"                       # idioma de los resúmenes
+
+[sources.doors]
+adapter = "exchange"                   # la base de intercambio que publica tools/doors_export
+enabled = false                        # true cuando tengas la base
+[sources.doors.exchange]
+path = "requirements.sqlite"
+[sources.doors.convention]
+id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
+
+[sources.code]
+roots = ["src"]
+languages = ["ada"]
+exclude = ["**/obj/**", "**/build/**"]
+test_patterns = ["**/tests/**"]        # sus subprogramas son pruebas
+
+# --- Agentes y servidor MCP ------------------------------------------------------------
+[agents]
+dirs = ["agents"]                      # los agentes del proyecto (.md), junto a este fichero
+
+[mcp]
+tools = []                             # vacío: las herramientas de las fuentes configuradas

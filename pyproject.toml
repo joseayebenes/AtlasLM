@@ -4,17 +4,27 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "atlaslm"
-version = "0.0.1"
+dynamic = ["version"]                        # atlas.__version__
 description = "Base de conocimiento de ingeniería: documentos, requisitos, código y grafo, con agentes ADK"
+readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["openai>=1.40", "numpy>=1.24", "pyyaml>=6", "tomli>=2.0; python_version < '3.11'"]
+# Rangos compatibles. constraints.txt fija la versión exacta de todo lo que se instaló al pasar
+# las pruebas (pip install ... -c constraints.txt). ADK, a una versión menor: su API cambia.
+dependencies = [
+    "openai>=1.40,<3",
+    "numpy>=1.24,<3",
+    "pyyaml>=6,<7",
+    "truststore>=0.9,<1",                    # ca_cert = "system": el almacén de certificados del sistema
+    "tomli>=2.0; python_version < '3.11'",
+]
 
 [project.optional-dependencies]
-docs = ["markitdown[pdf]", "pymupdf"]
-code = ["tree-sitter>=0.23", "tree-sitter-ada", "networkx"]
-agents = ["google-adk"]
-mcp = ["mcp"]
-dev = ["pytest>=8", "pymupdf"]
+docs = ["markitdown[pdf]>=0.1.2,<0.2", "pymupdf>=1.24,<2"]
+code = ["tree-sitter>=0.23,<0.27", "tree-sitter-ada>=0.1,<0.2", "networkx>=3,<4"]
+mcp = ["mcp>=2.3,<3"]
+agents = ["google-adk>=2.11,<2.12"]
+all = ["atlaslm[docs,code,mcp,agents]"]
+dev = ["pytest>=8", "pymupdf>=1.24,<2", "build>=1"]
 
 [project.scripts]
 atlas = "atlas.cli:main"
@@ -23,11 +33,15 @@ atlas = "atlas.cli:main"
 # Los plugins externos se declaran así en su propio pyproject:
 # mi_plugin = "mi_paquete.mi_modulo"
 
+[tool.setuptools.dynamic]
+version = {attr = "atlas.__version__"}
+
 [tool.setuptools.packages.find]
 include = ["atlas*"]
 
 [tool.setuptools.package-data]
 "atlas.agents" = ["builtin/*.md"]            # los agentes de serie
+"atlas" = ["templates/*.toml"]               # la plantilla de atlas init
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

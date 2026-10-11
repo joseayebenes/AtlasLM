@@ -13,7 +13,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `verify.py` | la verificación de los requisitos con la documentación |
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
 | `tools.py` | `build_context`, `verify_requirement` y `ask_atlas` como plugins `tool` |
-| `evaluate.py` | `atlas eval`: preguntas con respuesta conocida, puntuadas sin modelo |
+| `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 
 ## Agentes en ficheros Markdown
 
@@ -73,19 +73,62 @@ especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log`
 
 ## Evaluación
 
-`atlas eval` hace las preguntas de los conjuntos de `[agents.eval] sets` (YAML) y las puntúa
-sin modelo. Un caso está bien si la respuesta contiene los textos esperados (IDs,
-identificadores, valores) y el agente ha llamado a las herramientas esperadas.
-`examples/eval/assistant.yaml` tiene 24 casos sobre las muestras. Con `gemma4:12b` sin
-razonamiento, el asistente acertó 23 de 24 (96 %), con una mediana de 11 s por pregunta. El
-fallo dijo bien qué faltaba por definir en las alarmas, pero contestó en español y sin el
-literal «TBD» que pedía el caso.
+`atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.
+Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
+
+```yaml
+- id: trace-srs-0004                 # un agente: necesita el modelo y el extra [agents]
+  question: Which system requirement does SRS-0004 satisfy?
+  expect: [SSS-0005]                 # textos que la respuesta debe contener
+  tools: [trace]                     # opcional: herramientas que debe llamar
+- id: logs-30-days                   # la búsqueda del índice
+  search: how long does the HMI retain its log files
+  expect: [30 days]
+  kinds: [requirement]               # opcional, como document: dónde buscar
+- id: graph-impact-log               # una consulta del grafo, sin modelo
+  impact: Logger.Log                 # trace, trace_code, impact, find_symbol, search_code_docs
+  expect: [tracks.delete_track, SRS-0004]
+```
+
+- **Agentes.** Un caso está bien si la respuesta contiene los textos esperados (IDs,
+  identificadores, valores) y el agente ha llamado a las herramientas esperadas sin llegar a
+  `max_steps`. `examples/eval/assistant.yaml` tiene 24 casos sobre las muestras. Con
+  `gemma4:12b` sin razonamiento, el asistente acertó 23 de 24 (96 %), con una mediana de 9
+  a 11 s por pregunta. El fallo dice bien qué falta por definir en las alarmas, pero contesta
+  en español y sin el literal «TBD» que pide el caso.
+- **Búsqueda.** Cada texto esperado se encuentra en la posición del primer resultado que lo
+  contiene (en su ID, documento, título de sección o texto), y el caso, en la del último. De
+  ahí salen el acierto@k (los casos con todo lo esperado entre los k primeros, para k = 1, 3,
+  5 y 10) y el rango recíproco medio (MRR). Cada búsqueda se hace dos veces: híbrida (IDs,
+  vectores y BM25, como `atlas search`) y léxica (IDs y BM25, sin ninguna petición), para ver
+  qué aportan los vectores.
+- **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
+  no ordena ni varía: o está o no está.
+
+`examples/eval/retrieval.yaml` tiene 17 búsquedas (IDs exactos, palabras del texto,
+paráfrasis, preguntas en español, secciones) y 10 consultas del grafo sobre las muestras. Con
+`embeddinggemma`:
+
+| Búsqueda | acierto@1 | @3 | @5 | @10 | MRR |
+|---|---|---|---|---|---|
+| híbrida | 76 % | 94 % | 100 % | 100 % | 0,86 |
+| léxica, sin modelo | 65 % | 82 % | 94 % | 100 % | 0,76 |
+
+El grafo acierta 10 de 10. Los vectores se notan en las paráfrasis y en las preguntas en
+español: «how long does the HMI retain its log files» sale primera en la híbrida y tercera en
+la léxica. Las muestras son sintéticas y repetitivas, así que este conjunto sirve de
+referencia y para detectar regresiones; la cifra que vale es la de un conjunto escrito sobre
+el proyecto real.
 
 ```toml
 [agents.eval]
-sets = ["examples/eval/assistant.yaml"]
-runs = 3                   # veces que se hace cada pregunta: los modelos no responden siempre igual
+sets = ["examples/eval/assistant.yaml", "examples/eval/retrieval.yaml"]
+runs = 3                   # veces que se hace cada pregunta a un agente: los modelos no responden siempre igual
 ```
+
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`.
+Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el modelo de chat;
+la búsqueda híbrida sí necesita el de embeddings.
 
 ## Con Ollama
 
@@ -140,5 +183,6 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
-`max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación y
-la app de `adk web`. Con Ollama, `tests/test_agents_ollama.py`.
+`max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
+agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.
+Con Ollama, `tests/test_agents_ollama.py`.

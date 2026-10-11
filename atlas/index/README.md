@@ -60,6 +60,11 @@ fuentes y citándolas como `[n]`.
 Un proceso que vive mucho (el servidor MCP) ve lo que indexa otro: los vectores se vuelven
 a leer cuando cambia la base.
 
+`Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
+ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
+Sobre las muestras, con `embeddinggemma`, la híbrida pone lo buscado en primer lugar en el
+76 % de los casos y entre los tres primeros en el 94 %; la léxica, en el 65 % y el 82 %.
+
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
 contexto y de la respuesta.

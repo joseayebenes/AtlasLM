@@ -71,6 +71,25 @@ python3.12 -m venv ~/atlas/venv
 
 Por ejemplo, `"atlaslm[docs,code,mcp]"` para procesar y servir sin agentes.
 
+### El compilador de Ada (opcional)
+
+Para que los agentes compilen el código y ejecuten las pruebas (`check_code` y `run_test`, ver
+[atlas.code](../atlas/code/README.md)), GNAT. GNAT FSF es libre (GPL 3 con la excepción de la
+biblioteca de ejecución de GCC: los programas que compila se pueden distribuir con cualquier
+licencia). En un Mac con Apple Silicon no está en Homebrew; se instala con Alire, el gestor
+de paquetes de Ada:
+
+```bash
+curl -LO https://github.com/alire-project/alire/releases/download/v2.1.1/alr-2.1.1-bin-aarch64-macos.zip
+unzip alr-2.1.1-bin-aarch64-macos.zip -d ~/.local/alire
+~/.local/alire/bin/alr -n toolchain --select gnat_native gprbuild
+```
+
+Deja GNAT y gprbuild en `~/.local/share/alire/toolchains` (unos 640 MB con GNAT 16.1 y
+gprbuild 26.0) sin tocar la configuración de la shell: `[sources.code] tool_path` los pone
+delante del `PATH` solo para atlas. En Windows, Alire tiene instalador propio. Un proyecto que
+ya use GNAT Pro pone sus comandos en `check_command` y `test_command`.
+
 ## 2. Crear el proyecto
 
 ```powershell

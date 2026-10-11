@@ -205,6 +205,10 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |
 | `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos |
 | `summaries` | texto | — | reservada: sin efecto en 0.1.0 (resúmenes de subprogramas con el modelo) |
+| `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
+| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza |
+| `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]` |
+| `command_timeout` | entero | `120` | segundos como mucho para compilar o ejecutar una prueba |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
 
 ## [graph]
@@ -257,4 +261,4 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
-| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `verify_requirement`, `link_requirement` y `ask_atlas` solo se ofrecen si se piden |
+| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `run_test`, `verify_requirement`, `link_requirement` y `ask_atlas` solo se ofrecen si se piden |

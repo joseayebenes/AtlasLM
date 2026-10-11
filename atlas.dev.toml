@@ -66,6 +66,11 @@ exclude = ["**/build/**"]
 req_tag = "Req:"
 test_patterns = ["**/tests/**"]
 summaries = "none"
+# el compilador para los agentes (check_code, run_test): GNAT instalado con Alire
+#   alr toolchain --select gnat_native gprbuild
+check_command = ["gcc", "-c", "-gnatc", "{include}", "{file}"]
+test_command = ["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]
+tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 
 [graph]
 exports = ["graphml", "json"]               # grafo completo en <workspace>/graph/atlas.*
@@ -77,7 +82,7 @@ chunk_overlap = 200
 
 [agents]                                    # agentes: ficheros Markdown (atlas/agents/builtin y dirs)
 model = "gemma4:12b"                        # vacío: el de [llm]
-dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
+dirs = ["agents", "examples/agents"]        # carpetas con los .md del proyecto (examples/agents: implementer y tester)
 [agents.assistant]                          # retoques de un agente sin tocar su fichero
 max_steps = 10
 [agents.eval]                               # atlas eval: preguntas y búsquedas con respuesta conocida

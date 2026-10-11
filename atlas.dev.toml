@@ -80,8 +80,9 @@ model = "gemma4:12b"                        # vacío: el de [llm]
 dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
 [agents.assistant]                          # retoques de un agente sin tocar su fichero
 max_steps = 10
-[agents.eval]                               # atlas eval: preguntas con respuesta conocida
-sets = ["examples/eval/assistant.yaml"]
+[agents.eval]                               # atlas eval: preguntas y búsquedas con respuesta conocida
+sets = ["examples/eval/assistant.yaml",     # el asistente (necesita el modelo)
+        "examples/eval/retrieval.yaml"]     # el índice y el grafo, sin modelo
 runs = 1                                    # veces que se hace cada pregunta
 
 [mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...

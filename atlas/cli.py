@@ -766,21 +766,43 @@ def agent(cfg: Config, name: str, question: str) -> int:
 
 
 def evaluate(cfg: Config) -> int:
-    from atlas.agents.evaluate import evaluate_sets
+    from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
 
     def show(r: dict) -> None:
-        missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
-        print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
-              f"[{', '.join(r['calls'])}]" + (f"  missing: {', '.join(missing)}" if missing else "")
-              + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+        if r.get("kind") == "search":
+            ranks = "  ".join(f"{m} {r[m]['rank'] or '-'}" for m in SEARCH_MODES)
+            lost = sorted({x for m in SEARCH_MODES for x, n in r[m]["ranks"].items() if not n})
+            print(f"{'ok  ' if r['hybrid']['rank'] else 'MISS'} {r['id']}  position: {ranks}"
+                  + (f"  not found: {', '.join(lost)}" if lost else "")
+                  + (f"  {r['hybrid_error']}" if r.get("hybrid_error") else ""), flush=True)
+        elif r.get("kind") == "graph":
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']}  {r['query']}"
+                  + (f"  missing: {', '.join(r['missing'])}" if r["missing"] else "")
+                  + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+        else:
+            missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+                  f"[{', '.join(r['calls'])}]" + (f"  missing: {', '.join(missing)}" if missing else "")
+                  + (f"  {r['error']}" if r.get("error") else ""), flush=True)
 
     try:
         results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
     except ImportError as e:
         sys.exit(str(e))
     for name, res in results.items():
-        print(f"\n{name}: {res['passed']} of {res['total']} right ({res['rate']:.0%}), "
-              f"median {res['median_seconds']:.0f} s; written to {cfg.workspace / 'reports' / f'eval-{name}.json'}")
+        print(f"\n{name} (written to {cfg.workspace / 'reports' / f'eval-{name}.json'}):")
+        found = res.get("retrieval", {})
+        if "search" in found:
+            for mode in SEARCH_MODES:
+                m = found["search"][mode]
+                print(f"  search, {mode}: " + ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in KS)
+                      + f", MRR {m['mrr']:.2f} ({found['search']['cases']} cases)")
+        if "graph" in found:
+            g = found["graph"]
+            print(f"  graph: {g['passed']} of {g['total']} right ({g['rate']:.0%})")
+        if "agents" in res:
+            a = res["agents"]
+            print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
     return 0
 
 

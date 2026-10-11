@@ -20,6 +20,7 @@ APIs, seconds waiting for the rate limit...).
         fingerprint=lambda ctx, u: sha256_file(u) + cfg.fingerprint("sources.code"),
         run=lambda ctx, u: analyze(u),             # idempotent; writes atomically
         prune=lambda ctx, u: delete_results(u),    # optional: what to do with a vanished unit
+        prepare=lambda ctx, units: warm_cache(units),  # optional: once, with the units to process
         depends_on=["docs.sections"],
     )
     Runner(ledger=Ledger(workspace / "atlas.db"), steps=[step], context=ctx).run()
@@ -94,6 +95,10 @@ class Step:
     is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, FatalError)
     parallel: bool = True
     workers: int | None = None      # units at the same time; None = those of the Runner
+    # Called once with the units about to be processed, before them: to do together what
+    # they all need (e.g. their embeddings in full batches). It is only a head start: if
+    # it fails, each unit does its own work (a fatal error does stop the run).
+    prepare: Callable[[Any, list[str]], None] | None = None
 
 
 class Ledger:
@@ -331,9 +336,10 @@ class Runner:
     def _run_step(self, step: Step, rep: RunReport) -> None:
         """Processes the pending units of a step and leaves its profile in the report: wall
         seconds (`seconds`), of which `scan_seconds` went in finding the units and their
-        fingerprints; the units (all, and those that ran, well or not); the seconds of the
-        units that ran (total, median, maximum) and the slowest ones; and what the meters
-        grew (`api`). Also when the step stops on a fatal error."""
+        fingerprints and `prepare_seconds` in Step.prepare; the units (all, and those that
+        ran, well or not); the seconds of the units that ran (total, median, maximum) and
+        the slowest ones; and what the meters grew (`api`). Also when the step stops on a
+        fatal error."""
         start, before = time.perf_counter(), self._meter()
         workers = max(1, step.workers or self.workers) if step.parallel else 1
         prof: dict[str, Any] = {"units": 0, "workers": workers}
@@ -344,6 +350,8 @@ class Runner:
             elapsed = time.perf_counter() - start
             scan = prof.pop("scan_seconds", elapsed)          # not there if finding the units failed
             prof = {"seconds": round(elapsed, 3), "scan_seconds": round(scan, 3), **prof, "ran": len(durations)}
+            if "prepare_seconds" in prof:
+                prof["prepare_seconds"] = round(prof["prepare_seconds"], 3)
             if durations:
                 times = sorted(s for _, s in durations)
                 prof["unit_seconds"] = {"total": round(sum(times), 3), "median": round(times[len(times) // 2], 3),
@@ -389,6 +397,17 @@ class Runner:
                  len(pending), rep.skipped.get(step.name, 0))
         if not pending:
             return
+        if step.prepare:
+            t0 = time.perf_counter()
+            try:
+                step.prepare(self.context, [u for u, _ in pending])
+            except Exception as e:
+                if isinstance(e, FatalError):
+                    raise
+                if step.is_fatal(e):
+                    raise FatalError(str(e)) from e
+                log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
+            prof["prepare_seconds"] = time.perf_counter() - t0
 
         fatal: list[Exception] = []
         result_lock = threading.Lock()

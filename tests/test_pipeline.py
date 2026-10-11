@@ -217,3 +217,28 @@ def test_step_workers_and_ctrl_c_with_units_in_other_threads(tmp_path):
     rep = Runner(ledger, [step], workers=1).run()
     assert rep.profile["p"]["workers"] == 3 and rep.processed == {"p": 20 - done} and rep.skipped == {"p": done}
 
+
+def test_prepare_gets_the_pending_units_and_is_only_a_head_start(tmp_path):
+    prepared, done = [], []
+    fingerprints = {"a": "1", "b": "1", "c": "1"}
+    behaviour = {"raise": None}
+
+    def prepare(ctx, units):
+        prepared.append(units)
+        if behaviour["raise"]:
+            raise behaviour["raise"]
+
+    step = _step("p", ["a", "b", "c"], fingerprints, lambda ctx, u: done.append(u), prepare=prepare)
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [step]).run()
+    assert prepared == [["a", "b", "c"]] and rep.profile["p"]["prepare_seconds"] >= 0
+    Runner(ledger, [step]).run()
+    assert len(prepared) == 1                                 # nothing pending: not called
+    fingerprints["b"] = "2"
+    behaviour["raise"] = ValueError("the batch service is down")
+    rep = Runner(ledger, [step]).run()                        # it fails: the unit does its own work
+    assert prepared[-1] == ["b"] and rep.processed == {"p": 1} and done[-1] == "b"
+    fingerprints["c"] = "2"
+    behaviour["raise"] = FatalError("no connection")
+    rep = Runner(ledger, [step]).run()
+    assert rep.fatal == "p: no connection" and done[-1] == "b" and ledger.get("p", "c")["fingerprint"] == "1"

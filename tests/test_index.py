@@ -76,6 +76,33 @@ def test_failed_batches_are_retried_and_connection_errors_are_fatal(docs, tmp_pa
         _add(idx, docs["spec_with_bookmarks.pdf"])
 
 
+def test_the_texts_of_several_documents_go_in_full_batches(docs, tmp_path, fake, fake_embeddings, fake_stats):
+    import math
+    _, control = fake
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)              # batches of 16
+    texts = [r["embed_text"] for data in docs.values() for r in build_records(data)]
+    distinct = len(set(texts))
+    alone = sum(math.ceil(len({r["embed_text"] for r in build_records(d)}) / 16) for d in docs.values())
+    before = fake_stats()
+    res = idx.embed_missing(texts, workers=3)
+    grown = {k: fake_stats()[k] - before[k] for k in ("embeddings", "emb_texts")}
+    assert res == {"texts": distinct, "cached": 0, "embedded": distinct, "failed_batches": []}
+    assert grown == {"embeddings": math.ceil(distinct / 16), "emb_texts": distinct}
+    assert grown["embeddings"] < alone                       # fewer requests than document by document
+    before = fake_stats()
+    for data in docs.values():                               # indexing finds everything in the cache
+        assert _add(idx, data)["missing"] == 0
+    assert idx.embed_missing(texts)["cached"] == distinct and fake_stats() == before
+
+    idx2 = Index(tmp_path / "other.db", fake_embeddings)
+    control.write_text(json.dumps({"emb_fail_if": ["2 Alarms"]}))
+    res = idx2.embed_missing(texts, workers=2)
+    assert res["failed_batches"] and 0 < res["embedded"] < distinct
+    control.write_text(json.dumps({"down": True}))
+    with pytest.raises(FatalError, match="embeddings"):
+        idx2.embed_missing(texts)
+
+
 def test_vectors_of_another_embeddings_model_are_not_mixed(docs, tmp_path, fake_embeddings):
     db = tmp_path / "atlas.db"
     _add(Index(db, fake_embeddings), docs["hmi_manual.md"])

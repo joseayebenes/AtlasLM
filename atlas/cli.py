@@ -265,10 +265,12 @@ def index_options(ctx) -> dict:
 
 
 def index_step(ctx) -> Step:
-    """One unit per processed document (docs.process): its structure.json is indexed."""
-    from atlas.index import Index
+    """One unit per processed document (docs.process): its structure.json is indexed. The
+    texts of all the documents to index are embedded first, together, in full batches."""
+    from atlas.index import Index, build_records
     from atlas.llm import from_config
     options = index_options(ctx)
+    workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
@@ -300,16 +302,25 @@ def index_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
+    def prepare(ctx, units: list[str]) -> None:
+        texts = [r["embed_text"] for unit in units for r in build_records(
+            json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
+            options["chunk_overlap"], options["kinds"])]
+        index().embed_missing(texts, workers)
+
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, unit: index().remove_document(unit), depends_on=["docs.process"])
+                prune=lambda ctx, unit: index().remove_document(unit), prepare=prepare,
+                depends_on=["docs.process"])
 
 
 def index_requirements_step(ctx) -> Step:
     """One unit per DOORS module read by doors.requirements: its requirements are indexed
-    as one more document ("doors:<module>"), so that search finds them too."""
-    from atlas.index import DOORS_PREFIX, Index
+    as one more document ("doors:<module>"), so that search finds them too. Like
+    index.documents, the texts of all the modules to index are embedded first, together."""
+    from atlas.index import DOORS_PREFIX, Index, requirement_records
     from atlas.llm import from_config
     kinds = index_options(ctx)["kinds"]
+    workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     shared: dict = {}
     lock = threading.Lock()
@@ -334,8 +345,12 @@ def index_requirements_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
+    def prepare(ctx, modules: list[str]) -> None:
+        index().embed_missing([r["embed_text"] for m in modules
+                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
+                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,
                 depends_on=["doors.requirements"])
 
 

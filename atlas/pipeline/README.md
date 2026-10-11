@@ -87,6 +87,10 @@ requisitos), con la API falsa:
 | segunda, sin cambios | 0,1 s | ninguna |
 | tras cambiar un plazo en una página de un PDF | 1,4 s | 1 de chat, 1 de embeddings |
 
+Con el tamaño de la primera meta del plan (80 PDF de 1040 páginas y 2080 secciones, 20 910
+requisitos y 3060 subprogramas), la primera ejecución tarda 62 s y la segunda, sin cambios,
+0,3 s y ninguna petición.
+
 Con la API falsa no hay espera: casi todo el tiempo es CPU, sobre todo la extracción de los
 PDF (unos 50 ms por página, en Python puro), y procesar los documentos en paralelo no lo
 acorta (entre 17 y 18 s antes y después de la fase 6). Donde se nota es con un modelo que

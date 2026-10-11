@@ -127,3 +127,22 @@ def test_tolerates_the_usual_mistakes_of_small_models(project, tmp_path):
     assert "   procedure Update (I : Integer) is\n   begin\n      Check (I);\n      Logger.Log" in (tmp_path / f).read_text()
     # ignoring indentation must still be unique
     assert "appears 2 times" in project.edit_file(f, "begin", "start")["error"]
+
+
+def test_tolerates_the_listing_of_read_file_copied_into_an_edit(project, tmp_path):
+    """What gemma4:12b sent in edits of several lines: the line numbers of read_file, a
+    backslash before each line break and some line breaks as \\n, in old_text and in
+    new_text. Without this tolerance it repeated the same failed edit until max_steps."""
+    f = "src/tracks.adb"
+    project.read_file(f)
+    old = ("   procedure Update (I : Integer) is\\\n    3 |    begin\\\n"
+           "    4 |       Logger.Log (\\\"update\\\");\\\n    5 |    end Update;")
+    new = ("    2 |    procedure Update (I : Integer) is\\n    3 |    begin\\n"
+           "    4 |       if I > 0 then\\n    5 |          Logger.Log (\\\"update\\\");\\n    6 |       end if;\\n"
+           "    7 |    end Update;")
+    done = project.edit_file(f, old, new)
+    assert done["replacements"] == 1 and any("line numbers of read_file" in n for n in done["notes"])
+    assert (tmp_path / f).read_text() == TRACKS.replace(
+        '      Logger.Log ("update");\n', '      if I > 0 then\n         Logger.Log ("update");\n      end if;\n')
+    # a real line that starts like a listing is left alone when old_text has no listing
+    assert "is not in" in project.edit_file(f, "    9 | no such line", "x")["error"]

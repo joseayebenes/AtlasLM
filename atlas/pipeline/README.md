@@ -66,12 +66,12 @@ Cada ejecución deja su perfil en el informe de `atlas run` y en la tabla `runs`
 `atlas status` muestra el de la última ejecución y un resumen de las anteriores:
 
 ```
-last run: 2026-10-11T09:51:44, atlas 0.1.0, 16.9 s
+last run: 2026-10-11T15:35:21, atlas 0.1.0, 5.9 s
   step                  seconds   scan  units    ran  slowest unit; API
-  doors.requirements       0.07   0.00      2      2  SRS_LARGE (0.07 s)
-  code.parse               1.14   0.02    660    660  pkg_000.adb (0.03 s)
-  docs.process            12.55   0.00     20     20  spec_00.pdf (2.66 s); 540 chat
-  graph.build              1.61   0.09      3      3  docs (0.68 s)
+  doors.requirements       0.08   0.00      2      2  SRS_LARGE (0.07 s)
+  code.parse               1.31   0.02    660    660  pkg_000.adb (0.07 s)
+  docs.process             1.31   0.00     20     20  spec_00.pdf (0.45 s); 540 chat
+  graph.build              1.59   0.05      3      3  docs (0.68 s)
   index.documents          0.86   0.00     20     20  spec_16.pdf (0.03 s); 103 embeddings
   index.requirements       0.70   0.02      2      2  SRS_LARGE (0.08 s); 86 embeddings
 ```
@@ -83,18 +83,19 @@ requisitos), con la API falsa:
 
 | Ejecución | Tiempo | Peticiones |
 |---|---|---|
-| primera | 17,2 s | 540 de chat, 189 de embeddings (12 060 textos) |
+| primera | 6,1 s | 540 de chat, 189 de embeddings (12 060 textos) |
 | segunda, sin cambios | 0,1 s | ninguna |
-| tras cambiar un plazo en una página de un PDF | 1,4 s | 1 de chat, 1 de embeddings |
+| tras cambiar un plazo en una página de un PDF | 0,9 s | 1 de chat, 1 de embeddings |
 
-Con el tamaño de la primera meta del plan (80 PDF de 1040 páginas y 2080 secciones, 20 910
-requisitos y 3060 subprogramas), la primera ejecución tarda 62 s y la segunda, sin cambios,
-0,3 s y ninguna petición.
+Hasta la 0.1.0 los PDF se extraían con markitdown (pdfminer, Python puro, unos 45 ms por
+página) y la primera ejecución tardaba 17,2 s, 12,6 de ellos en `docs.process`. Con pymupdf
+(1,5 ms por página) `docs.process` tarda 1,3 s. Con el tamaño de la primera meta del plan (80
+PDF de 1040 páginas y 2080 secciones, 20 910 requisitos y 3060 subprogramas), medido con
+markitdown, la primera ejecución tardaba 62 s y la segunda, sin cambios, 0,3 s y ninguna
+petición.
 
-Con la API falsa no hay espera: casi todo el tiempo es CPU, sobre todo la extracción de los
-PDF (unos 50 ms por página, en Python puro), y procesar los documentos en paralelo no lo
-acorta (entre 17 y 18 s antes y después de la fase 6). Donde se nota es con un modelo que
-tarda. Con uno simulado de 1 s por petición y 4 hilos, sobre 6 PDF, la fase 6 bajó la
+Con la API falsa no hay espera: el tiempo es CPU, y procesar los documentos en paralelo no lo
+acorta. Donde se nota es con un modelo que tarda. Con uno simulado de 1 s por petición y 4 hilos, sobre 6 PDF, la fase 6 bajó la
 primera ejecución de 68,1 s a 51,6 s:
 - `docs.process`, de 50,6 a 43,2 s (el mínimo, 40,5 s), por procesar los documentos en
   paralelo: la extracción de unos se solapa con las respuestas de otros, y ya no se espera

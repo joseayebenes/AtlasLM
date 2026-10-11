@@ -1003,10 +1003,13 @@ Estado (11 de octubre de 2026), versión 0.1.0:
 - **Arreglos.** La caché de análisis de secciones no se escribía de forma atómica: un corte
   podía dejar un fichero roto y la sección en error para siempre. Ahora se escribe de forma
   atómica, y uno roto se vuelve a analizar.
-- **Sin hacer.** Extraer los PDF en varios procesos (la extracción es Python puro y ocupa
-  una CPU); pymupdf sería más rápido, pero cambia el texto extraído. `[sources.code]
-  summaries` y `[sources.doors] attributes` se aceptan sin efecto. Las rutas de las fuentes
+- **Sin hacer.** `[sources.code] summaries` y `[sources.doors] attributes` se aceptan sin
+  efecto. Las rutas de las fuentes
   son relativas a la carpeta desde la que se lanza atlas, y las demás, a la del fichero.
+- **Después de la 0.1.0.** Los PDF se extraen con pymupdf en vez de markitdown (pdfminer):
+  1,5 ms por página en vez de 45, y el texto respeta el orden en que se escribió, así que el
+  número de un título no se separa de él. En la muestra sin marcadores salen las 27
+  subsecciones, y no 9. Ya no hace falta extraer en varios procesos.
 
 Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 

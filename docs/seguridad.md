@@ -34,8 +34,8 @@ Otras piezas que podrían conectarse y no lo hacen:
   variables `OTEL_*`.
 - **`adk web`** abre un servidor web en `127.0.0.1`: solo se ve desde el propio puesto.
 - **`atlas serve`** habla por stdio con el editor: no abre ningún puerto.
-- **markitdown** solo recibe rutas de ficheros locales; su detector de tipos (magika) lleva
-  el modelo dentro del paquete.
+- **pymupdf** y **markitdown** solo reciben rutas de ficheros locales; el detector de tipos
+  de markitdown (magika) lleva el modelo dentro del paquete.
 
 ## Qué se guarda
 

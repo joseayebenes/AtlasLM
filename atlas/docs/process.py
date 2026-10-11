@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Iterable
 
 from atlas.docs import analysis as an
-from atlas.docs import read_text
+from atlas.docs import extractor_for, read_text
 from atlas.docs.structure import STRUCTURES, clean_headers, diagnose_headings, document_title, prepare_sections
 from atlas.docs.writer import pages, write_document
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
@@ -69,16 +69,17 @@ class DocsOptions:
 
 def preview(path: str | Path, options: DocsOptions | None = None, disabled: Iterable[str] = ()) -> dict:
     """The sections a document would have, without analysing it (the --dry-run of the
-    legacy script): title, structure source, sections and, when the structure did not
-    come from the bookmarks or some section had to be split in many parts, the heading
-    diagnosis."""
+    legacy script): title, extractor, structure source, sections and, when the structure
+    did not come from the bookmarks or some section had to be split in many parts, the
+    heading diagnosis."""
     path, options = Path(path), options or DocsOptions()
     text, removed = clean_headers(read_text(path, disabled))
     info: dict = {}
     sections = prepare_sections(text, options.max_chars, options.min_chars, options.heading_regex or None,
                                 path, options.structure, info)
     out = {"title": document_title(text, path), "chars": len(text), "removed_lines": removed,
-           "structure": info["source"], "subdivided": info["subdivided"], "oversized": info["oversized"],
+           "extractor": extractor_for(path, disabled).name, "structure": info["source"],
+           "subdivided": info["subdivided"], "oversized": info["oversized"],
            "sections": [{"id": s["id"], "pages": pages(s), "chars": len(s["body"]), "path": s["path"],
                          "includes": s["includes"]} for s in sections]}
     if info["oversized"] or not info["source"].startswith("PDF bookmarks"):

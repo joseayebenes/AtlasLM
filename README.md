@@ -123,9 +123,9 @@ atlas search "alarm latency" atlas.test.toml
 Para medir el motor con un proyecto grande, `make large` genera uno sintético en
 `examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
 procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
-- la primera ejecución tarda unos 17 s;
+- la primera ejecución tarda unos 6 s;
 - la segunda, sin cambios, 0,1 s y sin ninguna petición;
-- tras cambiar un plazo en una página de un PDF, 1,4 s y una sola petición al modelo.
+- tras cambiar un plazo en una página de un PDF, 0,9 s y una sola petición al modelo.
 
 ## Estructura
 

@@ -75,6 +75,13 @@ lang = "Spanish"
     rep = go()
     assert rep["processed"] == {} and rep["skipped"] == {"docs.process": 2} and fake_chats() == chats
 
+    # another extractor gives another text: the PDF is processed again, the Markdown is not
+    assert run(load_config(toml(sources + '[plugins]\ndisabled = ["extractor:pymupdf"]\n'))) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"] == {"docs.process": 1} and rep["skipped"] == {"docs.process": 1}
+    rep = go()
+    assert rep["processed"] == {"docs.process": 1} and fake_chats() == chats
+
     # a changed document whose analysis fails: output written, unit in error, retried next time
     (docs / "hmi_manual.md").write_text((docs / "hmi_manual.md").read_text().replace("30 days", "60 days"))
     control.write_text(json.dumps({"prose": True}))

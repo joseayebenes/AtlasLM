@@ -4,6 +4,27 @@ Formato de [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). Mientras
 sea 0.x, la API de la librería puede cambiar entre versiones menores; cada cambio que
 obligue a tocar la configuración o reprocese datos se anota en «Al actualizar».
 
+## [Sin publicar]
+
+### Cambiado
+- Los PDF se extraen con pymupdf, y markitdown (pdfminer) queda como alternativa
+  (`[plugins] disabled = ["extractor:pymupdf"]`). Es unas 30 veces más rápido (1,5 ms por
+  página en vez de 45: la primera ejecución del proyecto grande baja de 17,2 a 6,1 s) y el
+  texto sigue el orden en que se escribió, así que el número de un título no se separa de
+  él. En la muestra sin marcadores, pdfminer perdía 18 de las 27 subsecciones y sus
+  requisitos quedaban en la sección anterior.
+- Cuando varios extractores leen la misma extensión, se usa el de mayor `priority`
+  (atributo nuevo de `DocumentExtractor`).
+- La huella de `docs.process` incluye el extractor, y `atlas sections` dice cuál se usa.
+
+### Al actualizar
+- Todos los documentos se vuelven a procesar una vez. El texto de cada sección de un PDF
+  cambia (saltos de línea, posición de las cabeceras), así que la caché de análisis no sirve
+  y, con `analysis = "llm"`, todas las secciones de los PDF vuelven al modelo. Los Markdown
+  salen de la caché.
+- pymupdf tiene licencia AGPL-3.0 (o comercial de Artifex). Ya era una dependencia del extra
+  `[docs]`, para los marcadores; conviene confirmar que la política de la empresa la admite.
+
 ## [0.1.0] — 2026-10-11
 
 Primera versión para el repositorio interno: las fases 0 a 6 del plan (`legacy/PLAN.md`).

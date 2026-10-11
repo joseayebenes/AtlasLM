@@ -5,11 +5,36 @@ resultado en Markdown y en `structure.json`. Viene de `legacy/pdf_struct.py`.
 
 | Fichero | Qué tiene |
 |---|---|
-| `__init__.py` | extractores de texto (plugins por extensión): `markitdown` (PDF, Office, HTML) y `text` (Markdown y texto) |
+| `__init__.py` | extractores de texto (plugins por extensión): `pymupdf` (PDF), `markitdown` (Office, HTML) y `text` (Markdown y texto) |
 | `structure.py` | secciones sin modelo: marcadores del PDF, títulos numerados o bloques de tamaño fijo; limpieza de cabeceras y pies |
 | `analysis.py` | análisis de cada sección (`llm`, `regex` o `none`), verificación de los requisitos contra el texto y consolidación |
 | `writer.py` | el Markdown y `structure.json` |
 | `process.py` | un documento entero: `DocsOptions`, `process_document`, `preview` |
+
+## Extracción del texto
+
+Cada extensión la lee el extractor activo con más prioridad:
+
+| Extractor | Lee | Notas |
+|---|---|---|
+| `pymupdf` | PDF | por defecto para los PDF. Un bloque de texto es un párrafo, con una línea en blanco entre bloques, y `\f` entre páginas |
+| `markitdown` | Office, HTML y, si se apaga `pymupdf`, PDF | los PDF, con pdfminer |
+| `text` | Markdown y texto | tal cual |
+
+pymupdf extrae un PDF unas 30 veces más rápido que pdfminer (1,5 ms por página en vez de 45)
+y respeta el orden en que se escribió el texto. pdfminer agrupa por posición: separa el
+número de un título de su texto, y a veces los pone al revés y pegados al párrafo anterior.
+En `spec_without_bookmarks.pdf` de las muestras, con pdfminer salían 9 de las 27
+subsecciones, y los requisitos de las otras 18 quedaban en la sección anterior; con pymupdf
+salen todas. Con marcadores, los dos dan las mismas secciones y los mismos requisitos.
+
+Para volver a pdfminer: `[plugins] disabled = ["extractor:pymupdf"]`. El extractor forma
+parte de la huella de `docs.process`, así que al cambiarlo los PDF se vuelven a procesar, y
+como su texto cambia, sus secciones vuelven al modelo. `atlas sections` dice qué extractor
+lee cada documento.
+
+pymupdf tiene licencia AGPL-3.0 (o comercial de Artifex); también se usa para leer los
+marcadores. markitdown y pdfminer son MIT.
 
 ## Fuentes de documentos
 

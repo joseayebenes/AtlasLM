@@ -122,7 +122,7 @@ limitador.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `modules` | lista | `[]` | módulos Python con plugins propios (`"mi_paquete.analizador_cpp"`); también se cargan los entry points `atlas.plugins` de los paquetes instalados |
-| `disabled` | lista | `[]` | plugins apagados: `"code_analyzer:ada"`, `"extractor:markitdown"`, `"tool:ask_docs"`... |
+| `disabled` | lista | `[]` | plugins apagados: `"code_analyzer:ada"`, `"extractor:pymupdf"` (los PDF vuelven a markitdown), `"tool:ask_docs"`... |
 
 ## [[sources.docs]]
 

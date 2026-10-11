@@ -27,6 +27,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   (`reports/link-<objetivo>.md`) dice qué etiqueta `Req:` añadir y dónde; no se escribe nada
   en el código. También como herramienta `link_requirement` de `atlas serve`, si se pide.
 
+- `check_code` y `run_test` (`atlas.code.BuildTools`): el compilador y las pruebas del
+  proyecto para los agentes. `check_code` compila un fichero sin generar código y devuelve los
+  errores y avisos con su sitio; `run_test` construye un procedimiento de prueba y lo ejecuta.
+  Los comandos van en `[sources.code] check_command` y `test_command`, como listas de
+  argumentos, con `tool_path` y `command_timeout`. `atlas.dev.toml` los configura para GNAT
+  instalado con Alire. `run_test` ejecuta código y solo se ofrece si se pide.
+- `examples/agents/`: dos agentes de proyecto que escriben, `implementer` y `tester`.
+
 ### Cambiado
 - `edit_file` tolera también el listado de `read_file` copiado en el texto: quita los números
   de línea, las barras antes de cada salto de línea y los `\n` escritos como texto, en el

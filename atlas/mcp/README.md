@@ -10,6 +10,7 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
+| Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
 | Agentes | `build_context`, `verify_requirement`, `link_requirement`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
@@ -36,7 +37,7 @@ Cambios respecto a los servidores anteriores:
   - con `[[sources.docs]]`, las de documentos;
   - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
     pasos;
-  - con `[sources.code]`, las del grafo y `read_file`;
+  - con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
   - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
     `list_requirements` y `neighbors`), si `graph` está entre los pasos;
   - con el grafo, `build_context`.
@@ -45,7 +46,7 @@ Cambios respecto a los servidores anteriores:
 - Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
-  puede pedir confirmación antes de usarlas.
+  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, que ejecuta código.
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 

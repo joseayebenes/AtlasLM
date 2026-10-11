@@ -5,7 +5,8 @@
 # en la guía de configuración (docs/configuracion.md en el repositorio de atlas).
 #
 # Los secretos nunca se escriben aquí: ${VARIABLE} lee el entorno y ${VARIABLE:-valor}
-# da un valor por defecto.
+# da un valor por defecto. atlas rechaza una clave de API escrita tal cual para un
+# servidor que no sea local, y una contraseña en la URL del proxy o en el DSN de ODBC.
 #
 # Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas; la del
 # workspace, a la de este fichero.

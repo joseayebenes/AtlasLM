@@ -682,7 +682,7 @@ def describe(cfg: ServiceConfig) -> str:
     n = cfg.net
     tls = ("NOT verified" if n.insecure else
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
-    return (f"{cfg.base_url}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
+    return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"

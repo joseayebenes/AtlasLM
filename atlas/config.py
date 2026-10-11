@@ -4,7 +4,10 @@
 - Each known section has a schema (key -> type). Unknown keys or wrong types are errors
   that name the section and the key.
 - `fingerprint(section)` returns a stable hash of a section: the incremental engine adds
-  it to the fingerprint of the units that depend on that section.
+  it to the fingerprint of the units that depend on that section. Secrets do not count:
+  changing a password reprocesses nothing, and no hash of it is stored.
+- Secrets come from the environment: an API key for a server that is not local, or a
+  password in a proxy URL or in an ODBC DSN, written as is in the file is an error.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 try:
     import tomllib
@@ -23,6 +27,9 @@ except ImportError:  # Python < 3.11
     import tomli as tomllib  # type: ignore
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
+_URL_PASSWORD = re.compile(r"(://[^/@:]*:)([^/@]*)(@)")             # http://user:password@proxy
+_DSN_PASSWORD = re.compile(r"(?i)(\b(?:pwd|password)\s*=\s*)([^;]*)")  # ODBC: PWD=...; Password=...
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
 
 
 class ConfigError(ValueError):
@@ -126,14 +133,56 @@ class Config:
         return ws if ws.is_absolute() else (self.path.parent / ws).resolve()
 
     def fingerprint(self, *sections: str) -> str:
-        """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings')."""
+        """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings'), without
+        their secrets (see redact)."""
         parts = []
         for s in sections:
             d: Any = self.data
             for piece in s.split("."):
                 d = d.get(piece, None) if isinstance(d, dict) else None
-            parts.append(json.dumps(d, sort_keys=True, ensure_ascii=False, default=str))
+            parts.append(json.dumps(redact(d), sort_keys=True, ensure_ascii=False, default=str))
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def redact(value: Any) -> Any:
+    """A copy without secrets: api_key, client_key and the passwords of URLs and DSNs."""
+    if isinstance(value, dict):
+        return {k: "***" if k in ("api_key", "client_key") and v else redact(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v) for v in value]
+    if isinstance(value, str):
+        return _DSN_PASSWORD.sub(r"\1***", _URL_PASSWORD.sub(r"\1***\3", value))
+    return value
+
+
+def _is_local(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    return host in LOCAL_HOSTS or host.endswith(".localhost")
+
+
+def literal_secrets(raw: dict) -> list[str]:
+    """Where the file (`raw`: the TOML before expanding ${VAR}) writes a secret as is: an
+    api_key of [llm] or [embeddings] for a server that is not local, a password in a proxy
+    URL, or one in the DSN of [sources.doors.database]."""
+    def literal(v: Any) -> bool:
+        return isinstance(v, str) and bool(v.strip()) and "${" not in v
+
+    found = []
+    llm, emb = raw.get("llm") or {}, raw.get("embeddings") or {}
+    llm_url = _expand(llm.get("base_url", "")) or "http://localhost"
+    for name, section, url in (("llm", llm, llm_url), ("embeddings", emb, _expand(emb.get("base_url", "")) or llm_url)):
+        if literal(section.get("api_key")) and not _is_local(url):
+            found.append(f"[{name}] api_key")
+    for name, net in (("network", raw.get("network")), ("llm.network", llm.get("network")),
+                      ("embeddings.network", emb.get("network"))):
+        m = _URL_PASSWORD.search((net or {}).get("proxy", "") if isinstance(net, dict) else "")
+        if m and literal(m.group(2)):
+            found.append(f"[{name}] proxy (its password)")
+    dsn = (((raw.get("sources") or {}).get("doors") or {}).get("database") or {}).get("dsn", "")
+    m = _DSN_PASSWORD.search(dsn if isinstance(dsn, str) else "")
+    if m and literal(m.group(2)):
+        found.append("[sources.doors.database] dsn (its password)")
+    return found
 
 
 def load_config(path: str | Path) -> Config:
@@ -142,9 +191,10 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError(f"configuration file {path} does not exist")
     try:
         with open(path, "rb") as f:
-            data = _expand(tomllib.load(f))
+            raw = tomllib.load(f)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"TOML syntax in {path}: {e}") from e
+    data = _expand(raw)
 
     for section in data:
         if section not in SCHEMA:
@@ -167,6 +217,11 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
+    secrets = literal_secrets(raw)
+    if secrets:
+        raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "
+                          f"{', '.join(secrets)}. Write them as ${{VARIABLE}} (e.g. api_key = \"${{ATLAS_API_KEY}}\") "
+                          f"and set the variable; a server without a key needs no api_key")
 
     for section, defaults in DEFAULTS.items():
         data[section] = {**defaults, **data.get(section, {})}

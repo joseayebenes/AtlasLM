@@ -17,6 +17,8 @@
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
+    atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
+    atlas --version
 """
 from __future__ import annotations
 
@@ -795,12 +797,33 @@ def serve(cfg: Config) -> int:
     return 0
 
 
+TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
+
+
+def init(path: Path) -> int:
+    """Writes the template of atlas.toml in `path`, unless the file exists."""
+    if path.exists():
+        print(f"{path} already exists: it is not overwritten", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"created {path}: edit the sources and the model, then `atlas check {path.name}` and "
+          f"`atlas run {path.name}`")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
+    if argv[0] in ("-V", "--version", "version"):
+        from atlas import __version__
+        print(f"atlas {__version__}")
+        sys.exit(0)
     action, rest = argv[0], argv[1:]
+    if action == "init":
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,

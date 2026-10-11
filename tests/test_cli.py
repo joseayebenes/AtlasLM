@@ -350,3 +350,19 @@ analysis = "regex"
     for bad, message in (("graph = 2", "one by one"), ("indexes = 2", "unknown step"), ("docs = 0", "positive")):
         with pytest.raises(ConfigError, match=message):
             run(load_config(toml(sources.replace("docs = 2", bad))))
+
+
+def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatch):
+    import pytest
+    from atlas import __version__
+    from atlas.cli import main
+    monkeypatch.delenv("ATLAS_API_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    for argv, code in ((["init"], 0), (["init"], 1), (["--version"], 0)):     # init never overwrites
+        with pytest.raises(SystemExit) as exit:
+            main(argv)
+        assert exit.value.code == code
+    assert capsys.readouterr().out.strip().endswith(f"atlas {__version__}")
+    cfg = load_config(tmp_path / "atlas.toml")
+    assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
+    assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do

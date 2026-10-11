@@ -75,7 +75,8 @@ DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": d
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
                 "temperature": float}                             # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
-               "test_patterns": list, "summaries": str, "enabled": bool}
+               "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
+               "test_command": list, "tool_path": list, "command_timeout": int}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},

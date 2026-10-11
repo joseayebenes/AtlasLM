@@ -9,10 +9,11 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 [mcp] tools chooses the tools. When it is empty, the server offers those of the configured
 sources: the document tools with [[sources.docs]] (with only [sources.doors],
 get_requirement, and search when "index" is a step), the graph tools and read_file with
-[sources.code], and without code the traceability tools of the graph (trace, matrix,
-gaps...) when "graph" is a step; build_context with the graph. ask_atlas,
-verify_requirement and link_requirement (which need the model, and ask_atlas also ADK) are
-only offered when listed. So are edit_file and write_file: atlas provides knowledge and the editor edits.
+[sources.code] (and check_code when it has a check_command), and without code the
+traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step;
+build_context with the graph. ask_atlas, verify_requirement and link_requirement (which need
+the model, and ask_atlas also ADK) are only offered when listed. So are edit_file and
+write_file (atlas provides knowledge and the editor edits) and run_test, which runs code.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
@@ -58,6 +59,8 @@ INSTRUCTIONS = {
     "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
              "can be read.",
     "edit": "edit_file and write_file only change a file after a read_file of it; check the diff they return.",
+    "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
+             "every change; `run_test` builds a test procedure and runs it.",
 }
 
 
@@ -95,6 +98,8 @@ def default_tools(cfg: Config) -> list[str]:
             log.warning("no graph tools: %s", e)
     if code:
         names.append("read_file")
+        if sources["code"].get("check_command"):          # a compiler: the errors the model cannot see
+            names.append("check_code")
     return names
 
 
@@ -118,7 +123,8 @@ def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "context": ("build_context",),
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test"),
+              "context": ("build_context",),
               "agents": ("ask_atlas", "verify_requirement", "link_requirement")}
     try:
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS

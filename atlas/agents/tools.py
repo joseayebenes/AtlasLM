@@ -6,6 +6,8 @@
                          judged by the agent requirement_verifier (needs the model)
     link_requirement     the code that may implement a requirement, proposed by the agent
                          req_linker (needs the model); it changes nothing
+    check_compliance     whether the code of a requirement does all it asks, obligation by
+                         obligation, judged by the agent compliance_checker (needs the model)
     ask_atlas            a question to the agent assistant, which searches with its own tools
                          (needs the model and ADK): one call for the client, several behind
 
@@ -21,7 +23,7 @@ from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "ask_atlas")
+TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "check_compliance", "ask_atlas")
 
 
 class AgentTools:
@@ -81,6 +83,23 @@ class AgentTools:
         except openai.APIError as e:
             return {"error": f"the model server failed: {diagnose(e)}"}
 
+
+    def check_compliance(self, req_id: str) -> dict:
+        """Whether the code that implements a requirement (by its Req: tags) does all that it
+        asks: the requirement split into obligations, each met, not_met, partial or
+        cannot_tell (timing, performance, code not shown), with the code that decides it,
+        and a verdict (complies | does_not_comply | cannot_tell | no_code). A help for the
+        inspection, not a proof. Asks the model: slower than trace."""
+        import openai
+        from atlas.agents.comply import comply
+        from atlas.llm.connection import diagnose
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        try:
+            return comply(req_id, self.cfg, graph=g)
+        except openai.APIError as e:
+            return {"error": f"the model server failed: {diagnose(e)}"}
 
     def ask_atlas(self, question: str) -> dict:
         """Asks the assistant of atlas, an agent that answers from the documents, the DOORS

@@ -1020,6 +1020,9 @@ Estado (11 de octubre de 2026), versión 0.1.0:
   1,5 ms por página en vez de 45, y el texto respeta el orden en que se escribió, así que el
   número de un título no se separa de él. En la muestra sin marcadores salen las 27
   subsecciones, y no 9. Ya no hace falta extraer en varios procesos.
+- **Después de la 0.1.0.** `atlas comply` y el agente `compliance_checker`: el cumplimiento
+  del código con cada requisito, obligación a obligación, con el veredicto calculado a partir
+  de ellas. Una ayuda para la inspección, no una prueba.
 - **Después de la 0.1.0.** `check_code` y `run_test`: el compilador (GNAT, instalado con Alire)
   y las pruebas del proyecto para los agentes, configurados en `[sources.code]`. Con
   `gemma4:12b`, los cambios pequeños salen bien, pero los de varios ficheros no: el modelo no
@@ -1284,7 +1287,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 179 pruebas, 173 sin modelo:
+- `tests/`: 181 pruebas, 174 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

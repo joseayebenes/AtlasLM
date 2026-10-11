@@ -10,9 +10,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas eval` mide también la recuperación, sin modelo: casos `search` (acierto@1, @3, @5 y
   @10 y rango recíproco medio, con la búsqueda híbrida y con la léxica) y casos con una
   consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`, `search_code_docs`).
-  `examples/eval/retrieval.yaml` tiene 27 casos sobre las muestras; con `embeddinggemma`, la
-  híbrida acierta a la primera en el 76 % y entre las tres primeras en el 94 %, y el grafo,
+  `examples/eval/retrieval.yaml` tiene 30 casos sobre las muestras; con `embeddinggemma`, la
+  híbrida acierta a la primera en el 75 % y entre las tres primeras en el 90 %, y el grafo,
   10 de 10. Cierra la meta 7 del plan.
+- El código se indexa: paso `index.code`, una unidad por unidad de código (en Ada, el
+  paquete con su especificación y su cuerpo), y un registro `code_doc` por subprograma,
+  prueba, tipo, variable y constante, con su comentario de cabecera, los requisitos que cita
+  y su código. `search` y `atlas ask` encuentran código; la herramienta `search` acepta
+  `kind = "code_doc"`. En el proyecto grande añade 1,3 s y 48 peticiones de embeddings.
 - `Index.search(..., dense=False)`: solo IDs y BM25, sin ninguna petición.
 
 ### Cambiado
@@ -28,6 +33,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ### Al actualizar
 - El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.
+- `code_doc` ya estaba en `[index] kinds` por defecto: la siguiente ejecución embebe todo el
+  código una vez. Para no indexarlo, quítalo de `kinds`. El código compite con los documentos
+  en la búsqueda: en las muestras, una búsqueda de documentos bajó de la primera a la cuarta
+  posición; `kind` en `search` busca en una sola clase de texto.
 - Todos los documentos se vuelven a procesar una vez. El texto de cada sección de un PDF
   cambia (saltos de línea, posición de las cabeceras), así que la caché de análisis no sirve
   y, con `analysis = "llm"`, todas las secciones de los PDF vuelven al modelo. Los Markdown

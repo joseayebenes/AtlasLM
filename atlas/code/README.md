@@ -22,6 +22,9 @@ otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los ficheros que cas
 `test_patterns` son pruebas. Con eso, el paso `graph` construye el grafo de código (ver
 [atlas.graph](../graph/README.md)).
 
+El paso `index.code` lo lleva además al índice de búsqueda: cada subprograma, tipo y variable,
+con su comentario, sus requisitos y su código (ver [atlas.index](../index/README.md)).
+
 Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en el
 [README](../../README.md)).
 

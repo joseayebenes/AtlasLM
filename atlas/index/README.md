@@ -30,7 +30,17 @@ un fragmento. Así, `search` encuentra un requisito aunque no aparezca en ningú
 su cita queda como `SRS_TMS › 1.1 Deletion (requirement)`. `get_requirement` sigue dando el
 texto oficial aparte, y en sus documentos no repite el de DOORS.
 
-`[index] kinds` elige qué se indexa.
+El código también se indexa (paso `index.code`, tipo `code_doc`). Cada unidad de código es
+un documento más: un paquete de Ada, con su especificación y su cuerpo. Cada subprograma,
+prueba, tipo, variable y constante es un registro con su nombre completo en `ref`
+(`tracks.delete_track`) y, como texto, el comentario de cabecera (el del `.ads` si lo hay),
+los requisitos que cita y su código (los primeros `chunk_chars` caracteres). Su cita queda
+como `tracks › tracks.delete_track · tracks.adb:11-15 (code_doc)`. Así, «which subprogram
+removes a track from the database» encuentra `tracks.delete_track` aunque no use sus
+palabras. Un fichero cambiado solo reindexa su unidad, y de ella solo se embeben los textos
+que cambian.
+
+`[index] kinds` elige qué se indexa; sin `code_doc`, el código no entra en el índice.
 
 ## Embeddings
 
@@ -63,7 +73,12 @@ a leer cuando cambia la base.
 `Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
 ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
 Sobre las muestras, con `embeddinggemma`, la híbrida pone lo buscado en primer lugar en el
-76 % de los casos y entre los tres primeros en el 94 %; la léxica, en el 65 % y el 82 %.
+75 % de los casos y entre los tres primeros en el 90 %; la léxica, en el 55 % y el 70 %.
+
+El código compite con los documentos. En las muestras, «show the tracks on the operator
+screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de
+`tracks` habla de *tracks*. Para buscar solo en una clase de texto, `kind` en la herramienta
+`search` (o `kinds` en `Index.search`).
 
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del

@@ -328,6 +328,57 @@ steps = ["doors", "index"]
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 
+def test_code_is_indexed_by_unit(toml, samples, tmp_path, fake, fake_stats, capsys):
+    import shutil
+    import pytest
+    from atlas.cli import search
+    pytest.importorskip("tree_sitter_ada")
+    ada = tmp_path / "ada"
+    shutil.copytree(samples / "ada", ada)
+    extra = f'''
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["code", "index"]
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''
+    cfg = load_config(toml(extra))
+
+    def go(config=cfg):
+        assert run(config) == 0
+        return json.loads(capsys.readouterr().out)
+
+    # one unit per package (spec and body together), and one per test procedure
+    assert go()["processed"] == {"code.parse": 5, "index.code": 3}
+    assert search(cfg, "remove a track from the database") == 0
+    out = capsys.readouterr().out
+    assert "[1] tracks › tracks.delete_track · tracks.adb:11-15 (code_doc)" in out
+    assert "Removes track I from the database." in out and 'Logger.Log ("delete");' in out
+
+    embedded = fake_stats()["emb_texts"]
+    assert go()["skipped"] == {"code.parse": 5, "index.code": 3} and fake_stats()["emb_texts"] == embedded
+    # a changed body: that file is analysed again and its unit indexed again, embedding only
+    # the record whose text changed
+    body = ada / "src" / "tracks.adb"
+    body.write_text(body.read_text().replace('"delete"', '"track deleted"'))
+    assert go()["processed"] == {"code.parse": 1, "index.code": 1}
+    assert fake_stats()["emb_texts"] == embedded + 1
+    # a unit that disappears is pruned, and without code_doc in [index] kinds nothing is indexed
+    for f in ("logger.ads", "logger.adb"):
+        (ada / "src" / f).unlink()
+    assert go()["pruned"] == {"code.parse": 2, "index.code": 1}
+    rep = go(load_config(toml(extra + '[index]\nkinds = ["chunk"]\n')))
+    assert "index.code" not in rep["processed"] and "index.code" not in rep["skipped"]
+
+
 def test_step_workers_and_documents_with_the_same_name_in_parallel(toml, docs_samples, tmp_path, capsys):
     import shutil
     import pytest

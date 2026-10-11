@@ -110,12 +110,14 @@ class DocTools:
                               for d in docs]}
 
     def search(self, query: str, k: int = 8, document: str = "", kind: str = "") -> dict:
-        """Hybrid search in the documents and in the requirements of DOORS: exact IDs,
-        meaning and keywords. `document` limits it to one document or DOORS module (its name
-        or part of its title); `kind` to one kind of passage: chunk | section_summary |
-        requirement | definition | open_issue | overview. Each result has its citation, its
-        document and section (for get_section; for a DOORS requirement, get_requirement with
-        its ref) and its text."""
+        """Hybrid search in the documents, in the requirements of DOORS and in the code:
+        exact IDs, meaning and keywords. `document` limits it to one document, DOORS module or
+        code unit (its name or part of its title); `kind` to one kind of passage: chunk |
+        section_summary | requirement | definition | open_issue | overview | code_doc (a
+        subprogram, type or variable with its comment and code). Each result has its
+        citation, its document and section (for get_section; for a DOORS requirement,
+        get_requirement with its ref; for code, read_source or trace_code with its ref) and
+        its text."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:

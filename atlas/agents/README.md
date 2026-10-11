@@ -105,18 +105,19 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
 - **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
   no ordena ni varía: o está o no está.
 
-`examples/eval/retrieval.yaml` tiene 17 búsquedas (IDs exactos, palabras del texto,
-paráfrasis, preguntas en español, secciones) y 10 consultas del grafo sobre las muestras. Con
-`embeddinggemma`:
+`examples/eval/retrieval.yaml` tiene 20 búsquedas (IDs exactos, palabras del texto,
+paráfrasis, preguntas en español, secciones y código) y 10 consultas del grafo sobre las
+muestras. Con `embeddinggemma`:
 
 | Búsqueda | acierto@1 | @3 | @5 | @10 | MRR |
 |---|---|---|---|---|---|
-| híbrida | 76 % | 94 % | 100 % | 100 % | 0,86 |
-| léxica, sin modelo | 65 % | 82 % | 94 % | 100 % | 0,76 |
+| híbrida | 75 % | 90 % | 100 % | 100 % | 0,84 |
+| léxica, sin modelo | 55 % | 70 % | 90 % | 100 % | 0,68 |
 
-El grafo acierta 10 de 10. Los vectores se notan en las paráfrasis y en las preguntas en
-español: «how long does the HMI retain its log files» sale primera en la híbrida y tercera en
-la léxica. Las muestras son sintéticas y repetitivas, así que este conjunto sirve de
+El grafo acierta 10 de 10. Los vectores se notan en las paráfrasis, en las preguntas en
+español y en el código: «how long does the HMI retain its log files» sale primera en la
+híbrida y cuarta en la léxica, y «type for the hours of the day» (`tracks.hour_range`),
+primera y cuarta. Las muestras son sintéticas y repetitivas, así que este conjunto sirve de
 referencia y para detectar regresiones; la cifra que vale es la de un conjunto escrito sobre
 el proyecto real.
 

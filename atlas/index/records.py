@@ -16,15 +16,23 @@ document title and the section path, and each chunk also the summary of its sect
 
 A DOORS module is indexed as one more document: each requirement is a `requirement` record
 and each information object a `chunk`, with the headings above it as its path.
+
+A code unit (an Ada package: its spec and its body) is one more document too: each
+subprogram, test, type, variable and constant is a `code_doc` record, with its qualified
+name (`tracks.delete_track`) in `ref` and, as text, its header comment, the requirements it
+cites and its code.
 """
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Iterable
 
-__all__ = ["DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "reflow", "requirement_records"]
+__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "code_records", "reflow",
+           "requirement_records"]
 
 DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
+CODE_PREFIX = "code:"       # key of a code unit in the index: "code:tracks"
 KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
 
 
@@ -150,4 +158,62 @@ def requirement_records(module: str, requirements: list[dict], kinds: Iterable[s
     if kinds is not None:
         wanted = set(kinds)
         records = [r for r in records if r["kind"] in wanted]
+    return records
+
+
+def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
+                 chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> list[dict]:
+    """Records of a code unit from its files as code.parse leaves them in atlas.db (CodeUnit
+    as a dict; an Ada package has its spec and its body): one `code_doc` per subprogram,
+    test, type, variable and constant. The comment of a subprogram is the one of its
+    declaration in the spec, if there is one; its code, the body (up to chunk_chars
+    characters). `sources` has the text of each file and `tests` the files that are tests."""
+    if kinds is not None and "code_doc" not in set(kinds):
+        return []
+    tests = set(tests)
+    elements: dict[str, dict] = {}
+
+    def element(name: str, kind: str) -> dict:
+        return elements.setdefault(name, {"name": name, "kind": kind, "doc": "", "reqs": [], "where": "", "code": ""})
+
+    def lines(file: str, start: int, end: int) -> str:
+        return "\n".join(sources.get(file, "").splitlines()[start - 1:end]) if start else ""
+
+    def merge(e: dict, item: dict) -> None:
+        e["doc"] = e["doc"] or item.get("doc", "")
+        e["reqs"] += [r for r in item.get("reqs", []) if r not in e["reqs"]]
+
+    for part in sorted(parts, key=lambda p: (not p.get("declarations"), p["file"])):    # specs first
+        file, name = part["file"], Path(part["file"]).name
+        for d in part.get("declarations", []):
+            e = element(d["name"], "subprogram")
+            merge(e, d)
+            e["where"] = e["where"] or f"{name}:{d['line']}"
+            e["code"] = e["code"] or lines(file, d["line"], d["line"])
+        for sp in part.get("subprograms", []):
+            e = element(sp["name"], "subprogram")
+            e["kind"] = "test" if file in tests else e["kind"]
+            merge(e, sp)
+            e["where"] = f"{name}:{sp['start_line']}-{sp['end_line']}"
+            e["code"] = lines(file, sp["start_line"], sp["end_line"]) or e["code"]
+        for t in part.get("types", []):
+            e = element(t["name"], "type")
+            merge(e, t)
+            e["where"], e["code"] = f"{name}:{t['line']}", t.get("source", "")
+        for v in part.get("variables", []):
+            e = element(v["name"], "constant" if v.get("constant") else "variable")
+            e["where"], e["code"] = f"{name}:{v['line']}", v.get("source", "")
+
+    language = parts[0].get("language", "") if parts else ""
+    records = []
+    for n, e in enumerate(elements.values()):
+        ref = f"{unit}.{e['name']}"
+        code = e["code"].strip("\n")
+        if len(code) > chunk_chars:
+            code = code[:chunk_chars].rstrip() + "\n…"
+        unsaid = [r for r in e["reqs"] if r not in e["doc"] and r not in code]      # the Req: tag usually says them
+        body = "\n".join(x for x in (e["doc"], f"Requirements: {', '.join(unsaid)}" if unsaid else "", code) if x)
+        records.append({"kind": "code_doc", "ref": ref, "section_id": ref, "section_title": f"{ref} · {e['where']}",
+                        "path": unit, "seq": n, "text": f"{ref} ({e['kind']}, {e['where']})\n{body}",
+                        "embed_text": f"{language} unit {unit} > {e['kind']} {ref}\n{body}"})
     return records

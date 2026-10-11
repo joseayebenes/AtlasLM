@@ -25,7 +25,7 @@ def test_second_run_and_a_pdf_changed_in_one_page(tmp_path, fake, fake_stats):
         return json.loads(out.getvalue())
 
     assert go()["processed"] == {"doors.requirements": 2, "code.parse": 45, "docs.process": 2, "graph.build": 3,
-                                 "index.documents": 2, "index.requirements": 2}
+                                 "index.documents": 2, "index.requirements": 2, "index.code": 25}
     before = fake_stats()
     assert go()["processed"] == {} and fake_stats() == before      # nothing changed: no request at all
 

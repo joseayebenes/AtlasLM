@@ -42,7 +42,7 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 163 pruebas sin modelo (+5 de agentes con Ollama)
+python -m pytest -q                                # 165 pruebas sin modelo (+5 de agentes con Ollama)
 ```
 
 ### Tres niveles de modelo
@@ -89,7 +89,7 @@ atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al model
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
 atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
 atlas matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
-atlas search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
+atlas search "track deletion latency" atlas.dev.toml   # búsqueda en documentos, requisitos y código
 atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
@@ -123,7 +123,7 @@ atlas search "alarm latency" atlas.test.toml
 Para medir el motor con un proyecto grande, `make large` genera uno sintético en
 `examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
 procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
-- la primera ejecución tarda unos 6 s;
+- la primera ejecución tarda unos 7 s;
 - la segunda, sin cambios, 0,1 s y sin ninguna petición;
 - tras cambiar un plazo en una página de un PDF, 0,9 s y una sola petición al modelo.
 

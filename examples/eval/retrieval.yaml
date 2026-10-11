@@ -66,6 +66,17 @@
   search: mission system capabilities
   expect: [The mission system shall provide capability]
 
+# --- search: the code (each subprogram, type and variable, with its comment and code)
+- id: search-code-remove-track
+  search: which subprogram removes a track from the database
+  expect: [tracks.delete_track]
+- id: search-code-log
+  search: code that writes a line to the log
+  expect: [logger.log]
+- id: search-code-hours
+  search: type for the hours of the day
+  expect: [tracks.hour_range]
+
 # --- graph: traceability, impact and code, without a model
 - id: graph-trace-srs-0004
   trace: SRS-0004

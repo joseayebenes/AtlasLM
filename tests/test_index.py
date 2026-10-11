@@ -198,3 +198,29 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert {h["document"] for h in tools.search("track", k=20, document="SRS_TMS")["results"]} == {"SRS_TMS"}
     idx.remove_document("doors:SRS_TMS")
     assert [d["name"] for d in idx.documents()] == ["hmi_manual.md"]
+
+
+def test_records_of_a_code_unit(samples):
+    """An Ada package is one unit: the comment and the requirements of its spec go with the
+    code of its body."""
+    pytest.importorskip("tree_sitter_ada")
+    from dataclasses import asdict
+    from atlas.code import AdaAnalyzer
+    from atlas.index import code_records
+    files = [samples / "ada" / "src" / f for f in ("tracks.ads", "tracks.adb")]
+    parts = [asdict(AdaAnalyzer({}).analyze_file(f, f.read_bytes())) for f in files]
+    sources = {str(f): f.read_text() for f in files}
+    records = {r["ref"]: r for r in code_records("tracks", parts, sources)}
+    assert set(records) == {"tracks.update", "tracks.delete_track", "tracks.track", "tracks.track_array",
+                            "tracks.hour_range", "tracks.trk_db", "tracks.max_tracks"}
+    delete = records["tracks.delete_track"]
+    assert delete["kind"] == "code_doc" and delete["section_title"] == "tracks.delete_track · tracks.adb:11-15"
+    assert delete["text"].splitlines()[:3] == ["tracks.delete_track (subprogram, tracks.adb:11-15)",
+                                               "Removes track I from the database.", "Req: SRS-0004"]
+    assert 'Logger.Log ("delete");' in delete["text"] and delete["embed_text"].startswith("ada unit tracks > subprogram")
+    assert records["tracks.max_tracks"]["text"].startswith("tracks.max_tracks (constant, tracks.ads:11)")
+    # long code is cut; a test file gives tests; no code_doc in kinds, no records
+    assert code_records("tracks", parts, sources, chunk_chars=40)[0]["text"].endswith("…")
+    assert {r["text"].split(" (")[1].split(",")[0] for r in code_records("tracks", parts, sources, tests=[str(files[1])])
+            if "tracks.adb" in r["text"]} == {"test"}
+    assert code_records("tracks", parts, sources, kinds=["chunk"]) == []

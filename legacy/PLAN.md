@@ -669,9 +669,9 @@ La recuperación sin modelo se mide desde después de la 0.1.0, con los mismos c
 - un caso con una consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`,
   `search_code_docs`) acierta si el resultado contiene lo esperado.
 
-`examples/eval/retrieval.yaml` tiene 17 búsquedas y 10 consultas del grafo sobre las
-muestras. Con `embeddinggemma`: híbrida, acierto@1 76 %, @3 94 %, @5 100 %, MRR 0,86;
-léxica, 65 %, 82 %, 94 %, MRR 0,76; el grafo, 10 de 10. Las muestras son sintéticas y
+`examples/eval/retrieval.yaml` tiene 20 búsquedas (3 de código) y 10 consultas del grafo
+sobre las muestras. Con `embeddinggemma` y el código en el índice: híbrida, acierto@1 75 %,
+@3 90 %, @5 100 %, MRR 0,84; léxica, 55 %, 70 %, 90 %, MRR 0,68; el grafo, 10 de 10. Las muestras son sintéticas y
 repetitivas: la cifra que vale es la de un conjunto escrito sobre el proyecto real.
 
 ---
@@ -1020,6 +1020,9 @@ Estado (11 de octubre de 2026), versión 0.1.0:
   1,5 ms por página en vez de 45, y el texto respeta el orden en que se escribió, así que el
   número de un título no se separa de él. En la muestra sin marcadores salen las 27
   subsecciones, y no 9. Ya no hace falta extraer en varios procesos.
+- **Después de la 0.1.0.** El código se indexa (paso `index.code`, registros `code_doc`):
+  cada subprograma, tipo y variable con su comentario, sus requisitos y su código, por
+  unidad (especificación y cuerpo juntos).
 
 Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 
@@ -1031,7 +1034,7 @@ Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 | 4. Configurable por fichero | la línea de comandos solo elige acción y fichero | cada clave en la guía de configuración, comprobado por las pruebas |
 | 5. Importable | cada módulo sin ADK, sin MCP y sin los demás | `examples/library`, ejecutados por las pruebas |
 | 6. Trazabilidad | `trace` en una llamada, y `impact` a la inversa | `tests/test_graph.py` y el ejemplo de trazabilidad |
-| 7. Evaluable | `atlas eval` | agentes: 23 de 24 con `gemma4:12b`; recuperación sin modelo (8.4): búsqueda híbrida con acierto@3 del 94 % y MRR 0,86, grafo 10 de 10 |
+| 7. Evaluable | `atlas eval` | agentes: 23 de 24 con `gemma4:12b`; recuperación sin modelo (8.4): búsqueda híbrida con acierto@3 del 90 % y MRR 0,84, grafo 10 de 10 |
 
 ---
 
@@ -1271,7 +1274,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 168 pruebas, 163 sin modelo:
+- `tests/`: 170 pruebas, 165 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

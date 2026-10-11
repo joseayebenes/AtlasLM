@@ -358,6 +358,68 @@ def index_requirements_step(ctx) -> Step:
                 depends_on=["doors.requirements"])
 
 
+def index_code_step(ctx) -> Step | None:
+    """One unit per code unit read by code.parse (an Ada package: its spec and its body):
+    each subprogram, test, type and variable is a code_doc record, with its comment, its
+    requirements and its code, so that search finds code too. Like index.documents, the
+    texts of all the units to index are embedded first, together."""
+    sc = ctx.cfg["sources"].get("code")
+    options = index_options(ctx)
+    if not sc or not sc.get("enabled", True) or "code_doc" not in options["kinds"]:
+        return None
+    from atlas.graph.build import is_test_file
+    from atlas.index import CODE_PREFIX, Index, code_records
+    from atlas.llm import from_config
+    workers = step_workers(ctx, "index")
+    embed_model = from_config(ctx.cfg).embeddings.model
+    test_patterns = sc.get("test_patterns", [])
+    shared: dict = {}
+    lock = threading.Lock()
+
+    def index() -> Index:
+        with lock:
+            if "index" not in shared:
+                shared["index"] = Index.from_config(ctx.cfg)
+        return shared["index"]
+
+    def parts(unit: str) -> list[dict]:
+        return shared["units"][unit]
+
+    def sources(unit: str) -> dict[str, str]:
+        return {p["file"]: Path(p["file"]).read_text(encoding="utf-8", errors="replace") for p in parts(unit)}
+
+    def records(unit: str) -> list[dict]:
+        tests = [p["file"] for p in parts(unit) if is_test_file(p["file"], test_patterns)]
+        return code_records(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"])
+
+    def units(ctx) -> list[str]:
+        grouped: dict[str, list[dict]] = {}
+        for u in ctx.store.code_units():
+            grouped.setdefault(u["unit"], []).append(u)
+        shared["units"] = grouped
+        return sorted(grouped)
+
+    def fingerprint(ctx, unit: str) -> str:
+        files = [[p, sha256_file(p["file"]) if Path(p["file"]).exists() else ""] for p in parts(unit)]
+        return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{ctx.cfg.fingerprint('index')}|"
+                f"{embed_model}|{INDEX_VERSION}")
+
+    def run(ctx, unit: str):
+        tests = [p["file"] for p in parts(unit) if is_test_file(p["file"], test_patterns)]
+        res = index().add_code(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"])
+        if res["missing"]:
+            raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
+                                  f"failed batches); they are embedded on the next run")
+        return {"records": res["records"], "kinds": res["kinds"]}
+
+    def prepare(ctx, pending: list[str]) -> None:
+        index().embed_missing([r["embed_text"] for unit in pending for r in records(unit)], workers)
+
+    return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
+                prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit), prepare=prepare,
+                depends_on=["code.parse"])
+
+
 GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
@@ -462,7 +524,7 @@ def step_workers(ctx, name: str) -> int:
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
     builders = {"doors": [doors_step], "code": [code_step], "docs": [docs_step], "graph": [graph_step],
-                "index": [index_step, index_requirements_step]}
+                "index": [index_step, index_requirements_step, index_code_step]}
     out = []
     for name in wanted:
         if name not in builders:

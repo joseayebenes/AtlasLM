@@ -50,8 +50,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
                 "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int,
                 "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
                 "retry_statuses": list},
-    "pipeline": {"workers": int, "on_error": str, "max_attempts": int, "retry_quarantined": bool,
-                 "prune_missing": bool, "steps": list},
+    "pipeline": {"workers": int, "step_workers": dict, "on_error": str, "max_attempts": int,
+                 "retry_quarantined": bool, "prune_missing": bool, "steps": list},
     "plugins": {"modules": list, "disabled": list},
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
@@ -72,7 +72,7 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},
-    "pipeline": {"workers": 1, "on_error": "continue", "max_attempts": 3,
+    "pipeline": {"workers": 1, "step_workers": {}, "on_error": "continue", "max_attempts": 3,
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"]},
     "plugins": {"modules": [], "disabled": []},

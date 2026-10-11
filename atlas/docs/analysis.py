@@ -25,6 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from atlas.llm.structured import JsonLlm, TruncatedResponse
+from atlas.pipeline import atomic_write
 
 __all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "analyze_section", "consolidate",
            "empty_overview", "normalize", "overview", "regex_requirements", "section_cache_file", "verify"]
@@ -232,13 +233,25 @@ def analyze_section(llm: JsonLlm, s: dict, doc_title: str, lang: str = "", cache
     """Analysis of a section with the model, from the cache if it is there. `failures`
     is a folder where the invalid answers of the model are kept for diagnosis."""
     file = section_cache_file(cache, llm.model, s, doc_title, lang)
-    if file and file.exists():
-        return json.loads(file.read_text(encoding="utf-8"))
+    cached = _read_cache(file)
+    if cached is not None:
+        return cached
     result = _analyze_text(llm, s, s["body"], doc_title, lang, failures)
     if file:
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        atomic_write(file, json.dumps(result, ensure_ascii=False, indent=1))
     return result
+
+
+def _read_cache(file: Path | None) -> dict | None:
+    """A cached analysis, or None if there is none. A damaged file (written by a version
+    that did not write atomically and was cut) counts as missing."""
+    if not file or not file.exists():
+        return None
+    try:
+        return json.loads(file.read_text(encoding="utf-8"))
+    except (ValueError, OSError) as e:
+        log.warning("damaged cache file %s, analysed again: %s", file.name, e)
+        return None
 
 
 def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
@@ -249,12 +262,12 @@ def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
     key = hashlib.sha256(f"{PROMPT_VERSION}|{llm.model}|{lang}|{doc_title}|{items}"
                          .encode("utf-8")).hexdigest()[:20]
     file = Path(cache) / f"overview_{key}.json" if cache else None
-    if file and file.exists():
-        return json.loads(file.read_text(encoding="utf-8"))
+    cached = _read_cache(file)
+    if cached is not None:
+        return cached
     result = _overview(llm, items, doc_title, lang, max_chars)
     if file:
-        file.parent.mkdir(parents=True, exist_ok=True)
-        file.write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
+        atomic_write(file, json.dumps(result, ensure_ascii=False, indent=1))
     return result
 
 

@@ -110,3 +110,25 @@ def test_ctrl_c_does_not_go_on_with_the_pending_sections(docs_samples, tmp_path,
         process_document(docs_samples / "hmi_manual.md", tmp_path / "hmi", DocsOptions(), llm=fake_llm[0], workers=1)
     # the one in progress finishes; the other two of the 4 sections are never started
     assert len(calls) <= 2 and not (tmp_path / "hmi.tmp").exists()
+
+
+def test_a_stopped_run_starts_no_section(docs_samples, tmp_path, fake_llm, fake_chats):
+    import threading
+    from atlas.pipeline import Interrupted
+    stop = threading.Event()
+    stop.set()
+    with pytest.raises(Interrupted):
+        process_document(docs_samples / "hmi_manual.md", tmp_path / "hmi", DocsOptions(), llm=fake_llm[0], stop=stop)
+    assert fake_chats() == 0 and not (tmp_path / "hmi").exists() and not (tmp_path / "hmi.tmp").exists()
+
+
+def test_a_damaged_cache_file_is_analysed_again(docs_samples, tmp_path, fake_llm, fake_chats):
+    service, _ = fake_llm
+    md, cache = docs_samples / "hmi_manual.md", tmp_path / "cache"
+    process_document(md, tmp_path / "a", DocsOptions(), llm=service, cache_dir=cache)
+    damaged = next(f for f in sorted(cache.glob("*.json")) if not f.name.startswith("overview_"))
+    damaged.write_text('{"summary": "cut in the mid')         # a cut write of an older version
+    before = fake_chats()
+    data = process_document(md, tmp_path / "b", DocsOptions(), llm=service, cache_dir=cache)
+    assert data["errors"] == 0 and fake_chats() - before == 1
+    assert json.loads(damaged.read_text())["summary"] and not list(cache.glob("*.tmp"))

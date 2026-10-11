@@ -191,3 +191,29 @@ def test_a_ledger_of_an_older_version_gets_the_new_columns(tmp_path):
     rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, lambda ctx, u: None)]).run()
     assert rep.skipped == {"p": 1} and rep.processed == {"p": 1}
     assert ledger.get("p", "a")["seconds"] is None and ledger.get("p", "b")["seconds"] is not None
+
+
+def test_step_workers_and_ctrl_c_with_units_in_other_threads(tmp_path):
+    """Ctrl+C reaches only the main thread: the units that have not started are
+    cancelled instead of waited for, and `stopping` tells the running ones to stop."""
+    import time
+    seen, crash = [], {"on": True}
+
+    def run(ctx, u):
+        if u == "u00" and crash["on"]:
+            raise KeyboardInterrupt
+        seen.append(u)
+        time.sleep(0.05)
+
+    units = [f"u{i:02d}" for i in range(20)]
+    step = _step("p", units, {u: "1" for u in units}, run, workers=3)
+    ledger = Ledger(tmp_path / "db")
+    runner = Runner(ledger, [step], workers=1)
+    with pytest.raises(KeyboardInterrupt):
+        runner.run()
+    assert runner.stopping.is_set() and len(seen) < 10 and ledger.get("p", "u00")["status"] == "running"
+    crash["on"] = False
+    done = len(seen)
+    rep = Runner(ledger, [step], workers=1).run()
+    assert rep.profile["p"]["workers"] == 3 and rep.processed == {"p": 20 - done} and rep.skipped == {"p": done}
+

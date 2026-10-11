@@ -48,6 +48,12 @@ class FatalError(Exception):
     """Error after which it makes no sense to go on with the next unit."""
 
 
+class Interrupted(BaseException):
+    """The run was interrupted (Ctrl+C) while units ran in other threads. A long unit that
+    watches `Runner.stopping` raises it to stop early; like a kill, the unit stays
+    'running' in the ledger and the next run does it again."""
+
+
 class WorkspaceLocked(RuntimeError):
     pass
 
@@ -65,10 +71,11 @@ def sha256_text(*parts: Any) -> str:
 
 
 def atomic_write(path: str | Path, content: str | bytes) -> None:
-    """Atomic write: temporary file + rename."""
+    """Atomic write: temporary file + rename. The temporary file is the thread's own, so
+    two threads can write the same file at the same time (the last one wins)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     if isinstance(content, str):
         tmp.write_text(content, encoding="utf-8")
     else:
@@ -86,6 +93,7 @@ class Step:
     depends_on: list[str] = field(default_factory=list)
     is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, FatalError)
     parallel: bool = True
+    workers: int | None = None      # units at the same time; None = those of the Runner
 
 
 class Ledger:
@@ -253,14 +261,20 @@ SLOWEST = 3     # units listed in the profile of each step
 
 
 class Runner:
-    """Runs the steps in dependency order. `meters` returns cumulative counters (requests
+    """Runs the steps in dependency order, the units of a parallel step in `workers`
+    threads (or the step's own `workers`). `meters` returns cumulative counters (requests
     to the APIs, seconds waiting...): the profile of each step keeps what grew during it.
-    `version` is saved with each run, to compare profiles between versions."""
+    `version` is saved with each run, to compare profiles between versions.
+
+    `stopping` is set when the run is interrupted (Ctrl+C) with units running in other
+    threads: the units not started yet are cancelled, and the long ones can watch it and
+    raise Interrupted so as not to hold the end of the run."""
 
     def __init__(self, ledger: Ledger, steps: list[Step], context: Any = None, workers: int = 1,
                  on_error: str = "continue", max_attempts: int = 3, retry_quarantined: bool = False,
                  prune_missing: bool = True, lock_path: str | Path | None = None,
-                 meters: Callable[[], dict[str, float]] | None = None, version: str = ""):
+                 meters: Callable[[], dict[str, float]] | None = None, version: str = "",
+                 stopping: threading.Event | None = None):
         self.ledger, self.context = ledger, context
         self.steps = self._sort(steps)
         self.workers = max(1, workers)
@@ -268,6 +282,7 @@ class Runner:
         self.retry_quarantined, self.prune_missing = retry_quarantined, prune_missing
         self.lock_path = Path(lock_path) if lock_path else ledger.path.with_suffix(".lock")
         self.meters, self.version = meters, version
+        self.stopping = stopping or threading.Event()
 
     @staticmethod
     def _sort(steps: list[Step]) -> list[Step]:
@@ -292,6 +307,7 @@ class Runner:
 
     def run(self, only: Iterable[str] | None = None) -> RunReport:
         rep, t0 = RunReport(started=datetime.now().isoformat(timespec="seconds")), time.perf_counter()
+        self.stopping.clear()
         with self._lock():
             for step in self.steps:
                 if only and step.name not in set(only):
@@ -319,7 +335,7 @@ class Runner:
         units that ran (total, median, maximum) and the slowest ones; and what the meters
         grew (`api`). Also when the step stops on a fatal error."""
         start, before = time.perf_counter(), self._meter()
-        workers = self.workers if step.parallel else 1
+        workers = max(1, step.workers or self.workers) if step.parallel else 1
         prof: dict[str, Any] = {"units": 0, "workers": workers}
         durations: list[tuple[str, float]] = []
         try:
@@ -378,7 +394,7 @@ class Runner:
         result_lock = threading.Lock()
 
         def process(u: str, fp: str) -> None:
-            if fatal:
+            if fatal or self.stopping.is_set():
                 return
             prev = self.ledger.get(step.name, u)
             attempts = (prev["attempts"] if prev and prev["fingerprint"] == fp else 0)
@@ -415,10 +431,18 @@ class Runner:
                     fatal.append(FatalError(f"on_error = stop after {u} failed: {e}"))
 
         if workers > 1:
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                futures = [pool.submit(process, u, fp) for u, fp in pending]
-                for f in as_completed(futures):
+            pool = ThreadPoolExecutor(max_workers=workers)
+            try:
+                for f in as_completed([pool.submit(process, u, fp) for u, fp in pending]):
                     f.result()
+            except BaseException:
+                # Ctrl+C (only the main thread gets it): the units not started yet are
+                # cancelled, and the running ones are told to stop and waited for, so
+                # that none is still writing when the workspace lock is released
+                self.stopping.set()
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+            pool.shutdown()
         else:
             for u, fp in pending:
                 process(u, fp)

@@ -42,7 +42,8 @@ def _context(cfg: Config) -> SimpleNamespace:
     logging.getLogger("httpx").setLevel(logging.WARNING)     # one line per request otherwise
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
-    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
+    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
+                           stopping=threading.Event())     # set by the Runner when the run is interrupted
 
 
 # --------------------------------------------------------------------------
@@ -180,11 +181,17 @@ def docs_step(ctx) -> Step | None:
     by_name = {d["name"]: (d, options) for d, options in sources}
     root = ctx.cfg.workspace / "docs"
     model = from_config(ctx.cfg).llm.model
+    workers = step_workers(ctx, "docs")
     shared: dict = {}
+    lock = threading.Lock()             # documents are processed in parallel
+    reserved: dict[str, str] = {}       # output folder -> unit, for the documents of this run
 
     def llm() -> JsonLlm:
-        if "llm" not in shared:        # only when some source uses it, and only once
-            shared["llm"] = JsonLlm(from_config(ctx.cfg).llm)
+        # only when some source uses it, and only once. It is shared by the documents
+        # processed at the same time: `workers` sections of all of them at once.
+        with lock:
+            if "llm" not in shared:
+                shared["llm"] = JsonLlm(from_config(ctx.cfg).llm, concurrency=workers)
         return shared["llm"]
 
     def units(ctx) -> list[str]:
@@ -197,14 +204,17 @@ def docs_step(ctx) -> Step | None:
                 + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
 
     def out_dir(ctx, unit: str) -> Path:
-        """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it."""
+        """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it
+        (or is being processed into it at the same time)."""
         name, f = unit.split(":", 1)
         known = ctx.store.document(unit)
         if known:
             return Path(known["out_dir"])
         out = root / name / f"{Path(f).stem}_{Path(f).suffix.lstrip('.').lower()}"
-        if ctx.store.document_owning(str(out)) not in (None, unit):
-            out = out.with_name(f"{out.name}-{sha256_text(unit)[:8]}")
+        with lock:
+            if (ctx.store.document_owning(str(out)) or reserved.get(str(out), unit)) != unit:
+                out = out.with_name(f"{out.name}-{sha256_text(unit)[:8]}")
+            reserved[str(out)] = unit
         return out
 
     def run(ctx, unit: str):
@@ -212,8 +222,8 @@ def docs_step(ctx) -> Step | None:
         d, options = by_name[name]
         out = out_dir(ctx, unit)
         data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
-                                cache_dir=root / ".cache", workers=ctx.cfg["pipeline"]["workers"],
-                                disabled=ctx.disabled)
+                                cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
+                                stop=ctx.stopping)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"]}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
@@ -228,9 +238,9 @@ def docs_step(ctx) -> Step | None:
             shutil.rmtree(known["out_dir"], ignore_errors=True)
             ctx.store.delete_document(unit)
 
-    # sections are analysed in parallel inside each document (process_document's workers)
-    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune,
-                parallel=False)
+    # documents in parallel, and the sections of all of them `workers` at a time (llm()):
+    # the extraction of a PDF goes on while the model answers about the sections of others
+    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune)
 
 
 class IndexIncomplete(RuntimeError):
@@ -410,6 +420,26 @@ def graph_step(ctx) -> Step:
                 depends_on=["code.parse", "doors.requirements", "docs.process"], parallel=False)
 
 
+STEPS = ("doors", "code", "docs", "graph", "index")
+PARALLEL_STEPS = ("code", "docs", "index")      # the others process their units one by one
+
+
+def step_workers(ctx, name: str) -> int:
+    """Units of the step `name` processed at the same time: [pipeline.step_workers] or, if
+    it does not say, [pipeline] workers. In docs they are also the sections that are
+    analysed at the same time."""
+    per_step = ctx.cfg["pipeline"]["step_workers"]
+    for key, n in per_step.items():
+        if key not in STEPS:
+            raise ConfigError(f"[pipeline.step_workers] unknown step '{key}' (valid: {', '.join(PARALLEL_STEPS)})")
+        if key not in PARALLEL_STEPS:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' processes its units one by one "
+                              f"(valid: {', '.join(PARALLEL_STEPS)})")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' must be a positive integer")
+    return per_step.get(name, ctx.cfg["pipeline"]["workers"])
+
+
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
     builders = {"doors": [doors_step], "code": [code_step], "docs": [docs_step], "graph": [graph_step],
@@ -418,7 +448,10 @@ def steps(ctx) -> list[Step]:
     for name in wanted:
         if name not in builders:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
-        out += [s for s in (build(ctx) for build in builders[name]) if s]
+        for s in (build(ctx) for build in builders[name]):
+            if s:
+                s.workers = step_workers(ctx, name) if name in PARALLEL_STEPS else None
+                out.append(s)
     return out
 
 
@@ -434,7 +467,7 @@ def run(cfg: Config) -> int:
     runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
                     on_error=pc["on_error"], max_attempts=pc["max_attempts"],
                     retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
-                    meters=usage, version=__version__)
+                    meters=usage, version=__version__, stopping=ctx.stopping)
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:

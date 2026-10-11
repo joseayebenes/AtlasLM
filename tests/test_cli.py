@@ -319,3 +319,34 @@ steps = ["doors", "index"]
     assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
     assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
+
+
+def test_step_workers_and_documents_with_the_same_name_in_parallel(toml, docs_samples, tmp_path, capsys):
+    import shutil
+    import pytest
+    from atlas.config import ConfigError
+    for d in ("a", "b"):
+        (tmp_path / d).mkdir()
+        shutil.copy(docs_samples / "hmi_manual.md", tmp_path / d / "manual.md")
+    (tmp_path / "b" / "manual.md").write_text((tmp_path / "a" / "manual.md").read_text().replace("30 days", "60 days"))
+    sources = f'''
+[pipeline]
+steps = ["docs"]
+workers = 1
+step_workers = {{ docs = 2 }}
+[[sources.docs]]
+name = "manuals"
+paths = ["{(tmp_path / 'a').as_posix()}", "{(tmp_path / 'b').as_posix()}"]
+analysis = "regex"
+'''
+    cfg = load_config(toml(sources))
+    assert run(cfg) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"] == {"docs.process": 2} and rep["profile"]["docs.process"]["workers"] == 2
+    outs = sorted(p.name for p in (cfg.workspace / "docs" / "manuals").iterdir())
+    assert len(outs) == 2 and outs[0] == "manual_md" and outs[1].startswith("manual_md-")    # never the same folder
+    texts = {(cfg.workspace / "docs" / "manuals" / o / "requirements.md").read_text().count("60 days") for o in outs}
+    assert texts == {0, 1}
+    for bad, message in (("graph = 2", "one by one"), ("indexes = 2", "unknown step"), ("docs = 0", "positive")):
+        with pytest.raises(ConfigError, match=message):
+            run(load_config(toml(sources.replace("docs = 2", bad))))

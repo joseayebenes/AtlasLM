@@ -1,1 +1,197 @@
-"""Index and hybrid search: to be migrated from legacy/doc_rag.py (phase 1 of the plan)."""
+"""Index and hybrid search over the documents (legacy/doc_rag.py).
+
+    records.py      search records of a document (overview, sections, chunks, requirements...)
+                    and of a DOORS module (its requirements)
+    embeddings.py   Embedder: vectors through the [embeddings] connection
+    store.py        IndexStore: records, vectors, FTS5 and embeddings cache in atlas.db
+    search.py       hybrid search (IDs + vectors + BM25, merged with RRF) and cited answers
+    tools.py        DocTools: the tools of agents and of the MCP server over the documents
+
+    from atlas.index import Index
+    idx = Index.from_config(cfg)                    # the atlas.db of the workspace
+    idx.embed_missing(texts, workers=4)             # optional: many documents' texts in full batches
+    hits = idx.search("track deletion latency", k=8)
+    res = idx.answer("How long does a track take to be deleted?")
+    print(res["answer"], [s["cite"] for s in res["sources"]])
+"""
+from __future__ import annotations
+
+import logging
+import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Iterable
+
+import numpy as np
+
+from atlas.index.embeddings import Embedder
+from atlas.index.records import DOORS_PREFIX, KINDS, build_records, chunk_text, requirement_records
+from atlas.index.search import answer, build_context, cite, search
+from atlas.index.store import IndexStore
+from atlas.index.tools import DocTools
+from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
+from atlas.llm.structured import JsonLlm
+from atlas.pipeline import FatalError
+
+__all__ = ["DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context",
+           "build_records", "chunk_text", "cite", "embed_missing", "index_document", "index_module",
+           "requirement_records", "search"]
+
+log = logging.getLogger(__name__)
+
+
+def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, name: str, out_dir: str = "",
+                   chunk_chars: int = 1200, chunk_overlap: int = 200,
+                   kinds: Iterable[str] | None = None) -> dict:
+    """Embeds the records of a document (structure.json of atlas.docs) in batches, from the
+    cache when possible, and replaces the document in the index. A failed batch does not
+    stop the others: what has a vector is indexed and the result says what is missing.
+    A connection error raises FatalError (what was embedded stays in the cache)."""
+    if not data["sections"] or "body" not in data["sections"][0]:
+        raise ValueError(f"{name}: structure.json without the text of the sections")
+    return _index_records(store, embedder, build_records(data, chunk_chars, chunk_overlap, kinds),
+                          {"doc": doc, "name": name, "title": data["title"], "out_dir": out_dir,
+                           "overview": data.get("overview", {})})
+
+
+def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
+                 kinds: Iterable[str] | None = None) -> dict:
+    """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
+    "doors:<module>", named after the module. Same batches, cache and result as
+    index_document."""
+    records = requirement_records(module, requirements, kinds)
+    summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
+    return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
+                                                     "title": f"{module} (DOORS)", "out_dir": "",
+                                                     "overview": {"summary": summary}})
+
+
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
+    """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
+    `workers` batches at a time, and saves each batch in the cache. The texts of many
+    documents go in the same batches: fewer requests than embedding each document on its
+    own (index_document then finds everything in the cache). Returns how many texts there
+    were, how many were in the cache, how many were embedded and the failed batches. A
+    connection error raises FatalError; the batches that finished stay in the cache."""
+    by_key: dict[str, str] = {}
+    for t in texts:
+        by_key.setdefault(embedder.key(t), t)               # each distinct text once
+    cached = store.cache_get(list(by_key))
+    missing = [(k, t) for k, t in by_key.items() if k not in cached]
+    batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
+    out = {"texts": len(by_key), "cached": len(cached), "embedded": 0, "failed_batches": []}
+    if not batches:
+        return out
+    log.info("embeddings: %d texts, %d in the cache, %d to compute in %d batches of up to %d (%s)",
+             len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
+
+    def one(batch: list[tuple[str, str]]) -> int:
+        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+        return len(batch)
+
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    try:
+        futures = {pool.submit(one, b): n for n, b in enumerate(batches, 1)}
+        for f in as_completed(futures):
+            try:
+                out["embedded"] += f.result()
+            except Exception as e:
+                if is_connection_error(e):
+                    raise FatalError(f"connection error with the embeddings: {diagnose(e)}") from e
+                out["failed_batches"].append({"batch": futures[f], "error": f"{type(e).__name__}: {e}"[:500]})
+                log.warning("  batch %d/%d failed: %s", futures[f], len(batches), e)
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)      # the running batches end in the cache
+        raise
+    pool.shutdown()
+    return out
+
+
+def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
+    name = doc["name"]
+    keys = [embedder.key(r["embed_text"]) for r in records]
+    vectors = store.cache_get(keys)
+    missing = [i for i, k in enumerate(keys) if k not in vectors]
+    batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
+    log.info("embeddings of '%s': %d records, %d in the cache, %d to compute in %d batches (%s)",
+             name, len(records), len(records) - len(missing), len(missing), len(batches), embedder.model)
+    failed, t0 = [], time.time()
+    for n, batch in enumerate(batches, 1):
+        try:
+            new = dict(zip((keys[i] for i in batch), embedder.documents([records[i]["embed_text"] for i in batch])))
+            store.cache_put(new)                 # saved batch by batch
+            vectors.update(new)
+            log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)
+        except Exception as e:
+            if is_connection_error(e):
+                raise FatalError(f"connection error with the embeddings: {diagnose(e)}") from e
+            failed.append({"batch": n, "records": len(batch), "error": f"{type(e).__name__}: {e}"[:500],
+                           "kinds": sorted({records[i]["kind"] for i in batch}),
+                           "sections": sorted({records[i].get("section_id", "") for i in batch} - {""})})
+            log.warning("  batch %d/%d failed: %s", n, len(batches), e)
+
+    ok = [i for i, k in enumerate(keys) if k in vectors]
+    store.replace_document({**doc, "embed_model": embedder.model}, [records[i] for i in ok],
+                           np.vstack([vectors[keys[i]] for i in ok]) if ok else np.zeros((0, 1), np.float32))
+    kinds_done = Counter(records[i]["kind"] for i in ok)
+    log.info("indexed '%s': %s%s", name, dict(kinds_done),
+             f"; {len(records) - len(ok)} records without a vector in {len(failed)} batches" if failed else "")
+    return {"records": len(ok), "missing": len(records) - len(ok), "failed_batches": failed,
+            "kinds": dict(kinds_done)}
+
+
+class Index:
+    """The index of a workspace: add or remove documents, search and answer. The model
+    (`llm`) is only needed to rewrite queries and to answer, and it is created on first use."""
+
+    def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
+                 llm: ServiceConfig | JsonLlm | None = None):
+        self.store = IndexStore(db)
+        self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
+        self._llm = llm
+
+    @classmethod
+    def from_config(cls, cfg) -> "Index":
+        """The index of <workspace>/atlas.db with the [embeddings] and [llm] of atlas.toml."""
+        from atlas.llm import from_config
+        conn = from_config(cfg)
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm)
+
+    @property
+    def llm(self) -> JsonLlm:
+        if self._llm is None:
+            raise ValueError("this Index has no model: pass llm=ServiceConfig or JsonLlm")
+        if isinstance(self._llm, ServiceConfig):
+            self._llm = JsonLlm(self._llm)
+        return self._llm
+
+    def add_document(self, data: dict, doc: str, name: str, out_dir: str = "", **options) -> dict:
+        """See index_document (options: chunk_chars, chunk_overlap, kinds)."""
+        return index_document(self.store, self.embedder, data, doc, name, out_dir, **options)
+
+    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
+        """See index_module."""
+        return index_module(self.store, self.embedder, module, requirements, kinds)
+
+    def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
+        """See embed_missing."""
+        return embed_missing(self.store, self.embedder, texts, workers)
+
+    def remove_document(self, doc: str) -> None:
+        self.store.delete_document(doc)
+
+    def documents(self) -> list[dict]:
+        return self.store.documents()
+
+    def search(self, query: str, k: int = 8, document: str = "", kinds: list[str] | None = None,
+               rewrite: bool = False) -> list[dict]:
+        return search(self.store, self.embedder, query, k, document, kinds, self.llm if rewrite else None)
+
+    def answer(self, question: str, k: int = 8, document: str = "", rewrite: bool = True) -> dict:
+        return answer(self.store, self.embedder, self.llm, question, k, document, rewrite)
+
+    def requirement(self, req_id: str) -> list[dict]:
+        """The exact text of a requirement by its ID, in every indexed document."""
+        return self.store.requirement(req_id)
+

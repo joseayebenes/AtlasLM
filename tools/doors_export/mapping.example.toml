@@ -1,0 +1,42 @@
+# mapping.toml — correspondencia entre DOORS y la base de intercambio de atlas.
+# La usa publish.py; cambiarla solo exige volver a publicar, no volver a descargar de DOORS.
+#
+# Regla única: a la izquierda, lo que ve atlas; a la derecha, lo que hay en DOORS, con su
+# nombre exacto (mayúsculas y espacios incluidos). A la derecha puede ir una lista cuando
+# varias cosas de DOORS son lo mismo en atlas. publish.py comprueba que los atributos
+# existen y, si no, sugiere los más parecidos.
+
+[fields]
+id = "identifier"           # ID del requisito tal como aparece en documentos y código:
+                            #   "identifier" (prefijo del módulo + Absolute Number, p. ej. SRS-123),
+                            #   o un atributo de DOORS con el ID oficial, p. ej. "Requirement ID".
+                            #   "absolute_number" solo vale con un único módulo (se repite entre módulos).
+text = "Object Text"        # texto del requisito
+heading = "Object Heading"  # título (los objetos de título no suelen tener texto)
+
+[attributes]                # atributo en atlas = atributo de DOORS
+status = "Status"
+verification = "Verification Method"
+# safety = "Safety Level"
+
+[modules]                   # nombre en atlas = módulo de DOORS (ruta completa o solo su nombre)
+# Un módulo sin entrada se llama en atlas como en DOORS (la última parte de la ruta).
+SRS_TMS = "/Project/Requirements/SRS"
+SSS_MISSION = "/Project/Requirements/SSS"
+
+[link_types]                # tipo de enlace en atlas = módulo(s) de enlaces de DOORS (ruta o nombre)
+satisfies = ["Satisfies", "/Project/Links/Satisfies (old)"]
+verifies = "Verifies"
+refines = "/Project/Links/Refines"
+
+[links]
+default_type = ""           # tipo de los demás enlaces; vacío = el nombre del módulo de enlaces en minúsculas
+
+[kinds]
+# Sin esta sección: un objeto con texto es "requirement", uno con título y sin texto es
+# "heading" y el resto, "information". Si el proyecto tiene un atributo que lo dice:
+# attribute = "Object Type"
+# [kinds.values]            # tipo en atlas = valor(es) de ese atributo en DOORS
+# requirement = ["Requirement", "Functional", "Performance"]
+# heading = "Heading"
+# information = ["Note", "Comment"]

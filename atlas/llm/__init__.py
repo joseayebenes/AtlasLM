@@ -2,6 +2,7 @@
 
 `connection.py` is legacy/conexion.py translated to English. In atlas the configuration
 comes from the [llm], [embeddings] and [network] sections of atlas.toml via `from_config`.
+`structured.py` asks the chat model for JSON objects and repairs broken answers.
 """
 from __future__ import annotations
 
@@ -9,8 +10,9 @@ from dataclasses import fields, replace
 
 from atlas.llm.connection import (  # noqa: F401
     Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
-    is_connection_error, mask_credentials, rate_limiter_for, show,
+    is_connection_error, mask_credentials, rate_limiter_for, show, usage,
 )
+from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json  # noqa: F401
 
 
 def from_config(cfg) -> Connection:

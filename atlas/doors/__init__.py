@@ -1,6 +1,22 @@
-"""DOORS requirements read from a database (operational copy / export).
+"""Requirements adapters: how atlas reads requirements.
 
-Everything specific to the export is configured, not programmed:
+"exchange" (the usual one) reads the requirements exchange database of
+atlas.doors.exchange: a fixed schema that a filler fills (the DOORS export of
+tools/doors_export, or any other import). Nothing of the source is configured here:
+
+    [sources.doors]
+    adapter = "exchange"
+    modules = []                           # empty = every module of the database
+
+    [sources.doors.exchange]
+    path = "C:/atlas/requirements.sqlite"
+    kinds = ["requirement", "heading", "information"]   # which objects are read
+
+    [sources.doors.convention]             # how IDs match documents and code
+    id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
+    inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
+
+"database" reads any other database with configured queries and columns:
 
     [sources.doors]
     adapter = "database"
@@ -26,14 +42,15 @@ Everything specific to the export is configured, not programmed:
     inline_reference_type = "references"
 
 Use as a library:
-    from atlas.doors import DatabaseAdapter, diff_requirements
-    ad = DatabaseAdapter(cfg["sources"]["doors"])
+    from atlas.doors import ExchangeAdapter, diff_requirements
+    ad = ExchangeAdapter(cfg["sources"]["doors"])
     reqs = list(ad.requirements("SRS_TMS"))
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -41,6 +58,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Iterable
 
+from atlas.doors.exchange import KINDS, open_exchange
 from atlas.plugins import Link, Requirement, RequirementsAdapter, register
 
 log = logging.getLogger(__name__)
@@ -166,12 +184,84 @@ class DatabaseAdapter(RequirementsAdapter):
                 yield Link(source=normalize_id(row[lc["source"]], c["id_normalize"]),
                            target=normalize_id(row[lc["target"]], c["id_normalize"]),
                            type=str(row.get(lc["type"]) or "link"))
-        if self._ref_re:                     # references written inside the text
-            for r in self.requirements(module):
-                for ref in set(self._ref_re.findall(r.text)):
-                    ref = normalize_id(ref, c["id_normalize"])
-                    if ref != r.id:
-                        yield Link(source=r.id, target=ref, type=c["inline_reference_type"])
+        yield from _inline_links(self, module)
+
+    def close(self) -> None:
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
+
+
+def _inline_links(adapter, module: str) -> Iterable[Link]:
+    """Links for the IDs written inside the text of the requirements ("see SSS-0012")."""
+    if adapter._ref_re:
+        for r in adapter.requirements(module):
+            for ref in set(adapter._ref_re.findall(r.text)):
+                ref = normalize_id(ref, adapter.conv["id_normalize"])
+                if ref != r.id:
+                    yield Link(source=r.id, target=ref, type=adapter.conv["inline_reference_type"])
+
+
+class ExchangeAdapter(RequirementsAdapter):
+    """Reads the requirements exchange database (atlas.doors.exchange). Only the matching
+    rules are configured ([sources.doors.convention]: id_normalize, id_pattern and the
+    references inside the text): the mapping from the source is the filler's job."""
+    name = "exchange"
+
+    def __init__(self, config: dict):
+        super().__init__(config)
+        ex = config.get("exchange") or {}
+        if not ex.get("path"):
+            raise ValueError("[sources.doors.exchange] path is missing")
+        self.path = ex["path"]
+        self.kinds = list(ex.get("kinds") or KINDS)
+        unknown = sorted(set(self.kinds) - set(KINDS))
+        if unknown:
+            raise ValueError(f"[sources.doors.exchange] unknown kinds {unknown} (valid: {', '.join(KINDS)})")
+        self.conv = {**DEFAULT_CONVENTION, **(config.get("convention") or {})}
+        self._id_re = re.compile(self.conv["id_pattern"]) if self.conv.get("id_pattern") else None
+        self._ref_re = (re.compile(self.conv["inline_reference_regex"])
+                        if self.conv.get("inline_reference_regex") else None)
+        self._conn: sqlite3.Connection | None = None
+
+    def _db(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = open_exchange(self.path)
+        return self._conn
+
+    def modules(self) -> list[str]:
+        found = [r[0] for r in self._db().execute("SELECT module FROM exchange_modules ORDER BY module")]
+        requested = self.config.get("modules") or []
+        unknown = [m for m in requested if m not in found]
+        if unknown:
+            log.warning("modules not found in the exchange database: %s", unknown)
+        return [m for m in requested if m in found] if requested else found
+
+    def snapshot(self, module: str) -> str:
+        row = self._db().execute("SELECT snapshot FROM exchange_modules WHERE module = ?", (module,)).fetchone()
+        return row[0] if row else ""
+
+    def requirements(self, module: str) -> Iterable[Requirement]:
+        norm = lambda x: normalize_id(x, self.conv["id_normalize"])
+        rows = self._db().execute(
+            f"SELECT * FROM exchange_requirements WHERE module = ? AND kind IN ({','.join('?' * len(self.kinds))}) "
+            f"ORDER BY position", (module, *self.kinds))
+        for row in rows:
+            rid = norm(row["id"])
+            if self._id_re and not self._id_re.match(rid):
+                log.warning("ID outside the convention (%s): %r in %s", self.conv["id_pattern"], row["id"], module)
+            attributes = {**json.loads(row["attributes"] or "{}"), "kind": row["kind"], "heading": row["heading"],
+                          "outline": row["outline"], "level": row["level"]}
+            yield Requirement(id=rid, raw_id=row["id"], module=module,
+                              text=" ".join((row["text"] or row["heading"] or "").split()),
+                              parent=norm(row["parent"]) if row["parent"] else None, attributes=attributes)
+
+    def links(self, module: str) -> Iterable[Link]:
+        norm = lambda x: normalize_id(x, self.conv["id_normalize"])
+        for row in self._db().execute("SELECT source, target, type FROM exchange_links WHERE module = ? "
+                                      "ORDER BY source, target, type", (module,)):
+            yield Link(source=norm(row["source"]), target=norm(row["target"]), type=row["type"])
+        yield from _inline_links(self, module)
 
     def close(self) -> None:
         if self._conn is not None:
@@ -180,6 +270,7 @@ class DatabaseAdapter(RequirementsAdapter):
 
 
 register("requirements", "database", DatabaseAdapter)
+register("requirements", "exchange", ExchangeAdapter)
 
 
 def requirement_to_dict(r: Requirement) -> dict:

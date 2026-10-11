@@ -9,6 +9,7 @@ base_url = "http://localhost:11434/v1"     # Ollama. LM Studio: http://localhost
 model = "gemma4:12b"                       # en un Mac de 16 GB: gemma4:12b o gemma4:e4b
 api_key = "local"
 max_tokens = 8192
+reasoning_effort = "none"                  # gemma4 razona por defecto: una sección tarda minutos en vez de segundos
 
 [embeddings]
 model = "embeddinggemma"
@@ -32,9 +33,9 @@ disabled = []                               # p. ej. ["code_analyzer:ada"]
 name = "normas"
 paths = ["examples/samples/docs"]
 patterns = ["*.pdf"]
-analysis = "regex"                          # requisitos por expresión regular, sin LLM
-req_regex = "(?i)\\bReq\\s*:\\s*([^\\n]+)"
-structure = "auto"
+analysis = "regex"                          # llm | regex | none; regex: requisitos sin LLM
+req_regex = "(?i)\\bReq\\s*:\\s*(\\S+)"     # grupo 1 = ID; el texto sigue hasta el final de la frase
+structure = "auto"                          # auto | bookmarks | headings | size
 
 [[sources.docs]]
 name = "manuales"
@@ -45,26 +46,16 @@ lang = "Spanish"
 min_chars = 300
 
 [sources.doors]
-adapter = "database"
+adapter = "exchange"                        # la base de intercambio de requisitos (atlas.doors.exchange)
 modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
 
-[sources.doors.database]
-driver = "sqlite"
-path = "examples/samples/doors.sqlite"
-modules_query = "SELECT DISTINCT module FROM requirements ORDER BY module"
-requirements_query = "SELECT * FROM requirements WHERE module = :module ORDER BY id"
-links_query = "SELECT source_id, target_id, link_type FROM links WHERE source_module = :module"
-snapshot_query = "SELECT COUNT(*) || '|' || MAX(updated_at) FROM requirements WHERE module = :module"
+[sources.doors.exchange]
+path = "examples/samples/requirements.sqlite"   # la rellena tools/doors_export (aquí, make_samples.py)
+kinds = ["requirement", "heading", "information"]
 
-[sources.doors.convention]
-id_column = "id"
-text_column = "text"
-module_column = "module"
-parent_column = "parent"
-attribute_columns = ["status", "verification"]
+[sources.doors.convention]                  # cómo casan los IDs con documentos y código
 id_pattern = "^(?:SRS|SSS)-\\d{4}$"
 id_normalize = "upper"
-link_columns = { source = "source_id", target = "target_id", type = "link_type" }
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
 inline_reference_type = "references"
 
@@ -77,18 +68,23 @@ test_patterns = ["**/tests/**"]
 summaries = "none"
 
 [graph]
-exports = ["graphml", "json"]
+exports = ["graphml", "json"]               # grafo completo en <workspace>/graph/atlas.*
+communities = false                         # true: grupo de código (Louvain) en cada nodo, para Gephi
 
 [index]
 chunk_chars = 1200
 chunk_overlap = 200
 
-[agents]
-model = "gemma4:12b"
-[agents.assistant]
-tools = ["search", "get_requirement", "trace", "graph_query", "read_source"]
-max_steps = 8
+[agents]                                    # agentes: ficheros Markdown (atlas/agents/builtin y dirs)
+model = "gemma4:12b"                        # vacío: el de [llm]
+dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
+[agents.assistant]                          # retoques de un agente sin tocar su fichero
+max_steps = 10
+[agents.eval]                               # atlas eval: preguntas con respuesta conocida
+sets = ["examples/eval/assistant.yaml"]
+runs = 1                                    # veces que se hace cada pregunta
 
-[mcp]
+[mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...
 enabled = true
-tools = ["search", "trace", "impact", "context", "read_source", "get_requirement"]
+tools = []                                  # vacío: las de las fuentes configuradas; o una lista, p. ej.
+                                            # ["search", "get_requirement", "trace", "impact", "read_source"]

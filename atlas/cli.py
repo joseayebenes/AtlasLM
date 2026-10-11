@@ -2,22 +2,38 @@
 
     atlas run      [atlas.toml]     incremental, resumable processing
     atlas status   [atlas.toml]     state of the ledger and of the data
+    atlas sections [atlas.toml]     sections each document would have, without the model
+    atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
+    atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
+    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
+    atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
+    atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
+    atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents
+    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
     atlas plugins  [atlas.toml]     available plugins
+    atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
+    atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
-    atlas serve    [atlas.toml]     (phase 5) MCP server
+    atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
+    atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
+    atlas --version
 """
 from __future__ import annotations
 
 import fnmatch
 import json
 import logging
+import shutil
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 from atlas import plugins
 from atlas.config import Config, ConfigError, load_config
-from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file
+from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
 from atlas.store import Store
 
 log = logging.getLogger("atlas")
@@ -25,9 +41,11 @@ log = logging.getLogger("atlas")
 
 def _context(cfg: Config) -> SimpleNamespace:
     logging.basicConfig(level=cfg["project"]["log_level"], format="%(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)     # one line per request otherwise
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
-    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
+    return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
+                           stopping=threading.Event())     # set by the Runner when the run is interrupted
 
 
 # --------------------------------------------------------------------------
@@ -100,19 +118,357 @@ def code_step(ctx) -> Step | None:
     )
 
 
+class AnalysisIncomplete(RuntimeError):
+    """Some sections of a document (or its overview) could not be analysed. The output is
+    written; the unit stays in error so that the next run retries them."""
+
+
+DOCS_VERSION = "docs-1"     # change it when the processing of documents changes
+
+
+def doc_sources(ctx) -> list[tuple[dict, "DocsOptions"]]:
+    """The enabled [[sources.docs]] with their validated options."""
+    from atlas.docs import DocsOptions
+    out, names = [], set()
+    for d in ctx.cfg["sources"].get("docs", []):
+        if not d.get("enabled", True):
+            continue
+        if d["name"] in names:
+            raise ConfigError(f"[sources.docs] the name '{d['name']}' is repeated")
+        names.add(d["name"])
+        try:
+            out.append((d, DocsOptions.from_source(d)))
+        except ValueError as e:
+            raise ConfigError(f"[sources.docs] '{d['name']}': {e}") from None
+    return out
+
+
+def doc_files(ctx, source: dict) -> list[Path]:
+    """Files of a docs source: its paths (files, or folders searched recursively with its
+    patterns), without anything inside the workspace."""
+    from atlas.docs import extractor_for
+    patterns = source.get("patterns") or [
+        f"*{ext}" for name in plugins.available("extractor") if f"extractor:{name}" not in ctx.disabled
+        for ext in plugins.get("extractor", name).extensions]
+    found: set[Path] = set()
+    for root in source["paths"]:
+        p = Path(root)
+        if p.is_file():
+            found.add(p)
+        elif p.is_dir():
+            found.update(f for pat in patterns for f in p.rglob(pat) if f.is_file())
+        else:
+            log.warning("[sources.docs] '%s': %s does not exist", source["name"], root)
+    ws = ctx.cfg.workspace
+    out = []
+    for f in sorted(found):
+        if f.resolve().is_relative_to(ws):
+            continue
+        try:
+            extractor_for(f, ctx.disabled)
+        except LookupError as e:
+            log.warning("%s; skipped", e)
+            continue
+        out.append(f)
+    return out
+
+
+def docs_step(ctx) -> Step | None:
+    sources = doc_sources(ctx)
+    if not sources:
+        return None
+    from atlas.docs import process_document
+    from atlas.docs.analysis import PROMPT_VERSION
+    from atlas.llm import JsonLlm, from_config
+    by_name = {d["name"]: (d, options) for d, options in sources}
+    root = ctx.cfg.workspace / "docs"
+    model = from_config(ctx.cfg).llm.model
+    workers = step_workers(ctx, "docs")
+    shared: dict = {}
+    lock = threading.Lock()             # documents are processed in parallel
+    reserved: dict[str, str] = {}       # output folder -> unit, for the documents of this run
+
+    def llm() -> JsonLlm:
+        # only when some source uses it, and only once. It is shared by the documents
+        # processed at the same time: `workers` sections of all of them at once.
+        with lock:
+            if "llm" not in shared:
+                shared["llm"] = JsonLlm(from_config(ctx.cfg).llm, concurrency=workers)
+        return shared["llm"]
+
+    def units(ctx) -> list[str]:
+        return [f"{d['name']}:{f}" for d, _ in sources for f in doc_files(ctx, d)]
+
+    def fingerprint(ctx, unit: str) -> str:
+        name, f = unit.split(":", 1)
+        d, options = by_name[name]
+        return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
+                + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
+
+    def out_dir(ctx, unit: str) -> Path:
+        """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it
+        (or is being processed into it at the same time)."""
+        name, f = unit.split(":", 1)
+        known = ctx.store.document(unit)
+        if known:
+            return Path(known["out_dir"])
+        out = root / name / f"{Path(f).stem}_{Path(f).suffix.lstrip('.').lower()}"
+        with lock:
+            if (ctx.store.document_owning(str(out)) or reserved.get(str(out), unit)) != unit:
+                out = out.with_name(f"{out.name}-{sha256_text(unit)[:8]}")
+            reserved[str(out)] = unit
+        return out
+
+    def run(ctx, unit: str):
+        name, f = unit.split(":", 1)
+        d, options = by_name[name]
+        out = out_dir(ctx, unit)
+        data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
+                                cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
+                                stop=ctx.stopping)
+        summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
+                   "errors": data["errors"], "structure": data["structure_info"]["source"]}
+        ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
+        if data["errors"]:
+            raise AnalysisIncomplete(f"{data['errors']} sections (or the overview) could not be analysed; "
+                                     f"they are retried on the next run (details in {out}/structure.json)")
+        return summary
+
+    def prune(ctx, unit: str) -> None:
+        known = ctx.store.document(unit)
+        if known:
+            shutil.rmtree(known["out_dir"], ignore_errors=True)
+            ctx.store.delete_document(unit)
+
+    # documents in parallel, and the sections of all of them `workers` at a time (llm()):
+    # the extraction of a PDF goes on while the model answers about the sections of others
+    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune)
+
+
+class IndexIncomplete(RuntimeError):
+    """Some records of a document got no vector. The rest is indexed; the unit stays in
+    error so that the next run embeds what is missing."""
+
+
+INDEX_VERSION = "index-1"   # change it when the records or the index tables change
+
+
+def index_options(ctx) -> dict:
+    """The validated [index] options for index_document."""
+    from atlas.index import KINDS
+    ic = ctx.cfg["index"]
+    unknown = sorted(set(ic["kinds"]) - set(KINDS))
+    if unknown:
+        raise ConfigError(f"[index] unknown kinds {unknown} (valid: {', '.join(KINDS)})")
+    if ic["chunk_chars"] < 200 or not 0 <= ic["chunk_overlap"] < ic["chunk_chars"] // 2:
+        raise ConfigError("[index] chunk_chars must be at least 200 and chunk_overlap between 0 and "
+                          "half of chunk_chars")
+    return {"chunk_chars": ic["chunk_chars"], "chunk_overlap": ic["chunk_overlap"], "kinds": ic["kinds"]}
+
+
+def index_step(ctx) -> Step:
+    """One unit per processed document (docs.process): its structure.json is indexed. The
+    texts of all the documents to index are embedded first, together, in full batches."""
+    from atlas.index import Index, build_records
+    from atlas.llm import from_config
+    options = index_options(ctx)
+    workers = step_workers(ctx, "index")
+    embed_model = from_config(ctx.cfg).embeddings.model
+    shared: dict = {}
+    lock = threading.Lock()            # documents are indexed in parallel
+
+    def index() -> Index:              # created on first use: no embeddings client otherwise
+        with lock:
+            if "index" not in shared:
+                shared["index"] = Index.from_config(ctx.cfg)
+        return shared["index"]
+
+    def structure(unit: str) -> Path:
+        return Path(ctx.store.document(unit)["out_dir"]) / "structure.json"
+
+    def units(ctx) -> list[str]:
+        return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+
+    def fingerprint(ctx, unit: str) -> str:
+        return f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+
+    def run(ctx, unit: str):
+        d = ctx.store.document(unit)
+        name = Path(d["path"]).name             # what citations show, unless another document has it
+        if any(x["name"] == name and x["doc"] != unit for x in index().documents()):
+            name = d["path"]
+        res = index().add_document(json.loads(structure(unit).read_text(encoding="utf-8")), doc=unit,
+                                   name=name, out_dir=d["out_dir"], **options)
+        if res["missing"]:
+            raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
+                                  f"failed batches); they are embedded on the next run")
+        return {"records": res["records"], "kinds": res["kinds"]}
+
+    def prepare(ctx, units: list[str]) -> None:
+        texts = [r["embed_text"] for unit in units for r in build_records(
+            json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
+            options["chunk_overlap"], options["kinds"])]
+        index().embed_missing(texts, workers)
+
+    return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
+                prune=lambda ctx, unit: index().remove_document(unit), prepare=prepare,
+                depends_on=["docs.process"])
+
+
+def index_requirements_step(ctx) -> Step:
+    """One unit per DOORS module read by doors.requirements: its requirements are indexed
+    as one more document ("doors:<module>"), so that search finds them too. Like
+    index.documents, the texts of all the modules to index are embedded first, together."""
+    from atlas.index import DOORS_PREFIX, Index, requirement_records
+    from atlas.llm import from_config
+    kinds = index_options(ctx)["kinds"]
+    workers = step_workers(ctx, "index")
+    embed_model = from_config(ctx.cfg).embeddings.model
+    shared: dict = {}
+    lock = threading.Lock()
+
+    def index() -> Index:
+        with lock:
+            if "index" not in shared:
+                shared["index"] = Index.from_config(ctx.cfg)
+        return shared["index"]
+
+    def units(ctx) -> list[str]:          # nothing to index if neither kind is wanted
+        return ctx.store.modules() if {"requirement", "chunk"} & set(kinds) else []
+
+    def fingerprint(ctx, module: str) -> str:
+        rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
+        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+
+    def run(ctx, module: str):
+        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        if res["missing"]:
+            raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
+                                  f"failed batches); they are embedded on the next run")
+        return {"records": res["records"], "kinds": res["kinds"]}
+
+    def prepare(ctx, modules: list[str]) -> None:
+        index().embed_missing([r["embed_text"] for m in modules
+                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+
+    return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
+                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,
+                depends_on=["doors.requirements"])
+
+
+GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
+GRAPH_EXPORTS = ("graphml", "json")
+
+
+def graph_step(ctx) -> Step:
+    """One unit per part of the graph (its origin): "code" (code.parse), "doors"
+    (doors.requirements) and "docs" (docs.process). Each one is rebuilt whole (seconds)
+    when what it is built from changes; then the whole graph is exported."""
+    from atlas.doors import normalize_id
+    from atlas.graph import (GraphStore, build_code_graph, build_docs_graph, build_doors_graph, code_names,
+                             document_names, export_graph, find_communities)
+    exports = ctx.cfg["graph"]["exports"]
+    unknown = sorted(set(exports) - set(GRAPH_EXPORTS))
+    if unknown:
+        raise ConfigError(f"[graph] unknown exports {unknown} (valid: {', '.join(GRAPH_EXPORTS)})")
+    folder = ctx.cfg.workspace / "graph"
+    test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
+    id_normalize = ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {}).get("id_normalize", "upper")
+    normalize = lambda rid: normalize_id(rid, id_normalize)
+    settings = f"{ctx.cfg.fingerprint('graph')}|{test_patterns}|{id_normalize}|{GRAPH_VERSION}"
+
+    def documents(ctx) -> list[dict]:
+        docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+        names = document_names(docs)
+        return [{**d, "name": names[d["unit"]],
+                 "structure": json.loads((Path(d["out_dir"]) / "structure.json").read_text(encoding="utf-8"))}
+                for d in docs]
+
+    def units(ctx) -> list[str]:
+        present = {"code": bool(ctx.store.code_units()), "doors": ctx.store.counts()["requirements"] > 0,
+                   "docs": any((Path(d["out_dir"]) / "structure.json").exists() for d in ctx.store.documents())}
+        return [origin for origin, there in present.items() if there]
+
+    def fingerprint(ctx, unit: str) -> str:
+        if unit == "code":
+            data = ctx.store.code_units()
+        elif unit == "doors":
+            data = [ctx.store.requirements(), ctx.store.links()]
+        else:
+            docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
+            data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
+            data.append(sorted(code_names(ctx.store.code_units()).items()))    # what the sections can mention
+        return f"{sha256_text(json.dumps(data, sort_keys=True, default=str))}|{settings}"
+
+    def build(ctx, unit: str):
+        if unit == "code":
+            G, stats = build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+            if ctx.cfg["graph"]["communities"]:          # in the node, for the exports (Gephi colours)
+                groups = find_communities(G)
+                for n, group in groups.items():
+                    G.nodes[n]["community"] = group
+                stats["communities"] = len(set(groups.values()))
+            return G, stats
+        if unit == "doors":
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links())
+        return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
+
+    def export(store: GraphStore) -> None:
+        for old in [*folder.glob("atlas.*"), *folder.glob("code.*")]:        # code.*: before graph-2
+            old.unlink()
+        if store.builds():
+            stats = {o: {k: v for k, v in b.items() if not k.startswith("top_")} for o, b in store.builds().items()}
+            export_graph(store.load(), folder / "atlas", exports, stats)
+
+    def run(ctx, unit: str):
+        G, stats = build(ctx, unit)
+        store = GraphStore(ctx.store.path)
+        store.replace(unit, G, stats)
+        export(store)
+        log.info("graph %s: %s", unit, ", ".join(f"{v} {k}" for k, v in stats.items() if isinstance(v, int)))
+        return {k: v for k, v in stats.items() if not k.startswith("top_")}
+
+    def prune(ctx, unit: str) -> None:
+        store = GraphStore(ctx.store.path)
+        store.delete(unit)
+        export(store)
+
+    return Step(name="graph.build", units=units, fingerprint=fingerprint, run=run, prune=prune,
+                depends_on=["code.parse", "doors.requirements", "docs.process"], parallel=False)
+
+
+STEPS = ("doors", "code", "docs", "graph", "index")
+PARALLEL_STEPS = ("code", "docs", "index")      # the others process their units one by one
+
+
+def step_workers(ctx, name: str) -> int:
+    """Units of the step `name` processed at the same time: [pipeline.step_workers] or, if
+    it does not say, [pipeline] workers. In docs they are also the sections that are
+    analysed at the same time."""
+    per_step = ctx.cfg["pipeline"]["step_workers"]
+    for key, n in per_step.items():
+        if key not in STEPS:
+            raise ConfigError(f"[pipeline.step_workers] unknown step '{key}' (valid: {', '.join(PARALLEL_STEPS)})")
+        if key not in PARALLEL_STEPS:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' processes its units one by one "
+                              f"(valid: {', '.join(PARALLEL_STEPS)})")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1:
+            raise ConfigError(f"[pipeline.step_workers] '{key}' must be a positive integer")
+    return per_step.get(name, ctx.cfg["pipeline"]["workers"])
+
+
 def steps(ctx) -> list[Step]:
     wanted = ctx.cfg["pipeline"]["steps"]
-    builders = {"doors": doors_step, "code": code_step}
+    builders = {"doors": [doors_step], "code": [code_step], "docs": [docs_step], "graph": [graph_step],
+                "index": [index_step, index_requirements_step]}
     out = []
     for name in wanted:
-        if name in builders:
-            s = builders[name](ctx)
-            if s:
-                out.append(s)
-        elif name in ("docs", "graph", "index"):
-            log.warning("step '%s' not migrated yet (see PLAN.md); skipped", name)
-        else:
+        if name not in builders:
             raise ConfigError(f"[pipeline] unknown step '{name}'")
+        for s in (build(ctx) for build in builders[name]):
+            if s:
+                s.workers = step_workers(ctx, name) if name in PARALLEL_STEPS else None
+                out.append(s)
     return out
 
 
@@ -121,11 +477,14 @@ def steps(ctx) -> list[Step]:
 # --------------------------------------------------------------------------
 
 def run(cfg: Config) -> int:
+    from atlas import __version__
+    from atlas.llm import usage
     ctx = _context(cfg)
     pc = cfg["pipeline"]
     runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
                     on_error=pc["on_error"], max_attempts=pc["max_attempts"],
-                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"])
+                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
+                    meters=usage, version=__version__, stopping=ctx.stopping)
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
@@ -134,17 +493,239 @@ def run(cfg: Config) -> int:
     return 1 if rep.errors or rep.quarantined else 0
 
 
+def _api_text(api: dict) -> str:
+    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting' from the `api` of a profile."""
+    parts = [f"{api[k]:g} {k}" for k in ("chat", "embeddings", "other", "rejected", "retried") if api.get(k)]
+    if api.get("wait_seconds", 0) >= 0.1:
+        parts.append(f"{api['wait_seconds']:.1f} s waiting")
+    return ", ".join(parts)
+
+
+def print_profile(run: dict) -> None:
+    """The time profile of a run (Ledger.runs): one line per step."""
+    rep = run["report"]
+    print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
+          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else ""))
+    print(f"  {'step':20s} {'seconds':>8s} {'scan':>6s} {'units':>6s} {'ran':>6s}  slowest unit; API")
+    for step, p in rep.get("profile", {}).items():
+        slowest = p.get("slowest", [])
+        notes = [f"{Path(slowest[0]['unit'].split(':', 1)[-1]).name} ({slowest[0]['seconds']:.2f} s)"] if slowest else []
+        notes += [_api_text(p["api"])] if p.get("api") and _api_text(p["api"]) else []
+        print(f"  {step:20s} {p['seconds']:8.2f} {p['scan_seconds']:6.2f} {p['units']:6d} {p['ran']:6d}  "
+              + "; ".join(notes))
+
+
 def status(cfg: Config) -> int:
     ctx = _context(cfg)
     ledger = Ledger(ctx.store.path)
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
+    from atlas.graph import GraphStore
+    from atlas.index import IndexStore
+    print("graph:", GraphStore(ctx.store.path).counts())
+    print("index:", IndexStore(ctx.store.path).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
     pending = ledger.pending()
     for p in pending[:30]:
         print(f"  {p['status']:11s} {p['step']:20s} {p['unit'][:60]}  {p['error'] or ''}")
     if len(pending) > 30:
         print(f"  … and {len(pending) - 30} more")
+    runs = ledger.runs(6)
+    if runs:
+        print_profile(runs[0])
+    if len(runs) > 1:
+        print("previous runs:")
+        for r in runs[1:]:
+            api = {}
+            for p in r["report"].get("profile", {}).values():
+                for k, v in p.get("api", {}).items():
+                    api[k] = api.get(k, 0) + v
+            print(f"  {r['started']}  atlas {r['version'] or '?':8s} {r['seconds']:8.1f} s  "
+                  f"{sum(r['report']['processed'].values())} processed" + (f"; {_api_text(api)}" if _api_text(api) else ""))
+    return 0
+
+
+def sections(cfg: Config) -> int:
+    """The sections of every document of [[sources.docs]], without analysing them: to
+    tune structure, heading_regex, max_chars and min_chars before a run."""
+    from atlas.docs import preview
+    ctx = _context(cfg)
+    for d, options in doc_sources(ctx):
+        for f in doc_files(ctx, d):
+            p = preview(f, options, ctx.disabled)
+            print(f"\n[{d['name']}] {f} — '{p['title']}': {p['chars']} chars, {len(p['sections'])} sections")
+            print(f"  structure: {p['structure']}"
+                  + (f"; {p['subdivided']} large sections subdivided by their headings" if p["subdivided"] else "")
+                  + (f"; {p['removed_lines']} header/footer lines removed" if p["removed_lines"] else ""))
+            for s in p["sections"]:
+                print(f"  {s['id']}  p.{s['pages'] or '?':>7}  {s['chars']:6d} chars  {' > '.join(s['path'])}"
+                      + (f"  + {s['includes']}" if s["includes"] else ""))
+            for title, n in p["oversized"][:10]:
+                print(f"  ! '{title[:60]}' is split in {n} parts by size")
+            if p.get("headings"):
+                print("  lines that start like a numbered heading:")
+                for reason, lines in sorted(p["headings"].items(), key=lambda kv: -len(kv[1])):
+                    print(f"    {len(lines):5d}  {reason}" + "".join(f"\n           {x}" for x in lines[:3]))
+                print("  If your headings have another format, set heading_regex (group 1 = number, "
+                      "group 2 = title).")
+    return 0
+
+
+def graph(cfg: Config) -> int:
+    """The report of the last build of every part of the graph, and of its gaps."""
+    from atlas.graph import GraphStore, KnowledgeGraph
+    ctx = _context(cfg)
+    builds = GraphStore(ctx.store.path).builds()
+    if not builds:
+        print("no graph yet: run `atlas run` with \"graph\" in [pipeline] steps")
+        return 1
+    s = builds.get("code")
+    if s:
+        print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} "
+              f"subprograms, {s['tests']} tests, {s['types']} types, {s['variables']} variables, {s['externals']} "
+              f"externals, {s['requirements']} requirements) from {s['files']} files ({s['test_files']} of tests)")
+        c = s["edges_by_kind"]
+        print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
+              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+        print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
+              f"without a requirement: {s['subprograms_without_requirement']} | "
+              f"unresolved calls: {s['unresolved_calls']}"
+              + (f" | groups of code (communities): {s['communities']}" if "communities" in s else ""))
+        for title, key in (("Most called", "top_called"), ("Requirements traced by most elements", "top_requirements"),
+                           ("Most frequent unresolved calls (external libraries or names not captured)",
+                            "top_unresolved")):
+            if s[key]:
+                print(f"\n{title}:")
+                for name, n in s[key]:
+                    print(f"  {n:5d}  {name}")
+    s = builds.get("doors")
+    if s:
+        print(f"\nDOORS of {s['built_at'][:19]}: {s['modules']} modules, {s['requirements']} requirements, "
+              f"{s['headings']} headings; links: "
+              + ", ".join(f"{n} {k}" for k, n in s["edges_by_kind"].items() if k != "contains")
+              + (f"; {s['linked_outside']} IDs linked from modules that were not read" if s["linked_outside"] else ""))
+    s = builds.get("docs")
+    if s:
+        print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
+              f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
+    gaps = KnowledgeGraph.open(ctx.store.path).gaps()
+    print("\ntraceability gaps (atlas matrix MODULE for the detail):")
+    for key, value in gaps.items():
+        if isinstance(value, dict):
+            print(f"  {value['count']:5d}  {key.replace('_', ' ')}")
+    print(f"\nexported to {cfg.workspace / 'graph'}")
+    return 0
+
+
+def trace(cfg: Config, req_id: str) -> int:
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    res = KnowledgeGraph.open(ctx.store.path).trace(req_id)
+    print(json.dumps(res, ensure_ascii=False, indent=1))
+    return 1 if "error" in res else 0
+
+
+def matrix(cfg: Config, module: str) -> int:
+    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph,
+    as CSV (for a spreadsheet) and Markdown, and its summary and gaps on the screen."""
+    import csv
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    module = "" if module == "*" else module
+    res = KnowledgeGraph.open(ctx.store.path).matrix(module, limit=10**9)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
+    cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
+    prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
+    prefix.parent.mkdir(parents=True, exist_ok=True)
+    with open(prefix.with_suffix(".csv"), "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(columns)
+        w.writerows([cell(row.get(c, "")) for c in columns] for row in res["rows"])
+    sm, gaps = res["summary"], res["gaps"]
+    md = [f"# Traceability matrix: {res['module']}", "",
+          f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
+          f"{sm['with_documents']} in documents.", "",
+          "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
+    md += ["| " + " | ".join(cell(row.get(c, "")).replace("|", "\\|") for c in columns) + " |" for row in res["rows"]]
+    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
+        md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
+    prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(md[2])
+    for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
+        items = gaps[key]["items"]
+        print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
+    print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
+    return 0
+
+
+def verify(cfg: Config, target: str) -> int:
+    """Each requirement against the documentation: the inconsistencies on the screen, and the
+    report in <workspace>/reports."""
+    from atlas.agents.verify import verify_all
+    from atlas.index import Index
+    ctx = _context(cfg)
+    index = Index.from_config(cfg) if ctx.store.documents() else None
+    res = verify_all(target, cfg, index=index)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    c = res["counts"]
+    print(f"{len(res['results'])} requirements: {c['inconsistent']} inconsistent, {c['consistent']} consistent, "
+          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)")
+    for r in res["results"]:
+        if r.get("verdict") == "inconsistent":
+            print(f"\n{r['id']}: {r.get('summary', '')}")
+            for i in r["issues"]:
+                print(f"  - {i['type']}: DOORS «{i['official']}» / «{i['document']}» ({i['source']})")
+    print(f"\nwritten {res['files'][0]} and {res['files'][1]}")
+    return 0
+
+
+def impact(cfg: Config, name: str) -> int:
+    from atlas.agents.reports import impact_report
+    _context(cfg)
+    res = impact_report(name, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; similar: {', '.join(res['similar'])}" if res.get("similar") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
+def coverage(cfg: Config, module: str) -> int:
+    from atlas.agents.reports import coverage_report
+    _context(cfg)
+    res = coverage_report("" if module == "*" else module, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    print(res["report"].strip() + f"\n\nwritten {res['file']}")
+    return 0
+
+
+def search(cfg: Config, query: str) -> int:
+    from atlas.index import Index, cite
+    _context(cfg)
+    hits = Index.from_config(cfg).search(query, k=8)
+    if not hits:
+        print("nothing found (has `atlas run` indexed any document?)")
+    for i, h in enumerate(hits, 1):
+        print(f"\n[{i}] {cite(h)}\n    {h['text'][:400]}")
+    return 0
+
+
+def ask(cfg: Config, question: str) -> int:
+    from atlas.index import Index
+    _context(cfg)
+    res = Index.from_config(cfg).answer(question)
+    print(res["answer"])
+    if res["sources"]:
+        print("\nSources:")
+    for s in res["sources"]:
+        print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
     return 0
 
 
@@ -155,9 +736,80 @@ def list_plugins(cfg: Config) -> int:
     return 0
 
 
+def list_agents(cfg: Config) -> int:
+    from atlas.agents.definitions import BUILTIN, load_definitions
+    _context(cfg)
+    for d in load_definitions(cfg).values():
+        source = "built-in" if Path(d.source).parent == BUILTIN else d.source
+        print(f"{d.name:22s} {source}\n    {d.description}\n    tools: {', '.join(d.tools) or '-'}"
+              f" | model: {d.model or cfg['agents']['model'] or cfg.get('llm', {}).get('model', '') or '-'}"
+              f" | max_steps: {d.max_steps}")
+    return 0
+
+
+def agent(cfg: Config, name: str, question: str) -> int:
+    from atlas.agents.runtime import run_agent
+    try:
+        res = run_agent(name, question, cfg, _context(cfg))
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    print(res["answer"] or "(no answer)")
+    if res["stopped"]:
+        print(f"\n(stopped after the most calls to the model of the agent, max_steps)")
+    if res["calls"]:
+        print("\nTools called:")
+    for c in res["calls"]:
+        print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    return 1 if res["stopped"] else 0
+
+
+def evaluate(cfg: Config) -> int:
+    from atlas.agents.evaluate import evaluate_sets
+
+    def show(r: dict) -> None:
+        missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
+        print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+              f"[{', '.join(r['calls'])}]" + (f"  missing: {', '.join(missing)}" if missing else "")
+              + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+
+    try:
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
+    except ImportError as e:
+        sys.exit(str(e))
+    for name, res in results.items():
+        print(f"\n{name}: {res['passed']} of {res['total']} right ({res['rate']:.0%}), "
+              f"median {res['median_seconds']:.0f} s; written to {cfg.workspace / 'reports' / f'eval-{name}.json'}")
+    return 0
+
+
 def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     return check_connection(from_config(cfg))
+
+
+def serve(cfg: Config) -> int:
+    """The MCP server over stdio, until the client closes it."""
+    from atlas.mcp import serve as serve_mcp
+    try:
+        serve_mcp(cfg, _context(cfg))
+    except ImportError as e:            # without the mcp package
+        sys.exit(str(e))
+    return 0
+
+
+TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
+
+
+def init(path: Path) -> int:
+    """Writes the template of atlas.toml in `path`, unless the file exists."""
+    if path.exists():
+        print(f"{path} already exists: it is not overwritten", file=sys.stderr)
+        return 1
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"created {path}: edit the sources and the model, then `atlas check {path.name}` and "
+          f"`atlas run {path.name}`")
+    return 0
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -165,12 +817,32 @@ def main(argv: list[str] | None = None) -> None:
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)
         sys.exit(0)
-    action, path = argv[0], (argv[1] if len(argv) > 1 else "atlas.toml")
-    actions = {"run": run, "status": status, "plugins": list_plugins, "check": check}
-    if action not in actions:
+    if argv[0] in ("-V", "--version", "version"):
+        from atlas import __version__
+        print(f"atlas {__version__}")
+        sys.exit(0)
+    action, rest = argv[0], argv[1:]
+    if action == "init":
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
+    actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
+               "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify,
+                 "impact": impact, "coverage": coverage}
+    if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
+        if len(rest) < 2:
+            sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")
+        try:
+            sys.exit(agent(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1]))
+        except ConfigError as e:
+            sys.exit(f"configuration: {e}")
+    if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
+    if action in with_text and not rest:
+        sys.exit(f"usage: atlas {action} TEXT [atlas.toml]")
     try:
-        sys.exit(actions[action](load_config(path)))
+        if action in with_text:
+            sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0]))
+        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

@@ -1,4 +1,8 @@
+import socket
+import subprocess
 import sys
+import time
+import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -12,8 +16,19 @@ def samples():
     """Sample data (generated if missing)."""
     from examples import make_samples
     d = ROOT / "examples" / "samples"
-    if not (d / "doors.sqlite").exists():
-        make_samples.ada(); make_samples.doors()
+    if not (d / "requirements.sqlite").exists():
+        make_samples.ada(); make_samples.doors(); make_samples.exchange()
+    return d
+
+
+@pytest.fixture(scope="session")
+def docs_samples(samples):
+    """examples/samples/docs (the PDFs need pymupdf; reading them, markitdown)."""
+    from examples import make_samples
+    d = samples / "docs"
+    if not (d / "spec_without_bookmarks.pdf").exists():
+        pytest.importorskip("pymupdf")
+        make_samples.pdfs()
     return d
 
 
@@ -44,3 +59,49 @@ inline_reference_regex = "\\\\b(?:SRS|SSS)-\\\\d{{4}}\\\\b"
 ''', encoding="utf-8")
         return p
     return _make
+
+
+@pytest.fixture
+def fake(tmp_path):
+    """tests/fakes/fake_api.py on a free port. Yields (base_url, control file)."""
+    sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
+    control = tmp_path / "faults.json"; control.write_text("{}")
+    proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / "fakes" / "fake_api.py"),
+                             "--port", str(port), "--control", str(control)])
+    for _ in range(50):
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=0.2); break
+        except Exception:
+            time.sleep(0.1)
+    yield f"http://127.0.0.1:{port}/v1", control
+    proc.terminate(); proc.wait(timeout=5)
+
+
+@pytest.fixture
+def fake_llm(fake):
+    """ServiceConfig pointing at the fake API, and its control file."""
+    from atlas.llm import NetConfig, ServiceConfig
+    url, control = fake
+    return ServiceConfig(base_url=url, model="fake", api_key="x", net=NetConfig(proxy="", no_proxy="*")), control
+
+
+@pytest.fixture
+def fake_stats(fake):
+    """Function that returns the counters of the fake API (chat, embeddings, emb_texts)."""
+    import json
+    url = fake[0].removesuffix("/v1") + "/"
+    return lambda: json.load(urllib.request.urlopen(url))
+
+
+@pytest.fixture
+def fake_chats(fake_stats):
+    """Function that returns how many chat requests the fake API has received."""
+    return lambda: fake_stats()["chat"]
+
+
+@pytest.fixture
+def fake_embeddings(fake):
+    """ServiceConfig of the embeddings of the fake API."""
+    from atlas.llm import NetConfig, ServiceConfig
+    return ServiceConfig(base_url=fake[0], model="embeddinggemma", api_key="x", batch=16,
+                         net=NetConfig(proxy="", no_proxy="*"))

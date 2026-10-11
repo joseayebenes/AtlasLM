@@ -23,20 +23,22 @@ workers = 6
 steps = ["doors", "code", "docs", "graph", "index"]
 
 [sources.doors]
-adapter = "database"
-[sources.doors.database]
-driver = "odbc"                      # pip install pyodbc
-dsn = "DSN=DOORS_EXPORT;UID=${DB_USER};PWD=${DB_PASS}"
-modules_query = "SELECT DISTINCT module FROM dbo.requirements"
-requirements_query = "SELECT * FROM dbo.requirements WHERE module = :module"
-links_query = "SELECT source_id, target_id, link_type FROM dbo.links WHERE source_module = :module"
-snapshot_query = "SELECT CAST(COUNT(*) AS VARCHAR) + '|' + CONVERT(VARCHAR, MAX(updated_at), 126) FROM dbo.requirements WHERE module = :module"
+adapter = "exchange"                 # la base que publica tools/doors_export (o cualquier otro relleno)
+[sources.doors.exchange]
+path = "C:/atlas/tms/requirements.sqlite"
 [sources.doors.convention]
-id_column = "id"
-text_column = "object_text"
 id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
+# Para leer otra base con consultas propias: adapter = "database" y [sources.doors.database]
+# (driver sqlite u odbc, modules_query, requirements_query...; ver atlas/doors/__init__.py).
 
 [sources.code]
 roots = ["C:/src/tms"]
 languages = ["ada"]
+test_patterns = ["**/tests/**"]       # sus subprogramas son pruebas: verifican y cubren requisitos
+
+[agents]                             # agentes: ficheros Markdown con cabecera YAML (ver README)
+dirs = ["agents"]                    # los .md del proyecto, junto a este fichero
+
+[mcp]                                # atlas serve atlas.toml: servidor MCP para OpenCode, VS Code...
+tools = []                           # vacío: las de las fuentes; edit_file y write_file solo si se piden

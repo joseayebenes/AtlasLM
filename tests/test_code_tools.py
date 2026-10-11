@@ -1,0 +1,129 @@
+import inspect
+import os
+import stat
+from types import SimpleNamespace
+
+import pytest
+
+from atlas import plugins
+from atlas.code import TOOL_NAMES, CodeTools
+
+TRACKS = """package body Tracks is
+   procedure Update (I : Integer) is
+   begin
+      Logger.Log ("update");
+   end Update;
+
+   procedure Delete_Track (I : Integer) is
+   begin
+      Logger.Log ("delete");
+   end Delete_Track;
+end Tracks;
+"""
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    """A project with its code under src/, a build folder that is excluded and a secret outside."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src" / "util").mkdir(parents=True)
+    (tmp_path / "src" / "tracks.adb").write_text(TRACKS)
+    (tmp_path / "src" / "util" / "logger.ads").write_text("package Logger is\n   procedure Log (S : String);\nend Logger;\n")
+    (tmp_path / "src" / "build").mkdir()
+    (tmp_path / "src" / "build" / "tracks.ali").write_text("generated\n")
+    (tmp_path / "secret.txt").write_text("password\n")
+    return CodeTools(["src"], exclude=["**/build/**"])
+
+
+def test_list_grep_and_read(project):
+    assert project.list_files("**/*.ad?")["files"] == ["src/tracks.adb", "src/util/logger.ads"]
+    assert project.list_files()["files"] == ["src/tracks.adb", "src/util/logger.ads"]     # build/ is excluded
+    found = project.grep(r"Logger\.Log", glob="*.adb", context=1)
+    assert [(m["file"], m["line"]) for m in found["matches"]] == [("src/tracks.adb", 4), ("src/tracks.adb", 9)]
+    assert found["matches"][0]["context"].splitlines()[0] == "    3 |    begin"
+    assert project.grep("procedure log", ignore_case=True, path="src/util")["count"] == 1
+    assert project.grep("(unclosed")["error"].startswith("invalid regular expression")
+    part = project.read_file("src/tracks.adb", 7, 10)
+    assert part["source"].splitlines() == ["    7 |    procedure Delete_Track (I : Integer) is", "    8 |    begin",
+                                           '    9 |       Logger.Log ("delete");', "   10 |    end Delete_Track;"]
+    assert part["total_lines"] == 11 and not part["truncated"]
+
+
+@pytest.mark.parametrize("path", ["secret.txt", "src/../secret.txt", "/etc/hosts", "src/build/tracks.ali",
+                                  "src/link.txt"])
+def test_nothing_outside_the_roots(project, tmp_path, path):
+    (tmp_path / "src" / "link.txt").symlink_to(tmp_path / "secret.txt")      # a link that leaves the root
+    assert "error" in project.read_file(path)
+    assert "error" in project.write_file(path, "x")
+    assert "secret.txt" not in str(project.grep("password"))
+
+
+def test_edit_rules(project, tmp_path):
+    f = "src/tracks.adb"
+    assert "read" in project.edit_file(f, "update", "refresh")["error"]          # not read yet
+    project.read_file(f)
+    many = project.edit_file(f, "Logger.Log", "Log")
+    assert "appears 2 times (lines [4, 9])" in many["error"]
+    missing = project.edit_file(f, 'Logger.Log ("deleted");', "x")
+    assert missing["similar_lines"][0]["line"] == 9                              # helps the model copy it right
+    done = project.edit_file(f, 'Logger.Log ("delete");', 'Logger.Log ("track deleted");')
+    assert done["replacements"] == 1 and '+      Logger.Log ("track deleted");' in done["diff"]
+    assert project.edit_file(f, "Logger.Log", "Trace.Log", replace_all=True)["replacements"] == 2   # no new read needed
+    (tmp_path / f).write_text(TRACKS)                                         # someone else changes it
+    assert "changed since you read it" in project.edit_file(f, "Update", "Refresh")["error"]
+
+
+def test_encoding_line_endings_and_permissions(project, tmp_path):
+    crlf = tmp_path / "src" / "legacy.adb"
+    crlf.write_bytes("-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   null;\r\nend Run;\r\n".encode("latin-1"))
+    crlf.chmod(0o750)
+    project.read_file("src/legacy.adb")
+    assert "replacements" in project.edit_file("src/legacy.adb", "begin\n   null;", "begin\n   Go;")
+    assert crlf.read_bytes() == "-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   Go;\r\nend Run;\r\n".encode("latin-1")
+    assert stat.S_IMODE(crlf.stat().st_mode) == 0o750
+    assert "cannot hold" in project.edit_file("src/legacy.adb", "Go;", "Go;  -- 漢字")["error"]
+    assert not list((tmp_path / "src").glob(".*atlas-tmp"))
+
+
+def test_write_and_read_only(project, tmp_path):
+    new = project.write_file("src/new/radar.ads", "package Radar is\nend Radar;\n")
+    assert new["created"] and (tmp_path / "src" / "new" / "radar.ads").exists()
+    assert "read" in project.write_file("src/tracks.adb", "x")["error"]           # overwrite: read it first
+    project.read_file("src/tracks.adb")
+    assert "-   procedure Update (I : Integer) is" in project.write_file("src/tracks.adb", "null;\n")["diff"]
+    ro = CodeTools(["src"], read_only=True)
+    ro.read_file("src/tracks.adb")
+    assert ro.edit_file("src/tracks.adb", "null;", "x") == {"error": "these tools are read-only"}
+    assert "error" in CodeTools([]).read_file("src/tracks.adb")                   # no roots, no files
+
+
+def test_registered_as_tool_plugins(project, toml, tmp_path):
+    from atlas.config import load_config
+    plugins.load_plugins()
+    assert set(TOOL_NAMES) <= set(plugins.available("tool"))
+    context = SimpleNamespace(cfg=load_config(toml(f'[sources.code]\nroots = ["{(tmp_path / "src").as_posix()}"]\n')))
+    read, edit = (plugins.get("tool", n)(context) for n in ("read_file", "edit_file"))
+    path = (tmp_path / "src" / "tracks.adb").as_posix()
+    read.run(path=path)                                       # the same CodeTools behind every tool
+    assert edit.run(path=path, old_text="Update", new_text="Refresh", replace_all=True)["replacements"] == 2
+    params = inspect.signature(edit.function()).parameters    # what ADK and MCP turn into a schema
+    assert list(params) == ["path", "old_text", "new_text", "replace_all"] and params["replace_all"].annotation
+    assert edit.description.startswith("Replaces `old_text` by `new_text`")
+
+
+def test_tolerates_the_usual_mistakes_of_small_models(project, tmp_path):
+    # what gemma4:12b did: quotes escaped as inside a JSON string, and one space too many
+    f = "src/tracks.adb"
+    assert project.list_files("*.adb")["files"] == ["src/tracks.adb"]          # in every subfolder
+    assert project.list_files("*.ads", path=".")["files"] == ["src/util/logger.ads"]   # "." holds the root
+    project.read_file(f)
+    done = project.edit_file(f, '       Logger.Log (\\"delete\\");', '       Logger.Log (\\"track deleted\\");')
+    assert len(done["notes"]) == 2 and done["replacements"] == 1
+    assert (tmp_path / f).read_text() == TRACKS.replace('"delete"', '"track deleted"')
+    # a block with other indentation is re-indented like the file
+    block = project.edit_file(f, "procedure Update (I : Integer) is\nbegin\n   Logger.Log (\"update\");",
+                              "procedure Update (I : Integer) is\nbegin\n   Check (I);\n   Logger.Log (\"update\");")
+    assert block["notes"] == ["old_text was found ignoring indentation, and new_text was re-indented like the file"]
+    assert "   procedure Update (I : Integer) is\n   begin\n      Check (I);\n      Logger.Log" in (tmp_path / f).read_text()
+    # ignoring indentation must still be unique
+    assert "appears 2 times" in project.edit_file(f, "begin", "start")["error"]

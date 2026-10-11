@@ -1,26 +1,55 @@
-# AtlasLM — esqueleto de desarrollo
+# AtlasLM
 
-Base de conocimiento de ingeniería (documentos, requisitos de DOORS, código y grafo)
-configurable por fichero, importable como librería y orquestada con Google ADK. Este
-repositorio es el **esqueleto de la fase 0 del plan** (`legacy/PLAN.md`): motor
-incremental, configuración validada, sistema de plugins, lector de DOORS desde base de
-datos, analizador Ada, datos de ejemplo, servidor falso y pruebas. Los scripts anteriores
-están en `legacy/` y se migran módulo a módulo en la fase 1.
+Base de conocimiento de ingeniería: documentos, requisitos de DOORS, código Ada y el grafo
+que los une, configurable con un fichero, importable como librería y al servicio de
+agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
 
-## Puesta en marcha en un Mac (Apple Silicon)
+- **Procesa una vez.** Un motor incremental y recuperable analiza cada documento, módulo de
+  requisitos y fichero de código solo cuando cambia, y sigue donde se quedó tras un corte.
+- **Determinista primero.** Estructura, grafo, trazabilidad y búsqueda funcionan sin
+  modelo; el modelo resume, responde y juzga.
+- **Trazabilidad.** De cualquier requisito, en una llamada: su texto oficial, los documentos
+  que lo citan (y si dicen otra cifra), el código que lo implementa y las pruebas que lo
+  cubren. Y a la inversa, el impacto de un cambio.
+
+Versión 0.1.0: fases 0 a 6 del plan (`legacy/PLAN.md`). Los cambios de cada versión están
+en el [CHANGELOG](CHANGELOG.md).
+
+## Documentación
+
+| Documento | Para qué |
+|---|---|
+| [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
+| [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
+| [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
+| [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
+| [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |
+| [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |
+| [atlas.index](atlas/index/README.md) | índice, búsqueda híbrida y respuestas citadas |
+| [atlas.doors](atlas/doors/README.md) | requisitos: la base de intercambio y sus adaptadores |
+| [atlas.code](atlas/code/README.md) | análisis de Ada y herramientas de ficheros para agentes |
+| [atlas.graph](atlas/graph/README.md) | el grafo unificado y las consultas de trazabilidad |
+| [atlas.mcp](atlas/mcp/README.md) | el servidor MCP y su configuración en el editor |
+| [atlas.agents](atlas/agents/README.md) | agentes en Markdown, verificación, informes, evaluación |
+| [tools/doors_export](tools/doors_export/README.md) | el exportador de DOORS a la base de intercambio |
+| [Plan del proyecto](legacy/PLAN.md) | objetivos, arquitectura, fases y su estado |
+
+## Puesta en marcha para desarrollar
+
+En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacion.md)):
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[docs,code,mcp,dev]"      # añade ",agents" cuando empieces con ADK
-python examples/make_samples.py             # datos de ejemplo (PDFs, Ada, doors.sqlite)
-python -m pytest -q                         # 17 pruebas sin modelo (+1 de agentes si Ollama está en marcha)
+pip install -e ".[all,dev]" -c constraints.txt    # o: make install
+python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
+python -m pytest -q                                # 158 pruebas sin modelo (+5 de agentes con Ollama)
 ```
 
 ### Tres niveles de modelo
 
 | Nivel | Para qué | Configuración |
 |---|---|---|
-| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa, modelo que razona) | `atlas.test.toml` |
+| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa, modelo que razona, lentitud) | `atlas.test.toml` |
 | **Modelo local** (Ollama o LM Studio) | probar la calidad real de análisis, búsqueda y agentes sin cupo ni red | `atlas.dev.toml` |
 | **Gateway corporativo** | producción | `atlas.toml` |
 
@@ -45,83 +74,103 @@ Tamaño del modelo según la memoria del Mac (valores aproximados de descarga en
 | 16 GB | `gemma4:e4b` (~10 GB) o `gemma4:12b` (~8 GB cuantizado) | `embeddinggemma` |
 | 24-32 GB | `gemma4:26b` (MoE, 4B activos: rápido para su calidad) | `embeddinggemma` |
 
-Comprueba la conexión antes de nada: `python -m atlas.cli check atlas.dev.toml`. Si el
-modelo razona antes de contestar (gemma4 lo hace por defecto), `check` lo indica
-(`OK: 'ok' (reasoning model: …)`). Ese razonamiento cuenta dentro de `max_tokens`. Si el
-modelo agota el presupuesto razonando sin llegar a contestar, `check` falla y lo explica.
-
-### Agentes ADK con Ollama
-
-```bash
-pip install -e ".[agents]"                       # google-adk y litellm
-OLLAMA_CONTEXT_LENGTH=16384 ollama serve         # en otra terminal
-make test-ollama                                 # o: python -m pytest -q -m ollama
-```
-
-`tests/test_agents_ollama.py` monta un `LlmAgent` de ADK con LiteLLM sobre la URL y el
-modelo de `atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Le da dos herramientas
-sobre las muestras: `get_requirement`, que usa el adaptador de DOORS, y `trace`, que busca
-las etiquetas `Req:` en el Ada. Comprueba que el agente usa las dos, que responde con el
-requisito y los ficheros correctos y que no se inventa ficheros. Se omite sola si falta el
-extra `[agents]`, si Ollama no responde o si el modelo no está descargado. Para excluirla:
-`python -m pytest -m "not ollama"`.
-
-Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
-(`reasoning_effort="none"`, como hace la prueba). Con razonamiento, 7 de 10 respuestas
-fueron correctas y tardaron 40-80 s; las otras salieron vacías o con ficheros inventados.
-Sin razonamiento, acertó 5 de 5 en 8-14 s. Al instalar `[agents]`, litellm baja `openai`
-a la versión 2.x; el resto del proyecto funciona igual.
+Comprueba la conexión antes de nada: `atlas check atlas.dev.toml`. `gemma4` razona por
+defecto, y ese razonamiento cuenta dentro de `max_tokens` y multiplica los tiempos:
+`atlas.dev.toml` lo apaga con `[llm] reasoning_effort = "none"`. Los agentes con Ollama y
+sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md).
 
 ## Comandos
 
 ```bash
-python -m atlas.cli run      atlas.dev.toml   # procesamiento incremental y reanudable
-python -m atlas.cli status   atlas.dev.toml   # libro de registro y datos
-python -m atlas.cli plugins  atlas.dev.toml   # analizadores, adaptadores y extractores disponibles
-python -m atlas.cli check    atlas.dev.toml   # conexión con el modelo
+atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml
+atlas run      atlas.dev.toml # procesamiento incremental y reanudable
+atlas status   atlas.dev.toml # libro de registro, datos y perfil de tiempos
+atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
+atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
+atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
+atlas matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
+atlas search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
+atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
+atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
+atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
+atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente
+atlas verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación, con el modelo
+atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
+atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
+atlas eval     atlas.dev.toml # evaluación de los agentes con preguntas de respuesta conocida
+atlas check    atlas.dev.toml # conexión con el modelo
+atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
+atlas --version
 ```
 
 Toda la configuración está en el TOML; la línea de comandos solo elige acción y fichero.
-Con `pip install -e .` el comando `atlas` queda disponible directamente.
+Sin instalar, `python -m atlas.cli` en vez de `atlas`.
 
 Prueba el motor sin modelo:
 
 ```bash
 python tests/fakes/fake_api.py --port 8770 &      # en otra terminal
-python -m atlas.cli run atlas.test.toml           # primera vez: procesa todo
-python -m atlas.cli run atlas.test.toml           # segunda vez: todo "al día", 0 peticiones
-# cambia un .adb o un requisito en examples/samples/doors.sqlite y vuelve a ejecutar:
-# solo se reprocesa esa unidad
+atlas run atlas.test.toml           # primera vez: DOORS, Ada, grafo, documentos e índice
+atlas run atlas.test.toml           # segunda vez: todo "al día", 0 peticiones
+atlas status atlas.test.toml        # y el perfil de tiempos de cada paso
+atlas graph atlas.test.toml
+atlas search "alarm latency" atlas.test.toml
+# cambia un .adb, un requisito en examples/samples/requirements.sqlite o hmi_manual.md y
+# vuelve a ejecutar: solo se reprocesa esa unidad (y del documento, solo las secciones
+# cambiadas y los textos nuevos del índice)
 ```
+
+Para medir el motor con un proyecto grande, `make large` genera uno sintético en
+`examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
+procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
+- la primera ejecución tarda unos 17 s;
+- la segunda, sin cambios, 0,1 s y sin ninguna petición;
+- tras cambiar un plazo en una página de un PDF, 1,4 s y una sola petición al modelo.
 
 ## Estructura
 
 ```
 atlas/
-├── config.py       carga y validación de atlas.toml, ${VAR}, huellas por sección
+├── config.py       carga y validación de atlas.toml, ${VAR}, secretos, huellas por sección
 ├── plugins.py      interfaces (CodeAnalyzer, RequirementsAdapter, DocumentExtractor, Tool) y registro
-├── pipeline/       motor incremental: Step, Ledger (SQLite), Runner, cuarentena, poda, bloqueo
-├── store.py        atlas.db: requisitos, enlaces, unidades de código
-├── llm/            connection.py: clientes OpenAI, proxy, TLS, límites, reintentos
-├── doors/          adaptador "database": consultas y convención configurables, diff
-├── code/           analizador "ada" (envuelve legacy/ada_graph.py)
-├── docs/           extractores "markitdown" y "text" (la estructura y el análisis siguen en legacy/)
-├── graph/ index/ agents/ mcp/    pendientes de migración (fases 1, 4 y 5 del plan)
-└── cli.py          run | status | plugins | check
-examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, doors.sqlite)
-tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso y
-                            test_agents_ollama.py, la prueba de agentes con Ollama
-legacy/                     scripts actuales + README y PLAN del proyecto
+├── store.py        atlas.db: requisitos, enlaces, unidades de código, documentos
+├── pipeline/       motor incremental: Step, Ledger, Runner; paralelismo y perfiles de tiempo
+├── llm/            clientes OpenAI con proxy, TLS, límites y reintentos; respuestas JSON
+├── doors/          requisitos: base de intercambio y adaptadores "exchange" y "database"
+├── code/           analizador Ada y herramientas de ficheros para agentes de código
+├── docs/           documentos: extractores, estructura, análisis y Markdown
+├── index/          índice: registros, embeddings con caché, FTS5, búsqueda híbrida, respuestas
+├── graph/          grafo de código, DOORS y documentos; trazabilidad; GraphML, JSON y Mermaid
+├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
+├── agents/         agentes en Markdown (builtin/), AtlasLlm, build_context, verificación,
+│                   informes y evaluación
+├── templates/      la plantilla de atlas init
+└── cli.py          las acciones de la línea de comandos
+docs/                       instalación, configuración y seguridad
+examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
+examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
+examples/large_project.py   proyecto grande sintético y medición del motor (make large)
+examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
+examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
+tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
+tools/check_install.py      instalación limpia desde el wheelhouse (make check-install)
+tools/constraints.py        genera constraints.txt
+tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso
+legacy/                     los scripts de partida y el plan del proyecto
 ```
 
 ## Idioma
 
-El código está en inglés: nombres, comentarios, docstrings y mensajes de la línea de
-comandos. La documentación está en español: este README, `legacy/PLAN.md`,
-`legacy/README.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el español
-hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
+El código está en inglés: nombres, comentarios, docstrings, mensajes de la línea de
+comandos y los ficheros que genera (los Markdown de cada documento; el contenido de los
+resúmenes sigue `lang`). La documentación está en español: los README, `docs/`, el
+CHANGELOG, `legacy/PLAN.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el
+español mientras siga existiendo.
 
 ## Añadir o quitar piezas
+
+Todo lo que varía de un proyecto a otro es un plugin con nombre, que se elige en
+`atlas.toml`:
 
 - **Otro lenguaje**: una clase `CodeAnalyzer` registrada con `register("code_analyzer", "cpp", Clase)`
   en un módulo propio; actívalo con `[sources.code] languages = ["ada", "cpp"]` y declara el
@@ -129,12 +178,8 @@ hasta que se migre; por eso `atlas/code` sigue llamando a `ada_graph.analizar`.
 - **Otra fuente de requisitos**: una clase `RequirementsAdapter` (`modules`, `snapshot`,
   `requirements`, `links`) y `adapter = "nombre"` en `[sources.doors]`.
 - **Otro formato de documento**: una clase `DocumentExtractor` por extensión.
+- **Otra herramienta para agentes y MCP**: un plugin `tool`.
 - **Quitar algo**: `[plugins] disabled = ["code_analyzer:ada"]`, o no activarlo en la fuente.
 
-## DOORS desde una base de datos
-
-`[sources.doors.database]` lleva las consultas SQL (módulos, requisitos, enlaces e
-instantánea) con el parámetro `:module`, y `[sources.doors.convention]` el nombre de las
-columnas, el patrón de los IDs, la normalización, las columnas de enlace y la expresión
-regular de referencias dentro del texto. Ver `atlas.dev.toml` (SQLite de ejemplo) y
-`atlas.toml` (ODBC hacia SQL Server). Nada de esto está en el código.
+Un plugin ejecuta código al cargarse: tiene la misma confianza que el propio `atlas.toml`
+(ver [seguridad](docs/seguridad.md)).

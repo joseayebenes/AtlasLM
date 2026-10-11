@@ -3,8 +3,10 @@ __pycache__/
 .pytest_cache/
 workspace*/
 examples/samples/
+examples/large/
 *.egg-info/
 build/
 dist/
 faults.json
 .venv/
+firebase-debug.log

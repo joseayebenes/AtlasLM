@@ -7,6 +7,8 @@
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
+    atlas comply   ID|MODULE [atlas.toml]  whether the code of each requirement does all it asks, obligation
+                                           by obligation, with the model; * = all
     atlas link     ID|MODULE [atlas.toml]  code that may implement the requirements without code, with the
                                            model; a report of proposals, the code is not changed; * = all
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
@@ -750,6 +752,29 @@ def verify(cfg: Config, target: str) -> int:
     return 0
 
 
+def comply(cfg: Config, target: str) -> int:
+    """Whether the code of each requirement does all it asks, judged by the agent
+    compliance_checker: the verdicts on the screen and the report in <workspace>/reports."""
+    from atlas.agents.comply import comply_all
+    res = comply_all(target, cfg)
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    c = res["counts"]
+    print(f"{len(res['results'])} requirements: {c['complies']} comply, {c['does_not_comply']} do not, "
+          f"{c['cannot_tell']} cannot be decided by reading the code, {c['no_code']} without code "
+          f"({res['asked']} asked to the model, the rest from the cache)")
+    mark = {"met": "ok ", "not_met": "NO ", "partial": "1/2", "cannot_tell": " ? "}
+    for r in res["results"]:
+        if r.get("verdict") in ("does_not_comply", "cannot_tell"):
+            print(f"\n{r['id']} ({', '.join(r['code'])}): {r['verdict']}. {r.get('summary', '')}")
+            for o in r["obligations"]:
+                if o["status"] != "met":
+                    print(f"  {mark[o['status']]} {o['text']}: {o['evidence']}")
+    print(f"\nwritten {res['files'][0]} and {res['files'][1]}")
+    return 0
+
+
 def link(cfg: Config, target: str) -> int:
     """The code that may implement the requirements without code, judged by the agent
     req_linker: the proposals on the screen and the report in <workspace>/reports. Nothing
@@ -937,7 +962,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
-    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link,
+    with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:

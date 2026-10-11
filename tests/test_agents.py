@@ -26,7 +26,8 @@ def _agent(folder, file, name="tracer", description="Traces.", tools="[trace]", 
 
 def test_the_agents_come_from_markdown_files(toml, tmp_path):
     builtin = load_definitions()
-    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor", "req_linker"}
+    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor", "req_linker",
+                            "compliance_checker"}
     assistant = builtin["assistant"]
     assert assistant.instruction.startswith("You answer questions about an engineering project")
     assert assistant.max_steps == 10 and assistant.reasoning_effort == "none"
@@ -316,6 +317,43 @@ def test_links_are_proposed_and_the_code_is_not_changed(workspace, samples, caps
     out = capsys.readouterr().out
     assert "SRS-0005 -> tracks.delete_track (low)" in out and "nothing changed in the code" in out
     assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
+
+
+def test_the_code_of_a_requirement_is_judged_obligation_by_obligation(workspace, capsys):
+    from atlas.agents.comply import comply, comply_all, evidence
+    from atlas.cli import comply as comply_command
+    from atlas.graph import KnowledgeGraph
+    g = KnowledgeGraph.from_config(workspace)
+    ev = evidence("SRS-0004", g)
+    assert ev["text"].startswith("The TMF shall process track event 4") and ev["tests"] == ["test_tracks.test_tracks"]
+    [code] = ev["code"]
+    assert code["id"] == "tracks.delete_track" and "Logger.Log" in code["source"]
+    assert code["calls"] == [{"id": "logger.log", "doc": "Writes a line to the log.\nReq: SRS-0103"}]
+
+    # the verdict follows from the obligations, whatever the model says
+    judge = StubJudge({"verdict": "complies", "summary": "Timing cannot be told.", "obligations": [
+        {"text": "process track event 4", "status": "met", "evidence": "Trk_DB (I).Id := 0;"},
+        {"text": "within 320 ms", "status": "cannot_tell", "evidence": "no timing in the code"},
+        {"text": "", "status": "met"}, "not an obligation"]})
+    res = comply("SRS-0004", workspace, llm=judge, graph=g)
+    assert res["verdict"] == "cannot_tell" and len(res["obligations"]) == 2 and res["code"] == ["tracks.delete_track"]
+    system, prompt = judge.prompts[0]
+    assert system.startswith("You check whether the code that implements a requirement")
+    assert "[tracks.delete_track] (subprogram" in prompt and "It calls: logger.log (Writes a line to the log." in prompt
+    assert "Tests that verify or cover it: test_tracks.test_tracks" in prompt
+    assert comply("SRS-0004", workspace, llm=judge, graph=g) == res and len(judge.prompts) == 1     # the cache
+
+    # a module: what has no code is not asked; one obligation not met is enough
+    judge = StubJudge({"obligations": [{"text": "a", "status": "met", "evidence": "x"},
+                                       {"text": "b", "status": "partial", "evidence": "y"}], "summary": "No."})
+    report = comply_all("SRS_TMS", workspace, llm=judge, graph=g)
+    assert report["counts"] == {"complies": 0, "does_not_comply": 3, "cannot_tell": 1, "no_code": 36}
+    assert report["asked"] == 3                                   # SRS-0004 came from the cache
+    md = (workspace.workspace / "reports" / "comply-SRS_TMS.md").read_text()
+    assert "## SRS-0001: does_not_comply" in md and "- ◐ b: y" in md and "not a proof" in md
+    assert "neither a requirement nor a module" in comply_all("NOPE", workspace, llm=judge, graph=g)["error"]
+    assert comply_command(workspace, "SRS-0004") == 0
+    assert "SRS-0004 (tracks.delete_track): cannot_tell" in capsys.readouterr().out
 
 
 # --- reports written by an agent from the graph -----------------------------------------------

@@ -316,3 +316,57 @@ test_patterns = ["**/tests/**"]
     assert remove["links"][0]["confidence"] in ("high", "medium"), remove
     assert all(x["confidence"] != "high" for x in show["links"]), show
     assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
+
+
+def test_compliance_checker_finds_a_wrong_boundary(ollama, toml, samples, tmp_path):
+    """The code of a requirement that says "from 50 to 300 inclusive is Normal": with
+    `Speed < 300.0` it does not comply (300 is Fast), with `Speed <= 300.0` it does."""
+    pytest.importorskip("tree_sitter_ada")
+    import contextlib
+    import io
+    import shutil
+    from atlas.agents.comply import comply
+    from atlas.cli import run
+    base_url, api_key, model = ollama
+    ada, docs = tmp_path / "ada", tmp_path / "docs"
+    shutil.copytree(samples / "ada", ada)
+    docs.mkdir()
+    (docs / "speeds.md").write_text("# Speeds\n\n1 Classification\n\nReq: SRS-0160 The software shall classify a "
+                                    "speed in knots: below 0 is Invalid, below 50 is Slow, from 50 to 300 inclusive "
+                                    "is Normal, above 300 is Fast.\n")
+    (ada / "src" / "speeds.ads").write_text(
+        "package Speeds is\n   type Speed_Class is (Invalid, Slow, Normal, Fast);\n   -- Classifies a speed in knots."
+        "\n   -- Req: SRS-0160\n   function Classify (Speed : Float) return Speed_Class;\nend Speeds;\n")
+    body = ("package body Speeds is\n   function Classify (Speed : Float) return Speed_Class is\n   begin\n"
+            "      if Speed < 0.0 then\n         return Invalid;\n      elsif Speed < 50.0 then\n         return Slow;\n"
+            "      elsif Speed {op} 300.0 then\n         return Normal;\n      else\n         return Fast;\n"
+            "      end if;\n   end Classify;\nend Speeds;\n")
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["code", "docs", "graph"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    verdicts = {}
+    for op in ("<", "<="):
+        (ada / "src" / "speeds.adb").write_text(body.replace("{op}", op))
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert run(cfg) == 0
+        verdicts[op] = comply("SRS-0160", cfg)
+    assert verdicts["<"]["verdict"] == "does_not_comply", verdicts["<"]
+    assert verdicts["<="]["verdict"] == "complies", verdicts["<="]

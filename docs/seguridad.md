@@ -46,7 +46,7 @@ Todo en el workspace del proyecto (`[project] workspace`):
 | `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro y perfiles de las ejecuciones |
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
-| `reports/` | verificaciones, informes y evaluaciones |
+| `reports/` | verificaciones, propuestas de enlaces, informes y evaluaciones |
 
 Es información del proyecto, con la misma confidencialidad que los documentos y el código
 de los que sale: la carpeta necesita los mismos permisos. Nada está cifrado por atlas; en un

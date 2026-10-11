@@ -257,4 +257,4 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
-| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `verify_requirement` y `ask_atlas` solo se ofrecen si se piden |
+| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `verify_requirement`, `link_requirement` y `ask_atlas` solo se ofrecen si se piden |

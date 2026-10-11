@@ -26,7 +26,7 @@ def _agent(folder, file, name="tracer", description="Traces.", tools="[trace]", 
 
 def test_the_agents_come_from_markdown_files(toml, tmp_path):
     builtin = load_definitions()
-    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor"}
+    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor", "req_linker"}
     assistant = builtin["assistant"]
     assert assistant.instruction.startswith("You answer questions about an engineering project")
     assert assistant.max_steps == 10 and assistant.reasoning_effort == "none"
@@ -278,6 +278,44 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert "## SRS-0001" in (documented.workspace / "reports" / "verify-SRS_TMS.md").read_text()
     assert "neither a requirement nor a module" in verify_all("NOPE", documented, llm=judge, graph=g)["error"]
     assert verify_command(documented, "SSS-0001") == 0 and "1 requirements: 0 inconsistent" in capsys.readouterr().out
+
+
+def test_links_are_proposed_and_the_code_is_not_changed(workspace, samples, capsys):
+    from atlas.agents.link import candidates, link, link_all
+    from atlas.cli import link as link_command
+    from atlas.graph import KnowledgeGraph
+    code = {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")}
+    g = KnowledgeGraph.from_config(workspace)
+    # SRS-0005 refines SRS-0004, which tracks.delete_track implements: a candidate, without a model
+    c = candidates("SRS-0005", g)
+    assert [x["id"] for x in c["candidates"]] == ["tracks.delete_track"] and c["implemented_by"] == []
+    assert c["candidates"][0]["evidence"] == ["implements SRS-0004, linked to SRS-0005 (references)"]
+    assert "Removes track I" in c["candidates"][0]["doc"] and "Delete_Track" in c["candidates"][0]["code"]
+
+    judge = StubJudge({"summary": "It deletes tracks.", "links": [
+        {"code": "Tracks.Delete_Track", "confidence": "certain", "reason": "It deletes the track."},
+        {"code": "tracks.invented", "confidence": "high", "reason": "Not offered."}]})
+    res = link("SRS-0005", workspace, llm=judge, graph=g)
+    assert res["verdict"] == "proposed" and len(res["links"]) == 1          # what was not offered is dropped
+    x = res["links"][0]
+    assert (x["code"], x["confidence"], x["tag"]) == ("tracks.delete_track", "low", "-- Req: SRS-0005")
+    assert x["tag_at"].endswith("tracks.ads:17")                            # the declaration in the spec
+    system, prompt = judge.prompts[0]
+    assert system.startswith("You help keep the traceability") and "Official text (DOORS): The TMF shall" in prompt
+    assert "Why it is a candidate: implements SRS-0004, linked to SRS-0005 (references)" in prompt
+    assert link("SRS-0005", workspace, llm=judge, graph=g) == res and len(judge.prompts) == 1     # the cache
+
+    # a module: its requirements without code; those without candidates are not asked
+    judge = StubJudge({"links": [], "summary": "None."})
+    report = link_all("SRS_TMS", workspace, llm=judge, graph=g)
+    assert report["counts"] == {"proposed": 1, "none": 0, "no_candidates": 35} and report["asked"] == 0
+    md = (workspace.workspace / "reports" / "link-SRS_TMS.md").read_text()
+    assert "Add `-- Req: SRS-0005` at" in md and "Nothing has been changed in the code" in md
+    assert "neither a requirement nor a module" in link_all("NOPE", workspace, llm=judge, graph=g)["error"]
+    assert link_command(workspace, "SRS-0005") == 0
+    out = capsys.readouterr().out
+    assert "SRS-0005 -> tracks.delete_track (low)" in out and "nothing changed in the code" in out
+    assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
 
 
 # --- reports written by an agent from the graph -----------------------------------------------

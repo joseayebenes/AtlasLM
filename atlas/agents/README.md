@@ -11,8 +11,9 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `runtime.py` | `build_agent` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo |
 | `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete |
 | `verify.py` | la verificación de los requisitos con la documentación |
+| `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
-| `tools.py` | `build_context`, `verify_requirement` y `ask_atlas` como plugins `tool` |
+| `tools.py` | `build_context`, `verify_requirement`, `link_requirement` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 
 ## Agentes en ficheros Markdown
@@ -33,10 +34,10 @@ temperature: 0.1           # opcional
 You trace requirements of an engineering project...
 ```
 
-Vienen de serie, en `builtin/`, cuatro agentes:
+Vienen de serie, en `builtin/`, cinco agentes:
 - `assistant`, con herramientas de documentos, DOORS y código, todas de lectura;
-- `requirement_verifier`, `impact_analyst` y `coverage_auditor`, sin herramientas: redactan
-  el paso final de un flujo fijo.
+- `requirement_verifier`, `req_linker`, `impact_analyst` y `coverage_auditor`, sin
+  herramientas: juzgan o redactan el paso final de un flujo fijo.
 
 Los del proyecto van en las carpetas de `[agents] dirs` (`agents/` junto a `atlas.toml`, por
 defecto). Un fichero con el nombre de uno de serie lo sustituye. `[agents.<nombre>]` en el
@@ -59,6 +60,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |
 | `atlas coverage` | informe de los huecos de trazabilidad de un módulo | `coverage_auditor` |
+| `atlas link` | para cada requisito sin código, el código que puede implementarlo, con confianza (alta, media, baja), motivo y la etiqueta `Req:` que habría que añadir y dónde. No toca el código. También es la herramienta `link_requirement` | `req_linker` |
 | `ask_atlas` | el asistente como herramienta de `atlas serve`: una llamada para el cliente | `assistant` |
 
 En la verificación y en los informes, el grafo encuentra los datos sin modelo, y el agente
@@ -66,6 +68,35 @@ solo juzga o redacta. Los informes van a `<workspace>/reports/` y guardan, tras 
 del modelo, los datos de los que sale. La verificación guarda sus juicios en caché:
 verificar otra vez solo pregunta por lo que ha cambiado, y verifica varios requisitos a la
 vez (`[pipeline] workers`).
+
+## Propuestas de enlaces
+
+`atlas link MÓDULO` (o un ID, o `*`) recorre los requisitos sin código y, para cada uno,
+busca candidatos sin modelo:
+- el código que mencionan las secciones que declaran el requisito;
+- el código de los requisitos enlazados con él (enlaces de DOORS y referencias en el texto);
+- lo que encuentra la búsqueda en el código indexado (`code_doc`) con su texto, o con el del
+  documento que lo declara si no está en DOORS.
+
+Como mucho seis candidatos, cada uno con lo que lo trajo, su comentario, los requisitos que
+ya cita y el principio de su código. El agente `req_linker` elige los que implementan el
+requisito, con confianza y motivo, o ninguno. Lo que elija fuera de los candidatos se
+descarta, y un requisito sin candidatos no se pregunta. Los juicios se guardan en caché.
+
+El informe (`reports/link-<objetivo>.md` y `.json`) dice, para cada propuesta, la etiqueta
+que hay que añadir (`-- Req: SRS-0150`) y dónde: el comentario de la declaración en la
+especificación, o el del cuerpo si no la hay. **No se escribe nada en el código**: lo decide
+una persona, y el siguiente `atlas run` lee la etiqueta. Es deliberado: un enlace inventado
+cuenta en la matriz igual que uno revisado.
+
+Con `gemma4:12b`, en cuatro ejecuciones:
+- «The software shall remove a track from the track database when the operator deletes it»:
+  propone `tracks.delete_track` con confianza alta («pone a 0 el ID de la traza»).
+- «The HMI shall show the speed of each track in knots»: no propone nada.
+- Los 36 requisitos de `SRS_TMS` sin código, cuyos textos sintéticos no tienen relación con
+  el código de las muestras: ninguna propuesta. Para SRS-0005 el candidato era
+  `tracks.delete_track`, que implementa SRS-0004, al que refina; el agente lo descartó porque
+  no procesa el evento que pide.
 
 Con `gemma4:12b`, `atlas verify SRS-0001` encuentra que DOORS dice 499 ms y la
 especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log` tarda
@@ -140,14 +171,15 @@ make test-ollama                                 # o: python -m pytest -q -m oll
 ```
 
 `tests/test_agents_ollama.py` prueba los agentes contra la URL y el modelo de
-`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son cinco pruebas:
+`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son seis pruebas:
 - un agente con dos herramientas propias sobre las muestras (`get_requirement` y una `trace`
   que busca las etiquetas `Req:`): usa las dos, responde con el requisito y los ficheros
   correctos y no se inventa ficheros;
 - un cambio preciso en el Ada con las herramientas de ficheros;
 - un agente con las herramientas de `atlas serve` por MCP;
 - el asistente de serie, como lo ejecuta `atlas agent assistant`;
-- la verificación de un requisito con la documentación.
+- la verificación de un requisito con la documentación;
+- las propuestas de enlaces del `req_linker`, una que debe proponer y otra que no.
 
 Se omiten solas si falta el extra `[agents]`, si Ollama no responde o si el modelo no está
 descargado. Para excluirlas: `python -m pytest -m "not ollama"`.

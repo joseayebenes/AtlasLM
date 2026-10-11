@@ -264,3 +264,55 @@ analysis = "regex"
     assert res["verdict"] == "inconsistent", res
     assert any("499" in i["official"] and "301" in i["document"] and "spec_with_bookmarks" in i["source"]
                for i in res["issues"]), res
+
+
+def test_req_linker_proposes_the_code_that_implements_a_requirement(ollama, toml, samples, tmp_path):
+    """Two requirements stated in a document and without code: one that tracks.delete_track
+    implements (the search over the indexed code finds it) and one that no code of the
+    samples implements (the display of the HMI). The agent proposes the first and nothing
+    sure for the second, and the code is not changed."""
+    pytest.importorskip("tree_sitter_ada")
+    import contextlib
+    import io
+    from atlas.agents.link import link_all
+    from atlas.cli import run
+    from atlas.index import Index
+    base_url, api_key, model = ollama
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "operations.md").write_text(
+        "# Operations\n\n1 Tracks\n\nReq: SRS-0150 The software shall remove a track from the track database "
+        "when the operator deletes it.\n\n2 Display\n\nReq: SRS-0151 The HMI shall show the speed of each "
+        "track in knots.\n")
+    code = {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")}
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code", "docs", "graph", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    res = {r["id"]: r for r in link_all("SRS-0150", cfg, index=Index.from_config(cfg))["results"]}
+    res |= {r["id"]: r for r in link_all("SRS-0151", cfg, index=Index.from_config(cfg))["results"]}
+    remove, show = res["SRS-0150"], res["SRS-0151"]
+    assert "tracks.delete_track" in [c["id"] for c in remove["candidates"]], remove
+    assert [x["code"] for x in remove["links"]][:1] == ["tracks.delete_track"], remove
+    assert remove["links"][0]["confidence"] in ("high", "medium"), remove
+    assert all(x["confidence"] != "high" for x in show["links"]), show
+    assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code

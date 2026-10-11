@@ -10,7 +10,7 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
-| Agentes | `build_context`, `verify_requirement`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
+| Agentes | `build_context`, `verify_requirement`, `link_requirement`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
 - Tres herramientas cambian de nombre para que no se confundan:
@@ -40,8 +40,8 @@ Cambios respecto a los servidores anteriores:
   - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
     `list_requirements` y `neighbors`), si `graph` está entre los pasos;
   - con el grafo, `build_context`.
-- `verify_requirement` y `ask_atlas` necesitan el modelo (y `ask_atlas`, también ADK): solo
-  se ofrecen si están en la lista.
+- `verify_requirement`, `link_requirement` y `ask_atlas` necesitan el modelo (y
+  `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
 - Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente

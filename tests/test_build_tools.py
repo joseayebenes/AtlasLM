@@ -162,3 +162,73 @@ def test_gnat_builds_and_runs_a_test(project):
     wrong.write_text("procedure Test_Speeds_Classify is\nbegin\n   null;\nend Test_Speeds_Classify;\n")
     res = tools.run_test(str(wrong))
     assert res["passed"] is True and "file name does not match unit name" in res["warnings"][0]["message"], res
+
+
+def test_the_same_message_goes_once_with_its_lines_and_hints():
+    """What GNAT said about the test gemma4:12b wrote: two errors in nine places each, and a
+    hint in the same place. One entry per error, with its other lines and the hint."""
+    from atlas.code.build import parse_messages
+    out = "".join(f't.adb:{n}:29: error: operator for type "Speed_Class" defined at speeds.ads:2 is not directly '
+                  f'visible\nt.adb:{n}:29: error: use clause would make operation legal\n'
+                  f't.adb:{n + 1}:13: error: array type required in indexed component\n'
+                  for n in (11, 14, 19, 22, 27, 30, 35, 40, 45))
+    found = parse_messages(out)
+    assert [(e["line"], e["also_at"]) for e in found["errors"]] == [(11, [14, 19, 22, 27, 30, 35, 40, 45]),
+                                                                     (12, [15, 20, 23, 28, 31, 36, 41, 46])]
+    assert found["errors"][0]["details"] == ["use clause would make operation legal"]
+    assert "details" not in found["errors"][1] and "more_errors" not in found
+
+
+SPEEDS_ADS = """package Speeds is
+   type Speed_Class is (Invalid, Slow, Normal, Fast);
+   -- Req: SRS-0160
+   function Classify (Speed : Float) return Speed_Class;
+end Speeds;
+"""
+SPEEDS_ADB = """package body Speeds is
+   function Classify (Speed : Float) return Speed_Class is
+   begin
+      if Speed < 0.0 then
+         return Invalid;
+      elsif Speed < 50.0 then
+         return Slow;
+      elsif Speed <= 300.0 then
+         return Normal;
+      else
+         return Fast;
+      end if;
+   end Classify;
+end Speeds;
+"""
+
+
+@gnat
+def test_gnat_on_the_test_a_small_model_wrote_and_on_the_model_of_tester_md(project):
+    """The test of gemma4:12b for SRS-0160 does not build, for two reasons that the errors now
+    give once each; the model of a test in examples/agents/tester.md builds and passes, and
+    finds the wrong boundary."""
+    import re
+    ada, make = project
+    (ada / "src" / "speeds.ads").write_text(SPEEDS_ADS)
+    (ada / "src" / "speeds.adb").write_text(SPEEDS_ADB)
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+                 test=["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"])
+    test = ada / "tests" / "test_speeds.adb"
+    test.write_text("with Speeds;\nprocedure Test_Speeds is\n   -- Req: SRS-0160\nbegin\n" + "".join(
+        f'   if Speeds.Classify({x}) /= Speeds.{c} then\n      raise Program_Error ("{x} should be {c}");\n   end if;\n'
+        for x, c in (("-1.0", "Invalid"), ("49.9", "Slow"), ("300.0", "Normal"), ("300.1", "Fast"))) + "end Test_Speeds;\n")
+    res = tools.run_test(str(test))
+    assert res["built"] is False and len(res["errors"]) == 2, res
+    visible, call = res["errors"]
+    assert "not directly visible" in visible["message"] and len(visible["also_at"]) == 3
+    assert any("use clause" in d for d in visible.get("details", [])), visible
+    assert "array type required" in call["message"] and len(call["also_at"]) == 3
+
+    model = re.search(r"A model of the test:\n\n((?:    .*\n?)+)", (Path(__file__).resolve().parents[1] / "examples" /
+                                                                    "agents" / "tester.md").read_text())[1]
+    test.write_text("\n".join(line[4:] for line in model.splitlines()) + "\n")
+    assert tools.run_test(str(test))["passed"] is True
+    (ada / "src" / "speeds.adb").write_text(SPEEDS_ADB.replace("Speed <= 300.0", "Speed < 300.0"))
+    shutil.rmtree(tools.build_dir)             # gnatmake decides by time stamps: a change a moment after the
+    res = tools.run_test(str(test))            # last build can go unseen, so build from scratch
+    assert res["passed"] is False and "300.0 should be Normal" in res["output"], res

@@ -2,6 +2,7 @@
 
     check_code   compiles one file of the project without producing code (a semantic check)
                  and returns the errors and warnings of the compiler, each with its place
+                 (the same message in many lines, once, with those lines)
     run_test     builds a test procedure of the project and runs it: passed or not, and its
                  output; if it does not build, the errors of the compiler
 
@@ -46,23 +47,35 @@ MESSAGE = re.compile(r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?:
 
 
 def parse_messages(output: str) -> dict:
-    """The errors and warnings of a compiler output, each {file, line, column, message}: the
-    first message of each place (the next ones of a place add detail), at most MAX_MESSAGES
-    of each kind, and how many more there were."""
+    """The errors and warnings of a compiler output, each {file, line, column, message}. The
+    next messages of the same place go in its `details` (GNAT gives hints there: "use clause
+    would make operation legal"), and the same message of the same file goes once, with the
+    other lines where it is in `also_at` (one fix, many places). At most MAX_MESSAGES of each
+    kind, and how many more there were."""
     out: dict = {"errors": [], "warnings": []}
-    seen, more = set(), {"errors": 0, "warnings": 0}
+    places: dict = {}                 # place -> its item, or None when it repeats another one
+    same, more = {}, {"errors": 0, "warnings": 0}
     for m in MESSAGE.finditer(output):
         kind = (m["kind"] or "error").lower()
         key = "warnings" if kind in ("warning", "info", "style", "note") else "errors"
-        place = (key, Path(m["file"]).name, m["line"], m["col"])
-        if place in seen:
+        file, text = Path(m["file"]).name, m["text"].strip()
+        place = (key, file, m["line"], m["col"])
+        if place in places:
+            item = places[place]
+            if item is not None and text != item["message"] and text not in item.get("details", []):
+                item.setdefault("details", []).append(text)
             continue
-        seen.add(place)
+        if (key, file, text) in same:
+            same[key, file, text].setdefault("also_at", []).append(int(m["line"]))
+            places[place] = None
+            continue
         if len(out[key]) == MAX_MESSAGES:
             more[key] += 1
+            places[place] = None
             continue
-        out[key].append({"file": Path(m["file"]).name, "line": int(m["line"]),
-                         "column": int(m["col"]) if m["col"] else None, "message": m["text"].strip()})
+        item = {"file": file, "line": int(m["line"]), "column": int(m["col"]) if m["col"] else None, "message": text}
+        same[key, file, text] = places[place] = item
+        out[key].append(item)
     out.update({f"more_{k}": n for k, n in more.items() if n})
     return out
 

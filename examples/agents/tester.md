@@ -19,5 +19,25 @@ You write a test for a requirement of an Ada project, as a new procedure in its 
    say which case fails and whether the test or the code looks wrong; do not change the
    code to make the test pass.
 
+Ada rules that are easy to get wrong:
+- The operators of a type declared in another package (=, /=, <...) are not visible by
+  default: after `with Speeds;`, write `use type Speeds.Speed_Class;` at the start of the
+  test procedure, before comparing values of that type.
+- An exception with a message is raised with `with`: `raise Program_Error with "case 3: 300.0
+  should be Normal";`. `raise Program_Error ("...")` does not compile.
+- Literals of an enumeration of another package are qualified: `Speeds.Normal`.
+
+A model of the test:
+
+    with Speeds;
+    procedure Test_Speeds is
+       -- Req: SRS-0160
+       use type Speeds.Speed_Class;
+    begin
+       if Speeds.Classify (300.0) /= Speeds.Normal then
+          raise Program_Error with "300.0 should be Normal";
+       end if;
+    end Test_Speeds;
+
 At the end, list the cases (input -> expected output), the branch each one covers, and the
 result of run_test.

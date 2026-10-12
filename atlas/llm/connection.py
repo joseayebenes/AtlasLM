@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import random
 import re
@@ -87,6 +88,7 @@ class ServiceConfig:
     temperature: float = 0.1     # LLM only
     max_tokens: int = 0          # LLM only: output cap; 0 = the server default
     reasoning_effort: str = ""   # LLM only: "none" turns reasoning off (Ollama); "" = the server default
+    extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -702,7 +704,8 @@ def describe(cfg: ServiceConfig) -> str:
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
-            + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "") + "\n"
+            + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
+            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
             + (f" | client cert {n.client_cert}" if n.client_cert else "")
             + f" | timeout {n.timeout:g}s"
@@ -761,7 +764,8 @@ def check(conn: Connection) -> int:
                 r = client.chat.completions.create(
                     model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
                     messages=[{"role": "user", "content": "Reply with: ok"}],
-                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}))
+                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
+                    **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
                 ok, detail = _check_chat(r)
             else:
                 r = client.embeddings.create(model=cfg.model, input=["test"])
@@ -822,6 +826,10 @@ api_key = "${OPENAI_API_KEY:-local}"
 temperature = 0.1
 max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
 reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
+
+# [llm.extra_body]              # fields added as is to every chat request, for options of the server
+# provider = { order = ["deepinfra"], allow_fallbacks = false }   # OpenRouter: always the same provider
+# chat_template_kwargs = { enable_thinking = false }              # vLLM: no reasoning with Qwen3
 
 # [llm.network]                 # uncomment to override the network for the LLM only
 # proxy = ""

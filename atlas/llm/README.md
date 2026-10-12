@@ -34,6 +34,10 @@ configuración efectiva con las claves enmascaradas. Reconoce los modelos que ra
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
 razonando sin contestar.
 
+`[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
+agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no
+tiene, como `provider` en OpenRouter o `chat_template_kwargs` en vLLM.
+
 ## Respuestas en JSON
 
 `JsonLlm.ask_json` pide un objeto con un esquema y lo recupera en tres pasos: el mayor

@@ -99,3 +99,22 @@ def test_a_reset_in_epoch_milliseconds_is_not_a_pause_of_minutes():
         wait = _wait_from_headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": value})
         assert 28 <= wait <= 31, value
     assert _wait_from_headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "6m0s"}) == 360
+
+
+def test_extra_body_goes_as_is_in_every_chat_request(fake, fake_stats, capsys, tmp_path):
+    url, control = fake
+    from atlas.config import load_config
+    from atlas.llm import Connection, JsonLlm, check, from_config
+    toml = tmp_path / "atlas.toml"
+    toml.write_text(f'[llm]\nbase_url = "{url}"\nmodel = "fake"\n'
+                    f'[llm.extra_body]\nprovider = {{ order = ["deepinfra"], allow_fallbacks = false }}\n'
+                    f'[network]\nproxy = ""\nno_proxy = "*"\n')
+    conn = from_config(load_config(toml))
+    provider = {"order": ["deepinfra"], "allow_fallbacks": False}
+    assert check(Connection(llm=conn.llm, embeddings=_service(url))) == 0
+    assert 'extra_body={"provider": {"order": ["deepinfra"]' in capsys.readouterr().out
+    assert fake_stats()["last_chat"]["provider"] == provider
+    JsonLlm(conn.llm).ask_json("Answer in JSON.", "Overall?", {"type": "object", "properties": {
+        "summary": {"type": "string"}}}, "overview")
+    last = fake_stats()["last_chat"]
+    assert last["provider"] == provider and last["response_format"]["type"] == "json_schema"

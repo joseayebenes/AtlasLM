@@ -22,6 +22,7 @@ en el [CHANGELOG](CHANGELOG.md).
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
+| [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
 | [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
 | [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |
 | [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |
@@ -42,18 +43,19 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 176 pruebas sin modelo (+7 de agentes con Ollama)
+python -m pytest -q                                # 180 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
-### Tres niveles de modelo
+### Niveles de modelo
 
 | Nivel | Para qué | Configuración |
 |---|---|---|
 | **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa, modelo que razona, lentitud) | `atlas.test.toml` |
 | **Modelo local** (Ollama o LM Studio) | probar la calidad real de análisis, búsqueda y agentes sin cupo ni red | `atlas.dev.toml` |
+| **OpenRouter** | comparar modelos de chat sobre las muestras, también el del gateway, sin descargarlos ([guía](docs/openrouter.md)) | `atlas.openrouter.toml` |
 | **Gateway corporativo** | producción | `atlas.toml` |
 
-Los tres usan la misma API compatible con OpenAI: cambiar de nivel es cambiar `base_url`.
+Todos usan la misma API compatible con OpenAI: cambiar de nivel es cambiar `base_url`.
 
 ### Ollama o LM Studio
 

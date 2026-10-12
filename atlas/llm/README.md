@@ -18,19 +18,25 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
   sistema);
 - respeta el límite de peticiones y de tokens por minuto, repartiendo las peticiones en el
   tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave;
-- con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*` o espera creciente) hasta
+- con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*`, cuyo `reset` puede venir en
+  segundos o en milisegundos, o espera creciente) hasta
   `rate_limit_max_wait`, sin contarlo como reintento; si es adaptativo, baja el ritmo un
   30 % y lo recupera poco a poco;
 - reintenta los 5xx y los fallos de conexión puntuales, pero no los de certificado.
 
 `diagnose(e)` convierte los errores típicos de una red corporativa (certificado, proxy con
-autenticación, TLS mutuo, credenciales, URL sin `/v1`) en una indicación concreta, y
-`is_connection_error(e)` dice cuáles hacen inútil seguir: el motor los trata como fatales.
+autenticación, TLS mutuo, credenciales, URL sin `/v1`) y la falta de crédito (402) en una
+indicación concreta, con lo que diga el servidor (y, en OpenRouter, el proveedor), y `is_connection_error(e)` dice cuáles
+hacen inútil seguir: el motor los trata como fatales.
 
 `atlas check atlas.toml` hace una petición real al chat y otra a los embeddings y muestra la
 configuración efectiva con las claves enmascaradas. Reconoce los modelos que razonan: dice
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
 razonando sin contestar.
+
+`[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
+agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no
+tiene, como `provider` en OpenRouter o `chat_template_kwargs` en vLLM.
 
 ## Respuestas en JSON
 

@@ -25,7 +25,9 @@ Qué se envía al modelo:
   pregunta y lo que devuelven sus herramientas: requisitos, código fuente, documentos.
 
 Por eso el modelo tiene que ser el gateway corporativo o uno local. atlas no lo decide: va
-a donde diga `base_url`.
+a donde diga `base_url`. La excepción es `atlas.openrouter.toml`, que manda a OpenRouter, un
+servicio externo, las muestras sintéticas de `examples/samples` para comparar modelos
+([guía](openrouter.md)); no se usa con datos del proyecto.
 
 Otras piezas que podrían conectarse y no lo hacen:
 - **ADK**: los agentes usan `AtlasLlm`, que va por el cliente de `atlas.llm`; no se usan

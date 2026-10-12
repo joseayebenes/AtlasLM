@@ -1,0 +1,100 @@
+# atlas.openrouter.toml — pruebas con modelos de OpenRouter sobre los datos de examples/samples/
+# Solo con las muestras: OpenRouter es un servicio externo (ver docs/openrouter.md).
+#   export OPENROUTER_API_KEY=sk-or-...
+#   make eval-openrouter ATLAS_MODEL=qwen/qwen3.6-35b-a3b
+# El chat va a OpenRouter; los embeddings siguen en Ollama (embeddinggemma, como el gateway),
+# así que solo cambia el modelo de chat. Cada modelo tiene su propio workspace: cambiar de
+# modelo no reprocesa lo del anterior y sus informes no se pisan.
+[project]
+name = "atlas-openrouter"
+workspace = "./workspace-openrouter/${ATLAS_MODEL:-google/gemma-4-26b-a4b-it}"
+log_level = "INFO"
+
+[llm]
+base_url = "https://openrouter.ai/api/v1"
+model = "${ATLAS_MODEL:-google/gemma-4-26b-a4b-it}"   # por defecto, el del gateway: gemma 4 26B A4B
+api_key = "${OPENROUTER_API_KEY}"
+max_tokens = 8192
+reasoning_effort = "${ATLAS_REASONING:-none}"         # none | low | medium | high; gpt-oss no admite none
+
+[llm.network]
+requests_per_minute = 28                    # como el gateway; los modelos :free admiten 20 (atlas baja solo)
+
+# [llm.extra_body]                          # opciones de OpenRouter, tal cual en cada petición
+# provider = { order = ["deepinfra"], allow_fallbacks = false }   # siempre el mismo proveedor
+# provider = { data_collection = "deny" }                         # solo proveedores que no guardan datos
+
+[embeddings]
+base_url = "http://localhost:11434/v1"      # Ollama: OLLAMA_CONTEXT_LENGTH=16384 ollama serve
+model = "embeddinggemma"
+batch = 64
+
+[pipeline]
+workers = 4
+on_error = "continue"
+max_attempts = 3
+prune_missing = true
+steps = ["doors", "code", "docs", "graph", "index"]
+
+[[sources.docs]]
+name = "normas"
+paths = ["examples/samples/docs"]
+patterns = ["*.pdf"]
+analysis = "regex"                          # llm | regex | none; regex: requisitos sin LLM
+req_regex = "(?i)\\bReq\\s*:\\s*(\\S+)"     # grupo 1 = ID; el texto sigue hasta el final de la frase
+structure = "auto"                          # auto | bookmarks | headings | size
+
+[[sources.docs]]
+name = "manuales"
+paths = ["examples/samples/docs"]
+patterns = ["*.md"]
+analysis = "llm"
+lang = "Spanish"
+min_chars = 300
+
+[sources.doors]
+adapter = "exchange"                        # la base de intercambio de requisitos (atlas.doors.exchange)
+modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
+
+[sources.doors.exchange]
+path = "examples/samples/requirements.sqlite"   # la rellena tools/doors_export (aquí, make_samples.py)
+kinds = ["requirement", "heading", "information"]
+
+[sources.doors.convention]                  # cómo casan los IDs con documentos y código
+id_pattern = "^(?:SRS|SSS)-\\d{4}$"
+id_normalize = "upper"
+inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
+inline_reference_type = "references"
+
+[sources.code]
+roots = ["examples/samples/ada"]
+languages = ["ada"]
+exclude = ["**/build/**"]
+req_tag = "Req:"
+test_patterns = ["**/tests/**"]
+summaries = "none"
+# el compilador para los agentes (check_code, run_test): GNAT instalado con Alire
+check_command = ["gcc", "-c", "-gnatc", "{include}", "{file}"]
+test_command = ["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]
+tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
+
+[graph]
+exports = ["graphml", "json"]
+
+[index]
+chunk_chars = 1200
+chunk_overlap = 200
+
+[agents]                                    # sin model: el de [llm]
+dirs = ["agents", "examples/agents"]
+[agents.assistant]                          # los agentes de serie apagan el razonamiento en su fichero:
+max_steps = 10                              # para probarlo, reasoning_effort en [agents.<nombre>]
+reasoning_effort = "${ATLAS_REASONING:-none}"
+[agents.eval]
+sets = ["examples/eval/assistant.yaml",     # el asistente (necesita el modelo)
+        "examples/eval/retrieval.yaml"]     # el índice y el grafo, sin modelo
+runs = 1                                    # veces que se hace cada pregunta
+
+[mcp]
+enabled = true
+tools = []

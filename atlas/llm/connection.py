@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import random
 import re
@@ -87,6 +88,7 @@ class ServiceConfig:
     temperature: float = 0.1     # LLM only
     max_tokens: int = 0          # LLM only: output cap; 0 = the server default
     reasoning_effort: str = ""   # LLM only: "none" turns reasoning off (Ollama); "" = the server default
+    extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -418,12 +420,15 @@ def rate_limiter_for(cfg: ServiceConfig) -> RateLimiter:
 
 
 def _duration(v: str | None) -> float | None:
-    """'6m0s', '1.5s', '20ms', '30', or an epoch timestamp -> seconds."""
+    """'6m0s', '1.5s', '20ms', '30', or an epoch timestamp in seconds or milliseconds
+    (OpenRouter's X-RateLimit-Reset) -> seconds."""
     if not v:
         return None
     v = v.strip()
     try:
         x = float(v)
+        if x > 1e11:                    # milliseconds: in seconds that would be after the year 5000
+            x /= 1000
         return max(0.0, x - time.time()) if x > 1e9 else x
     except ValueError:
         pass
@@ -642,7 +647,19 @@ def create_client(cfg: ServiceConfig):
 def is_connection_error(e: BaseException) -> bool:
     """Errors after which it makes no sense to go on with the next request."""
     return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "RateLimitError",
-                                "ConflictError", "AuthenticationError", "PermissionDeniedError")
+                                "ConflictError", "AuthenticationError", "PermissionDeniedError") \
+        or getattr(e, "status_code", None) == 402          # no credit left
+
+
+def _server_message(chain: list) -> str:
+    """What the server said in the body of an HTTP error, if it said anything. OpenRouter
+    puts what the provider of the model answered in metadata.raw."""
+    for c in chain:
+        body = getattr(c, "body", None)
+        if isinstance(body, dict) and body.get("message"):
+            raw = (body.get("metadata") or {}).get("raw") if isinstance(body.get("metadata"), dict) else None
+            return (f"{body['message']}: {raw}" if isinstance(raw, str) and raw else str(body["message"]))[:300]
+    return ""
 
 
 def diagnose(e: BaseException) -> str:
@@ -652,6 +669,8 @@ def diagnose(e: BaseException) -> str:
         chain.append(x)
         x = x.__cause__ or x.__context__
     text = " | ".join(f"{type(c).__name__}: {c}" for c in chain)
+    said = _server_message(chain)
+    said = f" (the server says: {said})" if said else ""
     if "CERTIFICATE_VERIFY_FAILED" in text or any(isinstance(c, ssl.SSLCertVerificationError) for c in chain):
         return ("server certificate not verified. If a proxy inspects TLS, set the corporate "
                 "root CA in ca_cert (or ca_cert = \"system\" to use the system certificate "
@@ -660,16 +679,19 @@ def diagnose(e: BaseException) -> str:
             or "rate limit" in text.lower():
         return ("API request limit: the server kept rejecting for the whole rate_limit_max_wait. "
                 "It may be an hourly or daily quota. Wait before running again, lower "
-                "requests_per_minute or raise rate_limit_max_wait.")
+                f"requests_per_minute or raise rate_limit_max_wait{said}.")
     if "407" in text:
         return "the proxy requires authentication: proxy = \"http://user:password@proxy:port\""
     if "CERTIFICATE_REQUIRED" in text or "certificate required" in text.lower() \
             or "HANDSHAKE_FAILURE" in text:
         return "the server requires a client certificate: client_cert and client_key"
+    if any(getattr(c, "status_code", None) == 402 for c in chain):
+        return ("the API asks for payment (HTTP 402): no credit left, or the spending limit of the "
+                f"key was reached. Add credit or raise the limit of the key{said}")
     if "401" in text or "AuthenticationError" in text:
-        return "credentials rejected by the API: check api_key"
+        return "credentials rejected by the API: check api_key (and that its variable is set)"
     if "404" in text or "NotFoundError" in text:
-        return "path or model not found: check base_url (missing /v1?) and the model name"
+        return f"path or model not found: check base_url (missing /v1?) and the model name{said}"
     if any(type(c).__name__ == "ProxyError" for c in chain):
         return "cannot connect through the proxy: check proxy and no_proxy"
     if any(type(c).__name__ in ("ConnectError", "ConnectTimeout") for c in chain):
@@ -684,7 +706,8 @@ def describe(cfg: ServiceConfig) -> str:
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
-            + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "") + "\n"
+            + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
+            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
             + (f" | client cert {n.client_cert}" if n.client_cert else "")
             + f" | timeout {n.timeout:g}s"
@@ -743,7 +766,8 @@ def check(conn: Connection) -> int:
                 r = client.chat.completions.create(
                     model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
                     messages=[{"role": "user", "content": "Reply with: ok"}],
-                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}))
+                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
+                    **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
                 ok, detail = _check_chat(r)
             else:
                 r = client.embeddings.create(model=cfg.model, input=["test"])
@@ -804,6 +828,10 @@ api_key = "${OPENAI_API_KEY:-local}"
 temperature = 0.1
 max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
 reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
+
+# [llm.extra_body]              # fields added as is to every chat request, for options of the server
+# provider = { order = ["deepinfra"], allow_fallbacks = false }   # OpenRouter: always the same provider
+# chat_template_kwargs = { enable_thinking = false }              # vLLM: no reasoning with Qwen3
 
 # [llm.network]                 # uncomment to override the network for the LLM only
 # proxy = ""

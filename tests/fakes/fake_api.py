@@ -17,7 +17,7 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
-GET / returns counters. Sections are analysed with a heuristic (sentences with "shall");
+GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites [1].
 """
 import argparse, json, re, hashlib, os
@@ -56,6 +56,7 @@ class H(BaseHTTPRequestHandler):
             return self.send(200, {"object": "list", "model": "e", "usage": {"prompt_tokens": 1, "total_tokens": 1},
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         stats["chat"] += 1
+        stats["last_chat"] = {k: v for k, v in body.items() if k != "messages"}   # the options of the request
         if c.get("no_structured_output") and body.get("response_format"):
             return self.send(501, {"error": {"message": "structured output is unavailable", "type": "api_error"}})
         user = body["messages"][-1]["content"]; cut = False

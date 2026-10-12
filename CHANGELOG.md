@@ -45,6 +45,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   del modelo. Con `gemma4:12b` encontró un error de límite (`< 300.0` donde el requisito dice
   «300 inclusive») en 3 de 3 ejecuciones. También como herramienta `check_compliance`, si se
   pide. Es una ayuda para la inspección, no una prueba.
+- `atlas.openrouter.toml`: los modelos de chat de OpenRouter sobre las muestras, con los
+  embeddings en Ollama. El modelo va en `ATLAS_MODEL` (por defecto, `google/gemma-4-26b-a4b-it`,
+  el del gateway) y cada uno tiene su workspace. `make check-openrouter`, `eval-openrouter` y
+  `compare-openrouter`; este último usa `tools/compare_models.py`, que pasa `atlas run` y
+  `atlas eval` con cada modelo y termina con una tabla. Guía en `docs/openrouter.md`.
+- `[llm] extra_body`: campos que van tal cual en cada petición de chat, para las opciones
+  propias del servidor (`provider` en OpenRouter, `chat_template_kwargs` en vLLM).
 
 ### Cambiado
 - `edit_file` tolera también el listado de `read_file` copiado en el texto: quita los números
@@ -60,6 +67,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Cuando varios extractores leen la misma extensión, se usa el de mayor `priority`
   (atributo nuevo de `DocumentExtractor`).
 - La huella de `docs.process` incluye el extractor, y `atlas sections` dice cuál se usa.
+
+### Corregido
+- Un `X-RateLimit-Reset` en milisegundos, como el de OpenRouter, se leía como segundos: cada
+  429 paraba todas las peticiones 5 minutos.
+- Un 402 (sin crédito, o con el límite de gasto de la clave agotado) para el motor en vez de
+  fallar unidad a unidad, y el diagnóstico del 402, del 404 y del 429 dice lo que respondió
+  el servidor (en OpenRouter, también el proveedor del modelo).
 
 ### Al actualizar
 - El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.

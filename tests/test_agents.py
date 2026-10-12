@@ -124,6 +124,7 @@ test_patterns = ["**/tests/**"]
 def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatch):
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
@@ -131,6 +132,7 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
 
     first, second = client.requests
     assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file
+    assert first["extra_body"] == {"provider": {"order": ["deepinfra"]}}           # [llm] extra_body, as is
     assert first["messages"][0]["role"] == "system" and "engineering project" in first["messages"][0]["content"]
     assert first["messages"][-1] == {"role": "user", "content": "Who implements SRS-0004?"}
     tools = {t["function"]["name"]: t["function"] for t in first["tools"]}

@@ -58,6 +58,8 @@ class AtlasLlm(BaseLlm):
             kwargs["max_tokens"] = self.service.max_tokens
         if self.service.reasoning_effort:
             kwargs["reasoning_effort"] = self.service.reasoning_effort
+        if self.service.extra_body:
+            kwargs["extra_body"] = self.service.extra_body
         response = await asyncio.to_thread(self.client.chat.completions.create, **kwargs)   # the client is sync
         yield to_llm_response(response)
 

@@ -32,8 +32,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   errores y avisos con su sitio; `run_test` construye un procedimiento de prueba y lo ejecuta.
   Los comandos van en `[sources.code] check_command` y `test_command`, como listas de
   argumentos, con `tool_path` y `command_timeout`. `atlas.dev.toml` los configura para GNAT
-  instalado con Alire. `run_test` ejecuta código y solo se ofrece si se pide.
-- `examples/agents/`: dos agentes de proyecto que escriben, `implementer` y `tester`.
+  instalado con Alire. `run_test` ejecuta código y solo se ofrece si se pide. El mismo error
+  en varias líneas se da una vez, con sus líneas, y las pistas del compilador en el mismo
+  sitio van con él: para el test que escribió `gemma4:12b` para SRS-0160, 2 entradas en vez
+  de 18 mensajes.
+- `examples/agents/`: dos agentes de proyecto que escriben, `implementer` y `tester`. Las
+  instrucciones de `tester` traen las reglas de Ada en las que falló `gemma4:12b` y un modelo
+  de prueba que compila.
 - `atlas comply ID|MÓDULO` y el agente `compliance_checker`: si el código que implementa cada
   requisito hace todo lo que pide, obligación a obligación (`met`, `not_met`, `partial`,
   `cannot_tell`), con las líneas que lo deciden. El veredicto sale de las obligaciones, no

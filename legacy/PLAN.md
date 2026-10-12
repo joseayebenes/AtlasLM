@@ -1287,7 +1287,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 181 pruebas, 174 sin modelo:
+- `tests/`: 183 pruebas, 176 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

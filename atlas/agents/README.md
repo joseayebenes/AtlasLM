@@ -47,6 +47,10 @@ TOML retoca un campo sin tocar el fichero (`max_steps = 10`). `atlas agents` los
 Un agente se ejecuta con ADK sobre `AtlasLlm`, que usa el cliente de `atlas.llm`: el mismo
 proxy, TLS, límite de peticiones y reintentos que el resto, sin LiteLLM. Sus herramientas
 son los plugins `tool` con esos nombres, las mismas funciones que ofrece `atlas serve`.
+La misma llamada con los mismos argumentos, la tercera vez seguida, no se ejecuta: el modelo
+recibe un error que le pide hacer otra cosa. `gemma-4-26b` llegó a escribir 17 veces seguidas
+el mismo fichero tras un error de compilación que no entendía, hasta agotar `max_steps`; y
+`write_file` avisa cuando el contenido no cambia.
 
 ```bash
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml

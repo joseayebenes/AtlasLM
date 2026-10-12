@@ -91,6 +91,8 @@ def test_write_and_read_only(project, tmp_path):
     assert "read" in project.write_file("src/tracks.adb", "x")["error"]           # overwrite: read it first
     project.read_file("src/tracks.adb")
     assert "-   procedure Update (I : Integer) is" in project.write_file("src/tracks.adb", "null;\n")["diff"]
+    same = project.write_file("src/tracks.adb", "null;\n")                   # a model that loops: tell it
+    assert same["unchanged"] and "nothing changed" in same["note"] and "diff" not in same
     ro = CodeTools(["src"], read_only=True)
     ro.read_file("src/tracks.adb")
     assert ro.edit_file("src/tracks.adb", "null;", "x") == {"error": "these tools are read-only"}

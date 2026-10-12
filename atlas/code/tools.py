@@ -304,6 +304,9 @@ class CodeTools:
             p.parent.mkdir(parents=True, exist_ok=True)
             created = not p.exists()
             self._write(p, out)
+        if not created and before == content:
+            return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
+                    "note": "the file already had exactly this content: nothing changed"}
         return {"file": self._show(p), "created": created, "lines": content.count("\n") + 1,
                 **({} if created else {"diff": self._diff(self._show(p), before, content)})}
 

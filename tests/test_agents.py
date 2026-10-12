@@ -167,6 +167,32 @@ def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
         main(["agent", "nobody", "Hello", str(workspace.path)])
 
 
+def test_the_same_call_a_third_time_in_a_row_is_not_run(workspace, monkeypatch):
+    import inspect
+    from atlas.agents.runtime import REPEATS, loop_guard, run_agent
+    ran = []
+
+    def trace(req_id: str) -> dict:
+        """Everything about a requirement."""
+        ran.append(req_id)
+        return {"id": req_id}
+    guarded = loop_guard([trace])[0]
+    assert guarded.__name__ == "trace" and list(inspect.signature(guarded).parameters) == ["req_id"]   # for ADK
+    results = [guarded(req_id="SRS-0004") for _ in range(REPEATS + 1)] + [guarded(req_id="SRS-0005")]
+    assert ran == ["SRS-0004"] * (REPEATS - 1) + ["SRS-0005"]
+    assert all("times in a row" in r["error"] for r in results[REPEATS - 1:REPEATS + 1])
+
+    # in a real agent: the third identical call gets the error, and the agent goes on
+    monkeypatch.chdir(workspace.path.parent)
+    same = {"trace": {"req_id": "SRS-0004"}}
+    client = StubClient([same, same, same, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented") and len(res["calls"]) == 3
+    third = client.requests[3]["messages"][-1]
+    assert third["role"] == "tool" and "3 times in a row" in third["content"]
+    assert "tracks.delete_track" in client.requests[2]["messages"][-1]["content"]      # the second one ran
+
+
 def test_genai_schemas_become_json_schemas():
     pytest.importorskip("google.adk", reason="needs the [agents] extra")
     from google.adk.models.llm_request import LlmRequest

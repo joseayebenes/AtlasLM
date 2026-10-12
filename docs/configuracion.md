@@ -7,6 +7,8 @@ de comandos solo dice qué acción lanzar y con qué fichero: `atlas run atlas.t
 Ejemplos completos en el repositorio:
 - `atlas.toml`: producción, con el gateway;
 - `atlas.dev.toml`: Ollama y las muestras;
+- `atlas.openrouter.toml`: modelos de OpenRouter y las muestras, para compararlos
+  ([guía](openrouter.md));
 - `atlas.test.toml`: la API falsa de las pruebas.
 
 ## Cómo se lee

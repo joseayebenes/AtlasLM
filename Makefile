@@ -40,6 +40,19 @@ check:          ## prueba de conexión con el modelo local
 serve:          ## servidor MCP (stdio) de atlas.dev.toml; normalmente lo arranca el editor
 	$(PY) -m atlas.cli serve atlas.dev.toml
 
+check-openrouter:   ## conexión con OpenRouter (OPENROUTER_API_KEY) y con los embeddings de Ollama
+	$(PY) -m atlas.cli check atlas.openrouter.toml
+
+run-openrouter:     ## las muestras con un modelo de OpenRouter: make run-openrouter ATLAS_MODEL=qwen/qwen3.6-35b-a3b
+	$(PY) -m atlas.cli run atlas.openrouter.toml
+
+eval-openrouter:    ## atlas run y atlas eval con un modelo de OpenRouter; informes en workspace-openrouter/<modelo>
+	$(PY) -m atlas.cli run atlas.openrouter.toml || test $$? -eq 1      # 1: alguna unidad falló; 2: error fatal
+	$(PY) -m atlas.cli eval atlas.openrouter.toml
+
+compare-openrouter: ## lo mismo con cada modelo de MODELS="a b c" y una tabla que los compara
+	$(PY) tools/compare_models.py $(MODELS)
+
 wheel:          ## dist/atlaslm-<versión>-py3-none-any.whl y el .tar.gz
 	rm -f $(WHEEL)
 	$(PY) -m build --outdir dist .
@@ -57,7 +70,8 @@ check-install: wheelhouse   ## instalación limpia desde dist/wheelhouse, como d
 	$(PY) tools/check_install.py dist/wheelhouse
 
 clean:
-	rm -rf workspace-dev workspace-test examples/samples examples/large .pytest_cache dist build *.egg-info
+	rm -rf workspace-dev workspace-test workspace-openrouter examples/samples examples/large .pytest_cache dist build *.egg-info
 
 .PHONY: install samples fake test test-ollama run-test large run-dev status sections check serve \
+	check-openrouter run-openrouter eval-openrouter compare-openrouter \
 	wheel wheelhouse wheelhouse-windows check-install clean

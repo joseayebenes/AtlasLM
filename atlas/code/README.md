@@ -89,7 +89,7 @@ variable con el nombre de una función). `BuildTools` le da dos herramientas:
 | Herramienta | Qué hace |
 |---|---|
 | `check_code` | compila un fichero sin generar código y devuelve los errores y avisos, cada uno con fichero, línea, columna y mensaje. El mismo mensaje en varias líneas va una vez, con las demás líneas en `also_at` (un arreglo, muchos sitios), y las pistas que el compilador da en el mismo sitio van en `details` (GNAT: «use clause would make operation legal»). Como mucho 10 de cada clase |
-| `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`) |
+| `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`). Una prueba que no se construye, como un script de Python, solo se ejecuta |
 
 Los comandos están en `[sources.code]`, como listas de argumentos y sin intérprete de
 órdenes, así que no están atados a ningún compilador. Con GNAT, instalado con Alire (ver la
@@ -108,6 +108,19 @@ tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 `gnatmake` decide qué recompilar por las fechas de los ficheros: un cambio un instante después
 de compilar puede no verse. Si pasa, `-f` en `test_command` recompila todo lo que usa la
 prueba.
+
+Una prueba que habla con un servidor necesita que esté en marcha. `run_command` dice cómo se
+ejecuta lo que construyó `test_command` (por defecto, el ejecutable tal cual), así que un
+envoltorio del proyecto puede arrancar el servidor, ejecutar la prueba y pararlo. Las pruebas
+que no se construyen van por `test_commands`, por extensión, y pasan igual si terminan con 0:
+
+```toml
+[sources.code]
+run_command = ["with_server", "{exe}"]
+tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
+[sources.code.test_commands]
+py = ["with_server", "python3", "{file}"]
+```
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` ejecuta código, así
 que solo se ofrece si se pide en `[mcp] tools` o en las herramientas de un agente. Ningún

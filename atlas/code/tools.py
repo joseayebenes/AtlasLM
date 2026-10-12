@@ -318,6 +318,9 @@ class CodeTools:
                 raw, encoding = _decode(data)
                 before, crlf = raw.replace("\r\n", "\n"), "\r\n" in raw
             content = content.replace("\r\n", "\n")
+            unlisted = _line_backslashes(content)
+            if unlisted:
+                content = content.replace("\\\n", "\n")
             try:
                 out = (content.replace("\n", "\r\n") if crlf else content).encode(encoding)
             except UnicodeEncodeError as e:
@@ -329,7 +332,8 @@ class CodeTools:
             return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
                     "note": "the file already had exactly this content: nothing changed"}
         return {"file": self._show(p), "created": created, "lines": content.count("\n") + 1,
-                **({} if created else {"diff": self._diff(self._show(p), before, content)})}
+                **({} if created else {"diff": self._diff(self._show(p), before, content)}),
+                **({"notes": [LISTING_NOTE]} if unlisted else {})}
 
 
 ESCAPES_NOTE = "the backslashes before quotes or n/t in old_text and new_text were read as plain characters"
@@ -349,6 +353,13 @@ def _unlist(s: str) -> str:
     """What a model meant when it copied the listing of read_file into a text, with the line
     numbers, a backslash before each line break and some line breaks written as \\n."""
     return LISTING.sub("", _unescape(s.replace("\\\n", "\n")))
+
+
+def _line_backslashes(s: str) -> bool:
+    """Whether a model ended (nearly) every line of a text with a backslash, as in the listing
+    of read_file (gemma-4-26b in new_text alone, with an old_text copied right)."""
+    breaks = s.rstrip("\n").count("\n")                      # the final line break does not count
+    return breaks >= 2 and s.count("\\\n") >= 0.8 * breaks
 
 
 def _occurrences(text: str, old: str, starts: list[int] | None = None) -> list[int]:
@@ -371,7 +382,10 @@ def _find(text: str, old: str, new: str, replace_all: bool) -> dict | None:
     ambiguous, or None when old is not there. Exact first; then, as small models often
     get them wrong, with their escapes undone, without the line numbers of read_file they
     copied (gemma4:12b in edits of several lines), and ignoring indentation (whole lines)."""
-    tries = [(old, new, [])]
+    first_notes = []
+    if _line_backslashes(new) and "\\\n" not in old:
+        new, first_notes = new.replace("\\\n", "\n"), [LISTING_NOTE]
+    tries = [(old, new, first_notes)]
     if "\\" in old + new and (_unescape(old), _unescape(new)) != (old, new):
         tries.append((_unescape(old), _unescape(new), [ESCAPES_NOTE]))
     if (LISTING.search(old) or "\\\n" in old) and (_unlist(old), _unlist(new)) != (old, new):

@@ -87,6 +87,20 @@ def test_an_edit_already_made_and_the_closest_block(project):
     assert "closest" not in project.edit_file(f, "Something else entirely", "x")
 
 
+def test_backslashes_at_the_end_of_every_new_line_are_removed(project, tmp_path):
+    f = "src/tracks.adb"
+    project.read_file(f)
+    done = project.edit_file(f, "   procedure Update (I : Integer) is\n   begin",
+                             "   procedure Update (\\\n      I : Integer) is\\\n   begin")   # gemma-4-26b
+    assert done["replacements"] == 1 and done["notes"]
+    assert "   procedure Update (\n      I : Integer) is\n   begin\n" in (tmp_path / f).read_text()
+    new = project.write_file("src/new.ads", "package New_Unit is\\\n   X : Integer;\\\nend New_Unit;\n")
+    assert new["notes"] and (tmp_path / "src" / "new.ads").read_text() == "package New_Unit is\n   X : Integer;\nend New_Unit;\n"
+    shell = "a \\\n  b\nc\nd\ne\n"                      # one continuation line: left as it is
+    project.write_file("src/run.sh", shell)
+    assert (tmp_path / "src" / "run.sh").read_text() == shell
+
+
 def test_encoding_line_endings_and_permissions(project, tmp_path):
     crlf = tmp_path / "src" / "legacy.adb"
     crlf.write_bytes("-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   null;\r\nend Run;\r\n".encode("latin-1"))

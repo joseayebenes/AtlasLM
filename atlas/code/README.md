@@ -77,6 +77,9 @@ números de línea (`    3 | `), una barra antes de cada salto de línea y algun
 `edit_file` las quita de los dos y lo intenta otra vez. En un experimento (poner una guarda en
 `Tracks.Update`), sin esta tolerancia el agente repitió la misma edición fallida hasta agotar
 `max_steps` en 2 ejecuciones de 2; con ella, hizo el cambio correcto en las 2.
+`gemma-4-26b` pone a veces esas barras solo en el texto nuevo, con el buscado bien copiado: si
+casi todas las líneas del texto nuevo (o del contenido de `write_file`) acaban en barra, se
+quitan también.
 
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente

@@ -73,11 +73,12 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
 
 
-def _status_error(status: int, message: str):
+def _status_error(status: int, message: str, **metadata):
     import httpx
     from openai import OpenAI
     response = httpx.Response(status, request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
-                              json={"error": {"message": message, "code": status}})
+                              json={"error": {"message": message, "code": status,
+                                              **({"metadata": metadata} if metadata else {})}})
     return OpenAI(api_key="x", base_url="https://api.example/v1")._make_status_error_from_response(response)
 
 
@@ -89,6 +90,10 @@ def test_no_credit_is_fatal_and_the_server_message_is_shown():
     no_endpoints = _status_error(404, "No endpoints found matching your data policy")
     assert not is_connection_error(no_endpoints)
     assert "model name (the server says: No endpoints found matching your data policy)" in diagnose(no_endpoints)
+    upstream = _status_error(429, "Provider returned error", provider_name="Mistral",
+                             raw="mistralai/mistral-small-2603 is temporarily rate-limited upstream")
+    assert "(the server says: Provider returned error: mistralai/mistral-small-2603 is temporarily rate-limited " \
+           "upstream)" in diagnose(upstream)
 
 
 def test_a_reset_in_epoch_milliseconds_is_not_a_pause_of_minutes():

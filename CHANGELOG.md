@@ -72,8 +72,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Un `X-RateLimit-Reset` en milisegundos, como el de OpenRouter, se leía como segundos: cada
   429 paraba todas las peticiones 5 minutos.
 - Un 402 (sin crédito, o con el límite de gasto de la clave agotado) para el motor en vez de
-  fallar unidad a unidad, y el diagnóstico del 402 y del 404 dice lo que respondió el
-  servidor.
+  fallar unidad a unidad, y el diagnóstico del 402, del 404 y del 429 dice lo que respondió
+  el servidor (en OpenRouter, también el proveedor del modelo).
 
 ### Al actualizar
 - El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.

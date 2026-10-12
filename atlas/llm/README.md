@@ -26,7 +26,7 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 
 `diagnose(e)` convierte los errores típicos de una red corporativa (certificado, proxy con
 autenticación, TLS mutuo, credenciales, URL sin `/v1`) y la falta de crédito (402) en una
-indicación concreta, con lo que diga el servidor, y `is_connection_error(e)` dice cuáles
+indicación concreta, con lo que diga el servidor (y, en OpenRouter, el proveedor), y `is_connection_error(e)` dice cuáles
 hacen inútil seguir: el motor los trata como fatales.
 
 `atlas check atlas.toml` hace una petición real al chat y otra a los embeddings y muestra la

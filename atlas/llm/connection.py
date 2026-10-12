@@ -652,11 +652,13 @@ def is_connection_error(e: BaseException) -> bool:
 
 
 def _server_message(chain: list) -> str:
-    """What the server said in the body of an HTTP error, if it said anything."""
+    """What the server said in the body of an HTTP error, if it said anything. OpenRouter
+    puts what the provider of the model answered in metadata.raw."""
     for c in chain:
         body = getattr(c, "body", None)
         if isinstance(body, dict) and body.get("message"):
-            return str(body["message"])[:200]
+            raw = (body.get("metadata") or {}).get("raw") if isinstance(body.get("metadata"), dict) else None
+            return (f"{body['message']}: {raw}" if isinstance(raw, str) and raw else str(body["message"]))[:300]
     return ""
 
 
@@ -677,7 +679,7 @@ def diagnose(e: BaseException) -> str:
             or "rate limit" in text.lower():
         return ("API request limit: the server kept rejecting for the whole rate_limit_max_wait. "
                 "It may be an hourly or daily quota. Wait before running again, lower "
-                "requests_per_minute or raise rate_limit_max_wait.")
+                f"requests_per_minute or raise rate_limit_max_wait{said}.")
     if "407" in text:
         return "the proxy requires authentication: proxy = \"http://user:password@proxy:port\""
     if "CERTIFICATE_REQUIRED" in text or "certificate required" in text.lower() \

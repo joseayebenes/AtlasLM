@@ -79,7 +79,7 @@ variable con el nombre de una función). `BuildTools` le da dos herramientas:
 
 | Herramienta | Qué hace |
 |---|---|
-| `check_code` | compila un fichero sin generar código y devuelve los errores y avisos, cada uno con fichero, línea, columna y mensaje (el primero de cada sitio, como mucho 10) |
+| `check_code` | compila un fichero sin generar código y devuelve los errores y avisos, cada uno con fichero, línea, columna y mensaje. El mismo mensaje en varias líneas va una vez, con las demás líneas en `also_at` (un arreglo, muchos sitios), y las pistas que el compilador da en el mismo sitio van en `details` (GNAT: «use clause would make operation legal»). Como mucho 10 de cada clase |
 | `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`) |
 
 Los comandos están en `[sources.code]`, como listas de argumentos y sin intérprete de
@@ -96,12 +96,18 @@ tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 `{include}` se convierte en un `-I` por cada carpeta de código, `{build}` es
 `<workspace>/build`, donde el compilador deja lo que produce, y `tool_path` va antes del
 `PATH` solo para estos comandos. Un proyecto con fichero GPR usaría `gprbuild -P`.
+`gnatmake` decide qué recompilar por las fechas de los ficheros: un cambio un instante después
+de compilar puede no verse. Si pasa, `-f` en `test_command` recompila todo lo que usa la
+prueba.
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` ejecuta código, así
 que solo se ofrece si se pide en `[mcp] tools` o en las herramientas de un agente. Ningún
 agente de serie las usa: `examples/agents/` trae dos de proyecto, `implementer` (cambia el
 código para cumplir un requisito y compila lo que cambia) y `tester` (escribe una prueba con
-entradas y salidas esperadas y la ejecuta).
+entradas y salidas esperadas y la ejecuta). Las instrucciones de `tester` incluyen las reglas
+de Ada en las que falló `gemma4:12b` (`use type` para comparar valores de un tipo de otro
+paquete, `raise Program_Error with "..."`) y un modelo de prueba, que las pruebas de atlas
+compilan y ejecutan.
 
 Lo medido con `gemma4:12b` en un Mac de 24 GB, sobre una copia de las muestras:
 - **Cambios pequeños, bien.** Añadir el número de traza a un mensaje de log, 2 de 2; poner una

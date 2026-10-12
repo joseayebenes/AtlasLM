@@ -42,7 +42,7 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 174 pruebas sin modelo (+7 de agentes con Ollama)
+python -m pytest -q                                # 176 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
 ### Tres niveles de modelo

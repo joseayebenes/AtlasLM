@@ -254,7 +254,7 @@ class CodeTools:
             text = raw.replace("\r\n", "\n")
             found = _find(text, old_text, new_text, replace_all)
             if found is None:
-                return self._not_found(path, text, old_text)
+                return self._not_found(path, text, old_text, new_text)
             if "error" in found:
                 return found
             new, count, notes = found["text"], found["count"], found["notes"]
@@ -266,16 +266,37 @@ class CodeTools:
         return {"file": self._show(p), "replacements": count, "diff": self._diff(self._show(p), text, new),
                 **({"notes": notes} if notes else {})}
 
-    def _not_found(self, path: str, text: str, old_text: str) -> dict:
+    def _not_found(self, path: str, text: str, old_text: str, new_text: str) -> dict:
+        """Why old_text was not found, with what helps a model try again: whether new_text is
+        already in the file (a model that does not notice its edit was made repeats it: 8 of
+        11 failed edits of gemma-4-26b in one task), the block of the file most like old_text,
+        and the lines like its first one."""
         lines = text.split("\n")
+        squash = lambda s: re.sub(r"\s+", " ", LISTING.sub("", s)).strip()
+        new = squash(new_text)
+        if new and new in squash(text):         # where: by its most distinctive (longest) line
+            new_lines = [l.strip() for l in LISTING.sub("", new_text).strip("\n").split("\n")]
+            k = max(range(len(new_lines)), key=lambda j: len(new_lines[j]))
+            at = next((i + 1 - k for i, l in enumerate(lines) if l.strip() == new_lines[k]), None)
+            return {"error": f"old_text is not in {path}, but new_text already is"
+                             + (f" (line {at})" if at else "") + ": this change is already made. Read the file "
+                             "again to see its current text before another edit", **({"line": at} if at else {})}
         first = next((l.strip() for l in old_text.split("\n") if l.strip()), "")
         stripped = [l.strip() for l in lines]
         similar = [i for i, l in enumerate(stripped) if first and l == first]
         if not similar:                         # the most similar lines first
             close = difflib.get_close_matches(first, stripped, n=3, cutoff=0.6)
             similar = list(dict.fromkeys(i for c in close for i, l in enumerate(stripped) if l == c))
-        return {"error": f"old_text is not in {path}: copy it exactly (indentation included) from read_file",
-                "similar_lines": [{"line": i + 1, "text": lines[i][:MAX_LINE_CHARS]} for i in similar[:5]]}
+        out = {"error": f"old_text is not in {path}: copy it exactly (indentation included) from read_file",
+               "similar_lines": [{"line": i + 1, "text": lines[i][:MAX_LINE_CHARS]} for i in similar[:5]]}
+        size, old = len(old_text.strip("\n").split("\n")), squash(old_text)
+        if old and len(lines) <= MAX_CLOSEST_LINES and size <= MAX_CLOSEST_BLOCK:
+            ratio, start = max((difflib.SequenceMatcher(None, squash("\n".join(lines[i:i + size])), old).ratio(), i)
+                               for i in range(max(1, len(lines) - size + 1)))
+            if ratio >= 0.5:                    # what the file has now where old_text should be
+                out["closest"] = {"start_line": start + 1, "end_line": min(len(lines), start + size),
+                                  "text": "\n".join(lines[start:start + size])}
+        return out
 
     def write_file(self, path: str, content: str) -> dict:
         """Creates a file with `content`, or rewrites a file read before. For a small change
@@ -316,6 +337,7 @@ INDENT_NOTE = "old_text was found ignoring indentation, and new_text was re-inde
 LISTING_NOTE = ("the line numbers of read_file and the backslashes before line breaks were removed from old_text "
                 "and new_text: copy the text without them")
 LISTING = re.compile(r"(?m)^[ \t]*\d+ \|(?: |$)")      # "   12 | " at the start of a line, as read_file shows it
+MAX_CLOSEST_LINES, MAX_CLOSEST_BLOCK = 5000, 60   # how big a file and an old_text get the closest block
 
 
 def _unescape(s: str) -> str:

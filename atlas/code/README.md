@@ -60,8 +60,10 @@ Protecciones:
   atómica.
 - `CodeTools(..., read_only=True)` deja solo las de lectura.
 
-Un error es una respuesta con `error` (y, si el texto no aparece, las líneas más
-parecidas) para que el agente se corrija.
+Un error es una respuesta con `error` para que el agente se corrija. Si el texto a sustituir
+no aparece, dice si el texto nuevo ya está (el cambio ya se hizo: con `gemma-4-26b`, 8 de 11
+ediciones fallidas de una tarea repetían una que ya se había aplicado), el bloque del fichero
+más parecido a lo buscado (`closest`, con sus líneas) y las líneas como la primera.
 
 Los modelos pequeños suelen fallar copiando el texto a sustituir: escapan las comillas o
 cambian la sangría. `edit_file` lo intenta primero exacto y luego sin esos escapes y sin

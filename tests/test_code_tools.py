@@ -73,6 +73,20 @@ def test_edit_rules(project, tmp_path):
     assert "changed since you read it" in project.edit_file(f, "Update", "Refresh")["error"]
 
 
+def test_an_edit_already_made_and_the_closest_block(project):
+    f = "src/tracks.adb"
+    project.read_file(f)
+    old, new = '   begin\n      Logger.Log ("update");', '   begin\n      Logger.Log ("updated");\n      Count := Count + 1;'
+    assert project.edit_file(f, old, new)["replacements"] == 1
+    again = project.edit_file(f, old, new)                    # a model that did not notice it was made
+    assert "already made" in again["error"] and again["line"] == 3     # where new_text starts, "   begin"
+    wrong = project.edit_file(f, 'procedure Delete_Track (I : Integer) is\nbegin\n   Logger.Log ("deleting");',
+                              "x")                             # wrong indentation and text: the block as it is
+    assert wrong["closest"]["start_line"] == 8 and wrong["closest"]["end_line"] == 10
+    assert wrong["closest"]["text"].startswith("   procedure Delete_Track (I : Integer) is")
+    assert "closest" not in project.edit_file(f, "Something else entirely", "x")
+
+
 def test_encoding_line_endings_and_permissions(project, tmp_path):
     crlf = tmp_path / "src" / "legacy.adb"
     crlf.write_bytes("-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   null;\r\nend Run;\r\n".encode("latin-1"))

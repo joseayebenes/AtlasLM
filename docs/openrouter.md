@@ -57,6 +57,19 @@ python tools/compare_models.py MODELO... --no-run --out comparacion.md   # solo 
 Los modelos responden con algo de azar: para comparar con más seguridad, sube `runs` en
 `[agents.eval]` (cada pregunta se hace esas veces).
 
+Medido el 12 de octubre de 2026 con `make compare-openrouter`, sin razonamiento:
+
+| Modelo | Asistente | Mediana | `atlas run` desde cero |
+|---|---|---|---|
+| `google/gemma-4-26b-a4b-it` | 24 de 24 | 5 s | 29 s |
+| `qwen/qwen3.6-35b-a3b` | 24 de 24 | 5 s | 22 s |
+| `google/gemma-4-31b-it` | 24 de 24 | 6 s | 33 s |
+
+Como referencia, `gemma4:12b` en Ollama: 23 de 24, mediana 11 s, 62 s. Las tres pruebas, con
+las comprobaciones previas, costaron 0,03 dólares. `examples/eval/assistant.yaml` ya no
+distingue entre estos modelos: para compararlos hacen falta preguntas más difíciles o
+tareas más largas (`atlas verify`, `comply`, `impact`, `coverage`).
+
 Algunos candidatos, del catálogo del 12 de octubre de 2026 (precio en dólares por millón de
 tokens de entrada / salida; el catálogo y sus precios cambian, ver
 [openrouter.ai/models](https://openrouter.ai/models)):
@@ -106,6 +119,9 @@ pueden guardar los datos).
   en OpenRouter.
 - Los `:free` admiten 20 por minuto (atlas baja el ritmo solo con el primer rechazo) y 50 al
   día, o 1000 si la cuenta ha comprado al menos 10 dólares de crédito.
+- Un 429 puede venir del proveedor del modelo y no de la cuenta: «temporarily rate-limited
+  upstream». atlas baja el ritmo igual; si se repite, fija otro proveedor (ver
+  [Proveedores](#proveedores)) o espera un rato.
 - Sin crédito, OpenRouter responde 402 y atlas se para con «the API asks for payment».
 - El gasto de cada ejecución se ve en [openrouter.ai/activity](https://openrouter.ai/activity),
   o con:

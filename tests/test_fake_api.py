@@ -71,3 +71,31 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["chat"] == 1 and grown["other"] == 0 and grown["retried"] == 0
     assert grown["rejected"] >= 2 and grown["embeddings"] == 1 + grown["rejected"]
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
+
+
+def _status_error(status: int, message: str):
+    import httpx
+    from openai import OpenAI
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.example/v1/chat/completions"),
+                              json={"error": {"message": message, "code": status}})
+    return OpenAI(api_key="x", base_url="https://api.example/v1")._make_status_error_from_response(response)
+
+
+def test_no_credit_is_fatal_and_the_server_message_is_shown():
+    from atlas.llm import diagnose, is_connection_error
+    no_credit = _status_error(402, "Insufficient credits. Add more using https://openrouter.ai/settings/credits")
+    assert is_connection_error(no_credit)
+    assert "HTTP 402" in diagnose(no_credit) and "Insufficient credits" in diagnose(no_credit)
+    no_endpoints = _status_error(404, "No endpoints found matching your data policy")
+    assert not is_connection_error(no_endpoints)
+    assert "model name (the server says: No endpoints found matching your data policy)" in diagnose(no_endpoints)
+
+
+def test_a_reset_in_epoch_milliseconds_is_not_a_pause_of_minutes():
+    import time
+    from atlas.llm.connection import _wait_from_headers
+    reset = time.time() + 30
+    for value in (f"{reset:.0f}", f"{reset * 1000:.0f}"):          # seconds (most) or milliseconds (OpenRouter)
+        wait = _wait_from_headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": value})
+        assert 28 <= wait <= 31, value
+    assert _wait_from_headers({"x-ratelimit-remaining": "0", "x-ratelimit-reset": "6m0s"}) == 360

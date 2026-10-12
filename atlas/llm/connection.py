@@ -418,12 +418,15 @@ def rate_limiter_for(cfg: ServiceConfig) -> RateLimiter:
 
 
 def _duration(v: str | None) -> float | None:
-    """'6m0s', '1.5s', '20ms', '30', or an epoch timestamp -> seconds."""
+    """'6m0s', '1.5s', '20ms', '30', or an epoch timestamp in seconds or milliseconds
+    (OpenRouter's X-RateLimit-Reset) -> seconds."""
     if not v:
         return None
     v = v.strip()
     try:
         x = float(v)
+        if x > 1e11:                    # milliseconds: in seconds that would be after the year 5000
+            x /= 1000
         return max(0.0, x - time.time()) if x > 1e9 else x
     except ValueError:
         pass
@@ -642,7 +645,17 @@ def create_client(cfg: ServiceConfig):
 def is_connection_error(e: BaseException) -> bool:
     """Errors after which it makes no sense to go on with the next request."""
     return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "RateLimitError",
-                                "ConflictError", "AuthenticationError", "PermissionDeniedError")
+                                "ConflictError", "AuthenticationError", "PermissionDeniedError") \
+        or getattr(e, "status_code", None) == 402          # no credit left
+
+
+def _server_message(chain: list) -> str:
+    """What the server said in the body of an HTTP error, if it said anything."""
+    for c in chain:
+        body = getattr(c, "body", None)
+        if isinstance(body, dict) and body.get("message"):
+            return str(body["message"])[:200]
+    return ""
 
 
 def diagnose(e: BaseException) -> str:
@@ -652,6 +665,8 @@ def diagnose(e: BaseException) -> str:
         chain.append(x)
         x = x.__cause__ or x.__context__
     text = " | ".join(f"{type(c).__name__}: {c}" for c in chain)
+    said = _server_message(chain)
+    said = f" (the server says: {said})" if said else ""
     if "CERTIFICATE_VERIFY_FAILED" in text or any(isinstance(c, ssl.SSLCertVerificationError) for c in chain):
         return ("server certificate not verified. If a proxy inspects TLS, set the corporate "
                 "root CA in ca_cert (or ca_cert = \"system\" to use the system certificate "
@@ -666,10 +681,13 @@ def diagnose(e: BaseException) -> str:
     if "CERTIFICATE_REQUIRED" in text or "certificate required" in text.lower() \
             or "HANDSHAKE_FAILURE" in text:
         return "the server requires a client certificate: client_cert and client_key"
+    if any(getattr(c, "status_code", None) == 402 for c in chain):
+        return ("the API asks for payment (HTTP 402): no credit left, or the spending limit of the "
+                f"key was reached. Add credit or raise the limit of the key{said}")
     if "401" in text or "AuthenticationError" in text:
-        return "credentials rejected by the API: check api_key"
+        return "credentials rejected by the API: check api_key (and that its variable is set)"
     if "404" in text or "NotFoundError" in text:
-        return "path or model not found: check base_url (missing /v1?) and the model name"
+        return f"path or model not found: check base_url (missing /v1?) and the model name{said}"
     if any(type(c).__name__ == "ProxyError" for c in chain):
         return "cannot connect through the proxy: check proxy and no_proxy"
     if any(type(c).__name__ in ("ConnectError", "ConnectTimeout") for c in chain):

@@ -202,7 +202,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `roots` | lista | `[]` | carpetas del código (se recorren enteras); también las únicas que pueden leer y editar las herramientas de ficheros |
-| `languages` | lista | `["ada"]` | analizadores (plugins `code_analyzer`) |
+| `languages` | lista | `["ada"]` | analizadores (plugins `code_analyzer`): `"ada"` y `"python"` |
 | `exclude` | lista | `[]` | patrones que no se analizan ni se dejan leer: `["**/obj/**"]` |
 | `req_tag` | texto | `"Req:"` | la etiqueta de trazabilidad en los comentarios |
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |

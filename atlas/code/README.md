@@ -1,12 +1,13 @@
 # atlas.code — código fuente
 
-Analiza el código (Ada, con tree-sitter) y da a los agentes las herramientas habituales de
+Analiza el código (Ada con tree-sitter, Python con `ast`) y da a los agentes las herramientas habituales de
 un agente de código, confinadas a las carpetas del proyecto. Viene de
 `legacy/ada_graph.py`.
 
 | Fichero | Qué tiene |
 |---|---|
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
+| `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
 | `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file` |
 | `build.py` | `BuildTools`: `check_code` y `run_test`, el compilador y las pruebas del proyecto |
@@ -25,6 +26,14 @@ otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los ficheros que cas
 
 El paso `index.code` lo lleva además al índice de búsqueda: cada subprograma, tipo y variable,
 con su comentario, sus requisitos y su código (ver [atlas.index](../index/README.md)).
+
+**Python** (`languages = ["ada", "python"]`): funciones y métodos (`Clase.metodo`), clases
+como tipos, variables del módulo e `import`. Un módulo se nombra por su ruta desde la raíz de
+código que lo contiene (`tests/python/test_session.py` bajo la raíz `tests` es
+`python.test_session`), así que no choca con una unidad Ada del mismo nombre. Una etiqueta
+`# Req:` cuenta para una función si está en los comentarios justo encima (o encima de sus
+decoradores), en su docstring o en un comentario de su cuerpo; una del módulo no cita nada.
+Con `test_patterns`, una prueba Python y una Ada verifican el mismo requisito en el grafo.
 
 Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en el
 [README](../../README.md)).
@@ -144,7 +153,9 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 
 ## Pruebas
 
-`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`) y
+`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`),
+`tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
+Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,
 codificación y tolerancia a los fallos de los modelos pequeños) y `tests/test_build_tools.py`
 (con un compilador simulado en cualquier equipo, y con GNAT si está instalado).

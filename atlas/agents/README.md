@@ -50,7 +50,9 @@ son los plugins `tool` con esos nombres, las mismas funciones que ofrece `atlas 
 La misma llamada con los mismos argumentos, la tercera vez seguida, no se ejecuta: el modelo
 recibe un error que le pide hacer otra cosa. `gemma-4-26b` llegó a escribir 17 veces seguidas
 el mismo fichero tras un error de compilación que no entendía, hasta agotar `max_steps`; y
-`write_file` avisa cuando el contenido no cambia.
+`write_file` avisa cuando el contenido no cambia. Un modelo que razona puede gastar todo
+`max_tokens` pensando y no contestar nada; ADK tomaría esa vuelta vacía como la respuesta
+final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces.
 
 ```bash
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml

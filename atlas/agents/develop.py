@@ -358,9 +358,15 @@ def _message(error: dict) -> str:
     return str(error.get("message", error))
 
 
+FAILURE = re.compile(r"\b(?:Error|ERROR|raised|failed|FAILED)\b|^\S*Error:")
+
+
 def _last_lines(output: str, n: int = 2) -> str:
+    """What a failing test says, in a line: its lines that tell the failure (an assertion, an
+    exception), or else its last ones; a traceback of the server goes after them."""
     lines = [l.strip() for l in output.strip().splitlines() if l.strip()]
-    return " | ".join(lines[-n:])[:300]
+    failure = [l for l in lines if FAILURE.search(l)]
+    return " | ".join(failure[:n] if failure else lines[-n:])[:300]
 
 
 def markdown(report: dict) -> str:

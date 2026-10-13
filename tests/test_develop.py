@@ -166,3 +166,20 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/none_*.py"]\n')
     with pytest.raises(ConfigError, match="no file matches"):
         Developer(load_plan(base / "bad.toml"), cfg)
+
+
+def test_a_failure_in_a_line():
+    from atlas.agents.develop import _last_lines
+    output = '''Traceback (most recent call last):
+  File "tests/python/test_stp_0101.py", line 11, in test_stp_0101
+    raise AssertionError(f"Step {step}: command '{command}'")
+AssertionError: Step 2: command 'PING', expected 'OK PONG', received 'the end of the connection'
+with_server: the server stopped by itself during the test (exit code 1)
+raised CONSTRAINT_ERROR : controller.adb:103 length check failed
+The exception went through, the most recent first:
+  controller.adb:103 in controller__execute
+  socket_server.adb:19 in _ada_socket_server
+'''
+    assert _last_lines(output) == ("AssertionError: Step 2: command 'PING', expected 'OK PONG', received 'the end of "
+                                   "the connection' | raised CONSTRAINT_ERROR : controller.adb:103 length check failed")
+    assert _last_lines("one\ntwo\nthree\n") == "two | three"

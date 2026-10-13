@@ -6,6 +6,13 @@
     run_test     builds a test procedure of the project and runs it: passed or not, and its
                  output; if it does not build, the errors of the compiler. A test in a language
                  that is not built (a Python script) is just run
+    run_program  runs the program of the project with some lines as its input and returns
+                 what it wrote: to try what the code does before and after a change
+
+When an output cites places of the code ("controller.adb:103", the place of an exception, or
+'File "x.py", line 12'), the lines around them come with it, in `code_at`: a small model that
+gets "length check failed at controller.adb:103" does not always go and read that line.
+Only the files an agent can change are shown (not the protected ones: the tests).
 
 The commands come from [sources.code], as lists of arguments (no shell), and nothing is tied
 to a compiler. Placeholders:
@@ -21,10 +28,18 @@ With GNAT (installed with Alire, `alr toolchain --select gnat_native gprbuild`):
     test_command = ["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]
     tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 
+`check_commands` replaces check_command for the files of an extension: GNAT finds more errors
+when it generates code (a String assigned one of another length is a warning then, and an
+error with -gnatwE), but it cannot generate code for a package spec alone, so
+{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] } with a check_command without -gnatc.
+
 `run_command` runs what test_command built (by default the executable itself, "{exe}"); a
 wrapper there can start what the test needs first, e.g. ["with_server", "{exe}"] for a test
 that talks to a server. `test_commands` runs the tests of other languages as they are, by
-extension, with no build: { py = ["with_server", "python3", "{file}"] }.
+extension, with no build: { py = ["with_server", "python3", "{file}"] }. `program_command` is
+what run_program runs, with the lines on its standard input: the program itself, or a script
+that passes them on to it (e.g. ["with_server", "session"], a client that sends each line to the
+server and prints the answer).
 
 `tool_path` goes before PATH for these commands (globs allowed; a relative folder is relative
 to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
@@ -45,9 +60,13 @@ from atlas.plugins import register_methods
 
 __all__ = ["BuildTools", "BUILD_TOOL_NAMES", "parse_messages"]
 
-BUILD_TOOL_NAMES = ("check_code", "run_test")
+BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
 MAX_OUTPUT_CHARS = 3000
+MAX_INPUT_LINES = 100      # of run_program
+MAX_CITED, CITED_CONTEXT = 4, 3     # places of the code shown from an output, and lines around each one
+# "controller.adb:103" (GNAT, gcc and most tools) or 'File "/x/client.py", line 12' (Python)
+CITED = re.compile(r'File "(?P<py>[^"]+)", line (?P<py_line>\d+)|(?P<file>[\w./\\~-]+\.[A-Za-z]\w*):(?P<line>\d+)')
 # "tracks.adb:16:04: error: ..." (GNAT, gcc, clang); the kind is optional
 MESSAGE = re.compile(r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?:(?P<kind>error|warning|info|"
                      r"style|note)\s*:\s*)?(?P<text>.+)$", re.M | re.I)
@@ -91,15 +110,28 @@ def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
 
+def cited_places(output: str) -> list[tuple[str, int]]:
+    """The places of the code an output cites, (file as written, line), in order, once each."""
+    found = []
+    for m in CITED.finditer(output):
+        place = (m["py"], int(m["py_line"])) if m["py"] else (m["file"], int(m["line"]))
+        if place not in found:
+            found.append(place)
+    return found
+
+
 class BuildTools:
     def __init__(self, files: CodeTools, build_dir: str | Path, check_command: Iterable[str] = (),
                  test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120,
-                 run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None):
+                 run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
+                 check_commands: dict | None = None, program_command: Iterable[str] = ()):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
-        self.test_commands = {k.lower().lstrip("."): list(v) for k, v in (test_commands or {}).items()}
+        by_extension = lambda d: {k.lower().lstrip("."): list(v) for k, v in (d or {}).items()}
+        self.test_commands, self.check_commands = by_extension(test_commands), by_extension(check_commands)
+        self.program_command = list(program_command)
         self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
                           for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
         self.timeout = timeout
@@ -109,7 +141,8 @@ class BuildTools:
         sc = cfg["sources"].get("code") or {}
         return cls(files or CodeTools.from_config(cfg), cfg.workspace / "build", sc.get("check_command", []),
                    sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
-                   sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}))
+                   sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
+                   sc.get("program_command", []))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -124,8 +157,10 @@ class BuildTools:
                           if p.is_file() and not self.files._excluded(p)})
         return [f"-I{f}" for f in folders]
 
-    def _command(self, template: list[str], file: Path) -> list[str]:
-        values = {"{file}": str(file), "{build}": str(self.build_dir), "{exe}": str(self.build_dir / file.stem)}
+    def _command(self, template: list[str], file: Path | None) -> list[str]:
+        values = {"{build}": str(self.build_dir)}
+        if file is not None:
+            values.update({"{file}": str(file), "{exe}": str(self.build_dir / file.stem)})
         out: list[str] = []
         for arg in template:
             if arg == "{include}":
@@ -136,12 +171,13 @@ class BuildTools:
                 out.append(arg)
         return out
 
-    def _run(self, args: list[str]) -> subprocess.CompletedProcess | dict:
+    def _run(self, args: list[str], input: str | None = None) -> subprocess.CompletedProcess | dict:
         self.build_dir.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "PATH": os.pathsep.join([*self.tool_path, os.environ.get("PATH", "")])}
         try:
             return subprocess.run(args, cwd=self.build_dir, env=env, capture_output=True, text=True,
-                                  timeout=self.timeout)
+                                  timeout=self.timeout, input=input,
+                                  stdin=None if input is not None else subprocess.DEVNULL)
         except FileNotFoundError:
             return {"error": f"{args[0]} not found: install it or set [sources.code] tool_path"}
         except subprocess.TimeoutExpired:
@@ -155,17 +191,53 @@ class BuildTools:
             return None, {"error": f"{path} does not exist"}
         return p, None
 
+    def code_at(self, output: str) -> list[dict]:
+        """The lines around the places of the code that `output` cites, in the files that an
+        agent can change (in the roots, neither excluded nor protected), MAX_CITED at most."""
+        out, index = [], None
+        for name, line in cited_places(output):
+            p, _ = self.files._resolve(name)
+            if p is None or not p.is_file():               # "controller.adb": by its name, if only one has it
+                if index is None:
+                    index = {}
+                    for root in self.files.roots:
+                        for f in (root.rglob("*") if root.is_dir() else []):
+                            if f.is_file():
+                                index.setdefault(f.name, []).append(f)
+                same = index.get(Path(name).name, [])
+                p = same[0] if len(same) == 1 else None
+            if p is None or self.files._excluded(p) or self.files.protected_file(p) or \
+                    any(c["file"] == self.files._show(p) and c["line"] == line for c in out):
+                continue
+            lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not 1 <= line <= len(lines):
+                continue
+            lo, hi = max(1, line - CITED_CONTEXT), min(len(lines), line + CITED_CONTEXT)
+            out.append({"file": self.files._show(p), "line": line,
+                        "source": "\n".join(f"{'>' if i == line else ' '}{i:4d} | {lines[i - 1]}"
+                                            for i in range(lo, hi + 1))})
+            if len(out) == MAX_CITED:
+                break
+        return out
+
+    def _ran(self, ran: subprocess.CompletedProcess) -> dict:
+        """exit_code, output and the code it cites."""
+        output = ran.stdout + ran.stderr
+        cited = self.code_at(output)
+        return {"exit_code": ran.returncode, "output": _tail(output), **({"code_at": cited} if cited else {})}
+
     def check_code(self, path: str) -> dict:
         """Compiles one source file of the project without producing code, as the compiler
         of the project does, and returns its errors and warnings, each with file, line,
         column and message. Use it on every file you change or create, and fix every error,
         before saying the change is done."""
-        if not self.check_command:
-            return {"error": "no compiler configured ([sources.code] check_command)"}
         p, err = self._source(path)
         if err:
             return err
-        res = self._run(self._command(self.check_command, p))
+        command = self.check_commands.get(p.suffix.lower().lstrip("."), self.check_command)
+        if not command:
+            return {"error": "no compiler configured ([sources.code] check_command)"}
+        res = self._run(self._command(command, p))
         if isinstance(res, dict):
             return res
         output = res.stdout + res.stderr
@@ -189,8 +261,7 @@ class BuildTools:
             ran = self._run(self._command(direct, p))
             if isinstance(ran, dict):
                 return {"file": self.files._show(p), "passed": False, **ran}
-            return {"file": self.files._show(p), "passed": ran.returncode == 0, "exit_code": ran.returncode,
-                    "output": _tail(ran.stdout + ran.stderr)}
+            return {"file": self.files._show(p), "passed": ran.returncode == 0, **self._ran(ran)}
         if not self.test_command:
             return {"error": "no test command configured ([sources.code] test_command)"}
         res = self._run(self._command(self.test_command, p))
@@ -205,8 +276,22 @@ class BuildTools:
         ran = self._run(self._command(self.run_command, p))
         if isinstance(ran, dict):
             return {"file": self.files._show(p), "built": True, "passed": False, **ran, **warnings}
-        return {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0,
-                "exit_code": ran.returncode, "output": _tail(ran.stdout + ran.stderr), **warnings}
+        return {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0, **self._ran(ran),
+                **warnings}
+
+    def run_program(self, input_lines: list[str]) -> dict:
+        """Runs the program of the project with `input_lines` as its input, one line each,
+        and returns what it wrote (`output`) and its exit code; the lines of the code its
+        output cites (the place of an exception) are in `code_at`. Use it to see what the
+        code does with an input: to find why a test fails, and to check a fix. It runs code."""
+        if not self.program_command:
+            return {"error": "no program to run configured ([sources.code] program_command)"}
+        if not isinstance(input_lines, list) or not all(isinstance(l, str) for l in input_lines):
+            return {"error": "input_lines must be a list of strings, one per line"}
+        if len(input_lines) > MAX_INPUT_LINES:
+            return {"error": f"at most {MAX_INPUT_LINES} input lines"}
+        ran = self._run(self._command(self.program_command, None), "".join(f"{l}\n" for l in input_lines))
+        return ran if isinstance(ran, dict) else self._ran(ran)
 
 
-register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test",))
+register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"))

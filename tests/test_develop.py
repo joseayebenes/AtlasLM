@@ -132,6 +132,9 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
     md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
     assert "**0 of 1 tests pass.**" in md and "## For a person" in md and "## Undone" in md
     assert json.loads((cfg.workspace / "reports" / "develop-plan.json").read_text())["final"]["tests_passed"] == 0
+    runs = [json.loads(l) for l in (cfg.workspace / "reports" / "develop-plan.calls.jsonl").read_text().splitlines()]
+    assert [r["n"] for r in runs] == [1, 2, 3, 4, 5, 6] and runs[0]["prompt"] == "Implement add."
+    assert [c["name"] for c in runs[0]["calls"]] == ["read_file", "write_file"] and runs[0]["answer"] == "Done."
 
 
 def test_a_round_that_fixes_the_test(project):

@@ -193,9 +193,11 @@ def to_llm_response(response: Any) -> LlmResponse:
         parts.append(types.Part(function_call=types.FunctionCall(id=call.id, name=call.function.name,
                                                                  args=_arguments(call.function.arguments))))
     usage = getattr(response, "usage", None)
+    cost = getattr(usage, "cost", None)            # OpenRouter says what each request cost
     return LlmResponse(
         content=types.Content(role="model", parts=parts or [types.Part(text="")]),
         finish_reason=FINISH.get(choice.finish_reason),
+        custom_metadata={"cost": cost} if isinstance(cost, (int, float)) else None,
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=usage.prompt_tokens, candidates_token_count=usage.completion_tokens,
             total_token_count=usage.total_tokens) if usage else None)

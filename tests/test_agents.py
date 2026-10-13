@@ -103,7 +103,8 @@ class StubClient:
         else:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
         return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
-                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110))
+                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110,
+                                                     cost=0.0001))
 
 
 @pytest.fixture
@@ -131,7 +132,8 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
-                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}]}
+                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}],
+                   "tokens": {"prompt": 200, "completion": 20}, "cost": 0.0002}    # what each turn used
 
     first, second = client.requests
     assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file

@@ -101,7 +101,8 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None)
 
 
 async def ask(agent, question: str, max_steps: int = 8) -> dict:
-    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped"}.
+    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped",
+    "tokens": {"prompt", "completion"}, and "cost" when the server says it (OpenRouter)}.
     `stopped` says that it reached max_steps calls to the model before answering."""
     from google.adk.agents.invocation_context import LlmCallsLimitExceededError
     from google.adk.agents.run_config import RunConfig
@@ -111,9 +112,15 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
     session = await runner.session_service.create_session(app_name="atlas", user_id="atlas")
     message = types.Content(role="user", parts=[types.Part(text=question)])
     calls, answer, stopped = [], "", False
+    tokens, cost = {"prompt": 0, "completion": 0}, None
     try:
         async for event in runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
                                             run_config=RunConfig(max_llm_calls=max_steps)):
+            if event.usage_metadata:
+                tokens["prompt"] += event.usage_metadata.prompt_token_count or 0
+                tokens["completion"] += event.usage_metadata.candidates_token_count or 0
+            if (event.custom_metadata or {}).get("cost") is not None:
+                cost = (cost or 0.0) + float(event.custom_metadata["cost"])
             for part in (event.content.parts if event.content else None) or []:
                 if part.function_call:
                     calls.append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
@@ -121,7 +128,8 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
                     answer += part.text
     except LlmCallsLimitExceededError:        # max_steps reached
         stopped = True
-    return {"answer": answer.strip(), "calls": calls, "stopped": stopped}
+    return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
+            **({"cost": round(cost, 6)} if cost is not None else {})}
 
 
 def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None) -> dict:

@@ -36,6 +36,7 @@ KEYS = {
     "[index]": SCHEMA["index"],
     "[agents]": {*SCHEMA["agents"], *AGENT_SCHEMA, "sets", "runs"},
     "[mcp]": SCHEMA["mcp"],
+    "[tests]": {*SCHEMA["tests"], "path", "template", "match"},
 }
 
 

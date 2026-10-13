@@ -10,7 +10,8 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
 | `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file` |
-| `build.py` | `BuildTools`: `check_code` y `run_test`, el compilador y las pruebas del proyecto |
+| `build.py` | `BuildTools`: `check_code`, `run_test` y `run_program`, el compilador, las pruebas y el programa del proyecto |
+| `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
 ## Análisis
 
@@ -59,6 +60,10 @@ Protecciones:
 - Conservan la codificación, los finales de línea CRLF y los permisos, y escriben de forma
   atómica.
 - `CodeTools(..., read_only=True)` deja solo las de lectura.
+- Los ficheros de `[sources.code] protected` (`["tests/**"]`) se leen pero no se cambian. Son
+  los tests: al pedirles arreglar un test que fallaba, `gemma-4-26b` cambió el fin de línea del
+  cliente a CR LF y `devstral` las respuestas que esperaba, y los tests pasaron sin que el
+  servidor funcionara.
 
 Un error es una respuesta con `error` para que el agente se corrija. Si el texto a sustituir
 no aparece, dice si el texto nuevo ya está (el cambio ya se hizo: con `gemma-4-26b`, 8 de 11
@@ -101,6 +106,14 @@ variable con el nombre de una función). `BuildTools` le da dos herramientas:
 |---|---|
 | `check_code` | compila un fichero sin generar código y devuelve los errores y avisos, cada uno con fichero, línea, columna y mensaje. El mismo mensaje en varias líneas va una vez, con las demás líneas en `also_at` (un arreglo, muchos sitios), y las pistas que el compilador da en el mismo sitio van en `details` (GNAT: «use clause would make operation legal»). Como mucho 10 de cada clase |
 | `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`). Una prueba que no se construye, como un script de Python, solo se ejecuta |
+| `run_program` | ejecuta el programa del proyecto (`program_command`) con las líneas que le da el agente en su entrada, y devuelve lo que escribe: para ver qué hace el código con una entrada, antes y después de un cambio |
+
+Cuando la salida de `run_test` o de `run_program` cita un sitio del código
+(`raised CONSTRAINT_ERROR : controller.adb:103 length check failed`, o el `File "x.py", line 12`
+de Python), las líneas de alrededor van en `code_at`, con la citada marcada. Solo las de los
+ficheros que el agente puede cambiar: no las de los tests protegidos ni las del compilador.
+En el experimento de 2026-10-13, `devstral` tuvo ese mensaje en seis rondas sin ir a leer la
+línea 103.
 
 Los comandos están en `[sources.code]`, como listas de argumentos y sin intérprete de
 órdenes, así que no están atados a ningún compilador. Con GNAT, instalado con Alire (ver la
@@ -133,8 +146,24 @@ tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
 py = ["with_server", "python3", "{file}"]
 ```
 
-`check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` ejecuta código, así
-que solo se ofrece si se pide en `[mcp] tools` o en las herramientas de un agente. Ningún
+GNAT ve más errores cuando genera código: una cadena de longitud fija asignada a otra de
+distinta longitud es, al compilar con código, el aviso «Constraint_Error will be raised at run
+time», y con `-gnatwE` un error; con `-gnatc` no se ve. Pero GNAT no genera código para una
+especificación sola, así que `check_commands` cambia el comando por extensión:
+
+```toml
+[sources.code]
+check_command = ["gcc", "-c", "-gnat2012", "-gnatwE", "{include}", "{file}"]
+[sources.code.check_commands]
+ads = ["gcc", "-c", "-gnatc", "-gnat2012", "{include}", "{file}"]
+```
+
+`run_program` necesita `program_command`, que recibe las líneas por su entrada estándar: el
+programa mismo o, para un servidor, un cliente que manda cada línea y escribe la respuesta
+(`["with_server", "session"]` en `atlas-socket-demo`).
+
+`check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` y `run_program`
+ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
 agente de serie las usa: `examples/agents/` trae dos de proyecto, `implementer` (cambia el
 código para cumplir un requisito y compila lo que cambia) y `tester` (escribe una prueba con
 entradas y salidas esperadas y la ejecuta). Las instrucciones de `tester` incluyen las reglas
@@ -160,6 +189,43 @@ Lo medido con `gemma4:12b` en un Mac de 24 GB, sobre una copia de las muestras:
 Las herramientas hacen su parte: los errores que cometió el modelo (`Delete_Track` duplicado,
 nombres repetidos) los detecta `check_code` con GNAT, como comprueban las pruebas. Para que un
 agente los corrija hace falta un modelo que siga las instrucciones en tareas de varios pasos.
+
+## Tests desde los procedimientos de prueba
+
+`atlas tests MÓDULO|ID` escribe un test por procedimiento de prueba (los de un módulo de DOORS,
+o uno) y por lenguaje, a partir de sus pasos numerados, sin modelo. Cada paso se reconoce con
+una expresión regular de `[[tests.steps]]` y se convierte en el código de ese paso en cada
+lenguaje; el fichero sale de una plantilla del proyecto:
+
+```toml
+[tests.languages.ada]
+path = "tests/ada/test_{slug}.adb"                 # {id} STP-0101, {slug} stp_0101, {Slug} Stp_0101
+template = "requirements/templates/test.adb"       # el fichero entero, con {steps} en su línea
+[tests.languages.python]
+path = "tests/python/test_{slug}.py"
+template = "requirements/templates/test.py"
+
+[[tests.steps]]
+match = 'Send `(?P<command>[^`]*)`; expect `(?P<expected>[^`]*)`'
+ada = 'Expect ({n}, {command:str}, {expected:str});'
+python = 'client.expect({n}, {command:str}, {expected:str})'
+```
+
+`match` cubre el texto entero del paso, sin su punto final. En el código del paso, `{n}` es su
+número, `{text}` su texto y `{grupo}` un grupo con nombre de `match`, tal cual; `{grupo:str}`
+lo escribe como cadena del lenguaje (`"..."` con las comillas dobladas en Ada; como JSON en los
+demás). En la plantilla van `{id}`, `{slug}`, `{Slug}`, `{title}` (el encabezado en DOORS),
+`{verifies}` (lo que verifica el procedimiento) y `{steps}`, sola en su línea: el código de los
+pasos se pone ahí con su sangría. Las demás llaves se dejan como están.
+
+Un procedimiento con un paso que ningún patrón reconoce no se escribe, y el paso se dice: hace
+falta un patrón nuevo, o escribir el paso como los demás. Un fichero solo se escribe si cambia.
+
+Por qué: los tests que escribía un modelo no siempre eran el procedimiento. Al pedirles
+arreglar uno que fallaba, los agentes de los dos modelos probados lo adaptaron al código. Con
+los pasos como patrones, el test es el procedimiento en todos los lenguajes, el procedimiento
+es el único sitio donde se cambia, y el modelo solo hace falta para el cliente que usan los
+tests (una vez). Con `protected`, los agentes no los pueden tocar.
 
 ## Como librería
 

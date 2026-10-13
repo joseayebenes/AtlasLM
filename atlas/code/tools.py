@@ -8,7 +8,10 @@
 
 Every path must be inside [sources.code] roots and outside its `exclude` patterns; ".."
 or a symbolic link that leaves them is refused. Paths are given and shown relative to the
-working directory, like the file paths of the code graph.
+working directory, like the file paths of the code graph. The files of its `protected`
+patterns can be read but not edited or written: the tests, so that the agent that writes the
+code cannot change what judges it (both gemma-4-26b and devstral, asked to fix a failing test,
+changed what it expected instead of the code).
 
 Editing follows the rules of the usual coding agents, which also protect a small model
 from itself: a file can only be edited or overwritten after reading it, and not if it
@@ -70,10 +73,11 @@ def _decode(data: bytes) -> tuple[str, str]:
 
 class CodeTools:
     def __init__(self, roots: Iterable[str | Path], exclude: Iterable[str] = (), base: str | Path = ".",
-                 read_only: bool = False):
+                 read_only: bool = False, protected: Iterable[str] = ()):
         self.base = Path(base).resolve()
         self.roots = [(self.base / r).resolve() for r in roots]
         self.exclude = list(exclude)
+        self.protected = list(protected)
         self.read_only = read_only
         self._seen: dict[Path, str] = {}    # file -> hash of its content when last read or written here
         self._lock = threading.Lock()
@@ -82,7 +86,7 @@ class CodeTools:
     def from_config(cls, cfg, read_only: bool = False) -> "CodeTools":
         """Over the roots and exclude patterns of [sources.code]; paths from the working directory."""
         sc = cfg["sources"].get("code") or {}
-        return cls(sc.get("roots", []), sc.get("exclude", []), read_only=read_only)
+        return cls(sc.get("roots", []), sc.get("exclude", []), read_only=read_only, protected=sc.get("protected", []))
 
     @classmethod
     def for_context(cls, context: Any) -> "CodeTools":
@@ -101,9 +105,28 @@ class CodeTools:
         except ValueError:
             return p.as_posix()
 
-    def _excluded(self, p: Path) -> bool:
+    def _matches(self, p: Path, patterns: list[str]) -> bool:
         shown = self._show(p)
-        return any(fnmatch.fnmatch(shown, pat) or fnmatch.fnmatch(p.as_posix(), pat) for pat in self.exclude)
+        return any(fnmatch.fnmatch(shown, pat) or fnmatch.fnmatch(p.as_posix(), pat) for pat in patterns)
+
+    def _excluded(self, p: Path) -> bool:
+        return self._matches(p, self.exclude)
+
+    def protected_file(self, p: Path) -> bool:
+        """Whether a file is one of [sources.code] protected: it can be read, not changed."""
+        return self._matches(p, self.protected)
+
+    def _writable(self, path: str) -> tuple[Path | None, dict | None]:
+        """The path of a file to change, or why it cannot be changed."""
+        if self.read_only:
+            return None, {"error": "these tools are read-only"}
+        p, err = self._resolve(path)
+        if err:
+            return None, err
+        if self.protected_file(p):
+            return None, {"error": f"{path} is protected ([sources.code] protected): it can be read, not changed. "
+                                   "It checks the code, so when it fails, change the code it checks"}
+        return p, None
 
     def _resolve(self, path: str) -> tuple[Path | None, dict | None]:
         if not self.roots:
@@ -232,9 +255,7 @@ class CodeTools:
         """Replaces `old_text` by `new_text` in a file read before. `old_text` must be copied
         from the file (without the line numbers of read_file) and appear once; with
         replace_all every occurrence is replaced. Returns the diff: check it."""
-        if self.read_only:
-            return {"error": "these tools are read-only"}
-        p, err = self._resolve(path)
+        p, err = self._writable(path)
         if err:
             return err
         if not p.is_file():
@@ -305,9 +326,7 @@ class CodeTools:
     def write_file(self, path: str, content: str) -> dict:
         """Creates a file with `content`, or rewrites a file read before. For a small change
         to an existing file use edit_file instead."""
-        if self.read_only:
-            return {"error": "these tools are read-only"}
-        p, err = self._resolve(path)
+        p, err = self._writable(path)
         if err:
             return err
         if p.is_dir():

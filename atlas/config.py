@@ -77,7 +77,7 @@ AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": in
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
-               "test_commands": dict}
+               "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},

@@ -20,6 +20,8 @@
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
+                                       is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
@@ -898,6 +900,31 @@ def agent(cfg: Config, name: str, question: str) -> int:
     return 1 if res["stopped"] else 0
 
 
+def develop(cfg: Config, plan: str) -> int:
+    """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py)."""
+    from atlas.agents.develop import develop as run_plan
+
+    def show(s: dict) -> None:
+        cost = f" ${s['cost']:.4f}" if "cost" in s else ""
+        print(f"{s['n']:3d} {s['kind']:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, {s['calls']} calls"
+              f"{' (max_steps)' if s.get('stopped') else ''}{cost}; tests passing: {s.get('tests_passed', '?')}"
+              + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
+              + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
+
+    _context(cfg)
+    try:
+        report = run_plan(plan, cfg, on_step=show)
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    final, totals = report["final"], report["totals"]
+    print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
+          f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
+    for test, why in (report.get("for_a_person") or {}).items():
+        print(f"for a person: {test} ({why['reason']})")
+    print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
+    return 0 if final["tests_passed"] == final["tests"] else 1
+
+
 def evaluate(cfg: Config) -> int:
     from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
 
@@ -984,7 +1011,7 @@ def main(argv: list[str] | None = None) -> None:
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "tests": tests, "impact": impact, "coverage": coverage}
+                 "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

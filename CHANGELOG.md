@@ -52,8 +52,24 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `atlas eval` con cada modelo y termina con una tabla. Guía en `docs/openrouter.md`.
 - `[llm] extra_body`: campos que van tal cual en cada petición de chat, para las opciones
   propias del servidor (`provider` en OpenRouter, `chat_template_kwargs` en vLLM).
+- Analizador de Python (`[sources.code] languages = ["ada", "python"]`), con `ast` y sin
+  dependencias: funciones, métodos, clases, `import` y etiquetas `# Req:`. Un módulo se nombra
+  por su ruta desde la raíz de código, así que una prueba Python y una Ada del mismo nombre son
+  dos nodos que verifican el mismo requisito.
+- `run_test` con lo que la prueba necesita en marcha: `[sources.code] run_command` dice cómo se
+  ejecuta lo construido (un envoltorio que arranca un servidor, por ejemplo) y `test_commands`
+  ejecuta tal cual, por extensión, las pruebas que no se construyen (`py = ["python3", "{file}"]`).
+- Con esto, los agentes de AtlasLM y `gemma-4-26b` escribieron un proyecto de prueba completo:
+  un servidor de comandos Ada por sockets (544 líneas), a partir de 25 requisitos de software, y
+  sus diez pruebas en Ada y en Python, con trazabilidad de 25 de 25 requisitos. Lo que hizo falta
+  para los agentes está en los cambios siguientes.
 
 ### Cambiado
+- `edit_file` rechaza un texto buscado de más de 30 líneas y pide varias ediciones pequeñas o
+  `write_file`: `gemma-4-26b` reconstruía de memoria los textos largos y entraba en bucles de
+  leer y editar de 27 y 45 minutos.
+- La misma llamada a una herramienta con los mismos argumentos, la tercera vez seguida, no se
+  ejecuta: el agente recibe un error que le pide otra cosa.
 - `edit_file` tolera también el listado de `read_file` copiado en el texto: quita los números
   de línea, las barras antes de cada salto de línea y los `\n` escritos como texto, en el
   texto buscado y en el nuevo. Con `gemma4:12b`, un cambio de varias líneas pasó de 0 de 2 a
@@ -69,6 +85,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - La huella de `docs.process` incluye el extractor, y `atlas sections` dice cuál se usa.
 
 ### Corregido
+- Una vuelta de un agente que gasta todo `max_tokens` razonando, sin texto ni llamadas, se
+  repite con el doble (como mucho dos veces); antes el agente acababa en silencio.
+- `edit_file`, cuando no encuentra el texto, dice si el cambio ya está hecho y enseña el bloque
+  del fichero más parecido; `write_file` avisa si el contenido no cambia. Las barras al final de
+  cada línea, copiadas del listado de `read_file`, se quitan también del texto nuevo.
+- Una carpeta relativa de `[sources.code] tool_path` es relativa a donde se lanza atlas; antes
+  se buscaba desde `<workspace>/build`.
 - Un `X-RateLimit-Reset` en milisegundos, como el de OpenRouter, se leía como segundos: cada
   429 paraba todas las peticiones 5 minutos.
 - Un 402 (sin crédito, o con el límite de gasto de la clave agotado) para el motor en vez de

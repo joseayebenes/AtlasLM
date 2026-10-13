@@ -81,6 +81,12 @@ números de línea (`    3 | `), una barra antes de cada salto de línea y algun
 casi todas las líneas del texto nuevo (o del contenido de `write_file`) acaban en barra, se
 quitan también.
 
+Un texto buscado de más de 30 líneas se rechaza, con un error que pide varias ediciones
+pequeñas o reescribir el fichero con `write_file`. Con `gemma-4-26b` y un fichero de 200
+líneas, los textos largos no eran copias del fichero sino reconstrucciones de memoria (uno de
+142 líneas tenía las funciones en otro sitio): dos tareas acabaron así en bucles de leer y
+editar de 27 y 45 minutos. Con el límite, la siguiente salió en 7 llamadas.
+
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente
 `atlas run`.

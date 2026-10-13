@@ -87,6 +87,17 @@ def test_an_edit_already_made_and_the_closest_block(project):
     assert "closest" not in project.edit_file(f, "Something else entirely", "x")
 
 
+def test_an_old_text_too_long_is_refused(project, tmp_path):
+    from atlas.code.tools import MAX_OLD_LINES
+    f = tmp_path / "src" / "long.adb"
+    f.write_text("".join(f"   X{i} : Integer := {i};\n" for i in range(MAX_OLD_LINES + 5)))
+    project.read_file("src/long.adb")
+    whole = f.read_text()
+    refused = project.edit_file("src/long.adb", whole, whole.replace("X0", "Y0"))
+    assert f"has {MAX_OLD_LINES + 5} lines" in refused["error"] and "several edits" in refused["error"]
+    assert project.edit_file("src/long.adb", "   X0 : Integer := 0;", "   Y0 : Integer := 0;")["replacements"] == 1
+
+
 def test_backslashes_at_the_end_of_every_new_line_are_removed(project, tmp_path):
     f = "src/tracks.adb"
     project.read_file(f)

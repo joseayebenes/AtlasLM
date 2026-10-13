@@ -244,6 +244,10 @@ class CodeTools:
             return {"error": "old_text is empty"}
         if old_text == new_text:
             return {"error": "old_text and new_text are the same"}
+        size = old_text.strip("\n").count("\n") + 1
+        if size > MAX_OLD_LINES:
+            return {"error": f"old_text has {size} lines: copy at most {MAX_OLD_LINES} lines from read_file and make "
+                             "the change in several edits (or rewrite the whole file with write_file)"}
         with self._lock:
             data = p.read_bytes()
             err = self._check_seen(p, path, data)
@@ -342,6 +346,7 @@ LISTING_NOTE = ("the line numbers of read_file and the backslashes before line b
                 "and new_text: copy the text without them")
 LISTING = re.compile(r"(?m)^[ \t]*\d+ \|(?: |$)")      # "   12 | " at the start of a line, as read_file shows it
 MAX_CLOSEST_LINES, MAX_CLOSEST_BLOCK = 5000, 60   # how big a file and an old_text get the closest block
+MAX_OLD_LINES = 30           # a longer old_text is rejected: models rebuild it from memory instead of copying it
 
 
 def _unescape(s: str) -> str:

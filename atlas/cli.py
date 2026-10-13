@@ -11,6 +11,8 @@
                                            by obligation, with the model; * = all
     atlas link     ID|MODULE [atlas.toml]  code that may implement the requirements without code, with the
                                            model; a report of proposals, the code is not changed; * = all
+    atlas tests    ID|MODULE [atlas.toml]  the test procedures as tests in each language, step by step, by
+                                           the patterns of [tests], without the model; * = all
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
@@ -798,6 +800,25 @@ def link(cfg: Config, target: str) -> int:
     return 0
 
 
+def tests(cfg: Config, target: str) -> int:
+    """The tests of the test procedures of a module (or of one), from their steps."""
+    from atlas.code.procedures import generate_tests
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    res = generate_tests(KnowledgeGraph.open(ctx.store.path), "" if target == "*" else target, cfg["tests"])
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    for p in res["procedures"]:
+        files = ", ".join(f"{f['path']} ({f['status']})" for f in p["files"])
+        print(f"{p['id']}: {files}" if files else f"{p['id']}: not written")
+        for e in p["errors"]:
+            print(f"    {e}")
+    print(f"{res['written']} written, {res['unchanged']} unchanged"
+          + (f"; {res['errors']} procedures with steps that no pattern of [tests] steps matches" if res["errors"] else ""))
+    return 1 if res["errors"] else 0
+
+
 def impact(cfg: Config, name: str) -> int:
     from atlas.agents.reports import impact_report
     _context(cfg)
@@ -963,7 +984,7 @@ def main(argv: list[str] | None = None) -> None:
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "impact": impact, "coverage": coverage}
+                 "tests": tests, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

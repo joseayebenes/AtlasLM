@@ -5,11 +5,17 @@ ADK speaks in google.genai types (Content, Part, FunctionCall, FunctionDeclarati
 servers atlas talks to (Ollama, vLLM, LM Studio, a gateway) speak the OpenAI chat API. This
 module translates one into the other: the conversation with its tool calls and results, and
 the tools with their JSON schema. One request per model turn, without streaming.
+
+A reasoning model can spend the whole max_tokens thinking and answer nothing (finish_reason
+"length", no text, no tool call); ADK would take that empty turn as the final answer and end
+the agent in silence. That turn is asked again with twice the max_tokens, at most RETRIES
+times, with a warning.
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -22,6 +28,9 @@ from atlas.llm import ServiceConfig, create_client
 from atlas.llm.structured import repair_json
 
 __all__ = ["AtlasLlm", "to_llm_response", "to_messages", "to_tools"]
+
+log = logging.getLogger(__name__)
+RETRIES = 2      # times an empty turn cut by max_tokens is asked again, doubling max_tokens
 
 SCHEMA_KEYS = ("description", "enum", "required", "default", "format", "minimum", "maximum", "title")
 FINISH = {"stop": types.FinishReason.STOP, "tool_calls": types.FinishReason.STOP,
@@ -61,7 +70,21 @@ class AtlasLlm(BaseLlm):
         if self.service.extra_body:
             kwargs["extra_body"] = self.service.extra_body
         response = await asyncio.to_thread(self.client.chat.completions.create, **kwargs)   # the client is sync
+        for _ in range(RETRIES):
+            if not (_empty_and_cut(response) and kwargs.get("max_tokens")):
+                break
+            log.warning("the model %s spent the whole max_tokens (%d) reasoning and answered nothing: asking again "
+                        "with %d", self.service.model, kwargs["max_tokens"], kwargs["max_tokens"] * 2)
+            kwargs["max_tokens"] *= 2
+            response = await asyncio.to_thread(self.client.chat.completions.create, **kwargs)
         yield to_llm_response(response)
+
+
+def _empty_and_cut(response: Any) -> bool:
+    """Cut by max_tokens with no text and no tool call: all of it went to reasoning."""
+    choice = response.choices[0]
+    return choice.finish_reason == "length" and not (choice.message.content or "").strip() \
+        and not choice.message.tool_calls
 
 
 def _text(value: Any) -> str:

@@ -73,6 +73,45 @@ def test_edit_rules(project, tmp_path):
     assert "changed since you read it" in project.edit_file(f, "Update", "Refresh")["error"]
 
 
+def test_an_edit_already_made_and_the_closest_block(project):
+    f = "src/tracks.adb"
+    project.read_file(f)
+    old, new = '   begin\n      Logger.Log ("update");', '   begin\n      Logger.Log ("updated");\n      Count := Count + 1;'
+    assert project.edit_file(f, old, new)["replacements"] == 1
+    again = project.edit_file(f, old, new)                    # a model that did not notice it was made
+    assert "already made" in again["error"] and again["line"] == 3     # where new_text starts, "   begin"
+    wrong = project.edit_file(f, 'procedure Delete_Track (I : Integer) is\nbegin\n   Logger.Log ("deleting");',
+                              "x")                             # wrong indentation and text: the block as it is
+    assert wrong["closest"]["start_line"] == 8 and wrong["closest"]["end_line"] == 10
+    assert wrong["closest"]["text"].startswith("   procedure Delete_Track (I : Integer) is")
+    assert "closest" not in project.edit_file(f, "Something else entirely", "x")
+
+
+def test_an_old_text_too_long_is_refused(project, tmp_path):
+    from atlas.code.tools import MAX_OLD_LINES
+    f = tmp_path / "src" / "long.adb"
+    f.write_text("".join(f"   X{i} : Integer := {i};\n" for i in range(MAX_OLD_LINES + 5)))
+    project.read_file("src/long.adb")
+    whole = f.read_text()
+    refused = project.edit_file("src/long.adb", whole, whole.replace("X0", "Y0"))
+    assert f"has {MAX_OLD_LINES + 5} lines" in refused["error"] and "several edits" in refused["error"]
+    assert project.edit_file("src/long.adb", "   X0 : Integer := 0;", "   Y0 : Integer := 0;")["replacements"] == 1
+
+
+def test_backslashes_at_the_end_of_every_new_line_are_removed(project, tmp_path):
+    f = "src/tracks.adb"
+    project.read_file(f)
+    done = project.edit_file(f, "   procedure Update (I : Integer) is\n   begin",
+                             "   procedure Update (\\\n      I : Integer) is\\\n   begin")   # gemma-4-26b
+    assert done["replacements"] == 1 and done["notes"]
+    assert "   procedure Update (\n      I : Integer) is\n   begin\n" in (tmp_path / f).read_text()
+    new = project.write_file("src/new.ads", "package New_Unit is\\\n   X : Integer;\\\nend New_Unit;\n")
+    assert new["notes"] and (tmp_path / "src" / "new.ads").read_text() == "package New_Unit is\n   X : Integer;\nend New_Unit;\n"
+    shell = "a \\\n  b\nc\nd\ne\n"                      # one continuation line: left as it is
+    project.write_file("src/run.sh", shell)
+    assert (tmp_path / "src" / "run.sh").read_text() == shell
+
+
 def test_encoding_line_endings_and_permissions(project, tmp_path):
     crlf = tmp_path / "src" / "legacy.adb"
     crlf.write_bytes("-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   null;\r\nend Run;\r\n".encode("latin-1"))
@@ -91,6 +130,8 @@ def test_write_and_read_only(project, tmp_path):
     assert "read" in project.write_file("src/tracks.adb", "x")["error"]           # overwrite: read it first
     project.read_file("src/tracks.adb")
     assert "-   procedure Update (I : Integer) is" in project.write_file("src/tracks.adb", "null;\n")["diff"]
+    same = project.write_file("src/tracks.adb", "null;\n")                   # a model that loops: tell it
+    assert same["unchanged"] and "nothing changed" in same["note"] and "diff" not in same
     ro = CodeTools(["src"], read_only=True)
     ro.read_file("src/tracks.adb")
     assert ro.edit_file("src/tracks.adb", "null;", "x") == {"error": "these tools are read-only"}

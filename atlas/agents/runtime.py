@@ -7,11 +7,14 @@
 An agent gets its model from [llm] (with the model, temperature and reasoning of its file or
 of [agents]) through AtlasLlm, and its tools from the "tool" plugins with the names of its
 file: the same functions that atlas serve offers. max_steps caps the calls to the model in
-one answer.
+one answer, and the same tool call repeated REPEATS times in a row is not run again (see
+loop_guard).
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +25,10 @@ from atlas.config import Config, ConfigError
 from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
-__all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "run_agent"]
+__all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
+           "run_agent"]
+
+REPEATS = 3      # the same call this many times in a row is a loop
 
 
 def context_for(cfg: Config) -> SimpleNamespace:
@@ -58,6 +64,28 @@ def agent_tools(d: AgentDef, context: Any) -> list:
     return [plugins.get("tool", t, context.disabled)(context).function() for t in d.tools]
 
 
+def loop_guard(functions: list) -> list:
+    """The tools of one agent, wrapped so that the same call with the same arguments, the
+    REPEATS-th time in a row, is not run: the model gets an error that tells it to do something
+    else. Small models fall into these loops (gemma-4-26b wrote a file 17 times with the same
+    content after an error it did not understand) and spend every step of the agent."""
+    last: dict = {"call": None, "times": 0}
+
+    def wrap(f):
+        @functools.wraps(f)
+        def guarded(*args, **kwargs):
+            call = (f.__name__, json.dumps([args, kwargs], sort_keys=True, ensure_ascii=False, default=str))
+            last["times"] = last["times"] + 1 if call == last["call"] else 1
+            last["call"] = call
+            if last["times"] >= REPEATS:
+                return {"error": f"this is the same {f.__name__} call, with the same arguments, {last['times']} "
+                                 "times in a row: it gives the same result every time. Do something different: if "
+                                 "a tool reported an error, change what causes it; if the work is done, answer."}
+            return f(*args, **kwargs)
+        return guarded
+    return [wrap(f) for f in functions]
+
+
 def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None):
     """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests."""
     try:
@@ -68,7 +96,7 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None)
     d = definition(name, cfg)
     text = d.instruction
     return LlmAgent(name=d.name, description=d.description, model=AtlasLlm.from_service(agent_service(d, cfg), client),
-                    tools=agent_tools(d, context or context_for(cfg)),
+                    tools=loop_guard(agent_tools(d, context or context_for(cfg))),
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it
 
 

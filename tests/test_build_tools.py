@@ -43,7 +43,7 @@ def project(tmp_path, toml, samples):
     cc.parent.mkdir()
     cc.write_text(FAKE_CC)
 
-    def make(check=None, test=None, tool_path=None, timeout=None) -> BuildTools:
+    def make(check=None, test=None, tool_path=None, timeout=None, extra="") -> BuildTools:
         cfg = load_config(toml(f'''
 [sources.code]
 roots = ["{ada.as_posix()}"]
@@ -52,6 +52,7 @@ check_command = {check if check is not None else [sys.executable, str(cc), "{inc
 test_command = {test if test is not None else [sys.executable, str(cc), "{include}", "{file}", "-o", "{exe}"]}
 tool_path = {tool_path or []}
 command_timeout = {timeout or 30}
+{extra}
 '''.replace("'", '"')))
         return BuildTools.from_config(cfg)
     return ada, make
@@ -99,6 +100,37 @@ def test_tool_path_timeout_and_missing_compiler(project, tmp_path):
     assert "not found" in make(check=["no-such-compiler", "{file}"]).check_code(str(ada / "src" / "tracks.adb"))["error"]
     slow = make(check=[sys.executable, "-c", "import time; time.sleep(5)"], timeout=1)
     assert "more than 1 s" in slow.check_code(str(ada / "src" / "tracks.adb"))["error"]
+
+
+WRAPPER = '''import os, subprocess, sys
+print("service started", flush=True)        # what a test needs first, e.g. the server it talks to
+sys.exit(subprocess.run(sys.argv[1:], env={**os.environ, "SERVER_PORT": "5999"}).returncode)
+'''
+
+
+def test_a_test_runs_through_a_wrapper_and_python_tests_just_run(project, tmp_path, monkeypatch):
+    ada, make = project
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "with_server").write_text(f"#!{sys.executable}\n" + WRAPPER)
+    (scripts / "with_server").chmod(0o755)
+    monkeypatch.chdir(tmp_path)                 # a relative tool_path is relative to where atlas runs
+    tools = make(tool_path=["scripts"], extra='''
+run_command = ["with_server", "{exe}"]
+[sources.code.test_commands]
+py = ["with_server", "PYTHON", "{file}"]
+'''.replace("PYTHON", sys.executable))
+    res = tools.run_test(str(ada / "tests" / "test_tracks.adb"))
+    assert res["built"] and res["passed"] and res["output"].split() == ["service", "started", "ran"]
+    test = ada / "tests" / "test_session.py"
+    test.write_text("import os\nassert os.environ['SERVER_PORT'] == '5999'\nprint('step 1 ok')\n")
+    res = tools.run_test(str(test))
+    assert (res["passed"], res["exit_code"]) == (True, 0) and "built" not in res and "step 1 ok" in res["output"]
+    test.write_text("assert 1 == 2, 'step 2: expected OK PONG'\n")
+    res = tools.run_test(str(test))
+    assert res["passed"] is False and "step 2: expected OK PONG" in res["output"]
+    # without a command for .py, a Python test goes through test_command like the others
+    assert "built" in make().run_test(str(test))
 
 
 def test_offered_by_the_mcp_server(project, toml):

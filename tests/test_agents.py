@@ -82,7 +82,8 @@ def test_atlas_agents_lists_them(toml, capsys):
 
 class StubClient:
     """An OpenAI client that answers with scripted turns and keeps the requests: a dict is a
-    turn of tool calls ({name: args}), a string the final answer."""
+    turn of tool calls ({name: args}), a string the final answer, None a turn that spent the
+    whole max_tokens reasoning (no text, finish_reason "length")."""
 
     def __init__(self, turns):
         self.turns, self.requests = list(turns), []
@@ -97,6 +98,8 @@ class StubClient:
                                      function=SimpleNamespace(name=n, arguments=arguments(a)))
                      for i, (n, a) in enumerate(turn.items())]
             message, finish = SimpleNamespace(content=None, tool_calls=calls), "tool_calls"
+        elif turn is None:
+            message, finish = SimpleNamespace(content="", tool_calls=None), "length"
         else:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
         return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
@@ -165,6 +168,46 @@ def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
     assert end.value.code == 0 and stub.requests[0]["messages"][-1]["content"] == "Hello"
     with pytest.raises(SystemExit, match="there is no agent 'nobody'"):
         main(["agent", "nobody", "Hello", str(workspace.path)])
+
+
+def test_the_same_call_a_third_time_in_a_row_is_not_run(workspace, monkeypatch):
+    import inspect
+    from atlas.agents.runtime import REPEATS, loop_guard, run_agent
+    ran = []
+
+    def trace(req_id: str) -> dict:
+        """Everything about a requirement."""
+        ran.append(req_id)
+        return {"id": req_id}
+    guarded = loop_guard([trace])[0]
+    assert guarded.__name__ == "trace" and list(inspect.signature(guarded).parameters) == ["req_id"]   # for ADK
+    results = [guarded(req_id="SRS-0004") for _ in range(REPEATS + 1)] + [guarded(req_id="SRS-0005")]
+    assert ran == ["SRS-0004"] * (REPEATS - 1) + ["SRS-0005"]
+    assert all("times in a row" in r["error"] for r in results[REPEATS - 1:REPEATS + 1])
+
+    # in a real agent: the third identical call gets the error, and the agent goes on
+    monkeypatch.chdir(workspace.path.parent)
+    same = {"trace": {"req_id": "SRS-0004"}}
+    client = StubClient([same, same, same, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented") and len(res["calls"]) == 3
+    third = client.requests[3]["messages"][-1]
+    assert third["role"] == "tool" and "3 times in a row" in third["content"]
+    assert "tracks.delete_track" in client.requests[2]["messages"][-1]["content"]      # the second one ran
+
+
+def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, monkeypatch, caplog):
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"max_tokens": 100})
+    client = StubClient([None, None, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented")
+    assert [r["max_tokens"] for r in client.requests] == [100, 200, 400]
+    assert "spent the whole max_tokens (100) reasoning" in caplog.text
+    client = StubClient([None, None, None])                    # at most twice: then the empty answer
+    assert run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)["answer"] == ""
+    assert len(client.requests) == 3
 
 
 def test_genai_schemas_become_json_schemas():

@@ -1,12 +1,13 @@
 # atlas.code — código fuente
 
-Analiza el código (Ada, con tree-sitter) y da a los agentes las herramientas habituales de
+Analiza el código (Ada con tree-sitter, Python con `ast`) y da a los agentes las herramientas habituales de
 un agente de código, confinadas a las carpetas del proyecto. Viene de
 `legacy/ada_graph.py`.
 
 | Fichero | Qué tiene |
 |---|---|
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
+| `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
 | `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file` |
 | `build.py` | `BuildTools`: `check_code` y `run_test`, el compilador y las pruebas del proyecto |
@@ -25,6 +26,14 @@ otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los ficheros que cas
 
 El paso `index.code` lo lleva además al índice de búsqueda: cada subprograma, tipo y variable,
 con su comentario, sus requisitos y su código (ver [atlas.index](../index/README.md)).
+
+**Python** (`languages = ["ada", "python"]`): funciones y métodos (`Clase.metodo`), clases
+como tipos, variables del módulo e `import`. Un módulo se nombra por su ruta desde la raíz de
+código que lo contiene (`tests/python/test_session.py` bajo la raíz `tests` es
+`python.test_session`), así que no choca con una unidad Ada del mismo nombre. Una etiqueta
+`# Req:` cuenta para una función si está en los comentarios justo encima (o encima de sus
+decoradores), en su docstring o en un comentario de su cuerpo; una del módulo no cita nada.
+Con `test_patterns`, una prueba Python y una Ada verifican el mismo requisito en el grafo.
 
 Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en el
 [README](../../README.md)).
@@ -51,8 +60,10 @@ Protecciones:
   atómica.
 - `CodeTools(..., read_only=True)` deja solo las de lectura.
 
-Un error es una respuesta con `error` (y, si el texto no aparece, las líneas más
-parecidas) para que el agente se corrija.
+Un error es una respuesta con `error` para que el agente se corrija. Si el texto a sustituir
+no aparece, dice si el texto nuevo ya está (el cambio ya se hizo: con `gemma-4-26b`, 8 de 11
+ediciones fallidas de una tarea repetían una que ya se había aplicado), el bloque del fichero
+más parecido a lo buscado (`closest`, con sus líneas) y las líneas como la primera.
 
 Los modelos pequeños suelen fallar copiando el texto a sustituir: escapan las comillas o
 cambian la sangría. `edit_file` lo intenta primero exacto y luego sin esos escapes y sin
@@ -66,6 +77,15 @@ números de línea (`    3 | `), una barra antes de cada salto de línea y algun
 `edit_file` las quita de los dos y lo intenta otra vez. En un experimento (poner una guarda en
 `Tracks.Update`), sin esta tolerancia el agente repitió la misma edición fallida hasta agotar
 `max_steps` en 2 ejecuciones de 2; con ella, hizo el cambio correcto en las 2.
+`gemma-4-26b` pone a veces esas barras solo en el texto nuevo, con el buscado bien copiado: si
+casi todas las líneas del texto nuevo (o del contenido de `write_file`) acaban en barra, se
+quitan también.
+
+Un texto buscado de más de 30 líneas se rechaza, con un error que pide varias ediciones
+pequeñas o reescribir el fichero con `write_file`. Con `gemma-4-26b` y un fichero de 200
+líneas, los textos largos no eran copias del fichero sino reconstrucciones de memoria (uno de
+142 líneas tenía las funciones en otro sitio): dos tareas acabaron así en bucles de leer y
+editar de 27 y 45 minutos. Con el límite, la siguiente salió en 7 llamadas.
 
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente
@@ -80,7 +100,7 @@ variable con el nombre de una función). `BuildTools` le da dos herramientas:
 | Herramienta | Qué hace |
 |---|---|
 | `check_code` | compila un fichero sin generar código y devuelve los errores y avisos, cada uno con fichero, línea, columna y mensaje. El mismo mensaje en varias líneas va una vez, con las demás líneas en `also_at` (un arreglo, muchos sitios), y las pistas que el compilador da en el mismo sitio van en `details` (GNAT: «use clause would make operation legal»). Como mucho 10 de cada clase |
-| `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`) |
+| `run_test` | construye un procedimiento de prueba y lo ejecuta: pasa si termina con código 0. Si no compila, los errores; si falla, su salida (el mensaje del `Program_Error`). Una prueba que no se construye, como un script de Python, solo se ejecuta |
 
 Los comandos están en `[sources.code]`, como listas de argumentos y sin intérprete de
 órdenes, así que no están atados a ningún compilador. Con GNAT, instalado con Alire (ver la
@@ -99,6 +119,19 @@ tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 `gnatmake` decide qué recompilar por las fechas de los ficheros: un cambio un instante después
 de compilar puede no verse. Si pasa, `-f` en `test_command` recompila todo lo que usa la
 prueba.
+
+Una prueba que habla con un servidor necesita que esté en marcha. `run_command` dice cómo se
+ejecuta lo que construyó `test_command` (por defecto, el ejecutable tal cual), así que un
+envoltorio del proyecto puede arrancar el servidor, ejecutar la prueba y pararlo. Las pruebas
+que no se construyen van por `test_commands`, por extensión, y pasan igual si terminan con 0:
+
+```toml
+[sources.code]
+run_command = ["with_server", "{exe}"]
+tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
+[sources.code.test_commands]
+py = ["with_server", "python3", "{file}"]
+```
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` ejecuta código, así
 que solo se ofrece si se pide en `[mcp] tools` o en las herramientas de un agente. Ningún
@@ -144,7 +177,9 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 
 ## Pruebas
 
-`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`) y
+`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`),
+`tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
+Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,
 codificación y tolerancia a los fallos de los modelos pequeños) y `tests/test_build_tools.py`
 (con un compilador simulado en cualquier equipo, y con GNAT si está instalado).

@@ -4,7 +4,8 @@
                  and returns the errors and warnings of the compiler, each with its place
                  (the same message in many lines, once, with those lines)
     run_test     builds a test procedure of the project and runs it: passed or not, and its
-                 output; if it does not build, the errors of the compiler
+                 output; if it does not build, the errors of the compiler. A test in a language
+                 that is not built (a Python script) is just run
 
 The commands come from [sources.code], as lists of arguments (no shell), and nothing is tied
 to a compiler. Placeholders:
@@ -20,8 +21,14 @@ With GNAT (installed with Alire, `alr toolchain --select gnat_native gprbuild`):
     test_command = ["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]
     tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 
-`tool_path` goes before PATH for these commands (globs allowed), so the toolchain is used
-without touching the shell. A project with a GPR file would use gprbuild instead. The commands
+`run_command` runs what test_command built (by default the executable itself, "{exe}"); a
+wrapper there can start what the test needs first, e.g. ["with_server", "{exe}"] for a test
+that talks to a server. `test_commands` runs the tests of other languages as they are, by
+extension, with no build: { py = ["with_server", "python3", "{file}"] }.
+
+`tool_path` goes before PATH for these commands (globs allowed; a relative folder is relative
+to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
+used without touching the shell. A project with a GPR file would use gprbuild instead. The commands
 have the trust of atlas.toml itself; run_test runs code, so it is only offered when asked for.
 """
 from __future__ import annotations
@@ -86,19 +93,23 @@ def _tail(text: str) -> str:
 
 class BuildTools:
     def __init__(self, files: CodeTools, build_dir: str | Path, check_command: Iterable[str] = (),
-                 test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120):
+                 test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120,
+                 run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
-        self.tool_path = [p for pattern in tool_path for p in sorted(glob.glob(os.path.expanduser(pattern)),
-                                                                     reverse=True)]
+        self.run_command = list(run_command) or ["{exe}"]
+        self.test_commands = {k.lower().lstrip("."): list(v) for k, v in (test_commands or {}).items()}
+        self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
+                          for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
         self.timeout = timeout
 
     @classmethod
     def from_config(cls, cfg, files: CodeTools | None = None) -> "BuildTools":
         sc = cfg["sources"].get("code") or {}
         return cls(files or CodeTools.from_config(cfg), cfg.workspace / "build", sc.get("check_command", []),
-                   sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)))
+                   sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
+                   sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -164,16 +175,24 @@ class BuildTools:
                 **({"output": _tail(output)} if not ok and not found["errors"] else {})}
 
     def run_test(self, path: str) -> dict:
-        """Builds a test procedure of the project (a main subprogram, one per file) and runs
-        it. It passes when it ends with exit code 0; a failed check that raises an exception
+        """Builds a test of the project (an Ada test procedure: a main subprogram, one per
+        file) and runs it; a test that is not built, such as a Python script, is just run.
+        It passes when it ends with exit code 0; a failed check that raises an exception
         makes it fail, with the message in `output`. If it does not build, returns the errors
         of the compiler; if it builds, its warnings too. It runs code: use it on tests of the
         project only."""
-        if not self.test_command:
-            return {"error": "no test command configured ([sources.code] test_command)"}
         p, err = self._source(path)
         if err:
             return err
+        direct = self.test_commands.get(p.suffix.lower().lstrip("."))
+        if direct:                                    # not built: run as it is
+            ran = self._run(self._command(direct, p))
+            if isinstance(ran, dict):
+                return {"file": self.files._show(p), "passed": False, **ran}
+            return {"file": self.files._show(p), "passed": ran.returncode == 0, "exit_code": ran.returncode,
+                    "output": _tail(ran.stdout + ran.stderr)}
+        if not self.test_command:
+            return {"error": "no test command configured ([sources.code] test_command)"}
         res = self._run(self._command(self.test_command, p))
         if isinstance(res, dict):
             return res
@@ -183,7 +202,7 @@ class BuildTools:
             return {"file": self.files._show(p), "built": False, **found,
                     **({"output": _tail(res.stdout + res.stderr)} if not found["errors"] else {})}
         warnings = {"warnings": found["warnings"]} if found["warnings"] else {}
-        ran = self._run([str(exe)])
+        ran = self._run(self._command(self.run_command, p))
         if isinstance(ran, dict):
             return {"file": self.files._show(p), "built": True, "passed": False, **ran, **warnings}
         return {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0,

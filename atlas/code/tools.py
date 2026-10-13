@@ -244,6 +244,10 @@ class CodeTools:
             return {"error": "old_text is empty"}
         if old_text == new_text:
             return {"error": "old_text and new_text are the same"}
+        size = old_text.strip("\n").count("\n") + 1
+        if size > MAX_OLD_LINES:
+            return {"error": f"old_text has {size} lines: copy at most {MAX_OLD_LINES} lines from read_file and make "
+                             "the change in several edits (or rewrite the whole file with write_file)"}
         with self._lock:
             data = p.read_bytes()
             err = self._check_seen(p, path, data)
@@ -254,7 +258,7 @@ class CodeTools:
             text = raw.replace("\r\n", "\n")
             found = _find(text, old_text, new_text, replace_all)
             if found is None:
-                return self._not_found(path, text, old_text)
+                return self._not_found(path, text, old_text, new_text)
             if "error" in found:
                 return found
             new, count, notes = found["text"], found["count"], found["notes"]
@@ -266,16 +270,37 @@ class CodeTools:
         return {"file": self._show(p), "replacements": count, "diff": self._diff(self._show(p), text, new),
                 **({"notes": notes} if notes else {})}
 
-    def _not_found(self, path: str, text: str, old_text: str) -> dict:
+    def _not_found(self, path: str, text: str, old_text: str, new_text: str) -> dict:
+        """Why old_text was not found, with what helps a model try again: whether new_text is
+        already in the file (a model that does not notice its edit was made repeats it: 8 of
+        11 failed edits of gemma-4-26b in one task), the block of the file most like old_text,
+        and the lines like its first one."""
         lines = text.split("\n")
+        squash = lambda s: re.sub(r"\s+", " ", LISTING.sub("", s)).strip()
+        new = squash(new_text)
+        if new and new in squash(text):         # where: by its most distinctive (longest) line
+            new_lines = [l.strip() for l in LISTING.sub("", new_text).strip("\n").split("\n")]
+            k = max(range(len(new_lines)), key=lambda j: len(new_lines[j]))
+            at = next((i + 1 - k for i, l in enumerate(lines) if l.strip() == new_lines[k]), None)
+            return {"error": f"old_text is not in {path}, but new_text already is"
+                             + (f" (line {at})" if at else "") + ": this change is already made. Read the file "
+                             "again to see its current text before another edit", **({"line": at} if at else {})}
         first = next((l.strip() for l in old_text.split("\n") if l.strip()), "")
         stripped = [l.strip() for l in lines]
         similar = [i for i, l in enumerate(stripped) if first and l == first]
         if not similar:                         # the most similar lines first
             close = difflib.get_close_matches(first, stripped, n=3, cutoff=0.6)
             similar = list(dict.fromkeys(i for c in close for i, l in enumerate(stripped) if l == c))
-        return {"error": f"old_text is not in {path}: copy it exactly (indentation included) from read_file",
-                "similar_lines": [{"line": i + 1, "text": lines[i][:MAX_LINE_CHARS]} for i in similar[:5]]}
+        out = {"error": f"old_text is not in {path}: copy it exactly (indentation included) from read_file",
+               "similar_lines": [{"line": i + 1, "text": lines[i][:MAX_LINE_CHARS]} for i in similar[:5]]}
+        size, old = len(old_text.strip("\n").split("\n")), squash(old_text)
+        if old and len(lines) <= MAX_CLOSEST_LINES and size <= MAX_CLOSEST_BLOCK:
+            ratio, start = max((difflib.SequenceMatcher(None, squash("\n".join(lines[i:i + size])), old).ratio(), i)
+                               for i in range(max(1, len(lines) - size + 1)))
+            if ratio >= 0.5:                    # what the file has now where old_text should be
+                out["closest"] = {"start_line": start + 1, "end_line": min(len(lines), start + size),
+                                  "text": "\n".join(lines[start:start + size])}
+        return out
 
     def write_file(self, path: str, content: str) -> dict:
         """Creates a file with `content`, or rewrites a file read before. For a small change
@@ -297,6 +322,9 @@ class CodeTools:
                 raw, encoding = _decode(data)
                 before, crlf = raw.replace("\r\n", "\n"), "\r\n" in raw
             content = content.replace("\r\n", "\n")
+            unlisted = _line_backslashes(content)
+            if unlisted:
+                content = content.replace("\\\n", "\n")
             try:
                 out = (content.replace("\n", "\r\n") if crlf else content).encode(encoding)
             except UnicodeEncodeError as e:
@@ -304,8 +332,12 @@ class CodeTools:
             p.parent.mkdir(parents=True, exist_ok=True)
             created = not p.exists()
             self._write(p, out)
+        if not created and before == content:
+            return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
+                    "note": "the file already had exactly this content: nothing changed"}
         return {"file": self._show(p), "created": created, "lines": content.count("\n") + 1,
-                **({} if created else {"diff": self._diff(self._show(p), before, content)})}
+                **({} if created else {"diff": self._diff(self._show(p), before, content)}),
+                **({"notes": [LISTING_NOTE]} if unlisted else {})}
 
 
 ESCAPES_NOTE = "the backslashes before quotes or n/t in old_text and new_text were read as plain characters"
@@ -313,6 +345,8 @@ INDENT_NOTE = "old_text was found ignoring indentation, and new_text was re-inde
 LISTING_NOTE = ("the line numbers of read_file and the backslashes before line breaks were removed from old_text "
                 "and new_text: copy the text without them")
 LISTING = re.compile(r"(?m)^[ \t]*\d+ \|(?: |$)")      # "   12 | " at the start of a line, as read_file shows it
+MAX_CLOSEST_LINES, MAX_CLOSEST_BLOCK = 5000, 60   # how big a file and an old_text get the closest block
+MAX_OLD_LINES = 30           # a longer old_text is rejected: models rebuild it from memory instead of copying it
 
 
 def _unescape(s: str) -> str:
@@ -324,6 +358,13 @@ def _unlist(s: str) -> str:
     """What a model meant when it copied the listing of read_file into a text, with the line
     numbers, a backslash before each line break and some line breaks written as \\n."""
     return LISTING.sub("", _unescape(s.replace("\\\n", "\n")))
+
+
+def _line_backslashes(s: str) -> bool:
+    """Whether a model ended (nearly) every line of a text with a backslash, as in the listing
+    of read_file (gemma-4-26b in new_text alone, with an old_text copied right)."""
+    breaks = s.rstrip("\n").count("\n")                      # the final line break does not count
+    return breaks >= 2 and s.count("\\\n") >= 0.8 * breaks
 
 
 def _occurrences(text: str, old: str, starts: list[int] | None = None) -> list[int]:
@@ -346,7 +387,10 @@ def _find(text: str, old: str, new: str, replace_all: bool) -> dict | None:
     ambiguous, or None when old is not there. Exact first; then, as small models often
     get them wrong, with their escapes undone, without the line numbers of read_file they
     copied (gemma4:12b in edits of several lines), and ignoring indentation (whole lines)."""
-    tries = [(old, new, [])]
+    first_notes = []
+    if _line_backslashes(new) and "\\\n" not in old:
+        new, first_notes = new.replace("\\\n", "\n"), [LISTING_NOTE]
+    tries = [(old, new, first_notes)]
     if "\\" in old + new and (_unescape(old), _unescape(new)) != (old, new):
         tries.append((_unescape(old), _unescape(new), [ESCAPES_NOTE]))
     if (LISTING.search(old) or "\\\n" in old) and (_unlist(old), _unlist(new)) != (old, new):

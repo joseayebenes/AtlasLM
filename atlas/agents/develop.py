@@ -43,9 +43,12 @@ again and again in the same way, and changes that broke what worked.
    not get further in `stuck_rounds` rounds is left for a person: the agent does not insist on
    what it cannot fix. While a test gets further it keeps the turn; when not, the next one.
 4. A report after each step, in <workspace>/reports/develop-<plan>.json and .md: what each
-   task and round did, its time, tokens and cost, the tests that pass and those that need a
-   person, with their output. develop-<plan>.calls.jsonl keeps the prompt, the tool calls with
-   their results and the answer of every run of an agent.
+   task and round did, its time, tokens and cost, its edits (and how many failed) and its
+   compilations (and how many had errors), the tests that pass and those that need a person,
+   with their output, and the errors of the compiler of the whole plan, the most frequent
+   first, with whether a hint came with them ([sources.code] hints: one more after each run).
+   develop-<plan>.calls.jsonl keeps the prompt, the tool calls with their results and the
+   answer of every run of an agent.
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
@@ -57,8 +60,10 @@ import glob
 import json
 import math
 import re
+import threading
 import time
 import tomllib
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -69,6 +74,8 @@ __all__ = ["Plan", "develop", "load_plan"]
 
 MAX_OUTPUT = 1500          # characters of a test output in a prompt
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
+WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
+SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -216,6 +223,8 @@ class Developer:
         self.report: dict = {"plan": plan.name, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "steps": [],
                              "tests": self.tests}
         self.path = cfg.workspace / "reports" / f"develop-{plan.name}"
+        self.errors: dict[str, dict] = {}      # the errors of the compiler, by their message without names
+        self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
 
     # --- what the code does --------------------------------------------------------------
     def _score(self, result: dict) -> float:
@@ -270,11 +279,20 @@ class Developer:
         except Exception as e:                   # the model server failed: the task did not happen
             step.update({"calls": 0, "stopped": True, "error": f"{type(e).__name__}: {e}"[:MAX_ANSWER], "answer": ""})
         step["seconds"] = round(time.time() - t0)
-        self.report["steps"].append(step)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with open(f"{self.path}.calls.jsonl", "a", encoding="utf-8") as log:   # what it did, to study it
-            log.write(json.dumps({"n": step["n"], "kind": kind, "task": task, "prompt": prompt, "calls": record,
-                                  "answer": res.get("answer", "")}, ensure_ascii=False, default=str) + "\n")
+        use, errors = tool_use(record)
+        with self._lock:
+            step["n"] = len(self.report["steps"]) + 1
+            step.update(use)
+            for e in errors:
+                key = _shape(e.get("message", ""))
+                seen = self.errors.setdefault(key, {"message": e.get("message", ""), "count": 0, "hint": False})
+                seen["count"] += 1
+                seen["hint"] = seen["hint"] or bool(e.get("hint"))
+            self.report["steps"].append(step)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            with open(f"{self.path}.calls.jsonl", "a", encoding="utf-8") as log:   # what it did, to study it
+                log.write(json.dumps({"n": step["n"], "kind": kind, "task": task, "prompt": prompt, "calls": record,
+                                      "answer": res.get("answer", "")}, ensure_ascii=False, default=str) + "\n")
         return step
 
     def compiled(self, agent: str, task: str, before: dict, after: dict) -> dict:
@@ -418,16 +436,46 @@ class Developer:
 
     # --- the report ------------------------------------------------------------------------
     def save(self) -> None:
-        steps = self.report["steps"]
-        self.report["totals"] = {
-            "seconds": sum(s["seconds"] for s in steps), "calls": sum(s["calls"] for s in steps),
-            "prompt_tokens": sum((s.get("tokens") or {}).get("prompt", 0) for s in steps),
-            "completion_tokens": sum((s.get("tokens") or {}).get("completion", 0) for s in steps),
-            **({"cost": round(sum(s.get("cost", 0) for s in steps), 4)} if any("cost" in s for s in steps) else {})}
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.with_suffix(".json").write_text(json.dumps(self.report, ensure_ascii=False, indent=1),
-                                                  encoding="utf-8")
-        self.path.with_suffix(".md").write_text(markdown(self.report), encoding="utf-8")
+        with self._lock:
+            steps = self.report["steps"]
+            total = lambda key, field: sum((s.get(key) or {}).get(field, 0) for s in steps)
+            self.report["totals"] = {
+                "seconds": sum(s["seconds"] for s in steps), "calls": sum(s["calls"] for s in steps),
+                "prompt_tokens": total("tokens", "prompt"), "completion_tokens": total("tokens", "completion"),
+                "edits": {"made": total("edits", "made"), "failed": total("edits", "failed")},
+                "compiles": {"ok": total("compiles", "ok"), "failed": total("compiles", "failed")},
+                **({"cost": round(sum(s.get("cost", 0) for s in steps), 4)} if any("cost" in s for s in steps) else {})}
+            self.report["compiler_errors"] = sorted(self.errors.values(), key=lambda e: -e["count"])
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self.path.with_suffix(".json").write_text(json.dumps(self.report, ensure_ascii=False, indent=1),
+                                                      encoding="utf-8")
+            self.path.with_suffix(".md").write_text(markdown(self.report), encoding="utf-8")
+
+
+def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
+    """What the tool calls of a run did ({"edits": {made, failed}, "compiles": {ok, failed}})
+    and the errors of the compiler it saw: of check_code, of the check after a change and of
+    the syntax check."""
+    edits, compiles, errors = Counter(), Counter(), []
+    for call in record:
+        res = call.get("result") if isinstance(call.get("result"), dict) else {}
+        checks = []
+        if call.get("name") in WRITES:
+            edits["failed" if "error" in res else "made"] += 1
+            errors += res.get("syntax_errors", [])
+            checks = [res["check"]] if isinstance(res.get("check"), dict) else []
+        elif call.get("name") == "check_code" and "ok" in res:
+            checks = [res]
+        for c in checks:
+            compiles["ok" if c.get("ok") else "failed"] += 1
+            errors += c.get("errors", [])
+    return {"edits": {"made": edits["made"], "failed": edits["failed"]},
+            "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
+
+
+def _shape(message: str) -> str:
+    """A message of the compiler without its names and numbers: the same error in other places."""
+    return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
 
 
 def _cited(result: dict) -> str:
@@ -459,15 +507,22 @@ def markdown(report: dict) -> str:
     if report.get("final"):
         f = report["final"]
         out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**", ""]
+    edits, compiles = t.get("edits", {}), t.get("compiles", {})
     out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min, {t['calls']} tool calls, "
             f"{t['prompt_tokens'] + t['completion_tokens']} tokens" + (f", ${t['cost']}" if "cost" in t else "") + ".",
-            "", "| # | kind | task or test | agent | min | calls | outcome | tests passing |", "|---|---|---|---|---|---|---|---|"]
+            f"Edits: {edits.get('made', 0)} made, {edits.get('failed', 0)} failed. Compilations: "
+            f"{compiles.get('ok', 0)} without errors, {compiles.get('failed', 0)} with errors.",
+            "", "| # | kind | task or test | agent | min | calls | edits (failed) | compilations (errors) | outcome | "
+                "tests passing |", "|---|---|---|---|---|---|---|---|---|---|"]
     for s in report["steps"]:
         outcome = s.get("outcome", "")
         if s.get("error"):
             outcome = f"{outcome} (error: {s['error'][:80]})"
+        e, c = s.get("edits") or {}, s.get("compiles") or {}
         out.append(f"| {s['n']} | {s['kind']} | {s['task']} | {s['agent']} | {s['seconds'] / 60:.1f} | {s['calls']}"
-                   f"{' (max_steps)' if s.get('stopped') else ''} | {outcome} | {s.get('tests_passed', '')} |")
+                   f"{' (max_steps)' if s.get('stopped') else ''} | {e.get('made', 0) + e.get('failed', 0)} "
+                   f"({e.get('failed', 0)}) | {c.get('ok', 0) + c.get('failed', 0)} ({c.get('failed', 0)}) | "
+                   f"{outcome} | {s.get('tests_passed', '')} |")
     undone = [s for s in report["steps"] if s.get("broke")]
     if undone:
         out += ["", "## Undone", ""]
@@ -484,6 +539,12 @@ def markdown(report: dict) -> str:
                     "Attempts:", ""] + [f"- {a}" for a in p["attempts"]] + [""]
     if report.get("final", {}).get("failing"):
         out += ["", "## Failing at the end", ""] + [f"- {k}: {v}" for k, v in report["final"]["failing"].items()]
+    errors = report.get("compiler_errors") or []
+    if errors:
+        out += ["", "## Compiler errors", "", "The errors the agents met, the most frequent first. One without a hint "
+                "can get one in a file of [sources.code] hints.", "", "| times | message | hint |", "|---|---|---|"]
+        out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {'yes' if e['hint'] else '**no**'} |"
+                for e in errors[:SHOWN_ERRORS]]
     return "\n".join(out) + "\n"
 
 

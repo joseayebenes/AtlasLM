@@ -111,6 +111,27 @@ comprobaciones:
   vuelta de `check_code` (el 17 % de sus llamadas en la tanda 4) y no puede decir que compila
   sin haberlo visto (`gemma-4-26b` lo dijo dos veces sin ser así).
 
+### Pistas para los errores del compilador
+
+Cada error de `check_code`, de `run_test`, de la comprobación de sintaxis y de la compilación
+tras un cambio lleva una `hint` si alguna pista casa con su mensaje o con sus detalles. Las de
+serie (`hints.toml`) salen de los errores de `gemma-4-26b` escribiendo un servidor en Ada con
+GNAT: un `String` sin límites (16 veces en una tanda), argumentos de otro tipo, nombres que no
+existen (`Ada.Command_Line.Arguments`), `with` que faltan, bloques sin cerrar, atributos
+inventados (`'Second`)... Las del proyecto, en los ficheros de `[sources.code] hints`, van
+antes:
+
+```toml
+[[hint]]
+match = '"(?P<name>[^"]+)" not declared in "Controller"'
+hint = "Controller declares Session and Execute; the commands are Do_* procedures of its body."
+```
+
+La regla del `String` ya estaba en las instrucciones del agente y el error salió igual 16
+veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
+errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
+lista de lecciones que crece tras cada tanda.
+
 ### Subprogramas enteros
 
 `replace_subprogram(path, name, new_text, line=0)` sustituye un subprograma entero: el agente

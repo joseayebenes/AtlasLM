@@ -54,6 +54,12 @@ The file tools of the same context get two hooks from here (CodeTools.for_contex
   37-minute run before it was undone;
 - with `check_on_edit` (true by default), every change returns what check_code says of the
   file, in `check`: one turn less, and an agent cannot say it compiles without seeing it.
+
+Each error of the compiler gets a `hint` when one of the hints matches it: those of the files
+of [sources.code] hints first, then those of hints.toml (GNAT). A rule in the instructions of
+the agent was not enough: the one on String bounds was there, and the error came 16 times in a
+run; the hint comes with the error, when it is needed. The report of atlas develop says which
+errors came without a hint, to add one after each run.
 """
 from __future__ import annotations
 
@@ -66,9 +72,17 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from atlas.code.tools import CodeTools
+from atlas.config import ConfigError
 from atlas.plugins import register_methods
 
-__all__ = ["BuildTools", "BUILD_TOOL_NAMES", "parse_messages"]
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    import tomli as tomllib  # type: ignore
+
+__all__ = ["BuildTools", "BUILD_TOOL_NAMES", "HINTS", "hint_for", "load_hints", "parse_messages"]
+
+HINTS = Path(__file__).parent / "hints.toml"
 
 BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
@@ -117,6 +131,47 @@ def parse_messages(output: str) -> dict:
     return out
 
 
+def load_hints(paths: Iterable[str | Path]) -> list[tuple[re.Pattern, str]]:
+    """The hints of these files, in order: each [[hint]] has `match`, a regular expression,
+    and `hint`, the text, with {group} for the named groups of match."""
+    out = []
+    for path in paths:
+        path = Path(path)
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            raise ConfigError(f"hints {path}: {e}") from None
+        for i, h in enumerate(data.get("hint", []), 1):
+            if not (isinstance(h, dict) and isinstance(h.get("match"), str) and isinstance(h.get("hint"), str)):
+                raise ConfigError(f"hints {path}: [[hint]] {i} needs match and hint, two texts")
+            try:
+                out.append((re.compile(h["match"]), " ".join(h["hint"].split())))
+            except re.error as e:
+                raise ConfigError(f"hints {path}: [[hint]] {i}: match is not a valid regular expression: {e}") from None
+    return out
+
+
+class _Keep(dict):
+    def __missing__(self, key: str) -> str:            # a group that did not match stays as it was
+        return "{" + key + "}"
+
+
+def hint_for(hints: list[tuple[re.Pattern, str]], message: str, details: Iterable[str] = ()) -> str:
+    """The text of the first hint that matches the message or one of its details, or ""."""
+    for rx, text in hints:
+        for candidate in (message, *details):
+            m = rx.search(candidate or "")
+            if m:
+                return text.format_map(_Keep({k: v for k, v in m.groupdict().items() if v is not None}))
+    return ""
+
+
+def _relative(cfg, path: str) -> Path:
+    """A path of [sources.code] that names a file of the project: relative to atlas.toml."""
+    p = Path(path).expanduser()
+    return p if p.is_absolute() else cfg.path.parent / p
+
+
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
@@ -136,8 +191,10 @@ class BuildTools:
                  test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120,
                  run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
-                 syntax_commands: dict | None = None, check_on_edit: bool = True):
+                 syntax_commands: dict | None = None, check_on_edit: bool = True,
+                 hints: list[tuple[re.Pattern, str]] | None = None):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
+        self.hints = hints if hints is not None else load_hints([HINTS])
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
@@ -156,7 +213,8 @@ class BuildTools:
         return cls(files or CodeTools.from_config(cfg), cfg.workspace / "build", sc.get("check_command", []),
                    sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
-                   sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True))
+                   sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
+                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -195,7 +253,7 @@ class BuildTools:
             errors = parse_messages(output)["errors"]
             if ran.returncode != 0 and not errors:
                 errors = [{"line": None, "message": _tail(output.strip())[-300:]}]
-            return [{k: v for k, v in e.items() if k != "file" and v is not None} for e in errors]
+            return self._hinted([{k: v for k, v in e.items() if k != "file" and v is not None} for e in errors])
         if ext == "py":
             try:
                 ast.parse(text)
@@ -256,6 +314,14 @@ class BuildTools:
             return None, {"error": f"{path} does not exist"}
         return p, None
 
+    def _hinted(self, errors: list[dict]) -> list[dict]:
+        """The errors, each with the `hint` that matches it, if any."""
+        for e in errors:
+            hint = hint_for(self.hints, e.get("message", ""), e.get("details", []))
+            if hint:
+                e["hint"] = hint
+        return errors
+
     def code_at(self, output: str) -> list[dict]:
         """The lines around the places of the code that `output` cites, in the files that an
         agent can change (in the roots, neither excluded nor protected), MAX_CITED at most."""
@@ -307,6 +373,7 @@ class BuildTools:
             return res
         output = res.stdout + res.stderr
         found = parse_messages(output)
+        self._hinted(found["errors"])
         ok = res.returncode == 0 and not found["errors"]
         return {"file": self.files._show(p), "ok": ok, **found,
                 **({"output": _tail(output)} if not ok and not found["errors"] else {})}
@@ -333,6 +400,7 @@ class BuildTools:
         if isinstance(res, dict):
             return res
         found = parse_messages(res.stdout + res.stderr)
+        self._hinted(found["errors"])
         exe = self.build_dir / p.stem
         if res.returncode != 0 or found["errors"] or not exe.exists():
             return {"file": self.files._show(p), "built": False, **found,

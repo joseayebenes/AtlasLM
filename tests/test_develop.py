@@ -154,6 +154,11 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
     assert refused["error"].startswith("the change was not made: it breaks the syntax of src/calc.py")
     assert (report["steps"][0]["kind"], report["steps"][0]["outcome"]) == ("task", "kept")
     assert "undone" not in report["steps"][0]
+    # the report counts the edits and the compilations, and the errors of the compiler it met
+    assert report["steps"][0]["edits"] == {"made": 0, "failed": 1}
+    assert report["totals"]["edits"]["failed"] >= 1 and report["compiler_errors"][0]["count"] >= 1
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## Compiler errors" in md and "| edits (failed) |" in md and "Edits: " in md
 
 
 def test_a_round_that_fixes_the_test(project):

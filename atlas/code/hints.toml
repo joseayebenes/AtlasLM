@@ -1,0 +1,103 @@
+# Hints for the messages of the compiler: check_code, run_test, the syntax check and the
+# check after a change put the first hint whose `match` (a regular expression) finds the
+# message, or one of its details, in the `hint` of the error. Named groups go into the text:
+# {name} is the group (?P<name>...). Those of [sources.code] hints (files like this one) go
+# first. These come from the errors of gemma-4-26b writing a server in Ada with GNAT
+# (atlas develop, 2026-10-14): the most frequent first.
+
+[[hint]]
+match = 'unconstrained subtype not allowed \(need initialization\)'
+hint = """A String (or another array without bounds) needs its bounds where it is declared: give it its \
+value there (Line : constant String := To_String (Buffer);), in a declare block if the value comes later, \
+or use Ada.Strings.Unbounded.Unbounded_String for text that changes."""
+
+[[hint]]
+match = 'no candidate interpretations match the actuals'
+hint = """No subprogram with this name takes arguments of these types: compare each argument with the \
+profiles in details. The usual cause is a String where an Unbounded_String goes, or the reverse \
+(To_String, To_Unbounded_String), or an operator of a package without its use clause."""
+
+[[hint]]
+match = '"(?P<name>[^"]+)" not declared in "(?P<package>[^"]+)"'
+hint = """{package} has no {name}: do not guess names. Use one that {package} declares (its declarations \
+come in declared_in when atlas knows the package), or the package that really declares it."""
+
+[[hint]]
+match = 'possible misspelling of "(?P<name>[^"]+)"'
+hint = """The compiler knows {name}: write the name exactly as it is declared."""
+
+[[hint]]
+match = '"(?P<name>[^"]+)" is not visible'
+hint = """{name} exists, but not here: add the with clause of its package (and a use clause to write it \
+without the package name), e.g. with Ada.Characters.Latin_1; for LF and CR."""
+
+[[hint]]
+match = '"(?P<name>[^"]+)" is undefined'
+hint = """{name} is not declared or not visible here: add the with clause of the package that declares it \
+(and a use clause, or write Package.{name}); if it is yours, check how it is spelt and that it is declared \
+before this line."""
+
+[[hint]]
+match = '"end;" expected for "begin" at line (?P<line>\d+)'
+hint = """The begin of line {line} is not closed: each begin, if, loop, case, declare and record needs its \
+end (end if; end loop; end case; end Name;). Rewriting the whole subprogram (replace_subprogram) is usually \
+easier than patching it."""
+
+[[hint]]
+match = 'missing "end (?P<what>[^"]*)"|"end (?P<other>[^"]*)" expected'
+hint = """A block is not closed, or it is closed with the wrong end: if needs end if; loop, end loop; \
+case, end case; a subprogram, end Name;. Rewriting the whole subprogram (replace_subprogram) is usually \
+easier than patching it."""
+
+[[hint]]
+match = 'prefix for "Length" attribute may not be private type|prefix .*may not be private type'
+hint = """Unbounded_String is a private type: use Length (S) of Ada.Strings.Unbounded, not S'Length (or \
+To_String (S)'Length)."""
+
+[[hint]]
+match = 'unrecognized attribute "(?P<name>[^"]+)"'
+hint = """'{name} is not an attribute of Ada. The usual ones: 'Image, 'Value, 'First, 'Last, 'Length, \
+'Range, 'Pos, 'Val, 'Succ, 'Pred. For times: Ada.Calendar (Clock, Seconds) and Ada.Calendar.Formatting."""
+
+[[hint]]
+match = 'expected type "(?P<expected>[^"]+)"'
+hint = """The expression is not of type {expected}: convert it (To_String, To_Unbounded_String, \
+Integer'Image, Integer'Value...) or change what it is assigned to."""
+
+[[hint]]
+match = 'missing argument for parameter "(?P<name>[^"]+)"'
+hint = """The call lacks the argument {name}: see the profile of the subprogram in details."""
+
+[[hint]]
+match = 'actual for "(?P<name>[^"]+)" must be a variable'
+hint = """{name} is an out or in out parameter: it needs a variable, not an expression or a constant."""
+
+[[hint]]
+match = 'compilation unit expected'
+hint = """There is text outside the unit: everything goes inside the package (or the procedure), before its \
+final end Name;. Often a subprogram written after that end, or one end too many."""
+
+[[hint]]
+match = 'duplicate body for "(?P<name>[^"]+)"'
+hint = """There are two bodies of {name}: keep one (replace_subprogram changes a body in place, \
+add_subprogram adds a new one)."""
+
+[[hint]]
+match = 'component "(?P<name>[^"]+)" cannot be used before end of record declaration'
+hint = """A component of a record cannot have the name of a type: rename the type (type Unit_State is \
+(...);) and keep the component (State : Unit_State := Idle;)."""
+
+[[hint]]
+match = 'expression function must be enclosed in parentheses'
+hint = """An expression function is written function F (X : T) return R is (expression); with the \
+parentheses."""
+
+[[hint]]
+match = 'declaration expected|statement expected'
+hint = """A statement where a declaration goes, or the reverse: declarations go between is and begin, \
+statements between begin and end."""
+
+[[hint]]
+match = 'will raise Constraint_Error|would raise Constraint_Error|"Constraint_Error" will be raised|length check'
+hint = """This raises Constraint_Error when it runs, usually a String assigned one of another length: \
+declare it with its value (X : constant String := ...;) or use an Unbounded_String."""

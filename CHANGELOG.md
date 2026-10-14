@@ -21,6 +21,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   un cambio que rompe la sintaxis de un fichero que estaba bien no se hace (`[sources.code]
   syntax_commands`, con GNAT `gcc -c -gnats`; Python con `ast`), y cada cambio devuelve lo que
   dice `check_code` del fichero (`check_on_edit`, por defecto).
+- Pistas para los errores del compilador: cada error lleva la `hint` que casa con su mensaje.
+  Las de serie (`atlas/code/hints.toml`) cubren los errores de GNAT más repetidos por
+  `gemma-4-26b`; las del proyecto van en `[sources.code] hints`. El informe de `atlas develop`
+  lista los errores de la tanda y dice cuáles no tenían pista, y cuenta por ejecución las
+  ediciones fallidas y las compilaciones con errores.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

@@ -135,8 +135,11 @@ cambios que rompían lo que ya iba.
    no avanza en `stuck_rounds` rondas se deja **para una persona**: el agente no insiste en lo
    que no sabe arreglar. Mientras un test avanza, sigue con él; si no, pasa al siguiente.
 4. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
-   cada encargo y cada ronda, su tiempo, tokens y coste, los tests que pasan y los que necesitan
-   a una persona, con su salida.
+   cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
+   sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
+   persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
+   frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
+   lecciones que añadir antes de la siguiente.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos

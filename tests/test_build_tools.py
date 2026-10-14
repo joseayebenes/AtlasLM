@@ -68,7 +68,9 @@ def test_check_code_returns_the_messages_of_the_compiler(project):
     (ada / "src" / "tracks.adb").write_text("BROKEN")
     bad = tools.check_code(str(ada / "src" / "tracks.adb"))
     assert bad["ok"] is False
+    hint = bad["errors"][0].pop("hint")                                   # see test_hints_come_with_the_errors...
     assert bad["errors"] == [{"file": "tracks.adb", "line": 3, "column": 7, "message": '"Trk" is undefined'}]
+    assert hint.startswith("Trk is not declared or not visible here")
     assert bad["warnings"][0]["message"] == 'variable "H" is not referenced'
     # only inside the code roots; nothing without a command
     assert "error" in tools.check_code("/etc/hosts")
@@ -378,3 +380,26 @@ def test_gnat_rejects_a_begin_left_open(project):
     broken = tools.files.edit_file(f, first_end, "null;")
     assert "breaks the syntax" in broken["error"] and Path(f).read_text() == text
     assert any("expected" in e["message"] or "missing" in e["message"] for e in broken["syntax_errors"])
+
+
+def test_hints_come_with_the_errors_those_of_the_project_first(project, tmp_path):
+    from atlas.code.build import HINTS, hint_for, load_hints
+    from atlas.config import ConfigError
+    ada, make = project
+    (ada / "src" / "tracks.adb").write_text("BROKEN")
+    error = make().check_code(str(ada / "src" / "tracks.adb"))["errors"][0]
+    assert error["hint"].startswith("Trk is not declared or not visible here")         # hints.toml, of serie
+    mine = tmp_path / "lessons.toml"
+    mine.write_text('[[hint]]\nmatch = \'"(?P<name>Trk)" is undefined\'\nhint = "{name} is Track, in this project."\n')
+    tools = make(extra=f'hints = ["{mine.as_posix()}"]')
+    assert tools.check_code(str(ada / "src" / "tracks.adb"))["errors"][0]["hint"] == "Trk is Track, in this project."
+    # a hint can match a detail of the message, and its groups go into the text
+    hints = load_hints([HINTS])
+    assert hint_for(hints, "no match here", ['possible misspelling of "Argument"']).startswith("The compiler knows Argument")
+    assert hint_for(hints, "nothing to say") == ""
+    mine.write_text('[[hint]]\nmatch = "(unclosed"\nhint = "x"\n')
+    with pytest.raises(ConfigError, match="not a valid regular expression"):
+        load_hints([mine])
+    mine.write_text('[[hint]]\nmatch = "x"\n')
+    with pytest.raises(ConfigError, match="needs match and hint"):
+        load_hints([mine])

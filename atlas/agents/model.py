@@ -10,12 +10,18 @@ A reasoning model can spend the whole max_tokens thinking and answer nothing (fi
 "length", no text, no tool call); ADK would take that empty turn as the final answer and end
 the agent in silence. That turn is asked again with twice the max_tokens, at most RETRIES
 times, with a warning.
+
+A turn has at most [llm.network] timeout seconds in all, and is asked again when it takes
+longer (TURN_RETRIES times). The timeout of the HTTP client is between two reads, and a server
+that keeps the connection alive while the model works (OpenRouter sends blanks) never reaches
+it: a request of gemma-4-26b hung there for an hour, with the agent waiting.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import threading
 from typing import Any, AsyncGenerator
 
 from google.adk.models.base_llm import BaseLlm
@@ -31,6 +37,7 @@ __all__ = ["AtlasLlm", "to_llm_response", "to_messages", "to_tools"]
 
 log = logging.getLogger(__name__)
 RETRIES = 2      # times an empty turn cut by max_tokens is asked again, doubling max_tokens
+TURN_RETRIES = 2  # times a turn that takes longer than [llm.network] timeout in all is asked again
 
 SCHEMA_KEYS = ("description", "enum", "required", "default", "format", "minimum", "maximum", "title")
 FINISH = {"stop": types.FinishReason.STOP, "tool_calls": types.FinishReason.STOP,
@@ -69,15 +76,48 @@ class AtlasLlm(BaseLlm):
             kwargs["reasoning_effort"] = self.service.reasoning_effort
         if self.service.extra_body:
             kwargs["extra_body"] = self.service.extra_body
-        response = await asyncio.to_thread(self.client.chat.completions.create, **kwargs)   # the client is sync
+        response = await self._create(kwargs)
         for _ in range(RETRIES):
             if not (_empty_and_cut(response) and kwargs.get("max_tokens")):
                 break
             log.warning("the model %s spent the whole max_tokens (%d) reasoning and answered nothing: asking again "
                         "with %d", self.service.model, kwargs["max_tokens"], kwargs["max_tokens"] * 2)
             kwargs["max_tokens"] *= 2
-            response = await asyncio.to_thread(self.client.chat.completions.create, **kwargs)
+            response = await self._create(kwargs)
         yield to_llm_response(response)
+
+    async def _create(self, kwargs: dict) -> Any:
+        """One request to the model, at most [llm.network] timeout seconds in all, asked again
+        TURN_RETRIES times. The client is sync: it runs in a daemon thread, which a request that
+        hangs leaves behind without holding the agent or the end of the process."""
+        limit = self.service.net.timeout or None
+        for attempt in range(TURN_RETRIES + 1):
+            loop, done = asyncio.get_running_loop(), None
+            done = loop.create_future()
+
+            def settle(ok: bool, value: Any) -> None:
+                if not done.done():
+                    done.set_result(value) if ok else done.set_exception(value)
+
+            def work() -> None:
+                try:
+                    result = (True, self.client.chat.completions.create(**kwargs))
+                except BaseException as e:            # to the agent, as if it were raised here
+                    result = (False, e)
+                try:
+                    loop.call_soon_threadsafe(settle, *result)
+                except RuntimeError:                  # the loop is gone: nobody waits for it
+                    pass
+
+            threading.Thread(target=work, daemon=True, name="atlas-llm-turn").start()
+            try:
+                return await asyncio.wait_for(done, limit)
+            except asyncio.TimeoutError:
+                if attempt == TURN_RETRIES:
+                    raise TimeoutError(f"the model {self.service.model} did not answer in {limit:g} s, "
+                                       f"{TURN_RETRIES + 1} times ([llm.network] timeout)") from None
+                log.warning("the model %s did not answer in %g s ([llm.network] timeout): asking again",
+                            self.service.model, limit)
 
 
 def _empty_and_cut(response: Any) -> bool:

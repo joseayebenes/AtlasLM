@@ -14,7 +14,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   citan; un test que no avanza en `stuck_rounds` rondas se deja para una persona. Informe JSON
   y Markdown tras cada paso, y las llamadas de cada ejecución en `.calls.jsonl`. Sale del
   experimento de 2026-10-13 en `atlas-socket-demo`, donde ningún modelo sin ayuda llegó a un
-  servidor que funcionara. Con `gemma-4-26b`, desde `src` vacío: los 18 encargos y 2 rondas
+  servidor que funcionara. Cada encargo puede decir qué tests hace avanzar (`advances`); si
+  no avanzan, vuelve al agente con la salida del test (`advance_fixes`) y, si aun así no,
+  el informe lo dice. Con `gemma-4-26b`, desde `src` vacío: los 18 encargos y 2 rondas
   dieron un servidor que pasa los 5 STP (los 10 tests, Ada y Python), sin ayuda humana en el
   código, en 23 ejecuciones y 0,61 $; sobre el código de devstral que se caía, 2 rondas.
 - `atlas tests MÓDULO|ID` y `[tests]`: los procedimientos de prueba como tests en cada lenguaje,

@@ -909,6 +909,7 @@ def develop(cfg: Config, plan: str) -> int:
         print(f"{s['n']:3d} {s['kind']:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, {s['calls']} calls"
               f"{' (max_steps)' if s.get('stopped') else ''}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
+              + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
 
     _context(cfg)

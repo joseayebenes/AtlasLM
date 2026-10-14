@@ -10,13 +10,16 @@ The plan is a TOML file:
     tests = ["tests/python/test_*.py"]       # the acceptance tests, run with run_test, in this order
     progress = 'Step\\s+(\\d+)'                # optional: how far a failing test got (the last number)
     build_fixes = 2                          # turns to fix what check reports, after a task
+    advance_fixes = 2                        # turns to make the tests of `advances` get further
     fix_rounds = 12                          # rounds to fix failing tests, after the tasks
     stuck_rounds = 2                         # rounds without progress before a test goes to a person
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
+    advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
     [[tasks]]
     id = "controller"                        # optional: T01, T02...
     text = "Create the package Controller of SRS-0191 ..."
+    advances = ["tests/python/test_stp_0101.py"]   # optional: the tests it makes get further
 
 What it does comes from what went wrong when gemma-4-26b and devstral wrote a server with no
 one to help them: code that compiled and did not work, tests changed to pass, failures tried
@@ -28,6 +31,13 @@ again and again in the same way, and changes that broke what worked.
    fails; with `progress`, a test stops at an earlier step), is undone: the files go back to
    how they were. It is tried once more, told what it broke; if it breaks it again, it stays
    undone. The code never gets worse.
+   A task can say which tests it makes get further (`advances`: paths or patterns of tests).
+   When one of them fails where it failed before, the task goes back to the agent with what
+   the test printed, at most `advance_fixes` times, like the errors of check; a turn of these
+   that breaks something is undone alone. If the tests still do not get further, the task is
+   kept and reported (`not_advanced`): its code compiles and breaks nothing, but it does not
+   do what it should, and that is said now, not eight tasks later (the task of HELLO with
+   gemma-4-26b left an exception that no test could get past, and nothing said so).
 3. Then the rounds: the fix agent gets one failing test, what it printed and the code it cites,
    and the earlier attempts on it. A round that breaks something is undone. A test that does
    not get further in `stuck_rounds` rounds is left for a person: the agent does not insist on
@@ -42,6 +52,7 @@ protected); nothing is committed. The tests should be protected ([sources.code] 
 """
 from __future__ import annotations
 
+import fnmatch
 import glob
 import json
 import math
@@ -71,6 +82,14 @@ BUILD_FIX_PROMPT = """The code does not compile after the last change. check_cod
 {errors}
 
 Fix these errors without changing what the code does, and check the files again with check_code."""
+ADVANCE_PROMPT = """The change does not do all that the task asks yet: the test {test} should get \
+further with it, and it fails where it failed before. What it printed:
+
+{output}
+{code}
+Find why in the code and fix it. The test is right and cannot be changed: change the code it tests. \
+Check every file you change with check_code.
+"""
 RETRY = """
 
 A first attempt at this task was undone, because it broke what worked:
@@ -88,9 +107,11 @@ class Plan:
     tests: list[str] = field(default_factory=list)
     progress: str = ""
     build_fixes: int = 2
+    advance_fixes: int = 2
     fix_rounds: int = 12
     stuck_rounds: int = 2
     fix_prompt: str = FIX_PROMPT
+    advance_prompt: str = ADVANCE_PROMPT
 
 
 def load_plan(path: str | Path) -> Plan:
@@ -106,7 +127,14 @@ def load_plan(path: str | Path) -> Plan:
     tasks = data.pop("tasks", [])
     if not isinstance(tasks, list) or not all(isinstance(t, dict) and isinstance(t.get("text"), str) for t in tasks):
         raise ConfigError(f"plan {path}: each [[tasks]] needs its text")
-    tasks = [{"id": str(t.get("id") or f"T{i:02d}"), "text": t["text"]} for i, t in enumerate(tasks, 1)]
+    for t in tasks:
+        unknown = sorted(set(t) - {"id", "text", "advances"})
+        advances = t.get("advances", [])
+        if unknown or not isinstance(advances, list) or not all(isinstance(a, str) for a in advances):
+            raise ConfigError(f"plan {path}: a task has id, text and advances (a list of tests)"
+                              + (f", not {unknown}" if unknown else ""))
+    tasks = [{"id": str(t.get("id") or f"T{i:02d}"), "text": t["text"], "advances": t.get("advances", [])}
+             for i, t in enumerate(tasks, 1)]
     if data.get("progress"):
         try:
             re.compile(data["progress"])
@@ -176,6 +204,15 @@ class Developer:
         if unknown:
             raise ConfigError(f"plan {plan.name}: no command runs {unknown[0]} ([sources.code] test_command or "
                               f"test_commands)")
+        for task in plan.tasks:                  # each pattern of advances, the tests it names
+            found = []
+            for pattern in task["advances"]:
+                named = [t for t in self.tests if fnmatch.fnmatch(t, pattern) or Path(t).name == pattern]
+                if not named:
+                    raise ConfigError(f"plan {plan.name}, task {task['id']}: advances {pattern!r} is none of its "
+                                      f"tests")
+                found += [t for t in named if t not in found]
+            task["advances"] = found
         self.report: dict = {"plan": plan.name, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "steps": [],
                              "tests": self.tests}
         self.path = cfg.workspace / "reports" / f"develop-{plan.name}"
@@ -240,12 +277,8 @@ class Developer:
                                   "answer": res.get("answer", "")}, ensure_ascii=False, default=str) + "\n")
         return step
 
-    def attempt(self, agent: str, prompt: str, kind: str, task: str, before: dict) -> tuple[dict, dict, list]:
-        """One change of the agent with its build fixes: (step, state after, what it broke).
-        What breaks something is undone, and the state is `before` again."""
-        snapshot = self.files.snapshot()
-        step = self.run(agent, prompt, kind, task)
-        after = self.evaluate()
+    def compiled(self, agent: str, task: str, before: dict, after: dict) -> dict:
+        """`after`, or the state after the build fixes of what check finds that `before` had not."""
         new_errors = lambda state: set(state["check"]) - set(before["check"])
         for _ in range(self.plan.build_fixes):
             if not new_errors(after):
@@ -256,7 +289,50 @@ class Developer:
             after = self.evaluate()
             fix["outcome"] = "errors remain" if new_errors(after) else "compiles"
             self._done(fix, after)
+        return after
+
+    @staticmethod
+    def not_advanced(tests: list[str], before: dict, after: dict) -> list[str]:
+        """Those of `tests` that fail where they failed before (one that passes has advanced)."""
+        return [t for t in tests if not after["tests"][t]["passed"]
+                and after["tests"][t]["score"] <= before["tests"][t]["score"]]
+
+    def advanced(self, agent: str, task: str, advances: list[str], before: dict, after: dict) -> dict:
+        """The turns that make the tests of `advances` get further (see the module): the state
+        after them. A turn that breaks something is undone, and the turns end there."""
+        for _ in range(self.plan.advance_fixes):
+            stuck = self.not_advanced(advances, before, after)
+            if not stuck:
+                break
+            result = after["tests"][stuck[0]]
+            snapshot = self.files.snapshot()
+            fix = self.run(agent, self.plan.advance_prompt.format(
+                test=stuck[0], output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result)), "advance-fix", task)
+            fixed = self.compiled(agent, task, after, self.evaluate())
+            broken = self.broken(after, fixed)
+            if broken:
+                fix.update(outcome="undone", undone=self.files.restore(snapshot), broke=broken)
+                self._done(fix, after)
+                break
+            after = fixed
+            fix["outcome"] = "not yet" if self.not_advanced(advances, before, after) else "advanced"
+            self._done(fix, after)
+        return after
+
+    def attempt(self, agent: str, prompt: str, kind: str, task: str, before: dict,
+                advances: list[str] = ()) -> tuple[dict, dict, list]:
+        """One change of the agent with its build fixes and the turns that make the tests of
+        `advances` get further: (step, state after, what it broke). What breaks something is
+        undone, and the state is `before` again."""
+        snapshot = self.files.snapshot()
+        step = self.run(agent, prompt, kind, task)
+        after = self.compiled(agent, task, before, self.evaluate())
         broken = self.broken(before, after)
+        if not broken and advances:
+            after = self.advanced(agent, task, list(advances), before, after)
+            stuck = self.not_advanced(list(advances), before, after)
+            if stuck:
+                step["not_advanced"] = stuck
         if broken:
             step["undone"] = self.files.restore(snapshot)
             step["broke"] = broken
@@ -271,12 +347,13 @@ class Developer:
     # --- the plan --------------------------------------------------------------------------
     def tasks(self, state: dict) -> dict:
         for task in self.plan.tasks:
-            step, state, broken = self.attempt(self.plan.agent, task["text"], "task", task["id"], state)
+            step, state, broken = self.attempt(self.plan.agent, task["text"], "task", task["id"], state,
+                                               task["advances"])
             step["outcome"] = "undone" if broken else "kept"
             self._done(step, state)
             if broken:
                 retry, state, broken = self.attempt(self.plan.agent, task["text"] + RETRY.format(
-                    broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state)
+                    broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
                 retry["outcome"] = "undone" if broken else "kept"
                 self._done(retry, state)
         return state
@@ -292,11 +369,9 @@ class Developer:
                 after_last = [t for t in failing if target and self.tests.index(t) > self.tests.index(target)]
                 target = (after_last or failing)[0]
             result = state["tests"][target]
-            code = "\n".join(f"{c['file']}, line {c['line']}:\n{c['source']}" for c in result["code_at"])
             tried = attempts.get(target, [])
             prompt = self.plan.fix_prompt.format(
-                test=target, output=result["output"][-MAX_OUTPUT:].strip(),
-                code=f"\nThe code it cites:\n{code}\n" if code else "",
+                test=target, output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result),
                 attempts=("\nEarlier attempts on this test, which did not fix it:\n" +
                           "\n".join(f"- {a}" for a in tried[-3:])) if tried else "")
             step, after, broken = self.attempt(self.plan.fix_agent, prompt, "round", target, state)
@@ -355,6 +430,12 @@ class Developer:
         self.path.with_suffix(".md").write_text(markdown(self.report), encoding="utf-8")
 
 
+def _cited(result: dict) -> str:
+    """The code that the output of a test cites, for a prompt."""
+    code = "\n".join(f"{c['file']}, line {c['line']}:\n{c['source']}" for c in result["code_at"])
+    return f"\nThe code it cites:\n{code}\n" if code else ""
+
+
 def _message(error: dict) -> str:
     return str(error.get("message", error))
 
@@ -391,6 +472,10 @@ def markdown(report: dict) -> str:
     if undone:
         out += ["", "## Undone", ""]
         out += [f"- {s['n']} {s['task']}: " + "; ".join(s["broke"])[:400] for s in undone]
+    behind = [s for s in report["steps"] if s.get("not_advanced")]
+    if behind:
+        out += ["", "## Did not advance", "", "Kept, but these tests did not get further with them:", ""]
+        out += [f"- {s['n']} {s['task']}: {', '.join(s['not_advanced'])}" for s in behind]
     person = report.get("for_a_person") or {}
     if person:
         out += ["", "## For a person", "", "The agent made no progress on these tests:", ""]

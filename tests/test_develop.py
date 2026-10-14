@@ -152,6 +152,52 @@ def test_a_round_that_fixes_the_test(project):
     assert (base / "tests" / "test_calc.py").read_text().startswith("import sys")
 
 
+ADVANCES = '''agent = "implementer"
+check = ["src/*.py"]
+tests = ["tests/test_*.py"]
+progress = 'Step (\\d+)'
+advance_fixes = 1
+fix_rounds = 0
+
+[[tasks]]
+id = "add"
+text = "Implement add."
+advances = ["test_calc.py"]
+
+[[tasks]]
+id = "mul"
+text = "Implement mul."
+advances = ["tests/test_*.py"]
+'''
+
+
+def test_a_task_that_does_not_advance_its_tests_goes_back_to_the_agent(project):
+    """The task of HELLO left an exception that no test could get past, and eight tasks went
+    by without anything saying so: a task says which tests it makes get further."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "plan.toml").write_text(ADVANCES)
+    client = StubClient(
+        write("def add(a, b):\n    return a - b\n")          # add: compiles, breaks nothing, the test does not advance
+        + write(ADD)                                            # told so, it does
+        + [{"read_file": {"path": "src/calc.py"}}, "Nothing to do."]   # mul: nothing
+        + write("def add(a, b):\n    return 0\n"))           # told so, it breaks add: that turn alone is undone
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["task"], s.get("outcome")) for s in report["steps"]] == [
+        ("task", "add", "kept"), ("advance-fix", "add", "advanced"), ("task", "mul", "kept"),
+        ("advance-fix", "mul", "undone")]
+    add, mul = report["steps"][0], report["steps"][2]
+    assert "not_advanced" not in add and mul["not_advanced"] == ["tests/test_calc.py"]
+    assert report["steps"][3]["broke"][0].startswith("tests/test_calc.py got to 2 and now got to 1")
+    assert (base / "src" / "calc.py").read_text() == ADD                    # what add left
+    prompt = client.prompts[1]
+    assert prompt.startswith("The change does not do all that the task asks yet: the test tests/test_calc.py should")
+    assert "Step 1: expected 3, received -1" in prompt
+    assert "Step 2: expected 6, received None" in client.prompts[3]
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## Did not advance" in md and "- 3 mul: tests/test_calc.py" in md
+
+
 def test_bad_plans(project):
     from atlas.agents.develop import Developer, load_plan
     base, cfg = project
@@ -167,6 +213,12 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/none_*.py"]\n')
     with pytest.raises(ConfigError, match="no file matches"):
         Developer(load_plan(base / "bad.toml"), cfg)
+    (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\n[[tasks]]\ntext = "x"\nadvances = ["test_other.py"]\n')
+    with pytest.raises(ConfigError, match="none of its tests"):
+        Developer(load_plan(base / "bad.toml"), cfg)
+    (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\n[[tasks]]\ntext = "x"\nadvance = ["test_calc.py"]\n')
+    with pytest.raises(ConfigError, match="not \\['advance'\\]"):
+        load_plan(base / "bad.toml")
 
 
 def test_a_failure_in_a_line():

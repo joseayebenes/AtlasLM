@@ -93,12 +93,14 @@ check = ["src/*.ad?"]                    # check_code sobre estos ficheros tras 
 tests = ["tests/python/test_stp_*.py"]   # los tests de aceptación, con run_test, en este orden
 progress = 'Step\s+(\d+)'                # opcional: hasta dónde llegó un test que falla
 build_fixes = 2                          # vueltas para arreglar lo que dice check, tras un encargo
+advance_fixes = 2                        # vueltas para que avancen los tests de advances
 fix_rounds = 12                          # rondas para arreglar tests, tras los encargos
 stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
 
 [[tasks]]
-id = "controller"
-text = "Create the package Controller of SRS-0191 ..."
+id = "ping-bye"
+text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PONG ..."
+advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
 ```
 
 Sale de lo que fue mal cuando `gemma-4-26b` y `devstral` escribieron un servidor sin ayuda
@@ -112,6 +114,13 @@ cambios que rompían lo que ya iba.
    falla; con `progress`, se para en un paso anterior), **se deshace**: los ficheros vuelven a
    como estaban. Se intenta otra vez diciéndole lo que rompió; si lo vuelve a romper, se queda
    deshecho. El código no empeora nunca.
+   Un encargo puede decir qué tests hace avanzar (`advances`: rutas, nombres o patrones de
+   tests del plan). Si alguno sigue fallando donde fallaba, el encargo **vuelve al agente** con
+   lo que escribió el test y el código que cita, como mucho `advance_fixes` veces, igual que
+   los errores de compilación; una de esas vueltas que rompe algo se deshace ella sola. Si aun
+   así no avanzan, el encargo se conserva (compila y no rompe nada) y el informe lo dice
+   (`not_advanced`, «Did not advance»). Sin esto, el encargo de `HELLO` dejó con gemma una
+   excepción que ningún test podía pasar, y nada lo dijo hasta ocho encargos después.
 3. Después, las **rondas**: el agente recibe un test que falla, lo que escribió y el código que
    cita, y los intentos anteriores sobre él. Una ronda que rompe algo se deshace. Un test que
    no avanza en `stuck_rounds` rondas se deja **para una persona**: el agente no insiste en lo

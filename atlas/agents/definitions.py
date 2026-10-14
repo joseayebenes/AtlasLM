@@ -10,14 +10,16 @@ Each file is an agent: a YAML header and, as its body, the instructions of the a
     max_steps: 8                 # optional: most calls to the model in one answer
     reasoning_effort: none       # optional: "none" turns reasoning off; else [llm] reasoning_effort
     temperature: 0.1             # optional: else [llm] temperature
+    top_p: 0.95                  # optional: else the server default
+    top_k: 64                    # optional: else the server default (sent in extra_body)
     ---
     You answer questions about an engineering project...
 
 The agents that come with atlas are in atlas/agents/builtin/. Those of the project are in
 the folders of [agents] dirs (["agents"] by default, next to atlas.toml): a file with the
 name of a built-in one replaces it. [agents.<name>] in atlas.toml retouches one field of an
-agent (tools, model, max_steps, reasoning_effort, temperature, description). The name is
-the `name` of the header, or the name of the file.
+agent (tools, model, max_steps, reasoning_effort, temperature, top_p, top_k, description). The
+name is the `name` of the header, or the name of the file.
 
 This module only reads the files: it does not need ADK.
 """
@@ -49,6 +51,8 @@ class AgentDef:
     max_steps: int = 8
     reasoning_effort: str = ""      # "" = [llm] reasoning_effort
     temperature: float | None = None
+    top_p: float | None = None      # None = the server default
+    top_k: int | None = None        # None = the server default; not in the OpenAI API: goes in extra_body
     source: str = ""                # the file it comes from
 
 
@@ -84,6 +88,11 @@ def _checked(d: AgentDef, where: str) -> AgentDef:
         raise ConfigError(f"{where}: max_steps must be a positive integer")
     if not d.instruction:
         raise ConfigError(f"{where}: the agent has no instructions (the body of the file)")
+    if d.top_p is not None and (isinstance(d.top_p, bool) or not isinstance(d.top_p, (int, float))
+                                or not 0 < d.top_p <= 1):
+        raise ConfigError(f"{where}: top_p must be a number above 0 and at most 1")
+    if d.top_k is not None and (isinstance(d.top_k, bool) or not isinstance(d.top_k, int) or d.top_k < 1):
+        raise ConfigError(f"{where}: top_k must be a positive integer")
     d.reasoning_effort = str(d.reasoning_effort or "")
     return d
 

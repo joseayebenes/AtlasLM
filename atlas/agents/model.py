@@ -54,13 +54,15 @@ FINISH = {"stop": types.FinishReason.STOP, "tool_calls": types.FinishReason.STOP
 class AtlasLlm(BaseLlm):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     service: Any = None                       # the ServiceConfig of atlas.llm
+    top_p: float | None = None                # sampling of the agent; None = the server default
+    top_k: int | None = None                  # not in the OpenAI API: sent in extra_body
     _client: Any = PrivateAttr(default=None)
 
     @classmethod
-    def from_service(cls, service: ServiceConfig, client: Any = None) -> "AtlasLlm":
-        """The model of `service` ([llm] of atlas.toml, retouched by the agent). `client`
-        replaces the OpenAI client, for tests."""
-        llm = cls(model=service.model, service=service)
+    def from_service(cls, service: ServiceConfig, client: Any = None, **options) -> "AtlasLlm":
+        """The model of `service` ([llm] of atlas.toml, retouched by the agent), with the
+        `options` of the agent (top_p, top_k). `client` replaces the OpenAI client, for tests."""
+        llm = cls(model=service.model, service=service, **options)
         llm._client = client
         return llm
 
@@ -81,8 +83,11 @@ class AtlasLlm(BaseLlm):
             kwargs["max_tokens"] = self.service.max_tokens
         if self.service.reasoning_effort:
             kwargs["reasoning_effort"] = self.service.reasoning_effort
-        if self.service.extra_body:
-            kwargs["extra_body"] = self.service.extra_body
+        if self.top_p is not None:
+            kwargs["top_p"] = self.top_p
+        extra = {**self.service.extra_body, **({"top_k": self.top_k} if self.top_k is not None else {})}
+        if extra:
+            kwargs["extra_body"] = extra
         response = await self._create(kwargs)
         for _ in range(RETRIES):
             if not (_empty_and_cut(response) and kwargs.get("max_tokens")):

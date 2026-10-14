@@ -32,6 +32,8 @@ model: gemma4:12b          # opcional: [agents] model, o si no [llm] model
 max_steps: 6               # opcional: llamadas al modelo como mucho en una respuesta
 reasoning_effort: none     # opcional: "none" apaga el razonamiento
 temperature: 0.1           # opcional
+top_p: 0.95                # opcional: el muestreo de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64)
+top_k: 64                  # opcional: no es de la API de OpenAI, va en extra_body
 ---
 You trace requirements of an engineering project...
 ```

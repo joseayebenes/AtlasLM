@@ -267,6 +267,8 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `max_steps` | entero | llamadas al modelo como mucho en una respuesta |
 | `reasoning_effort` | texto | `"none"` apaga el razonamiento |
 | `temperature` | número | su temperatura |
+| `top_p` | número | su `top_p` (de 0 a 1); sin poner, el del servidor. La ficha de gemma 4 recomienda 0,95 |
+| `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
 
 ### [agents.eval]
 

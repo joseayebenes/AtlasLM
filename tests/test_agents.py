@@ -198,6 +198,27 @@ def test_the_reasoning_of_a_turn_with_tool_calls_goes_back_to_the_model(workspac
     assert reasoning_of(SimpleNamespace(content="x")) == ""
 
 
+def test_the_sampling_of_an_agent(workspace, monkeypatch):
+    """top_p and top_k of the agent (gemma 4: 0.95 and 64); top_k is not in the OpenAI API."""
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
+    monkeypatch.setitem(workspace["agents"], "assistant", {"top_p": 0.95, "top_k": 64})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    request = client.requests[0]
+    assert request["top_p"] == 0.95
+    assert request["extra_body"] == {"provider": {"order": ["deepinfra"]}, "top_k": 64}
+    monkeypatch.setitem(workspace["agents"], "assistant", {})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    assert "top_p" not in client.requests[0] and "top_k" not in client.requests[0]["extra_body"]
+    for bad, why in (({"top_p": 1.5}, "top_p must be"), ({"top_k": 0}, "top_k must be")):
+        monkeypatch.setitem(workspace["agents"], "assistant", bad)
+        with pytest.raises(ConfigError, match=why):
+            load_definitions(workspace)
+
+
 def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
     from atlas.agents import model
     from atlas.agents.runtime import run_agent

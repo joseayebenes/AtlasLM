@@ -13,6 +13,7 @@ The plan is a TOML file:
     advance_fixes = 2                        # turns to make the tests of `advances` get further
     fix_rounds = 12                          # rounds to fix failing tests, after the tasks
     stuck_rounds = 2                         # rounds without progress before a test goes to a person
+    restarts = 1                             # fresh starts of a run that stopped (max_steps, stall_steps)
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -50,11 +51,17 @@ again and again in the same way, and changes that broke what worked.
    develop-<plan>.calls.jsonl keeps the prompt, the tool calls with their results and the
    answer of every run of an agent.
 
+A run that stops without finishing (max_steps, or stall_steps of the agent: that many tool
+calls without changing the code) starts again with a fresh conversation, at most `restarts`
+times: the same prompt, the diff of what it changed, which stays, and what check_code says
+now. A long conversation of failed edits does not get better with more turns.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 """
 from __future__ import annotations
 
+import difflib
 import fnmatch
 import glob
 import json
@@ -73,6 +80,7 @@ from atlas.config import Config, ConfigError
 __all__ = ["Plan", "develop", "load_plan"]
 
 MAX_OUTPUT = 1500          # characters of a test output in a prompt
+MAX_CHANGES = 3000         # characters of the diff of what a stopped run changed, in the prompt of its restart
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
 WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
@@ -97,6 +105,12 @@ further with it, and it fails where it failed before. What it printed:
 Find why in the code and fix it. The test is right and cannot be changed: change the code it tests. \
 Check every file you change with check_code.
 """
+RESTART = """{prompt}
+
+This is a fresh start: an earlier run on this stopped after {calls} tool calls{why}, before it \
+finished. What it changed in the code, which stays:
+{changes}
+{check}Go on from the code as it is now: keep what is right, and do not try again what did not work."""
 RETRY = """
 
 A first attempt at this task was undone, because it broke what worked:
@@ -117,6 +131,7 @@ class Plan:
     advance_fixes: int = 2
     fix_rounds: int = 12
     stuck_rounds: int = 2
+    restarts: int = 1
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -267,6 +282,45 @@ class Developer:
 
     # --- the agent -------------------------------------------------------------------------
     def run(self, agent: str, prompt: str, kind: str, task: str) -> dict:
+        """A run of the agent, started again with a fresh conversation, at most `restarts`
+        times, when it stops before finishing (see the module): the step of the last one."""
+        before = self.files.snapshot() if self.plan.restarts else {}
+        step = self._run_once(agent, prompt, kind, task)
+        for _ in range(self.plan.restarts):
+            if not step.get("stopped") or step.get("error"):
+                break
+            changes, check = self._changes(before)
+            step["outcome"] = "restarted"
+            self.save()
+            self.on_step(step)
+            why = " without changing the code in its last steps" if step.get("stalled") else ""
+            step = self._run_once(agent, RESTART.format(prompt=prompt, calls=step["calls"], why=why,
+                                                        changes=changes or "(nothing)", check=check),
+                                  f"{kind}-restart", task)
+        return step
+
+    def _changes(self, before: dict) -> tuple[str, str]:
+        """(the diff of the files changed since `before`, what check_code says of them now)."""
+        now, parts, checks = self.files.snapshot(), [], []
+        for p in sorted(set(before) | set(now)):
+            if before.get(p) == now.get(p):
+                continue
+            shown = self.code._show(p)
+            old = (before.get(p) or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            new = (now.get(p) or b"").decode("utf-8", "replace").splitlines(keepends=True)
+            parts.append("".join(difflib.unified_diff(old, new, fromfile=shown, tofile=shown, n=1)))
+            if p in now and (self.build.check_commands.get(p.suffix.lower().lstrip(".")) or self.build.check_command):
+                res = self.build.check_code(shown)
+                errors = res.get("errors") or []
+                if errors:
+                    checks.append(f"check_code says of {shown}:\n" + "\n".join(
+                        f"  line {e.get('line')}: {e.get('message')}" for e in errors[:5]))
+        diff = "\n".join(parts)
+        if len(diff) > MAX_CHANGES:
+            diff = diff[:MAX_CHANGES] + "\n… (more changes: read the files)"
+        return diff, ("\n".join(checks) + "\n") if checks else ""
+
+    def _run_once(self, agent: str, prompt: str, kind: str, task: str) -> dict:
         from atlas.agents.runtime import context_for, run_agent
         t0 = time.time()
         step = {"n": len(self.report["steps"]) + 1, "kind": kind, "task": task, "agent": agent}
@@ -275,6 +329,7 @@ class Developer:
         try:
             res = run_agent(agent, prompt, self.cfg, context_for(self.cfg), client=self.client, record=record)
             step.update({"calls": len(res["calls"]), "stopped": res["stopped"], "tokens": res.get("tokens"),
+                         **({"stalled": True} if res.get("stalled") else {}),
                          **({"cost": res["cost"]} if "cost" in res else {}), "answer": res["answer"][:MAX_ANSWER]})
         except Exception as e:                   # the model server failed: the task did not happen
             step.update({"calls": 0, "stopped": True, "error": f"{type(e).__name__}: {e}"[:MAX_ANSWER], "answer": ""})
@@ -519,8 +574,9 @@ def markdown(report: dict) -> str:
         if s.get("error"):
             outcome = f"{outcome} (error: {s['error'][:80]})"
         e, c = s.get("edits") or {}, s.get("compiles") or {}
+        stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
         out.append(f"| {s['n']} | {s['kind']} | {s['task']} | {s['agent']} | {s['seconds'] / 60:.1f} | {s['calls']}"
-                   f"{' (max_steps)' if s.get('stopped') else ''} | {e.get('made', 0) + e.get('failed', 0)} "
+                   f"{stop} | {e.get('made', 0) + e.get('failed', 0)} "
                    f"({e.get('failed', 0)}) | {c.get('ok', 0) + c.get('failed', 0)} ({c.get('failed', 0)}) | "
                    f"{outcome} | {s.get('tests_passed', '')} |")
     undone = [s for s in report["steps"] if s.get("broke")]

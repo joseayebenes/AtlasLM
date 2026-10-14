@@ -13,6 +13,7 @@ Each file is an agent: a YAML header and, as its body, the instructions of the a
     top_p: 0.95                  # optional: else the server default
     top_k: 64                    # optional: else the server default (sent in extra_body)
     keep_tool_results: 10        # optional: large tool results kept whole, the rest a note; 0 = all
+    stall_steps: 15              # optional: tool calls without changing the code that end a run; 0 = none
     ---
     You answer questions about an engineering project...
 
@@ -20,7 +21,7 @@ The agents that come with atlas are in atlas/agents/builtin/. Those of the proje
 the folders of [agents] dirs (["agents"] by default, next to atlas.toml): a file with the
 name of a built-in one replaces it. [agents.<name>] in atlas.toml retouches one field of an
 agent (tools, model, max_steps, reasoning_effort, temperature, top_p, top_k, keep_tool_results,
-description). The name is the `name` of the header, or the name of the file.
+stall_steps, description). The name is the `name` of the header, or the name of the file.
 
 This module only reads the files: it does not need ADK.
 """
@@ -55,6 +56,7 @@ class AgentDef:
     top_p: float | None = None      # None = the server default
     top_k: int | None = None        # None = the server default; not in the OpenAI API: goes in extra_body
     keep_tool_results: int = 0      # the large tool results kept whole, the older ones a note; 0 = all
+    stall_steps: int = 0            # tool calls without changing the code (or passing a test) that end a run
     source: str = ""                # the file it comes from
 
 
@@ -97,6 +99,8 @@ def _checked(d: AgentDef, where: str) -> AgentDef:
         raise ConfigError(f"{where}: top_k must be a positive integer")
     if isinstance(d.keep_tool_results, bool) or not isinstance(d.keep_tool_results, int) or d.keep_tool_results < 0:
         raise ConfigError(f"{where}: keep_tool_results must be an integer, 0 or more")
+    if isinstance(d.stall_steps, bool) or not isinstance(d.stall_steps, int) or d.stall_steps < 0:
+        raise ConfigError(f"{where}: stall_steps must be an integer, 0 or more")
     d.reasoning_effort = str(d.reasoning_effort or "")
     return d
 

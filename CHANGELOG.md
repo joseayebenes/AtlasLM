@@ -36,6 +36,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `keep_tool_results` por agente: los resultados grandes de herramientas de antes de los últimos
   quedan en una nota, y una lectura de un fichero que se volvió a leer se quita. En la tanda 4,
   las vueltas de un arreglo llevaban 55 000 tokens de entrada, casi todo lecturas viejas.
+- `stall_steps` por agente y `restarts` en el plan de `atlas develop`: una ejecución que lleva
+  esas llamadas sin cambiar el código (o que agota `max_steps`) se para y vuelve a empezar con
+  una conversación nueva, el diff de lo hecho y lo que dice `check_code`. En la tanda 4, las 6
+  ejecuciones que agotaron sus 40 llamadas fueron el 41 % del tiempo.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

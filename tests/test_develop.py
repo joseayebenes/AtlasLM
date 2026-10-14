@@ -161,6 +161,29 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
     assert "## Compiler errors" in md and "| edits (failed) |" in md and "Edits: " in md
 
 
+def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project):
+    """stall_steps: tool calls without changing the code end the run; develop starts it again,
+    with a new conversation that says what the first one changed (restarts)."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "agents" / "implementer.md").write_text(AGENT.replace("NAME", "implementer")
+                                                   .replace("max_steps: 6", "max_steps: 6\nstall_steps: 2"))
+    (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0] + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    read = {"read_file": {"path": "src/calc.py"}}
+    half = "def add(a, b):\n    return a + b + 0\n"
+    client = StubClient([read, {"write_file": {"path": "src/calc.py", "content": half}}, read, read,   # stalls
+                         read, {"write_file": {"path": "src/calc.py", "content": ADD}}, "Done."] + ["No idea."] * 6)
+    report = develop(base / "plan.toml", cfg, client=client)
+    first, second = report["steps"][:2]
+    assert (first["kind"], first["outcome"], first["stalled"], first["calls"]) == ("task", "restarted", True, 4)
+    assert (second["kind"], second["outcome"]) == ("task-restart", "kept") and "stalled" not in second
+    restart = client.prompts[1]
+    assert restart.startswith("Implement add.\n\nThis is a fresh start: an earlier run on this stopped after 4 tool "
+                              "calls without changing the code in its last steps")
+    assert "+    return a + b + 0" in restart                    # what it changed, which stays
+    assert (base / "src" / "calc.py").read_text() == ADD
+
+
 def test_a_round_that_fixes_the_test(project):
     from atlas.agents.develop import develop
     base, cfg = project

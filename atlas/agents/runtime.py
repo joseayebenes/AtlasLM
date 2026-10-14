@@ -8,7 +8,9 @@ An agent gets its model from [llm] (with the model, temperature and reasoning of
 of [agents]) through AtlasLlm, and its tools from the "tool" plugins with the names of its
 file: the same functions that atlas serve offers. max_steps caps the calls to the model in
 one answer, and the same tool call repeated REPEATS times in a row is not run again (see
-loop_guard).
+loop_guard). With stall_steps, a run that goes that many tool calls without changing the code
+or making a test pass ends there, `stalled` (see stall_guard): atlas develop starts it again
+with a fresh conversation.
 """
 from __future__ import annotations
 
@@ -27,9 +29,10 @@ from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
 __all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
-           "recorded", "run_agent"]
+           "recorded", "run_agent", "stall_guard"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
+CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 
 
 def context_for(cfg: Config) -> SimpleNamespace:
@@ -87,6 +90,29 @@ def loop_guard(functions: list) -> list:
     return [wrap(f) for f in functions]
 
 
+def stall_guard(functions: list, limit: int, state: dict) -> list:
+    """The tools of one agent, wrapped to count the calls since the code last changed (a
+    change that went through) or a test last passed. At `limit` such calls, state["stalled"]
+    is set, and ask() ends the run after that turn. In the tanda 4 of atlas develop, the 6 runs
+    that spent their 40 calls took 41 % of the time, most of it in loops of reading and editing
+    badly; a fresh start with what is done goes further than a long conversation."""
+    since = {"calls": 0}
+
+    def wrap(f):
+        @functools.wraps(f)
+        def guarded(*args, **kwargs):
+            result = f(*args, **kwargs)
+            ok = isinstance(result, dict) and "error" not in result
+            moved = (f.__name__ in CHANGES and ok and not result.get("unchanged")) or \
+                    (f.__name__ == "run_test" and ok and result.get("passed"))
+            since["calls"] = 0 if moved else since["calls"] + 1
+            if since["calls"] >= limit:
+                state["stalled"] = True
+            return result
+        return guarded
+    return [wrap(f) for f in functions]
+
+
 def recorded(functions: list, record: list) -> list:
     """The tools, wrapped so that each call goes to `record` with its arguments, its result
     and its seconds, to study afterwards what an agent did."""
@@ -102,9 +128,11 @@ def recorded(functions: list, record: list) -> list:
     return [wrap(f) for f in functions]
 
 
-def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None):
+def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None,
+                state: dict | None = None):
     """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests;
-    `record`, a list, gets every tool call with its result (see recorded)."""
+    `record`, a list, gets every tool call with its result (see recorded); `state`, a dict,
+    gets "stalled" when the agent has stall_steps (see stall_guard)."""
     try:
         from google.adk.agents import LlmAgent
     except ImportError as e:
@@ -115,15 +143,18 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     tools = agent_tools(d, context or context_for(cfg))
     model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
                                   keep_tool_results=d.keep_tool_results)
-    return LlmAgent(name=d.name, description=d.description, model=model,
-                    tools=loop_guard(recorded(tools, record) if record is not None else tools),
+    guarded = loop_guard(recorded(tools, record) if record is not None else tools)
+    if d.stall_steps and state is not None:
+        guarded = stall_guard(guarded, d.stall_steps, state)
+    return LlmAgent(name=d.name, description=d.description, model=model, tools=guarded,
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it
 
 
-async def ask(agent, question: str, max_steps: int = 8) -> dict:
+async def ask(agent, question: str, max_steps: int = 8, state: dict | None = None) -> dict:
     """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped",
     "tokens": {"prompt", "completion"}, and "cost" when the server says it (OpenRouter)}.
-    `stopped` says that it reached max_steps calls to the model before answering."""
+    `stopped` says that it reached max_steps calls to the model before answering, or that
+    `state` (of stall_guard) says it stalled: then "stalled" is true too."""
     from google.adk.agents.invocation_context import LlmCallsLimitExceededError
     from google.adk.agents.run_config import RunConfig
     from google.adk.runners import InMemoryRunner
@@ -146,9 +177,14 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
                     calls.append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
                 elif part.text and not part.thought and event.is_final_response():
                     answer += part.text
+            if state is not None and state.get("stalled") and event.content and \
+                    any(p.function_response for p in event.content.parts or []):
+                stopped = True                    # no progress in stall_steps calls: the run ends here
+                break
     except LlmCallsLimitExceededError:        # max_steps reached
         stopped = True
     return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
+            **({"stalled": True} if state is not None and state.get("stalled") else {}),
             **({"cost": round(cost, 6)} if cost is not None else {})}
 
 
@@ -156,5 +192,6 @@ def run_agent(name: str, question: str, cfg: Config, context: Any = None, client
               record: list | None = None) -> dict:
     """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
     with their results."""
-    agent = build_agent(name, cfg, context, client, record)
-    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps))
+    state: dict = {}
+    agent = build_agent(name, cfg, context, client, record, state)
+    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps, state))

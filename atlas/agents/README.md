@@ -35,6 +35,7 @@ temperature: 0.1           # opcional
 top_p: 0.95                # opcional: el muestreo de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64)
 top_k: 64                  # opcional: no es de la API de OpenAI, va en extra_body
 keep_tool_results: 10      # opcional: resultados grandes de herramientas que se conservan enteros
+stall_steps: 15            # opcional: llamadas sin cambiar el código que paran una ejecución
 ---
 You trace requirements of an engineering project...
 ```
@@ -114,6 +115,7 @@ build_fixes = 2                          # vueltas para arreglar lo que dice che
 advance_fixes = 2                        # vueltas para que avancen los tests de advances
 fix_rounds = 12                          # rondas para arreglar tests, tras los encargos
 stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
+restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 
 [[tasks]]
 id = "ping-bye"
@@ -143,7 +145,14 @@ cambios que rompían lo que ya iba.
    cita, y los intentos anteriores sobre él. Una ronda que rompe algo se deshace. Un test que
    no avanza en `stuck_rounds` rondas se deja **para una persona**: el agente no insiste en lo
    que no sabe arreglar. Mientras un test avanza, sigue con él; si no, pasa al siguiente.
-4. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+4. Una ejecución que **se para sin acabar** vuelve a empezar con una conversación nueva, como
+   mucho `restarts` veces: el mismo encargo, el diff de lo que cambió (que se queda) y lo que
+   dice `check_code` ahora. Se para al agotar `max_steps` o, si el agente tiene `stall_steps`,
+   al llevar esas llamadas sin cambiar el código ni hacer pasar un test. En la tanda 4, las 6
+   ejecuciones que agotaron sus 40 llamadas se llevaron el 41 % del tiempo, casi todo en
+   bucles de leer y editar mal: una conversación larga de ediciones fallidas no mejora con más
+   vueltas.
+5. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más

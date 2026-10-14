@@ -150,8 +150,11 @@ cambios que rompían lo que ya iba.
 4. Una ejecución que **se para sin acabar** vuelve a empezar con una conversación nueva, como
    mucho `restarts` veces: el mismo encargo, el diff de lo que cambió (que se queda) y lo que
    dice `check_code` ahora. Se para al agotar `max_steps` o, si el agente tiene `stall_steps`,
-   al llevar esas llamadas sin cambiar el código ni hacer pasar un test (no cuenta en un agente
-   que solo lee, como el planificador: parecería atascado siempre). En la tanda 4, las 6
+   al llevar esas llamadas sin que el código avance: un cambio tras el que el fichero compila o
+   tiene menos errores que antes, o un test que pasa. Reescribir un fichero con los mismos
+   errores no es avanzar (en la prueba del 2026-10-15, un intento reescribió `server.adb` 17
+   veces con los mismos 2 errores). No cuenta en un agente que solo lee, como el planificador:
+   parecería atascado siempre. En la tanda 4, las 6
    ejecuciones que agotaron sus 40 llamadas se llevaron el 41 % del tiempo, casi todo en
    bucles de leer y editar mal: una conversación larga de ediciones fallidas no mejora con más
    vueltas.

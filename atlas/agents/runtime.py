@@ -91,21 +91,40 @@ def loop_guard(functions: list) -> list:
 
 
 def stall_guard(functions: list, limit: int, state: dict) -> list:
-    """The tools of one agent, wrapped to count the calls since the code last changed (a
-    change that went through) or a test last passed. At `limit` such calls, state["stalled"]
-    is set, and ask() ends the run after that turn. In the tanda 4 of atlas develop, the 6 runs
-    that spent their 40 calls took 41 % of the time, most of it in loops of reading and editing
-    badly; a fresh start with what is done goes further than a long conversation."""
-    since = {"calls": 0}
+    """The tools of one agent, wrapped to count the calls since the code last moved: a change
+    after which the file compiles, or has fewer errors than at its last check (a change with no
+    compiler counts), or a test that passed. At `limit` such calls, state["stalled"] is set,
+    and ask() ends the run after that turn. In the tanda 4 of atlas develop, the 6 runs that
+    spent their 40 calls took 41 % of the time, most of it in loops of reading and editing
+    badly; a run of the server rewrote its file 17 times with the same 2 errors. A fresh start
+    with what is done goes further than a long conversation."""
+    since, errors = {"calls": 0}, {}            # errors: file -> errors at its last check
+
+    def count(check: dict) -> int:
+        return 0 if check.get("ok") else max(1, len(check.get("errors", [])) + check.get("more_errors", 0))
+
+    def moved(name: str, result: Any) -> bool:
+        if not isinstance(result, dict) or "error" in result:
+            return False
+        if name == "run_test":
+            return bool(result.get("passed"))
+        if name == "check_code" and "ok" in result:
+            errors[result.get("file", "")] = count(result)
+            return False
+        if name not in CHANGES or result.get("unchanged"):
+            return False
+        check = result.get("check")
+        if not isinstance(check, dict):
+            return True
+        before, now = errors.get(result.get("file", "")), count(check)
+        errors[result.get("file", "")] = now
+        return before is None or now == 0 or now < before
 
     def wrap(f):
         @functools.wraps(f)
         def guarded(*args, **kwargs):
             result = f(*args, **kwargs)
-            ok = isinstance(result, dict) and "error" not in result
-            moved = (f.__name__ in CHANGES and ok and not result.get("unchanged")) or \
-                    (f.__name__ == "run_test" and ok and result.get("passed"))
-            since["calls"] = 0 if moved else since["calls"] + 1
+            since["calls"] = 0 if moved(f.__name__, result) else since["calls"] + 1
             if since["calls"] >= limit:
                 state["stalled"] = True
             return result

@@ -625,3 +625,29 @@ def test_old_tool_results_are_left_out_when_the_agent_keeps_a_few():
     assert MASK_STEP == 5 and [("note" in r) for r in short[1:]] == [True] * 4 + [False] * 5
     assert short[1]["ok"] is False and short[1]["file"] == "src/a.adb" and "errors" not in short[1]
     assert short[-2]["source"] == "y" * 2000 and short[-1]["diff"] == "d" * 50      # the last read and the edit stay
+
+
+def test_a_change_that_leaves_the_same_errors_is_not_progress():
+    """stall_guard: rewriting a file with the same compile errors again and again is a loop
+    (the server of a run of atlas develop, 17 times); fewer errors, or none, is progress."""
+    from atlas.agents.runtime import stall_guard
+    results = iter([{"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}}])
+
+    def write_file(path: str, content: str) -> dict:
+        return next(results)
+    state: dict = {}
+    write = stall_guard([write_file], 2, state)[0]
+    write(path="s.adb", content="a")              # the first check of the file: progress
+    write(path="s.adb", content="b")              # the same 2 errors: 1
+    assert not state
+    write(path="s.adb", content="c")              # 2: stalled
+    assert state == {"stalled": True}
+    state.clear()
+    write(path="s.adb", content="d")              # 1 error now: progress again
+    write(path="s.adb", content="e")
+    assert not state

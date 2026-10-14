@@ -151,6 +151,14 @@ protegidos, `run_program`, `code_at` y el registro del servidor con la traza de 
   las excepciones tratadas.
 - **Las vueltas de gemma son lentas**: de 20 s a 10 min. Tres no contestaron en 600 s y se
   preguntaron otra vez (ver `[llm.network] timeout`).
+- **Con `advances`** en 11 de los 18 encargos y la traza de excepciones desde el principio
+  (tanda 4, otra vez desde `src` vacío): los 5 tests pasaron al acabar los encargos, **sin
+  ninguna ronda**, en 28 ejecuciones, 4 h 52 min de agente y 0,72 $. El encargo de los
+  argumentos dejó `PING` y `BYE` sin comprobar los suyos: volvió al agente con la salida de
+  `test_stp_0103` y en una vuelta de 4 minutos el test pasó. El primer intento de `GET` dejó un
+  `begin` sin cerrar que dos arreglos no resolvieron: se deshizo y el reintento se conservó.
+  Un arreglo de compilación gastó sus 40 llamadas (37 min, 0,17 $) sin arreglar nada, y el
+  agente dejó en `src` un fichero suyo de prueba.
 
 ## Cumplimiento del código
 

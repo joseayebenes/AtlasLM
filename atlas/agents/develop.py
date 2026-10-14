@@ -34,8 +34,8 @@ again and again in the same way, and changes that broke what worked.
    what it cannot fix. While a test gets further it keeps the turn; when not, the next one.
 4. A report after each step, in <workspace>/reports/develop-<plan>.json and .md: what each
    task and round did, its time, tokens and cost, the tests that pass and those that need a
-   person, with their output. develop-<plan>.calls.jsonl keeps the prompt, the tool calls and
-   the answer of every run of an agent.
+   person, with their output. develop-<plan>.calls.jsonl keeps the prompt, the tool calls with
+   their results and the answer of every run of an agent.
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
@@ -225,8 +225,9 @@ class Developer:
         t0 = time.time()
         step = {"n": len(self.report["steps"]) + 1, "kind": kind, "task": task, "agent": agent}
         res: dict = {"calls": []}
+        record: list = []
         try:
-            res = run_agent(agent, prompt, self.cfg, context_for(self.cfg), client=self.client)
+            res = run_agent(agent, prompt, self.cfg, context_for(self.cfg), client=self.client, record=record)
             step.update({"calls": len(res["calls"]), "stopped": res["stopped"], "tokens": res.get("tokens"),
                          **({"cost": res["cost"]} if "cost" in res else {}), "answer": res["answer"][:MAX_ANSWER]})
         except Exception as e:                   # the model server failed: the task did not happen
@@ -235,7 +236,7 @@ class Developer:
         self.report["steps"].append(step)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(f"{self.path}.calls.jsonl", "a", encoding="utf-8") as log:   # what it did, to study it
-            log.write(json.dumps({"n": step["n"], "kind": kind, "task": task, "prompt": prompt, "calls": res["calls"],
+            log.write(json.dumps({"n": step["n"], "kind": kind, "task": task, "prompt": prompt, "calls": record,
                                   "answer": res.get("answer", "")}, ensure_ascii=False, default=str) + "\n")
         return step
 

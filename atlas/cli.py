@@ -24,6 +24,8 @@
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
+    atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
+                                    whether the server uses the reasoning that the agents give back
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
     atlas --version
@@ -972,6 +974,13 @@ def check(cfg: Config) -> int:
     return check_connection(from_config(cfg))
 
 
+def probe(cfg: Config) -> int:
+    """The chat model as an agent: a tool call, its result and the reasoning given back."""
+    from atlas.llm import from_config
+    from atlas.llm.probe import probe as probe_model
+    return probe_model(from_config(cfg).llm)
+
+
 def serve(cfg: Config) -> int:
     """The MCP server over stdio, until the client closes it."""
     from atlas.mcp import serve as serve_mcp
@@ -1010,7 +1019,7 @@ def main(argv: list[str] | None = None) -> None:
     if action == "init":
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
+               "agents": list_agents, "eval": evaluate, "check": check, "probe": probe, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

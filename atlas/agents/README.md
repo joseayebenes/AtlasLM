@@ -55,6 +55,13 @@ el mismo fichero tras un error de compilación que no entendía, hasta agotar `m
 `max_tokens` pensando y no contestar nada; ADK tomaría esa vuelta vacía como la respuesta
 final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces.
 
+El razonamiento de cada vuelta vuelve al modelo en las siguientes, en el mensaje del asistente
+que lleva las llamadas a herramientas (`[llm] reasoning_field`, `"reasoning"` por defecto; `""`
+lo apaga). Lo pide la ficha de gemma 4: el razonamiento de los turnos con llamadas a
+herramientas se queda en la conversación, y su plantilla de chat lo vuelve a poner si llega en
+`reasoning` o `reasoning_content`. Antes se tiraba: en cada vuelta, el modelo tenía que deducir
+otra vez qué estaba haciendo. `atlas probe` dice si un servidor lo aprovecha.
+
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
 servidor lo dice (OpenRouter, `usage.cost`), su coste.
 

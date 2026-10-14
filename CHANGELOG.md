@@ -7,6 +7,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas (una
+  llamada a una herramienta, su resultado y si el servidor aprovecha el razonamiento devuelto).
+  Para comprobar el gateway antes de usar agentes.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez
@@ -97,6 +100,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   para los agentes está en los cambios siguientes.
 
 ### Cambiado
+- Los agentes devuelven al modelo el razonamiento de sus vueltas con llamadas a herramientas,
+  en el mensaje del asistente (`[llm] reasoning_field`, `"reasoning"` por defecto; `""` como
+  antes). Lo pide la ficha de gemma 4; antes se tiraba y el modelo tenía que deducir en cada
+  vuelta qué estaba haciendo. Con OpenRouter, el prompt de `gemma-4-26b` lo incluye.
 - `edit_file` rechaza un texto buscado de más de 30 líneas y pide varias ediciones pequeñas o
   `write_file`: `gemma-4-26b` reconstruía de memoria los textos largos y entraba en bucles de
   leer y editar de 27 y 45 minutos.

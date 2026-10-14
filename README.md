@@ -105,6 +105,7 @@ atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas check    atlas.dev.toml # conexión con el modelo
+atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
 atlas --version
 ```

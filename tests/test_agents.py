@@ -150,6 +150,54 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     assert "tracks.delete_track" in result["content"] and "SSS-0005" in result["content"]
 
 
+class ThinkingClient(StubClient):
+    """A StubClient whose model reasons before each turn: `reasoning` (OpenRouter, Ollama) or,
+    with details=True, `reasoning_details` (OpenRouter)."""
+
+    def __init__(self, turns, details=False):
+        super().__init__(turns)
+        self.details, self.n = details, 0
+
+    def create(self, **kwargs):
+        response = super().create(**kwargs)
+        self.n += 1
+        thought = f"Thought {self.n}: SRS-0004 needs trace."
+        message = response.choices[0].message
+        if self.details:
+            message.model_extra = {"reasoning_details": [{"type": "reasoning.text", "text": thought}]}
+        else:
+            message.reasoning = thought
+        return response
+
+
+def test_the_reasoning_of_a_turn_with_tool_calls_goes_back_to_the_model(workspace, monkeypatch):
+    """The model card of gemma 4: the thoughts of the turns with tool calls stay in the
+    conversation. They go back in [llm] reasoning_field, never in the answer."""
+    from atlas.agents.model import reasoning_of
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    turns = [{"trace": {"req_id": "SRS-0004"}}, {"trace": {"req_id": "SRS-0005"}}, "tracks.delete_track."]
+    client = ThinkingClient(turns)
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"] == "tracks.delete_track."                       # the last thought is not in it
+    third = client.requests[2]["messages"]
+    calls = [m for m in third if m["role"] == "assistant"]
+    assert [m["reasoning"] for m in calls] == ["Thought 1: SRS-0004 needs trace.", "Thought 2: SRS-0004 needs trace."]
+    assert "reasoning" not in client.requests[0]["messages"][-1]
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": "reasoning_content"})
+    client = ThinkingClient(turns[1:], details=True)
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    call = client.requests[1]["messages"][-2]
+    assert call["reasoning_content"] == "Thought 1: SRS-0004 needs trace." and "reasoning" not in call
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": ""})        # never
+    client = ThinkingClient(turns[1:])
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert set(client.requests[1]["messages"][-2]) == {"role", "content", "tool_calls"}
+    assert reasoning_of(SimpleNamespace(content="x")) == ""
+
+
 def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
     from atlas.agents import model
     from atlas.agents.runtime import run_agent

@@ -15,6 +15,12 @@ A turn has at most [llm.network] timeout seconds in all, and is asked again when
 longer (TURN_RETRIES times). The timeout of the HTTP client is between two reads, and a server
 that keeps the connection alive while the model works (OpenRouter sends blanks) never reaches
 it: a request of gemma-4-26b hung there for an hour, with the agent waiting.
+
+The reasoning of a turn comes back to ADK as a thought part, and goes back to the model in the
+next requests, in the assistant message of its tool calls ([llm] reasoning_field, "reasoning"
+by default). The model card of gemma 4 asks for it: the thoughts of the turns with tool calls
+stay in the conversation, and its chat template puts them back from `reasoning` or
+`reasoning_content`. Without them, the model works out again in every turn what it was doing.
 """
 from __future__ import annotations
 
@@ -31,9 +37,10 @@ from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
 from atlas.llm import ServiceConfig, create_client
+from atlas.llm.connection import reasoning_of
 from atlas.llm.structured import repair_json
 
-__all__ = ["AtlasLlm", "to_llm_response", "to_messages", "to_tools"]
+__all__ = ["AtlasLlm", "reasoning_of", "to_llm_response", "to_messages", "to_tools"]
 
 log = logging.getLogger(__name__)
 RETRIES = 2      # times an empty turn cut by max_tokens is asked again, doubling max_tokens
@@ -65,7 +72,7 @@ class AtlasLlm(BaseLlm):
 
     async def generate_content_async(self, llm_request: LlmRequest,
                                      stream: bool = False) -> AsyncGenerator[LlmResponse, None]:
-        kwargs = {"model": self.service.model, "messages": to_messages(llm_request),
+        kwargs = {"model": self.service.model, "messages": to_messages(llm_request, self.service.reasoning_field),
                   "temperature": self.service.temperature}
         tools = to_tools(llm_request)
         if tools:
@@ -141,17 +148,21 @@ def _text(value: Any) -> str:
     return str(getattr(value, "text", "") or "")
 
 
-def to_messages(request: LlmRequest) -> list[dict]:
+def to_messages(request: LlmRequest, reasoning_field: str = "reasoning") -> list[dict]:
     """The conversation of an ADK request as OpenAI chat messages: the system instruction,
-    the turns of the user, those of the model (text and tool calls) and the tool results."""
+    the turns of the user, those of the model (text and tool calls) and the tool results.
+    The reasoning of a turn of the model with tool calls goes in its `reasoning_field`
+    ("" = it is left out)."""
     messages = []
     system = _text(request.config.system_instruction) if request.config else ""
     if system:
         messages.append({"role": "system", "content": system})
     for content in request.contents:
-        texts, calls, results = [], [], []
+        texts, calls, results, thoughts = [], [], [], []
         for part in content.parts or []:
             if part.thought:
+                if part.text and part.text.strip():
+                    thoughts.append(part.text)
                 continue
             if part.function_call:
                 fc = part.function_call
@@ -165,7 +176,9 @@ def to_messages(request: LlmRequest) -> list[dict]:
         if content.role == "model":
             if texts or calls:
                 messages.append({"role": "assistant", "content": "\n".join(texts) or None,
-                                 **({"tool_calls": calls} if calls else {})})
+                                 **({"tool_calls": calls} if calls else {}),
+                                 **({reasoning_field: "\n".join(thoughts)} if calls and thoughts and reasoning_field
+                                    else {})})
             continue
         for r in results:
             messages.append({"role": "tool", "tool_call_id": r.id or r.name,
@@ -223,10 +236,14 @@ def _arguments(text: str | None) -> dict:
 
 
 def to_llm_response(response: Any) -> LlmResponse:
-    """An OpenAI chat completion as an ADK response: its text and its tool calls."""
+    """An OpenAI chat completion as an ADK response: its reasoning (a thought part), its text
+    and its tool calls."""
     choice = response.choices[0]
     message = choice.message
     parts = []
+    reasoning = reasoning_of(message)
+    if reasoning:
+        parts.append(types.Part(text=reasoning, thought=True))
     if message.content and message.content.strip():
         parts.append(types.Part(text=message.content))
     for call in message.tool_calls or []:

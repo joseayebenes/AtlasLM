@@ -18,7 +18,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   no avanzan, vuelve al agente con la salida del test (`advance_fixes`) y, si aun así no,
   el informe lo dice. Con `gemma-4-26b`, desde `src` vacío: los 18 encargos y 2 rondas
   dieron un servidor que pasa los 5 STP (los 10 tests, Ada y Python), sin ayuda humana en el
-  código, en 23 ejecuciones y 0,61 $; sobre el código de devstral que se caía, 2 rondas.
+  código, en 23 ejecuciones y 0,61 $; sobre el código de devstral que se caía, 2 rondas; con
+  `advances`, los 5 STP al acabar los encargos, sin rondas, en 28 ejecuciones y 0,72 $.
 - `atlas tests MÓDULO|ID` y `[tests]`: los procedimientos de prueba como tests en cada lenguaje,
   paso a paso, con patrones y plantillas del proyecto y sin modelo. Un paso que ningún patrón
   reconoce se dice y el procedimiento no se escribe.

@@ -56,7 +56,7 @@ from typing import Any, Callable, Iterable
 from atlas.code.symbols import Span, comment_mark, insertion_line, language, new_subprograms, subprograms
 from atlas.plugins import register_methods
 
-__all__ = ["CodeTools", "TOOL_NAMES", "WRITE_TOOLS"]
+__all__ = ["CodeTools", "TOOL_NAMES", "WRITE_TOOLS", "rebased"]
 
 TOOL_NAMES = ("list_files", "grep", "read_file", "edit_file", "write_file", "replace_subprogram", "add_subprogram")
 WRITE_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
@@ -97,10 +97,13 @@ class CodeTools:
         self.after_change: Callable[[Path], dict | None] | None = None
 
     @classmethod
-    def from_config(cls, cfg, read_only: bool = False) -> "CodeTools":
-        """Over the roots and exclude patterns of [sources.code]; paths from the working directory."""
+    def from_config(cls, cfg, read_only: bool = False, base: str | Path | None = None) -> "CodeTools":
+        """Over the roots and exclude patterns of [sources.code]; paths from the working
+        directory, or from `base`, a copy of it (a parallel attempt of atlas develop)."""
         sc = cfg["sources"].get("code") or {}
-        return cls(sc.get("roots", []), sc.get("exclude", []), read_only=read_only, protected=sc.get("protected", []))
+        roots = sc.get("roots", []) if base is None else [rebased(r, base) for r in sc.get("roots", [])]
+        return cls(roots, sc.get("exclude", []), base=base or ".", read_only=read_only,
+                   protected=sc.get("protected", []))
 
     @classmethod
     def for_context(cls, context: Any) -> "CodeTools":
@@ -510,6 +513,19 @@ class CodeTools:
         return {"file": self._show(p), "added": [a.name for a in added],
                 "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
                 **self._checked(p)}
+
+
+def rebased(path: str, base: str | Path) -> str:
+    """A path of the configuration in `base`, a copy of the working folder: a relative one
+    stays as it is (it is relative to base now), an absolute one inside the working folder
+    moves into base; one outside it is the same for every copy."""
+    p = Path(path).expanduser()
+    if not p.is_absolute():
+        return path
+    try:
+        return str(Path(base) / p.resolve().relative_to(Path.cwd().resolve()))
+    except ValueError:
+        return path
 
 
 def _matcher(suffix: str):

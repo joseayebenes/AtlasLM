@@ -80,7 +80,7 @@ from typing import Any, Iterable
 
 from atlas.code.library import Library, with_clauses
 from atlas.code.reference import Reference
-from atlas.code.tools import CodeTools
+from atlas.code.tools import CodeTools, rebased
 from atlas.config import ConfigError
 from atlas.plugins import register_methods
 
@@ -204,11 +204,11 @@ class BuildTools:
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
                  hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
-                 reference: Iterable[str] = ()):
+                 reference: Iterable[str] = (), reference_db: str | Path | None = None):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
         self.library = Library(library, files.roots)
-        self.reference = Reference(Path(build_dir).parent / "reference.db", reference, self.library)
+        self.reference = Reference(reference_db or Path(build_dir).parent / "reference.db", reference, self.library)
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
@@ -222,14 +222,23 @@ class BuildTools:
         self.timeout = timeout
 
     @classmethod
-    def from_config(cls, cfg, files: CodeTools | None = None) -> "BuildTools":
+    def from_config(cls, cfg, files: CodeTools | None = None, base: str | Path | None = None) -> "BuildTools":
+        """Over [sources.code]. With `base`, a copy of the working folder (a parallel attempt of
+        atlas develop): its own build folder, and the folders of tool_path in the copy (the
+        scripts of the project build what is in it); the manuals and the library are shared."""
         sc = cfg["sources"].get("code") or {}
-        return cls(files or CodeTools.from_config(cfg), cfg.workspace / "build", sc.get("check_command", []),
-                   sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
+        tool_path = sc.get("tool_path", [])
+        build_dir = cfg.workspace / "build"
+        if base is not None:
+            tool_path = [rebased(p, base) if Path(p).expanduser().is_absolute() else str(Path(base) / p)
+                         for p in tool_path]          # relative ones are relative to where atlas runs: the copy
+            build_dir = Path(base) / ".atlas" / "build"
+        return cls(files or CodeTools.from_config(cfg, base=base), build_dir, sc.get("check_command", []),
+                   sc.get("test_command", []), tool_path, int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
                    load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []),
-                   sc.get("reference", []))
+                   sc.get("reference", []), cfg.workspace / "reference.db")
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":

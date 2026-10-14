@@ -40,6 +40,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   esas llamadas sin cambiar el código (o que agota `max_steps`) se para y vuelve a empezar con
   una conversación nueva, el diff de lo hecho y lo que dice `check_code`. En la tanda 4, las 6
   ejecuciones que agotaron sus 40 llamadas fueron el 41 % del tiempo.
+- `attempts` en el plan de `atlas develop`: varios intentos de cada encargo a la vez, cada uno en
+  una copia de la carpeta de trabajo; gana el que no rompe nada y deja más tests pasando, y sus
+  ficheros pasan a la carpeta de trabajo.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

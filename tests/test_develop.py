@@ -184,6 +184,54 @@ def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project):
     assert (base / "src" / "calc.py").read_text() == ADD
 
 
+class ParallelClient:
+    """Scripted turns for runs at the same time: each new conversation takes the next script,
+    and its tool calls carry the letter of its script, so that its next turns are known."""
+
+    def __init__(self, scripts):
+        import threading
+        self.scripts = {chr(65 + i): list(s) for i, s in enumerate(scripts)}
+        self.order, self.lock = list(self.scripts), threading.Lock()
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        with self.lock:
+            called = [m for m in kwargs["messages"] if m.get("tool_calls")]
+            tag = called[-1]["tool_calls"][0]["id"][0] if called else self.order.pop(0)
+            turn = self.scripts[tag].pop(0)
+        if isinstance(turn, dict):
+            calls = [SimpleNamespace(id=f"{tag}{i}", type="function", function=SimpleNamespace(name=n, arguments=json.dumps(a)))
+                     for i, (n, a) in enumerate(turn.items())]
+            message, finish = SimpleNamespace(content=None, tool_calls=calls), "tool_calls"
+        else:
+            message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
+                               usage=SimpleNamespace(prompt_tokens=50, completion_tokens=5, total_tokens=55))
+
+
+def test_parallel_attempts_each_in_a_copy_and_the_tests_choose(project):
+    """attempts = 3: three runs at once, each in its own copy; the one that breaks nothing and
+    gets further wins, and its files come to the working folder."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
+                                                                        '.resolve().parent.parent / "src")'))
+    plan = PLAN.split("[[tasks]]")[0].replace("build_fixes = 1", "build_fixes = 0").replace("fix_rounds = 4",
+                                                                                          "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'attempts = 3\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = ParallelClient([write(MUL), write("def add(a, b:\n    return a + b\n"), write(ADD)])
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert (base / "src" / "calc.py").read_text() == MUL                   # the one that passes the test
+    tasks = [s for s in report["steps"] if s["kind"] == "task"]
+    assert sorted(s["attempt"] for s in tasks) == [1, 2, 3]
+    assert sorted(s["outcome"] for s in tasks) == ["kept", "not chosen", "undone"]
+    chosen = next(s for s in tasks if s["outcome"] == "kept")
+    assert chosen["chosen"].endswith("of 3") and chosen["tests_passed"] == 1
+    assert report["final"]["tests_passed"] == 1
+    assert not (cfg.workspace / "attempts" / "1").exists()                  # the copies go away
+    assert "| task #" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+
+
 def test_a_round_that_fixes_the_test(project):
     from atlas.agents.develop import develop
     base, cfg = project

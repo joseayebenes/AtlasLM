@@ -124,6 +124,25 @@ Deshacer devuelve los ficheros de las raíces del código que un agente puede ca
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
 (`[sources.code] protected`), para que el agente no pueda cambiarlos.
 
+Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
+`atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
+protegidos, `run_program`, `code_at` y el registro del servidor con la traza de cada excepción:
+- **Desde `src` vacío**, los 18 encargos pequeños y 2 rondas del `fixer` dieron un servidor que
+  pasa los 5 procedimientos de prueba (los 10 tests, Ada y Python), sin tocar nadie el código:
+  23 ejecuciones del agente, 463 llamadas, 5 h y media de agente y 0,61 $. Ningún encargo se
+  deshizo; 3 necesitaron arreglos de compilación y 4 agotaron `max_steps`. En el experimento
+  anterior, sin estas piezas, ninguna configuración llegó a un servidor que funcionara.
+- **Sobre el código de `devstral`** que se caía en `controller.adb:103` (seis rondas de devstral
+  sin arreglarlo), el `fixer` lo dejó en 5 de 5 en 2 rondas (51 min, 0,065 $): fue a la línea
+  que citaba la traza y probó con `run_program`.
+- **Lo que no recoge la regla de deshacer:** el encargo de `HELLO` dejó un `CONSTRAINT_ERROR`
+  que un `when others => null` se tragaba (el cliente no recibía respuesta). Se conservó porque
+  los tests ya fallaban en ese paso; los ocho encargos siguientes no pudieron hacer avanzar
+  ningún test. Lo arregló la segunda ronda, cuando el registro del servidor ya escribía también
+  las excepciones tratadas.
+- **Las vueltas de gemma son lentas**: de 20 s a 10 min. Tres no contestaron en 600 s y se
+  preguntaron otra vez (ver `[llm.network] timeout`).
+
 ## Cumplimiento del código
 
 `atlas comply ID|MÓDULO` (o `*`) juzga, para cada requisito con código, si ese código hace

@@ -7,6 +7,35 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
+  lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
+  un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez
+  con lo que rompió. Después, rondas sobre los tests que fallan, con su salida y el código que
+  citan; un test que no avanza en `stuck_rounds` rondas se deja para una persona. Informe JSON
+  y Markdown tras cada paso, y las llamadas de cada ejecución en `.calls.jsonl`. Sale del
+  experimento de 2026-10-13 en `atlas-socket-demo`, donde ningún modelo sin ayuda llegó a un
+  servidor que funcionara. Con `gemma-4-26b`, desde `src` vacío: los 18 encargos y 2 rondas
+  dieron un servidor que pasa los 5 STP (los 10 tests, Ada y Python), sin ayuda humana en el
+  código, en 23 ejecuciones y 0,61 $; sobre el código de devstral que se caía, 2 rondas.
+- `atlas tests MÓDULO|ID` y `[tests]`: los procedimientos de prueba como tests en cada lenguaje,
+  paso a paso, con patrones y plantillas del proyecto y sin modelo. Un paso que ningún patrón
+  reconoce se dice y el procedimiento no se escribe.
+- `[sources.code] protected`: ficheros que los agentes leen pero no cambian (los tests). Los
+  agentes de los dos modelos probados, al pedirles arreglar un test, lo adaptaron al código.
+- La herramienta `run_program` (`[sources.code] program_command`): ejecuta el programa con las
+  líneas que le da el agente, para ver qué hace el código con una entrada.
+- `run_test` y `run_program` devuelven en `code_at` las líneas alrededor de los sitios del
+  código que cita su salida (el de una excepción).
+- `[sources.code] check_commands`: el comando de `check_code` por extensión (GNAT, generando
+  código en los cuerpos y con `-gnatc` en las especificaciones).
+- `run_agent` devuelve los tokens y, con OpenRouter, el coste de todas las vueltas, y con
+  `record` apunta cada llamada a una herramienta con su resultado y su tiempo.
+
+### Corregido
+- Una vuelta de un agente tiene como mucho `[llm.network] timeout` segundos en total y, si
+  tarda más, se pregunta otra vez. El tiempo máximo del cliente HTTP es entre dos lecturas, y
+  OpenRouter mantiene viva la conexión mientras el modelo trabaja: una petición de
+  `gemma-4-26b` se quedó colgada una hora con `atlas develop` esperando.
 - `atlas eval` mide también la recuperación, sin modelo: casos `search` (acierto@1, @3, @5 y
   @10 y rango recíproco medio, con la búsqueda híbrida y con la léxica) y casos con una
   consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`, `search_code_docs`).

@@ -43,6 +43,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `attempts` en el plan de `atlas develop`: varios intentos de cada encargo a la vez, cada uno en
   una copia de la carpeta de trabajo; gana el que no rompe nada y deja más tests pasando, y sus
   ficheros pasan a la carpeta de trabajo.
+- `planner` en el plan de `atlas develop`: un agente de solo lectura dice cómo hacer cada
+  encargo, y el implementador lo recibe con ese plan (el arquitecto y el editor de Aider).
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

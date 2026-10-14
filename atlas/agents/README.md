@@ -117,6 +117,7 @@ fix_rounds = 12                          # rondas para arreglar tests, tras los 
 stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
+planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
 
 [[tasks]]
 id = "ping-bye"
@@ -153,7 +154,12 @@ cambios que rompían lo que ya iba.
    ejecuciones que agotaron sus 40 llamadas se llevaron el 41 % del tiempo, casi todo en
    bucles de leer y editar mal: una conversación larga de ediciones fallidas no mejora con más
    vueltas.
-5. Con `attempts` mayor que 1, cada encargo (y su reintento) va a esos intentos **a la vez**,
+5. Con `planner`, cada encargo pasa antes por ese agente, que solo lee (sus herramientas no
+   cambian nada) y escribe cómo hacerlo; el encargo llega al agente con ese plan. Es el
+   arquitecto y el editor de Aider: el modelo no tiene que pensar el cambio y acertar con las
+   herramientas en las mismas vueltas. Con el mismo modelo en los dos papeles, GPT-4o-mini
+   pasó del 55,6 al 60,2 % en su banco de pruebas.
+6. Con `attempts` mayor que 1, cada encargo (y su reintento) va a esos intentos **a la vez**,
    cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las raíces del
    código, los scripts del proyecto y su propia carpeta de compilación), con sus arreglos de
    compilación y sus vueltas de `advances`. De los que no rompen nada gana el que deja más
@@ -162,7 +168,7 @@ cambios que rompían lo que ya iba.
    tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
-6. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más

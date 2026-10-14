@@ -232,6 +232,28 @@ def test_parallel_attempts_each_in_a_copy_and_the_tests_choose(project):
     assert "| task #" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
 
 
+def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
+    """planner: the architect and editor of Aider, with the same model in both roles."""
+    from atlas.agents.develop import develop
+    from atlas.config import ConfigError
+    base, cfg = project
+    (base / "agents" / "planner.md").write_text(AGENT.replace("NAME", "planner").replace(
+        "tools: [read_file, write_file, edit_file]", "tools: [read_file]"))
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'planner = "planner"\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient([{"read_file": {"path": "src/calc.py"}}, "Replace the body of add: return a + b."]
+                        + write(ADD))
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["agent"], s["outcome"]) for s in report["steps"]] == [
+        ("plan", "planner", "planned"), ("task", "implementer", "kept")]
+    assert client.prompts[0] == "Implement add."
+    assert client.prompts[1].startswith("Implement add.\n\nHow to do it, from a colleague")
+    assert client.prompts[1].endswith("Replace the body of add: return a + b.")
+    (base / "plan.toml").write_text(plan + 'planner = "nobody"\n\n[[tasks]]\ntext = "x"\n')
+    with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        develop(base / "plan.toml", cfg, client=StubClient([]))
+
+
 def test_a_round_that_fixes_the_test(project):
     from atlas.agents.develop import develop
     base, cfg = project

@@ -15,6 +15,7 @@ The plan is a TOML file:
     stuck_rounds = 2                         # rounds without progress before a test goes to a person
     restarts = 1                             # fresh starts of a run that stopped (max_steps, stall_steps)
     attempts = 1                             # parallel attempts at each task, each in a copy: the tests choose
+    planner = "planner"                      # optional: an agent that reads and says how to do each task
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -51,6 +52,11 @@ again and again in the same way, and changes that broke what worked.
    first, with whether a hint came with them ([sources.code] hints: one more after each run).
    develop-<plan>.calls.jsonl keeps the prompt, the tool calls with their results and the
    answer of every run of an agent.
+
+With a planner, each task goes first to that agent (with tools to read, not to change): it
+writes how to do it, and the task goes to the agent with that plan. The architect and editor of
+Aider: the model does not have to think out the change and get the tools right in the same
+turns (with the same model in both roles, GPT-4o-mini went from 55.6 to 60.2 %).
 
 With attempts > 1, each task (and its retry) goes to that many runs at once, each in its own
 copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of the
@@ -122,6 +128,11 @@ This is a fresh start: an earlier run on this stopped after {calls} tool calls{w
 finished. What it changed in the code, which stays:
 {changes}
 {check}Go on from the code as it is now: keep what is right, and do not try again what did not work."""
+PLANNED = """{task}
+
+How to do it, from a colleague who has read the code and the requirements (follow it unless the code says \
+otherwise):
+{plan}"""
 RETRY = """
 
 A first attempt at this task was undone, because it broke what worked:
@@ -144,6 +155,7 @@ class Plan:
     stuck_rounds: int = 2
     restarts: int = 1
     attempts: int = 1
+    planner: str = ""
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -270,6 +282,9 @@ class Developer:
         self.main = _Workspace(self)
         self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
         self.tests = _files(plan.tests)
+        if plan.planner:
+            from atlas.agents.runtime import definition
+            definition(plan.planner, cfg)                 # it exists, or a ConfigError now and not after a task
         outside = [r for r in self.code.roots if Path.cwd().resolve() not in (r, *r.parents)]
         if plan.attempts > 1 and outside:
             raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder where atlas runs, "
@@ -296,6 +311,7 @@ class Developer:
                              "tests": self.tests}
         self.path = cfg.workspace / "reports" / f"develop-{plan.name}"
         self.errors: dict[str, dict] = {}      # the errors of the compiler, by their message without names
+        self._answers: dict[int, str] = {}     # the whole answer of each step (the report keeps its start)
         self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
 
     # --- what the code does --------------------------------------------------------------
@@ -392,6 +408,7 @@ class Developer:
                 seen["count"] += 1
                 seen["hint"] = seen["hint"] or bool(e.get("hint"))
             self.report["steps"].append(step)
+            self._answers[step["n"]] = res.get("answer", "")
             self.path.parent.mkdir(parents=True, exist_ok=True)
             with open(f"{self.path}.calls.jsonl", "a", encoding="utf-8") as log:   # what it did, to study it
                 log.write(json.dumps({"n": step["n"], "kind": kind, "task": task,
@@ -533,16 +550,28 @@ class Developer:
     # --- the plan --------------------------------------------------------------------------
     def tasks(self, state: dict) -> dict:
         for task in self.plan.tasks:
-            step, state, broken = self.attempts(self.plan.agent, task["text"], "task", task["id"], state,
+            text = self.planned(task, state)
+            step, state, broken = self.attempts(self.plan.agent, text, "task", task["id"], state,
                                                 task["advances"])
             step["outcome"] = "undone" if broken else "kept"
             self._done(step, state)
             if broken:
-                retry, state, broken = self.attempts(self.plan.agent, task["text"] + RETRY.format(
+                retry, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
                     broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
                 retry["outcome"] = "undone" if broken else "kept"
                 self._done(retry, state)
         return state
+
+    def planned(self, task: dict, state: dict) -> str:
+        """The text of a task for the agent: with the plan of the planner, if the plan has one
+        and it answered."""
+        if not self.plan.planner:
+            return task["text"]
+        step = self.run(self.plan.planner, task["text"], "plan", task["id"])
+        step["outcome"] = "planned" if step.get("answer") else "no plan"
+        self._done(step, state)
+        plan = self._answers.get(step["n"], "")
+        return PLANNED.format(task=task["text"], plan=plan) if plan.strip() else task["text"]
 
     def rounds(self, state: dict) -> dict:
         stuck, attempts, escalated = {}, {}, self.report.setdefault("for_a_person", {})

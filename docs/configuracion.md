@@ -209,12 +209,25 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos |
 | `summaries` | texto | — | reservada: sin efecto en 0.1.0 (resúmenes de subprogramas con el modelo) |
 | `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
+| `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
 | `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza |
 | `run_command` | lista | `["{exe}"]` | cómo se ejecuta lo que construyó `test_command`. Un envoltorio puede arrancar antes lo que la prueba necesita: `["with_server", "{exe}"]` |
 | `test_commands` | tabla | `{}` | pruebas que no se construyen, por extensión: el comando que las ejecuta tal cual, `{ py = ["python3", "{file}"] }` |
+| `program_command` | lista | `[]` | lo que ejecuta la herramienta `run_program`, con las líneas que le da el agente en su entrada estándar: el programa, o un cliente que se las pasa, `["with_server", "session"]`. Vacía: sin `run_program` |
+| `protected` | lista | `[]` | patrones de ficheros que los agentes leen pero no cambian: `["tests/**"]`. Los tests, para que el agente que escribe el código no pueda cambiar lo que lo juzga |
 | `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a la carpeta desde la que se lanza atlas, como las raíces del código |
 | `command_timeout` | entero | `120` | segundos como mucho para compilar o ejecutar una prueba |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
+
+## [tests]
+
+Para `atlas tests`, que escribe un test por procedimiento de prueba y lenguaje a partir de sus
+pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desde-los-procedimientos-de-prueba)).
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `languages` | tabla | `{}` | `[tests.languages.<lenguaje>]`, con `path`, dónde se escribe el test (`"tests/ada/test_{slug}.adb"`; `{id}`, `{slug}` y `{Slug}` salen del ID), y `template`, la plantilla del fichero entero, con `{steps}` en su propia línea |
+| `steps` | lista | `[]` | `[[tests.steps]]`: `match`, una expresión regular para el texto entero de un paso, sin su punto final, y el código del paso en cada lenguaje, con `{n}`, `{text}` y los grupos con nombre de `match`; `{grupo:str}` lo escribe como cadena del lenguaje |
 
 ## [graph]
 

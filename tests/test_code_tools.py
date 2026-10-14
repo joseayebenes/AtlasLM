@@ -138,6 +138,21 @@ def test_write_and_read_only(project, tmp_path):
     assert "error" in CodeTools([]).read_file("src/tracks.adb")                   # no roots, no files
 
 
+def test_protected_files_can_be_read_not_changed(project, tmp_path):
+    """The tests judge the code: an agent asked to fix one changed what it expected instead."""
+    (tmp_path / "src" / "tests").mkdir()
+    (tmp_path / "src" / "tests" / "test_tracks.py").write_text("assert True\n")
+    tools = CodeTools(["src"], exclude=["**/build/**"], protected=["src/tests/**"])
+    assert "assert True" in tools.read_file("src/tests/test_tracks.py")["source"]
+    for res in (tools.edit_file("src/tests/test_tracks.py", "True", "False"),
+                tools.write_file("src/tests/test_tracks.py", "x"), tools.write_file("src/tests/test_new.py", "x")):
+        assert "is protected" in res["error"] and "change the code it checks" in res["error"]
+    assert (tmp_path / "src" / "tests" / "test_tracks.py").read_text() == "assert True\n"
+    assert not (tmp_path / "src" / "tests" / "test_new.py").exists()
+    tools.read_file("src/tracks.adb")                                       # the rest, as always
+    assert tools.edit_file("src/tracks.adb", '"update"', '"updated"')["replacements"] == 1
+
+
 def test_registered_as_tool_plugins(project, toml, tmp_path):
     from atlas.config import load_config
     plugins.load_plugins()

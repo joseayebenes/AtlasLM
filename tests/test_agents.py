@@ -103,7 +103,8 @@ class StubClient:
         else:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
         return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
-                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110))
+                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110,
+                                                     cost=0.0001))
 
 
 @pytest.fixture
@@ -131,7 +132,8 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
-                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}]}
+                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}],
+                   "tokens": {"prompt": 200, "completion": 20}, "cost": 0.0002}    # what each turn used
 
     first, second = client.requests
     assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file
@@ -208,6 +210,33 @@ def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, m
     client = StubClient([None, None, None])                    # at most twice: then the empty answer
     assert run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)["answer"] == ""
     assert len(client.requests) == 3
+
+
+def test_a_turn_that_hangs_is_asked_again(workspace, monkeypatch, caplog):
+    """The timeout of the HTTP client is between two reads: a server that keeps the connection
+    alive never reaches it. A turn has [llm.network] timeout seconds in all."""
+    import time
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"network": {"timeout": 0.5}})
+
+    class Hangs(StubClient):
+        def create(self, **kwargs):
+            if len(self.requests) < self.hangs:
+                self.requests.append(kwargs)
+                time.sleep(5)                            # a request that does not end
+            return super().create(**kwargs)
+
+    client = Hangs(["SRS-0004 is implemented by tracks.delete_track."])
+    client.hangs = 1
+    t0 = time.time()
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented") and time.time() - t0 < 3
+    assert len(client.requests) == 2 and "did not answer in 0.5 s" in caplog.text
+    client = Hangs([])
+    client.hangs = 3                                     # every time: an error, and the agent ends
+    with pytest.raises(TimeoutError, match="did not answer in 0.5 s, 3 times"):
+        run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
 
 
 def test_genai_schemas_become_json_schemas():

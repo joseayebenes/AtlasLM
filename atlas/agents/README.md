@@ -16,6 +16,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
 | `tools.py` | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
+| `develop.py` | `atlas develop`: un agente escribe el código encargo a encargo y los tests lo juzgan; lo que rompe algo se deshace |
 
 ## Agentes en ficheros Markdown
 
@@ -54,6 +55,9 @@ el mismo fichero tras un error de compilación que no entendía, hasta agotar `m
 `max_tokens` pensando y no contestar nada; ADK tomaría esa vuelta vacía como la respuesta
 final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces.
 
+`run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
+servidor lo dice (OpenRouter, `usage.cost`), su coste.
+
 ```bash
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml
 ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso, en el navegador
@@ -76,6 +80,77 @@ solo juzga o redacta. Los informes van a `<workspace>/reports/` y guardan, tras 
 del modelo, los datos de los que sale. La verificación guarda sus juicios en caché:
 verificar otra vez solo pregunta por lo que ha cambiado, y verifica varios requisitos a la
 vez (`[pipeline] workers`).
+
+## Desarrollo guiado por los tests
+
+`atlas develop PLAN` encarga el código a un agente, tarea a tarea, y deja que los tests digan
+qué ha salido bien. El plan es un TOML:
+
+```toml
+agent = "implementer"                    # el agente de los encargos
+fix_agent = "fixer"                      # el que arregla un test que falla (por defecto, agent)
+check = ["src/*.ad?"]                    # check_code sobre estos ficheros tras cada encargo
+tests = ["tests/python/test_stp_*.py"]   # los tests de aceptación, con run_test, en este orden
+progress = 'Step\s+(\d+)'                # opcional: hasta dónde llegó un test que falla
+build_fixes = 2                          # vueltas para arreglar lo que dice check, tras un encargo
+advance_fixes = 2                        # vueltas para que avancen los tests de advances
+fix_rounds = 12                          # rondas para arreglar tests, tras los encargos
+stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
+
+[[tasks]]
+id = "ping-bye"
+text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PONG ..."
+advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
+```
+
+Sale de lo que fue mal cuando `gemma-4-26b` y `devstral` escribieron un servidor sin ayuda
+(experimento de 2026-10-13, en `atlas-socket-demo`): código que compilaba y no funcionaba,
+tests cambiados para que pasaran, el mismo fallo intentado seis veces del mismo modo y
+cambios que rompían lo que ya iba.
+
+1. Cada encargo va al agente; después, `check_code` sobre los ficheros de `check` y los tests.
+   Si `check_code` da errores, vuelven al agente, como mucho `build_fixes` veces.
+2. Un encargo que deja errores, o que hace que un test falle antes que antes (uno que pasaba
+   falla; con `progress`, se para en un paso anterior), **se deshace**: los ficheros vuelven a
+   como estaban. Se intenta otra vez diciéndole lo que rompió; si lo vuelve a romper, se queda
+   deshecho. El código no empeora nunca.
+   Un encargo puede decir qué tests hace avanzar (`advances`: rutas, nombres o patrones de
+   tests del plan). Si alguno sigue fallando donde fallaba, el encargo **vuelve al agente** con
+   lo que escribió el test y el código que cita, como mucho `advance_fixes` veces, igual que
+   los errores de compilación; una de esas vueltas que rompe algo se deshace ella sola. Si aun
+   así no avanzan, el encargo se conserva (compila y no rompe nada) y el informe lo dice
+   (`not_advanced`, «Did not advance»). Sin esto, el encargo de `HELLO` dejó con gemma una
+   excepción que ningún test podía pasar, y nada lo dijo hasta ocho encargos después.
+3. Después, las **rondas**: el agente recibe un test que falla, lo que escribió y el código que
+   cita, y los intentos anteriores sobre él. Una ronda que rompe algo se deshace. Un test que
+   no avanza en `stuck_rounds` rondas se deja **para una persona**: el agente no insiste en lo
+   que no sabe arreglar. Mientras un test avanza, sigue con él; si no, pasa al siguiente.
+4. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+   cada encargo y cada ronda, su tiempo, tokens y coste, los tests que pasan y los que necesitan
+   a una persona, con su salida.
+
+Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
+excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
+(`[sources.code] protected`), para que el agente no pueda cambiarlos.
+
+Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
+`atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
+protegidos, `run_program`, `code_at` y el registro del servidor con la traza de cada excepción:
+- **Desde `src` vacío**, los 18 encargos pequeños y 2 rondas del `fixer` dieron un servidor que
+  pasa los 5 procedimientos de prueba (los 10 tests, Ada y Python), sin tocar nadie el código:
+  23 ejecuciones del agente, 463 llamadas, 5 h y media de agente y 0,61 $. Ningún encargo se
+  deshizo; 3 necesitaron arreglos de compilación y 4 agotaron `max_steps`. En el experimento
+  anterior, sin estas piezas, ninguna configuración llegó a un servidor que funcionara.
+- **Sobre el código de `devstral`** que se caía en `controller.adb:103` (seis rondas de devstral
+  sin arreglarlo), el `fixer` lo dejó en 5 de 5 en 2 rondas (51 min, 0,065 $): fue a la línea
+  que citaba la traza y probó con `run_program`.
+- **Lo que no recoge la regla de deshacer:** el encargo de `HELLO` dejó un `CONSTRAINT_ERROR`
+  que un `when others => null` se tragaba (el cliente no recibía respuesta). Se conservó porque
+  los tests ya fallaban en ese paso; los ocho encargos siguientes no pudieron hacer avanzar
+  ningún test. Lo arregló la segunda ronda, cuando el registro del servidor ya escribía también
+  las excepciones tratadas.
+- **Las vueltas de gemma son lentas**: de 20 s a 10 min. Tres no contestaron en 600 s y se
+  preguntaron otra vez (ver `[llm.network] timeout`).
 
 ## Cumplimiento del código
 
@@ -263,6 +338,8 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 
 ## Pruebas
 
+`tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
+que se deshacen, arreglos de compilación, rondas y lo que se deja a una persona).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
 agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.

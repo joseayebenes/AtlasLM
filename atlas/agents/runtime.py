@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -26,7 +27,7 @@ from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
 __all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
-           "run_agent"]
+           "recorded", "run_agent"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
 
@@ -86,8 +87,24 @@ def loop_guard(functions: list) -> list:
     return [wrap(f) for f in functions]
 
 
-def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None):
-    """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests."""
+def recorded(functions: list, record: list) -> list:
+    """The tools, wrapped so that each call goes to `record` with its arguments, its result
+    and its seconds, to study afterwards what an agent did."""
+    def wrap(f):
+        @functools.wraps(f)
+        def logged(*args, **kwargs):
+            t0 = time.time()
+            result = f(*args, **kwargs)
+            record.append({"name": f.__name__, "args": kwargs, "result": result,
+                           "seconds": round(time.time() - t0, 2)})
+            return result
+        return logged
+    return [wrap(f) for f in functions]
+
+
+def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None):
+    """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests;
+    `record`, a list, gets every tool call with its result (see recorded)."""
     try:
         from google.adk.agents import LlmAgent
     except ImportError as e:
@@ -95,13 +112,15 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None)
     from atlas.agents.model import AtlasLlm
     d = definition(name, cfg)
     text = d.instruction
+    tools = agent_tools(d, context or context_for(cfg))
     return LlmAgent(name=d.name, description=d.description, model=AtlasLlm.from_service(agent_service(d, cfg), client),
-                    tools=loop_guard(agent_tools(d, context or context_for(cfg))),
+                    tools=loop_guard(recorded(tools, record) if record is not None else tools),
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it
 
 
 async def ask(agent, question: str, max_steps: int = 8) -> dict:
-    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped"}.
+    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped",
+    "tokens": {"prompt", "completion"}, and "cost" when the server says it (OpenRouter)}.
     `stopped` says that it reached max_steps calls to the model before answering."""
     from google.adk.agents.invocation_context import LlmCallsLimitExceededError
     from google.adk.agents.run_config import RunConfig
@@ -111,9 +130,15 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
     session = await runner.session_service.create_session(app_name="atlas", user_id="atlas")
     message = types.Content(role="user", parts=[types.Part(text=question)])
     calls, answer, stopped = [], "", False
+    tokens, cost = {"prompt": 0, "completion": 0}, None
     try:
         async for event in runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
                                             run_config=RunConfig(max_llm_calls=max_steps)):
+            if event.usage_metadata:
+                tokens["prompt"] += event.usage_metadata.prompt_token_count or 0
+                tokens["completion"] += event.usage_metadata.candidates_token_count or 0
+            if (event.custom_metadata or {}).get("cost") is not None:
+                cost = (cost or 0.0) + float(event.custom_metadata["cost"])
             for part in (event.content.parts if event.content else None) or []:
                 if part.function_call:
                     calls.append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
@@ -121,10 +146,13 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
                     answer += part.text
     except LlmCallsLimitExceededError:        # max_steps reached
         stopped = True
-    return {"answer": answer.strip(), "calls": calls, "stopped": stopped}
+    return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
+            **({"cost": round(cost, 6)} if cost is not None else {})}
 
 
-def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None) -> dict:
-    """Builds the agent `name` and asks it `question` (see ask)."""
-    agent = build_agent(name, cfg, context, client)
+def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None,
+              record: list | None = None) -> dict:
+    """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
+    with their results."""
+    agent = build_agent(name, cfg, context, client, record)
     return asyncio.run(ask(agent, question, definition(name, cfg).max_steps))

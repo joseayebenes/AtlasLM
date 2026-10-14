@@ -133,12 +133,61 @@ py = ["with_server", "PYTHON", "{file}"]
     assert "built" in make().run_test(str(test))
 
 
+def test_check_commands_by_extension(project):
+    """GNAT checks a spec alone with -gnatc, and a body generating code (more errors)."""
+    ada, make = project
+    cc = ada.parent / "bin1" / "fakecc.py"
+    tools = make(extra=f'[sources.code.check_commands]\nads = ["{sys.executable}", "{cc}", "-gnatc", "{{file}}"]\n')
+    assert tools.check_code(str(ada / "src" / "tracks.ads"))["ok"]
+    assert "-gnatc" in (tools.build_dir / "args.txt").read_text().splitlines()
+    assert tools.check_code(str(ada / "src" / "tracks.adb"))["ok"]
+    assert "-gnatc" not in (tools.build_dir / "args.txt").read_text().splitlines()
+
+
+PROGRAM = '''import sys
+for line in sys.stdin:
+    print("< " + line.strip().upper())
+if "crash" in sys.argv[1:]:
+    print("connected to 127.0.0.1:5555")
+    print("raised CONSTRAINT_ERROR : tracks.adb:6 length check failed", file=sys.stderr)
+    print('  File "TEST", line 3, in test_tracks', file=sys.stderr)
+    print("tracks.adb:6 again, and logger.adb:999 (no such line)", file=sys.stderr)
+    sys.exit(1)
+'''
+
+
+def test_run_program_and_the_code_its_output_cites(project, tmp_path):
+    ada, make = project
+    program = tmp_path / "program.py"
+    program.write_text(PROGRAM.replace("TEST", str(ada / "tests" / "test_tracks.adb")))
+    tools = make(extra=f'program_command = ["{sys.executable}", "{program}"]\nprotected = ["**/tests/**"]\n')
+    res = tools.run_program(["ping", "hello tester"])
+    assert res == {"exit_code": 0, "output": "< PING\n< HELLO TESTER\n"}
+    crash = make(extra=f'program_command = ["{sys.executable}", "{program}", "crash"]\nprotected = ["**/tests/**"]\n')
+    res = crash.run_program([])
+    assert res["exit_code"] == 1 and "length check failed" in res["output"]
+    # the line of tracks.adb, once; not the protected test, nor "127.0.0.1:5555", nor a line past the end
+    [at] = res["code_at"]
+    assert at["file"].endswith("src/tracks.adb") and at["line"] == 6
+    lines = at["source"].splitlines()
+    assert len(lines) == 7 and lines[3].startswith(">   6 | ") and lines[0].startswith("    3 | ")
+    # run_test shows it too
+    test = ada / "tests" / "test_crash.py"
+    test.write_text("import sys\nprint('Step 4: received nothing; server: raised at tracks.adb:2')\nsys.exit(1)\n")
+    tools = make(extra=f'protected = ["**/tests/**"]\n[sources.code.test_commands]\npy = ["{sys.executable}", "{{file}}"]\n')
+    res = tools.run_test(str(test))
+    assert res["passed"] is False and res["code_at"][0]["line"] == 2
+    assert "error" in make().run_program(["x"])                                 # nothing configured
+    assert "list of strings" in crash.run_program("ping")["error"]
+
+
 def test_offered_by_the_mcp_server(project, toml):
     from atlas.mcp import default_tools
     ada, make = project
     tools = make()
     cfg = load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\ncheck_command = ["cc", "{{file}}"]\n'))
     assert "check_code" in default_tools(cfg) and "run_test" not in default_tools(cfg)     # run_test runs code
+    assert "run_program" not in default_tools(cfg)
     assert "check_code" not in default_tools(load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\n')))
 
 

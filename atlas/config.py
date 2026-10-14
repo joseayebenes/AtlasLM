@@ -65,6 +65,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
+    "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
 }
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
@@ -77,7 +78,7 @@ AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": in
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
-               "test_commands": dict}
+               "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},
@@ -91,6 +92,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                         "code_doc"]},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
+    "tests": {"languages": {}, "steps": []},
 }
 
 
@@ -113,6 +115,32 @@ def _validate(data: dict, schema: dict, where: str) -> None:
                 raise ConfigError(f"[{where}] '{k}' must be an integer")
         elif not isinstance(v, kind):
             raise ConfigError(f"[{where}] '{k}' must be of type {kind.__name__}")
+
+
+def _validate_tests(tests: dict) -> None:
+    """[tests]: each language with its path and template; each step with its match, a valid
+    regular expression, and the code of some of those languages."""
+    languages = tests.get("languages", {})
+    for name, spec in languages.items():
+        if not isinstance(spec, dict):
+            raise ConfigError(f"[tests.languages.{name}] must be a table with path and template")
+        _validate(spec, {"path": str, "template": str}, f"tests.languages.{name}")
+        if "path" not in spec or "template" not in spec:
+            raise ConfigError(f"[tests.languages.{name}] needs path and template")
+    for i, step in enumerate(tests.get("steps", [])):
+        where = f"tests.steps[{i}]"
+        if not isinstance(step, dict) or not isinstance(step.get("match"), str):
+            raise ConfigError(f"[{where}] needs match, a regular expression")
+        try:
+            re.compile(step["match"])
+        except re.error as e:
+            raise ConfigError(f"[{where}] match is not a valid regular expression: {e}") from None
+        unknown = sorted(k for k in step if k != "match" and k not in languages)
+        if unknown:
+            raise ConfigError(f"[{where}] {unknown} are not languages of [tests.languages] "
+                              f"({', '.join(languages) or 'none'})")
+        if not all(isinstance(v, str) for v in step.values()):
+            raise ConfigError(f"[{where}] the code of each language must be a string")
 
 
 @dataclass
@@ -219,6 +247,7 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
+    _validate_tests(data.get("tests", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

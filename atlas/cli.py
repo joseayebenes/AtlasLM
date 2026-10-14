@@ -11,6 +11,8 @@
                                            by obligation, with the model; * = all
     atlas link     ID|MODULE [atlas.toml]  code that may implement the requirements without code, with the
                                            model; a report of proposals, the code is not changed; * = all
+    atlas tests    ID|MODULE [atlas.toml]  the test procedures as tests in each language, step by step, by
+                                           the patterns of [tests], without the model; * = all
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
@@ -18,6 +20,8 @@
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
+                                       is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
@@ -798,6 +802,25 @@ def link(cfg: Config, target: str) -> int:
     return 0
 
 
+def tests(cfg: Config, target: str) -> int:
+    """The tests of the test procedures of a module (or of one), from their steps."""
+    from atlas.code.procedures import generate_tests
+    from atlas.graph import KnowledgeGraph
+    ctx = _context(cfg)
+    res = generate_tests(KnowledgeGraph.open(ctx.store.path), "" if target == "*" else target, cfg["tests"])
+    if "error" in res:
+        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
+        return 1
+    for p in res["procedures"]:
+        files = ", ".join(f"{f['path']} ({f['status']})" for f in p["files"])
+        print(f"{p['id']}: {files}" if files else f"{p['id']}: not written")
+        for e in p["errors"]:
+            print(f"    {e}")
+    print(f"{res['written']} written, {res['unchanged']} unchanged"
+          + (f"; {res['errors']} procedures with steps that no pattern of [tests] steps matches" if res["errors"] else ""))
+    return 1 if res["errors"] else 0
+
+
 def impact(cfg: Config, name: str) -> int:
     from atlas.agents.reports import impact_report
     _context(cfg)
@@ -875,6 +898,32 @@ def agent(cfg: Config, name: str, question: str) -> int:
     for c in res["calls"]:
         print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
     return 1 if res["stopped"] else 0
+
+
+def develop(cfg: Config, plan: str) -> int:
+    """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py)."""
+    from atlas.agents.develop import develop as run_plan
+
+    def show(s: dict) -> None:
+        cost = f" ${s['cost']:.4f}" if "cost" in s else ""
+        print(f"{s['n']:3d} {s['kind']:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, {s['calls']} calls"
+              f"{' (max_steps)' if s.get('stopped') else ''}{cost}; tests passing: {s.get('tests_passed', '?')}"
+              + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
+              + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
+              + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
+
+    _context(cfg)
+    try:
+        report = run_plan(plan, cfg, on_step=show)
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    final, totals = report["final"], report["totals"]
+    print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
+          f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
+    for test, why in (report.get("for_a_person") or {}).items():
+        print(f"for a person: {test} ({why['reason']})")
+    print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
+    return 0 if final["tests_passed"] == final["tests"] else 1
 
 
 def evaluate(cfg: Config) -> int:
@@ -963,7 +1012,7 @@ def main(argv: list[str] | None = None) -> None:
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "impact": impact, "coverage": coverage}
+                 "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

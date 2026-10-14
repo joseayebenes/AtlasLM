@@ -9,7 +9,8 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
-| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file` |
+| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
+| `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
 | `build.py` | `BuildTools`: `check_code`, `run_test` y `run_program`, el compilador, las pruebas y el programa del proyecto |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
@@ -51,6 +52,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 | `read_file` | un fragmento numerado |
 | `edit_file` | sustituye un texto y devuelve el diff |
 | `write_file` | crea un fichero o lo reescribe entero |
+| `replace_subprogram` | sustituye un subprograma entero, buscado por su nombre (Ada y Python) |
+| `add_subprogram` | añade subprogramas tras otro o al final de las declaraciones del paquete |
 
 Protecciones:
 - No tocan nada fuera de las raíces ni de lo excluido con `exclude`; tampoco con `..` ni
@@ -91,6 +94,29 @@ pequeñas o reescribir el fichero con `write_file`. Con `gemma-4-26b` y un fiche
 líneas, los textos largos no eran copias del fichero sino reconstrucciones de memoria (uno de
 142 líneas tenía las funciones en otro sitio): dos tareas acabaron así en bucles de leer y
 editar de 27 y 45 minutos. Con el límite, la siguiente salió en 7 llamadas.
+
+### Subprogramas enteros
+
+`replace_subprogram(path, name, new_text, line=0)` sustituye un subprograma entero: el agente
+da el subprograma nuevo completo, de `procedure Nombre` o `function Nombre` a su `end Nombre;`
+(en Python, de `def` al final del cuerpo), y no tiene que copiar nada del fichero.
+`add_subprogram(path, new_text, after="")` añade subprogramas detrás de otro o, sin `after`, al
+final de las declaraciones del paquete: antes de `private` en una especificación, antes del
+`begin` o del `end` de un cuerpo; en Python, al final del fichero. Las dos:
+- encuentran los subprogramas con tree-sitter (Ada) o `ast` (Python), en `symbols.py`;
+- distinguen el cuerpo de la declaración (en Ada un nombre puede tener los dos en el mismo
+  fichero) y cambian el que corresponde al texto nuevo;
+- aceptan un nombre cualificado (`Controller.Execute`, `Calc.mul`), y `line` elige entre varios
+  con el mismo nombre (sobrecargas);
+- sangran el texto nuevo como el sitio donde va, y si empieza por comentarios, sustituyen
+  también los de encima del subprograma (las etiquetas `Req:`);
+- piden la misma lectura previa que `edit_file` y conservan codificación y finales de línea.
+
+Salen de la tanda 4 de `atlas develop` con `gemma-4-26b`: 80 de sus 151 `edit_file` fallaron,
+39 por un texto buscado de más de 30 líneas (quería sustituir bloques enteros) y 34 por no
+copiarlo exacto. Unos 43 de los 293 minutos se fueron en esas vueltas, y dos encargos acabaron
+en bucles de leer y editar mal. Con un subprograma por orden, como hace el plan del servidor,
+cada encargo cambia o añade un subprograma pequeño.
 
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente

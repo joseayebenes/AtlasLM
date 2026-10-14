@@ -13,6 +13,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `top_p` y `top_k` por agente, en su fichero o en `[agents.<nombre>]`. La ficha de gemma 4
   recomienda temperatura 1,0, `top_p` 0,95 y `top_k` 64, y no todos los proveedores usan esos
   valores por defecto (EmpirioLabs documenta `top_k` 20). `top_k` va en `extra_body`.
+- `replace_subprogram` y `add_subprogram`: cambiar o añadir un subprograma entero, por su
+  nombre, sin copiar nada del fichero (Ada con tree-sitter y Python). En la tanda 4 de
+  `atlas develop`, 80 de las 151 ediciones de `gemma-4-26b` fallaron: 39 querían sustituir más
+  de 30 líneas y 34 no copiaron bien el texto. `atlas serve` solo las ofrece si se piden.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

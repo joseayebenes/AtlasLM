@@ -106,6 +106,7 @@ atlas develop tasks/server.toml atlas.toml   # un agente escribe el código enca
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
+atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
 atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
 atlas --version
 ```

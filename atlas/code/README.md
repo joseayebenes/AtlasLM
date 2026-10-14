@@ -13,6 +13,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
 | `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
+| `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
 | `hints.toml` | las pistas de serie para los mensajes de GNAT |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
@@ -155,6 +156,30 @@ Un error que nombra algo que no existe trae lo que sí existe:
 En la tanda 4, unos 25 de los cerca de 100 errores de compilación eran nombres inventados o sin su
 `with`. Las instrucciones del `implementer` llevaban un resumen a mano de `GNAT.Sockets`
 porque el modelo se inventaba su API; con `library_spec`, cualquier paquete.
+
+### Los manuales
+
+`search_reference(query, k=5)` busca por palabras en los manuales de `[sources.code]
+reference` y en las declaraciones de la biblioteca (`library`, con su comentario), y da cada
+pasaje con su origen: el manual y su sección, o `Unidad.Nombre`. Sirve para saber qué paquete
+tiene algo o qué hace un pragma, un atributo o una opción del compilador:
+
+| Búsqueda | Primer resultado |
+|---|---|
+| `split a string by a separator` | `GNAT.Array_Split.Create` (el genérico de `GNAT.String_Split`) |
+| `Unbounded_String slice` | `Ada.Strings.Unbounded.Unbounded_Slice` |
+| `pragma Assertion_Policy` | `gnat_rm.info: Pragma Assertion_Policy` |
+| `-gnatwE warnings as errors` | `gnat_ugn.info: Warning Message Control` |
+| `convert integer to string without leading space` | `Ada.Strings.Fixed.Trim` |
+
+GNAT trae sus manuales en formato info (`share/info/gnat_rm.info` y `gnat_ugn.info` en la
+instalación de Alire); también se leen Markdown, texto y HTML. Van en su propio índice,
+`<workspace>/reference.db`, y no en `atlas.db`: `search` sigue buscando solo en los documentos
+del proyecto. Se construye en la primera búsqueda (0,4 s con los dos manuales de GNAT y su
+runtime: 2458 pasajes y 13 452 declaraciones) o con `atlas reference`, y se rehace lo que
+cambia. Es búsqueda léxica (BM25), sin modelo. Las unidades internas de GNAT (`System.*`) no
+entran. El manual de referencia del lenguaje (el ARM) no viene con GNAT: se puede descargar en
+HTML y añadir su carpeta.
 
 ### Subprogramas enteros
 

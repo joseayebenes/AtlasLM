@@ -10,6 +10,8 @@
                  what it wrote: to try what the code does before and after a change
     library_spec the public declarations of a library unit: of the runtime of the compiler
                  ([sources.code] library: GNAT's adainclude) or of the project (library.py)
+    search_reference  the manuals of the language and of the compiler ([sources.code]
+                 reference) and the declarations of the library, by words (reference.py)
 
 When an output cites places of the code ("controller.adb:103", the place of an exception, or
 'File "x.py", line 12'), the lines around them come with it, in `code_at`: a small model that
@@ -77,6 +79,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from atlas.code.library import Library, with_clauses
+from atlas.code.reference import Reference
 from atlas.code.tools import CodeTools
 from atlas.config import ConfigError
 from atlas.plugins import register_methods
@@ -90,7 +93,7 @@ __all__ = ["BuildTools", "BUILD_TOOL_NAMES", "HINTS", "hint_for", "load_hints", 
 
 HINTS = Path(__file__).parent / "hints.toml"
 
-BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program", "library_spec")
+BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program", "library_spec", "search_reference")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
 MAX_EDIT_ERRORS = 5        # errors of check_code in the answer of a change
 MAX_OUTPUT_CHARS = 3000
@@ -200,10 +203,12 @@ class BuildTools:
                  run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
-                 hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = ()):
+                 hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
+                 reference: Iterable[str] = ()):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
         self.library = Library(library, files.roots)
+        self.reference = Reference(Path(build_dir).parent / "reference.db", reference, self.library)
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
@@ -223,7 +228,8 @@ class BuildTools:
                    sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
-                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []))
+                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []),
+                   sc.get("reference", []))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -365,6 +371,19 @@ class BuildTools:
             return self.library.spec(unit, name, shown=self._shown)
         except ImportError as e:
             return {"error": f"library_spec needs tree-sitter-ada: {e}"}
+
+    def search_reference(self, query: str, k: int = 5) -> dict:
+        """Searches by words the manuals of the language and of the compiler (the reference
+        manual and the user's guide of GNAT) and the declarations of the library: which
+        package has a subprogram for something ("split a string by a separator"), what a
+        pragma, an attribute or a switch of the compiler does. Returns `k` passages, each with
+        where it comes from (a manual and its section, or Unit.Name), the best first."""
+        if not (self.reference.patterns or self.library.folders):
+            return {"error": "no manuals and no library to search: [sources.code] reference and library"}
+        try:
+            return {"passages": self.reference.search(query, k)}
+        except ImportError as e:
+            return {"error": f"search_reference needs tree-sitter-ada for the library: {e}"}
 
     def _shown(self, p: Path) -> str:
         """A spec as an answer shows it: from the working folder if it is in the project, else

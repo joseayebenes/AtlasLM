@@ -464,3 +464,62 @@ def test_library_spec_reads_the_runtime_of_gnat(project):
     split = tools.library_spec("GNAT.String_Split")                       # an instance: its generic's declarations
     assert split["instance_of"] == "GNAT.Array_Split" and any(d["name"] == "Create" for d in split["declarations"])
     assert "Length (Source : Unbounded_String) return Natural" in str(tools.library_spec("Ada.Strings.Unbounded", "Length"))
+
+
+INFO = """This is gnat_rm.info, produced by makeinfo.
+
+\x1f
+File: gnat_rm.info,  Node: Pragma Assertion_Policy,  Next: Pragma Assume,  Up: Implementation Defined Pragmas
+
+2.17 Pragma Assertion_Policy
+============================
+
+Syntax: pragma Assertion_Policy (CHECK | DISABLE | IGNORE);
+This pragma controls the assertions that are checked.
+
+* Pragma Assume::
+
+\x1f
+File: gnat_rm.info,  Node: Pragma Assume,  Next: Pragma Elaborate_All,  Up: Implementation Defined Pragmas
+
+2.18 Pragma Assume
+==================
+
+Syntax: pragma Assume (Boolean_EXPRESSION);
+\x1f
+Tag Table:
+Node: Top 100
+"""
+
+
+def test_search_reference_over_the_manuals_and_the_library(project, tmp_path, toml, capsys):
+    pytest.importorskip("tree_sitter_ada")
+    from atlas.cli import main
+    ada, make = project
+    lib = tmp_path / "adainclude"
+    lib.mkdir()
+    (lib / "a-strfix.ads").write_text("package Ada.Strings.Fixed is\n   function Trim (Source : String) return String;\n"
+                                      "   --  Removes the leading and trailing blanks of Source.\nend Ada.Strings.Fixed;\n")
+    (lib / "s-imgint.ads").write_text("package System.Img_Int is\n   procedure Image_Integer (V : Integer);\n"
+                                      "   --  Removes nothing, internal.\nend System.Img_Int;\n")
+    docs = tmp_path / "manuals"
+    docs.mkdir()
+    (docs / "gnat_rm.info").write_text(INFO)
+    (docs / "style.md").write_text("# Naming\n\nPackages are nouns.\n\n# Blanks\n\nNo leading blanks in an image.\n")
+    tools = make(extra=f'library = ["{lib.as_posix()}"]\nreference = ["{docs.as_posix()}"]')
+    found = tools.search_reference("pragma Assume")["passages"]
+    assert found[0]["source"] == "gnat_rm.info: Pragma Assume" and "Boolean_EXPRESSION" in found[0]["text"]
+    blanks = [p["source"] for p in tools.search_reference("remove leading blanks")["passages"]]
+    assert "Ada.Strings.Fixed.Trim" in blanks and "style.md: Blanks" in blanks
+    assert not any(s.startswith("System.") for s in blanks)              # the internal units of GNAT are left out
+    # again when a manual changes; a manual taken out of the configuration goes
+    (docs / "style.md").write_text("# Blanks\n\nUse Ada.Strings.Fixed.Trim for an image without blanks.\n")
+    os.utime(docs / "style.md", (1, 1))
+    assert "Ada.Strings.Fixed.Trim for an image" in str(tools.search_reference("image without blanks"))
+    assert set(make(extra=f'library = ["{lib.as_posix()}"]').reference.ensure()) == {"library"}
+    assert "no manuals and no library" in make().search_reference("x")["error"]
+    # atlas reference builds it from the command line
+    cfg = toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\nreference = ["{docs.as_posix()}"]\n')
+    with pytest.raises(SystemExit) as end:
+        main(["reference", str(cfg)])
+    assert end.value.code == 0 and "gnat_rm.info" in capsys.readouterr().out

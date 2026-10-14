@@ -11,7 +11,9 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
 | `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
-| `build.py` | `BuildTools`: `check_code`, `run_test` y `run_program`, el compilador, las pruebas y el programa del proyecto |
+| `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
+| `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
+| `hints.toml` | las pistas de serie para los mensajes de GNAT |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
 ## Análisis
@@ -131,6 +133,28 @@ La regla del `String` ya estaba en las instrucciones del agente y el error sali�
 veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
 errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
 lista de lecciones que crece tras cada tanda.
+
+### La biblioteca de verdad
+
+`library_spec(unit, name="")` da las declaraciones públicas de una unidad: sus subprogramas con
+sus parámetros, sus tipos, constantes y excepciones, con su comentario. Lee las
+especificaciones de las raíces del código y las de las carpetas de `[sources.code] library`
+(el runtime de GNAT, su carpeta `adainclude`), con tree-sitter: son las de la versión del
+compilador que se usa. Encuentra una unidad por su nombre, no por el del fichero (GNAT los
+acorta: `a-comlin.ads`), y de una instancia genérica (`GNAT.String_Split is new
+GNAT.Array_Split`) da las de su genérico. Las 896 especificaciones del runtime se leen en unos
+0,2 s, una vez por proceso.
+
+Un error que nombra algo que no existe trae lo que sí existe:
+- `"Arguments" not declared in "Command_Line"` lleva en `declared_in` lo que declara
+  `Ada.Command_Line` parecido (`function Argument (Number : Positive) return String`) y todos
+  sus nombres; el paquete se elige por los `with` del fichero del error;
+- `"LF" is undefined` o `is not visible` lleva en `found_in` las unidades que declaran `LF`
+  (`Ada.Characters.Latin_1`).
+
+En la tanda 4, unos 25 de los cerca de 100 errores de compilación eran nombres inventados o sin su
+`with`. Las instrucciones del `implementer` llevaban un resumen a mano de `GNAT.Sockets`
+porque el modelo se inventaba su API; con `library_spec`, cualquier paquete.
 
 ### Subprogramas enteros
 

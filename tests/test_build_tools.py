@@ -403,3 +403,64 @@ def test_hints_come_with_the_errors_those_of_the_project_first(project, tmp_path
     mine.write_text('[[hint]]\nmatch = "x"\n')
     with pytest.raises(ConfigError, match="needs match and hint"):
         load_hints([mine])
+
+
+# --- the real declarations of the library ----------------------------------------------------
+
+COMLIN = """package Ada.Command_Line is
+   function Argument_Count return Natural;
+   --  The number of arguments.
+
+   function Argument (Number : Positive) return String;
+   --  The argument at the position Number.
+
+   type Exit_Status is new Integer;
+   Success : constant Exit_Status;
+private
+   Hidden : Integer;
+end Ada.Command_Line;
+"""
+LATIN = "package Ada.Characters.Latin_1 is\n   LF : constant Character := Character'Val (10);\nend Ada.Characters.Latin_1;\n"
+OTHER = "package GNAT.Command_Line is\n   procedure Getopt (Switches : String);\nend GNAT.Command_Line;\n"
+
+
+def test_library_spec_and_the_errors_that_name_what_does_not_exist(project, tmp_path):
+    pytest.importorskip("tree_sitter_ada")
+    ada, make = project
+    lib = tmp_path / "adainclude"
+    lib.mkdir()
+    (lib / "a-comlin.ads").write_text(COMLIN)          # GNAT shortens the file names: found by the unit
+    (lib / "a-chlat1.ads").write_text(LATIN)
+    (lib / "g-comlin.ads").write_text(OTHER)
+    tools = make(extra=f'library = ["{tmp_path.as_posix()}/adain*"]')
+    spec = tools.library_spec("Ada.Command_Line")
+    assert spec["unit"] == "Ada.Command_Line" and spec["file"] == "a-comlin.ads"
+    assert [(d["kind"], d["name"]) for d in spec["declarations"]] == [
+        ("function", "Argument_Count"), ("function", "Argument"), ("type", "Exit_Status"), ("constant", "Success")]
+    assert spec["declarations"][1]["text"] == "function Argument (Number : Positive) return String"
+    assert spec["declarations"][1]["doc"] == "The argument at the position Number."          # the private part is not
+    assert [d["name"] for d in tools.library_spec("ada.command_line", name="count")["declarations"]] == ["Argument_Count"]
+    assert "similar: ada.command_line" in tools.library_spec("Ada.Comand_Line")["error"]
+    assert tools.library_spec("Tracks")["unit"] == "Tracks"                    # a spec of the project too
+    # an error that names what does not exist brings what does
+    errors = tools._hinted([{"message": '"Arguments" not declared in "Command_Line"'},
+                            {"message": '"LF" is undefined'}, {"message": '"Nothing" is undefined'}],
+                           text="with Ada.Command_Line;\nprocedure Main is begin null; end Main;\n")
+    assert errors[0]["declared_in"]["unit"] == "Ada.Command_Line"            # not GNAT.Command_Line: the with says so
+    assert errors[0]["declared_in"]["similar"][0] == "function Argument (Number : Positive) return String"
+    assert errors[0]["hint"].startswith("Command_Line has no Arguments")
+    assert errors[1]["found_in"] == ["Ada.Characters.Latin_1: LF : constant Character := Character'Val (10);"]
+    assert "found_in" not in errors[2]
+    with_gnat = tools._hinted([{"message": '"Getop" not declared in "Command_Line"'}], text="with GNAT.Command_Line;")
+    assert with_gnat[0]["declared_in"]["unit"] == "GNAT.Command_Line"
+
+
+@gnat
+def test_library_spec_reads_the_runtime_of_gnat(project):
+    ada, make = project
+    tools = make(extra='library = ["~/.local/share/alire/toolchains/gnat_native_*/lib/gcc/*/*/adainclude"]')
+    sockets = tools.library_spec("GNAT.Sockets", name="Receive_Socket")["declarations"]
+    assert sockets and all(d["name"] == "Receive_Socket" for d in sockets)
+    split = tools.library_spec("GNAT.String_Split")                       # an instance: its generic's declarations
+    assert split["instance_of"] == "GNAT.Array_Split" and any(d["name"] == "Create" for d in split["declarations"])
+    assert "Length (Source : Unbounded_String) return Natural" in str(tools.library_spec("Ada.Strings.Unbounded", "Length"))

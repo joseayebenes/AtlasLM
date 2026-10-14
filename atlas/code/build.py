@@ -8,6 +8,8 @@
                  that is not built (a Python script) is just run
     run_program  runs the program of the project with some lines as its input and returns
                  what it wrote: to try what the code does before and after a change
+    library_spec the public declarations of a library unit: of the runtime of the compiler
+                 ([sources.code] library: GNAT's adainclude) or of the project (library.py)
 
 When an output cites places of the code ("controller.adb:103", the place of an exception, or
 'File "x.py", line 12'), the lines around them come with it, in `code_at`: a small model that
@@ -59,7 +61,10 @@ Each error of the compiler gets a `hint` when one of the hints matches it: those
 of [sources.code] hints first, then those of hints.toml (GNAT). A rule in the instructions of
 the agent was not enough: the one on String bounds was there, and the error came 16 times in a
 run; the hint comes with the error, when it is needed. The report of atlas develop says which
-errors came without a hint, to add one after each run.
+errors came without a hint, to add one after each run. An error that names something that
+does not exist brings what does: '"Arguments" not declared in "Command_Line"' comes with what
+Ada.Command_Line declares like it (`declared_in`), and '"LF" is undefined' with the units that
+declare LF (`found_in`).
 """
 from __future__ import annotations
 
@@ -71,6 +76,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
+from atlas.code.library import Library, with_clauses
 from atlas.code.tools import CodeTools
 from atlas.config import ConfigError
 from atlas.plugins import register_methods
@@ -84,7 +90,7 @@ __all__ = ["BuildTools", "BUILD_TOOL_NAMES", "HINTS", "hint_for", "load_hints", 
 
 HINTS = Path(__file__).parent / "hints.toml"
 
-BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program")
+BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program", "library_spec")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
 MAX_EDIT_ERRORS = 5        # errors of check_code in the answer of a change
 MAX_OUTPUT_CHARS = 3000
@@ -92,6 +98,8 @@ MAX_INPUT_LINES = 100      # of run_program
 MAX_CITED, CITED_CONTEXT = 4, 3     # places of the code shown from an output, and lines around each one
 # "controller.adb:103" (GNAT, gcc and most tools) or 'File "/x/client.py", line 12' (Python)
 CITED = re.compile(r'File "(?P<py>[^"]+)", line (?P<py_line>\d+)|(?P<file>[\w./\\~-]+\.[A-Za-z]\w*):(?P<line>\d+)')
+NOT_DECLARED = re.compile(r'"(?P<name>[^"]+)" not declared in "(?P<package>[^"]+)"')
+UNKNOWN = re.compile(r'"(?P<name>[^"]+)" is (?:undefined|not visible)')
 # "tracks.adb:16:04: error: ..." (GNAT, gcc, clang); the kind is optional
 MESSAGE = re.compile(r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s*(?:(?P<kind>error|warning|info|"
                      r"style|note)\s*:\s*)?(?P<text>.+)$", re.M | re.I)
@@ -192,9 +200,10 @@ class BuildTools:
                  run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
-                 hints: list[tuple[re.Pattern, str]] | None = None):
+                 hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = ()):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
+        self.library = Library(library, files.roots)
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
@@ -214,7 +223,7 @@ class BuildTools:
                    sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
-                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]))
+                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -253,7 +262,8 @@ class BuildTools:
             errors = parse_messages(output)["errors"]
             if ran.returncode != 0 and not errors:
                 errors = [{"line": None, "message": _tail(output.strip())[-300:]}]
-            return self._hinted([{k: v for k, v in e.items() if k != "file" and v is not None} for e in errors])
+            return self._hinted([{k: v for k, v in e.items() if k != "file" and v is not None} for e in errors],
+                                text=text)
         if ext == "py":
             try:
                 ast.parse(text)
@@ -314,13 +324,53 @@ class BuildTools:
             return None, {"error": f"{path} does not exist"}
         return p, None
 
-    def _hinted(self, errors: list[dict]) -> list[dict]:
-        """The errors, each with the `hint` that matches it, if any."""
+    def _hinted(self, errors: list[dict], source: Path | None = None, text: str | None = None) -> list[dict]:
+        """The errors, each with the `hint` that matches it, if any, and what the library has
+        for one that names something that does not exist (`declared_in`, `found_in`). `source`
+        (or its `text`): the file of the errors, whose with clauses say which package a name
+        like "Command_Line" is."""
+        withs = None
         for e in errors:
-            hint = hint_for(self.hints, e.get("message", ""), e.get("details", []))
+            message = e.get("message", "")
+            hint = hint_for(self.hints, message, e.get("details", []))
             if hint:
                 e["hint"] = hint
+            m = NOT_DECLARED.search(message) or UNKNOWN.search(message)
+            if m is None:
+                continue
+            if withs is None:
+                if text is None and source is not None and source.is_file():
+                    text = source.read_text(encoding="utf-8", errors="replace")
+                withs = with_clauses(text or "")
+            try:
+                if m.re is NOT_DECLARED:
+                    found = self.library.close_to(m["package"], m["name"], withs)
+                    if found:
+                        e["declared_in"] = found
+                else:
+                    found = self.library.declaring(m["name"])
+                    if found:
+                        e["found_in"] = found
+            except (OSError, ImportError):             # no tree-sitter-ada, or a file that went away
+                pass
         return errors
+
+    def library_spec(self, unit: str, name: str = "") -> dict:
+        """The public declarations of a library unit: a package of the runtime of the
+        compiler (Ada.Command_Line, Ada.Strings.Unbounded, GNAT.Sockets...) or a spec of the
+        project: its subprograms with their parameters, its types, constants and exceptions,
+        with their comment. `name` keeps those whose name contains it. Look here before using
+        a subprogram you have not used in this project: do not guess names or parameters."""
+        try:
+            return self.library.spec(unit, name, shown=self._shown)
+        except ImportError as e:
+            return {"error": f"library_spec needs tree-sitter-ada: {e}"}
+
+    def _shown(self, p: Path) -> str:
+        """A spec as an answer shows it: from the working folder if it is in the project, else
+        its name (the runtime of the compiler cannot be read with read_file)."""
+        shown = self.files._show(p)
+        return shown if not Path(shown).is_absolute() else p.name
 
     def code_at(self, output: str) -> list[dict]:
         """The lines around the places of the code that `output` cites, in the files that an
@@ -373,7 +423,7 @@ class BuildTools:
             return res
         output = res.stdout + res.stderr
         found = parse_messages(output)
-        self._hinted(found["errors"])
+        self._hinted(found["errors"], p)
         ok = res.returncode == 0 and not found["errors"]
         return {"file": self.files._show(p), "ok": ok, **found,
                 **({"output": _tail(output)} if not ok and not found["errors"] else {})}
@@ -400,7 +450,7 @@ class BuildTools:
         if isinstance(res, dict):
             return res
         found = parse_messages(res.stdout + res.stderr)
-        self._hinted(found["errors"])
+        self._hinted(found["errors"], p)
         exe = self.build_dir / p.stem
         if res.returncode != 0 or found["errors"] or not exe.exists():
             return {"file": self.files._show(p), "built": False, **found,

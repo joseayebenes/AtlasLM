@@ -26,6 +26,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `gemma-4-26b`; las del proyecto van en `[sources.code] hints`. El informe de `atlas develop`
   lista los errores de la tanda y dice cuáles no tenían pista, y cuenta por ejecución las
   ediciones fallidas y las compilaciones con errores.
+- `library_spec` y `[sources.code] library`: las declaraciones públicas reales de un paquete del
+  runtime del compilador (la carpeta `adainclude` de GNAT) o del proyecto, leídas con
+  tree-sitter. Un error `"X" not declared in "P"` trae lo que declara `P` parecido a `X`, y uno
+  `"X" is undefined` las unidades que declaran `X`.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

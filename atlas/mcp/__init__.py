@@ -63,7 +63,8 @@ INSTRUCTIONS = {
     "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
             "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
     "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
-             "every change; `run_test` builds a test procedure and runs it.",
+             "every change; `run_test` builds a test procedure and runs it; `library_spec` gives the real "
+             "declarations of a package of the runtime or of the project.",
 }
 
 
@@ -126,7 +127,7 @@ def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test"),
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test", "library_spec"),
               "context": ("build_context",),
               "agents": ("ask_atlas", "verify_requirement", "link_requirement", "check_compliance")}
     try:

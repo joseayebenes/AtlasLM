@@ -95,6 +95,22 @@ líneas, los textos largos no eran copias del fichero sino reconstrucciones de m
 142 líneas tenía las funciones en otro sitio): dos tareas acabaron así en bucles de leer y
 editar de 27 y 45 minutos. Con el límite, la siguiente salió en 7 llamadas.
 
+### La sintaxis antes de escribir y el compilador después
+
+En el contexto de un agente, las herramientas que escriben reciben de `BuildTools` dos
+comprobaciones:
+- **Sintaxis.** Un cambio que deja mal la sintaxis de un fichero que estaba bien no se hace:
+  el agente recibe los errores y las líneas de alrededor, como habría quedado el fichero. La
+  comprueba `[sources.code] syntax_commands` por extensión, sobre una copia en
+  `<workspace>/build/syntax` (GNAT: `gcc -c -gnats`, solo sintaxis); Python, con `ast`, sin
+  comando. Un fichero nuevo se escribe aunque esté mal. Es lo que hace SWE-agent con su
+  linter. En la tanda 4, un `begin` sin cerrar que dejó una edición siguió en 5 compilaciones
+  de una ejecución de 37 minutos, hasta que se deshizo el encargo.
+- **Compilación.** Con `check_on_edit` (por defecto), cada cambio devuelve en `check` lo que
+  dice `check_code` del fichero: `ok` y los cinco primeros errores. El agente se ahorra la
+  vuelta de `check_code` (el 17 % de sus llamadas en la tanda 4) y no puede decir que compila
+  sin haberlo visto (`gemma-4-26b` lo dijo dos veces sin ser así).
+
 ### Subprogramas enteros
 
 `replace_subprogram(path, name, new_text, line=0)` sustituye un subprograma entero: el agente

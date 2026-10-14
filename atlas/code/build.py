@@ -45,9 +45,19 @@ server and prints the answer).
 to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
 used without touching the shell. A project with a GPR file would use gprbuild instead. The commands
 have the trust of atlas.toml itself; run_test runs code, so it is only offered when asked for.
+
+The file tools of the same context get two hooks from here (CodeTools.for_context):
+- a change that breaks the syntax of a file that had none is not made. `syntax_commands`
+  checks the syntax by extension, on a copy of the new text in <workspace>/build/syntax
+  (GNAT: { adb = ["gcc", "-c", "-gnats", "{file}"] }); Python needs no command (ast). A
+  `begin` left without its `end` by an edit of gemma-4-26b went through 5 compilations of a
+  37-minute run before it was undone;
+- with `check_on_edit` (true by default), every change returns what check_code says of the
+  file, in `check`: one turn less, and an agent cannot say it compiles without seeing it.
 """
 from __future__ import annotations
 
+import ast
 import glob
 import os
 import re
@@ -62,6 +72,7 @@ __all__ = ["BuildTools", "BUILD_TOOL_NAMES", "parse_messages"]
 
 BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
+MAX_EDIT_ERRORS = 5        # errors of check_code in the answer of a change
 MAX_OUTPUT_CHARS = 3000
 MAX_INPUT_LINES = 100      # of run_program
 MAX_CITED, CITED_CONTEXT = 4, 3     # places of the code shown from an output, and lines around each one
@@ -124,13 +135,16 @@ class BuildTools:
     def __init__(self, files: CodeTools, build_dir: str | Path, check_command: Iterable[str] = (),
                  test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120,
                  run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
-                 check_commands: dict | None = None, program_command: Iterable[str] = ()):
+                 check_commands: dict | None = None, program_command: Iterable[str] = (),
+                 syntax_commands: dict | None = None, check_on_edit: bool = True):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
         by_extension = lambda d: {k.lower().lstrip("."): list(v) for k, v in (d or {}).items()}
         self.test_commands, self.check_commands = by_extension(test_commands), by_extension(check_commands)
+        self.syntax_commands = by_extension(syntax_commands)
+        self.check_on_edit = check_on_edit
         self.program_command = list(program_command)
         self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
                           for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
@@ -142,15 +156,66 @@ class BuildTools:
         return cls(files or CodeTools.from_config(cfg), cfg.workspace / "build", sc.get("check_command", []),
                    sc.get("test_command", []), sc.get("tool_path", []), int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
-                   sc.get("program_command", []))
+                   sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
+        """One instance per context, over its CodeTools, to which it gives the syntax check
+        and check_code after each change (see the module)."""
         tools = getattr(context, "_build_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg, CodeTools.for_context(context))
             setattr(context, "_build_tools", tools)
+            tools.hook()
         return tools
+
+    def hook(self) -> None:
+        """Gives the file tools the syntax check and, with check_on_edit, check_code after
+        each change."""
+        self.files.syntax = self.syntax_errors
+        self.files.after_change = self.after_change if self.check_on_edit else None
+
+    def syntax_errors(self, p: Path, text: str) -> list[dict] | None:
+        """The syntax errors of `text` as the content of the file `p`: with the command of its
+        extension in syntax_commands, run on a copy, or with ast for Python. None when nothing
+        checks the syntax of that extension (or its command is missing); an empty command
+        turns the check of its extension off, Python's too."""
+        ext = p.suffix.lower().lstrip(".")
+        command = self.syntax_commands.get(ext)
+        if ext in self.syntax_commands and not command:
+            return None
+        if command:
+            copy = self.build_dir / "syntax" / p.name
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            copy.write_text(text, encoding="utf-8")
+            ran = self._run(self._command(command, copy))
+            if isinstance(ran, dict):
+                return None
+            output = ran.stdout + ran.stderr
+            errors = parse_messages(output)["errors"]
+            if ran.returncode != 0 and not errors:
+                errors = [{"line": None, "message": _tail(output.strip())[-300:]}]
+            return [{k: v for k, v in e.items() if k != "file" and v is not None} for e in errors]
+        if ext == "py":
+            try:
+                ast.parse(text)
+            except SyntaxError as e:
+                return [{"line": e.lineno, "column": e.offset, "message": e.msg}]
+            return []
+        return None
+
+    def after_change(self, p: Path) -> dict | None:
+        """What check_code says of a file just changed, short: ok, and its first errors."""
+        if not (self.check_commands.get(p.suffix.lower().lstrip(".")) or self.check_command):
+            return None
+        res = self.check_code(self.files._show(p))
+        if "ok" not in res:                                  # the compiler is missing: nothing to say
+            return None
+        errors = [{k: v for k, v in e.items() if k != "file" and v is not None} for e in res.get("errors", [])]
+        more = len(errors) - MAX_EDIT_ERRORS + res.get("more_errors", 0)
+        return {"ok": res["ok"], **({"errors": errors[:MAX_EDIT_ERRORS]} if errors else {}),
+                **({"more_errors": more} if more > 0 else {}),
+                **({"output": res["output"][-500:]} if not res["ok"] and not errors and res.get("output") else {})}
 
     def _include(self) -> list[str]:
         folders = sorted({p.parent for root in self.files.roots if root.is_dir() for p in root.rglob("*")

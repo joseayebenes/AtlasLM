@@ -51,7 +51,7 @@ import shutil
 import textwrap
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from atlas.code.symbols import Span, comment_mark, insertion_line, language, new_subprograms, subprograms
 from atlas.plugins import register_methods
@@ -91,6 +91,10 @@ class CodeTools:
         self.read_only = read_only
         self._seen: dict[Path, str] = {}    # file -> hash of its content when last read or written here
         self._lock = threading.Lock()
+        # Set by BuildTools (see build.py): the syntax errors of a text as the content of a file
+        # (None: nothing checks that language), and check_code of a file after a change
+        self.syntax: Callable[[Path, str], list[dict] | None] | None = None
+        self.after_change: Callable[[Path], dict | None] | None = None
 
     @classmethod
     def from_config(cls, cfg, read_only: bool = False) -> "CodeTools":
@@ -101,11 +105,14 @@ class CodeTools:
     @classmethod
     def for_context(cls, context: Any) -> "CodeTools":
         """One instance per context, shared by every tool plugin: what read_file reads is
-        what edit_file can edit."""
+        what edit_file can edit. Its BuildTools gives it the syntax check and check_code after
+        each change, when [sources.code] has them."""
         tools = getattr(context, "_code_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg)
             setattr(context, "_code_tools", tools)
+            from atlas.code.build import BuildTools
+            BuildTools.for_context(context)
         return tools
 
     # --- paths ----------------------------------------------------------------
@@ -293,13 +300,11 @@ class CodeTools:
             if "error" in found:
                 return found
             new, count, notes = found["text"], found["count"], found["notes"]
-            try:
-                out = (new.replace("\n", "\r\n") if crlf else new).encode(encoding)
-            except UnicodeEncodeError as e:
-                return {"error": f"the file is {encoding} and new_text has characters it cannot hold: {e}"}
-            self._write(p, out)
+            err = self._store(p, new, encoding, crlf, before=text)
+            if err:
+                return err
         return {"file": self._show(p), "replacements": count, "diff": self._diff(self._show(p), text, new),
-                **({"notes": notes} if notes else {})}
+                **({"notes": notes} if notes else {}), **self._checked(p)}
 
     def _not_found(self, path: str, text: str, old_text: str, new_text: str) -> dict:
         """Why old_text was not found, with what helps a model try again: whether new_text is
@@ -342,31 +347,25 @@ class CodeTools:
         if p.is_dir():
             return {"error": f"{path} is a folder"}
         with self._lock:
-            before, encoding, crlf = "", "utf-8", False
+            before, encoding, crlf = None, "utf-8", False
             if p.exists():
-                data = p.read_bytes()
-                err = self._check_seen(p, path, data)
-                if err:
-                    return err
-                raw, encoding = _decode(data)
-                before, crlf = raw.replace("\r\n", "\n"), "\r\n" in raw
+                current = self._current(p, path)
+                if isinstance(current, dict):
+                    return current
+                before, encoding, crlf = current
             content = content.replace("\r\n", "\n")
             unlisted = _line_backslashes(content)
             if unlisted:
                 content = content.replace("\\\n", "\n")
-            try:
-                out = (content.replace("\n", "\r\n") if crlf else content).encode(encoding)
-            except UnicodeEncodeError as e:
-                return {"error": f"the file is {encoding} and content has characters it cannot hold: {e}"}
-            p.parent.mkdir(parents=True, exist_ok=True)
-            created = not p.exists()
-            self._write(p, out)
-        if not created and before == content:
-            return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
-                    "note": "the file already had exactly this content: nothing changed"}
-        return {"file": self._show(p), "created": created, "lines": content.count("\n") + 1,
-                **({} if created else {"diff": self._diff(self._show(p), before, content)}),
-                **({"notes": [LISTING_NOTE]} if unlisted else {})}
+            if before == content:
+                return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
+                        "note": "the file already had exactly this content: nothing changed"}
+            err = self._store(p, content, encoding, crlf, before=before)
+            if err:
+                return err
+        return {"file": self._show(p), "created": before is None, "lines": content.count("\n") + 1,
+                **({} if before is None else {"diff": self._diff(self._show(p), before, content)}),
+                **({"notes": [LISTING_NOTE]} if unlisted else {}), **self._checked(p)}
 
     # --- whole subprograms ----------------------------------------------------
     def _current(self, p: Path, path: str) -> tuple[str, str, bool] | dict:
@@ -378,13 +377,26 @@ class CodeTools:
         raw, encoding = _decode(data)
         return raw.replace("\r\n", "\n"), encoding, "\r\n" in raw
 
-    def _store(self, p: Path, text: str, encoding: str, crlf: bool) -> dict | None:
+    def _store(self, p: Path, text: str, encoding: str, crlf: bool, before: str | None = None) -> dict | None:
+        """Writes `text` (with LF) as the file, in its encoding and line endings. An error
+        instead when the text cannot be encoded, or when it breaks the syntax of a file that
+        had none (`before`: its text; None for a new file, which is written anyway)."""
+        if self.syntax is not None and before is not None:
+            errors = self.syntax(p, text)
+            if errors and not self.syntax(p, before):
+                return _broken_syntax(self._show(p), text, errors)
         try:
             out = (text.replace("\n", "\r\n") if crlf else text).encode(encoding)
         except UnicodeEncodeError as e:
             return {"error": f"the file is {encoding} and the new text has characters it cannot hold: {e}"}
+        p.parent.mkdir(parents=True, exist_ok=True)
         self._write(p, out)
         return None
+
+    def _checked(self, p: Path) -> dict:
+        """{"check": what check_code says of a file just changed}, when BuildTools gave a hook."""
+        found = self.after_change(p) if self.after_change is not None else None
+        return {"check": found} if found else {}
 
     def _subprogram_file(self, path: str) -> tuple[Path | None, dict | None]:
         p, err = self._writable(path)
@@ -439,12 +451,13 @@ class CodeTools:
                 while start > 0 and lines[start - 1].strip().startswith(mark):
                     start -= 1
             new = "\n".join(lines[:start] + block + lines[end:])
-            err = self._store(p, new, encoding, crlf)
+            err = self._store(p, new, encoding, crlf, before=text)
             if err:
                 return err
         return {"file": self._show(p), "replaced": f"{target.kind} of {target.qualified}, lines {target.start}-"
                                                   f"{target.end}",
-                "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {})}
+                "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
+                **self._checked(p)}
 
     def add_subprogram(self, path: str, new_text: str, after: str = "") -> dict:
         """Adds new subprograms to a file read before; `new_text` holds them complete. They go
@@ -491,11 +504,12 @@ class CodeTools:
                 head.pop()
             tail = lines[where - 1:]
             new = "\n".join(head + gap + block + ([""] if tail and tail[0].strip() else []) + tail)
-            err = self._store(p, new, encoding, crlf)
+            err = self._store(p, new, encoding, crlf, before=text)
             if err:
                 return err
         return {"file": self._show(p), "added": [a.name for a in added],
-                "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {})}
+                "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
+                **self._checked(p)}
 
 
 def _matcher(suffix: str):
@@ -527,6 +541,17 @@ def _missing(path: str, name: str, kind: str, named: list[Span], spans: list[Spa
                      + (f" (similar: {', '.join(close)})" if close else "")
                      + (f". Its subprograms: {', '.join(names[:40])}" if names else ". It has no subprograms")
                      + (". To add a new one, use add_subprogram" if kind else "")}
+
+
+def _broken_syntax(path: str, text: str, errors: list[dict]) -> dict:
+    """The answer to a change that breaks the syntax of a file: not made, with the errors and
+    the lines around the first one, as the file would have been."""
+    line = errors[0].get("line")
+    lines = text.split("\n")
+    around = "\n".join(f"{'>' if i == line else ' '}{i:4d} | {lines[i - 1]}"
+                       for i in range(max(1, line - 3), min(len(lines), line + 3) + 1)) if line else ""
+    return {"error": f"the change was not made: it breaks the syntax of {path}, which had none. Correct the new "
+                     "text and try again", "syntax_errors": errors[:5], **({"around": around} if around else {})}
 
 
 def _indent(line: str) -> str:

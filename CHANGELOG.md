@@ -17,6 +17,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   nombre, sin copiar nada del fichero (Ada con tree-sitter y Python). En la tanda 4 de
   `atlas develop`, 80 de las 151 ediciones de `gemma-4-26b` fallaron: 39 querían sustituir más
   de 30 líneas y 34 no copiaron bien el texto. `atlas serve` solo las ofrece si se piden.
+- Las herramientas que escriben comprueban la sintaxis antes de escribir y compilan después:
+  un cambio que rompe la sintaxis de un fichero que estaba bien no se hace (`[sources.code]
+  syntax_commands`, con GNAT `gcc -c -gnats`; Python con `ast`), y cada cambio devuelve lo que
+  dice `check_code` del fichero (`check_on_edit`, por defecto).
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez
@@ -145,6 +149,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   el servidor (en OpenRouter, también el proveedor del modelo).
 
 ### Al actualizar
+- `edit_file`, `write_file` y las herramientas de subprogramas ya no escriben un cambio que
+  rompe la sintaxis de un fichero Python que estaba bien (también desde `atlas serve`, si se
+  ofrecen); `[sources.code.syntax_commands] py = []` lo apaga. Con un compilador configurado,
+  sus respuestas traen `check`.
 - El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.
 - `code_doc` ya estaba en `[index] kinds` por defecto: la siguiente ejecución embebe todo el
   código una vez. Para no indexarlo, quítalo de `kinds`. El código compite con los documentos

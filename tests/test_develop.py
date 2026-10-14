@@ -94,6 +94,8 @@ protected = ["tests/**"]
 check_command = ["{sys.executable}", "-m", "py_compile", "{{file}}"]
 [sources.code.test_commands]
 py = ["{sys.executable}", "{{file}}"]
+[sources.code.syntax_commands]
+py = []                                 # off: these tests write code that does not compile on purpose
 '''))
     return tmp_path, cfg
 
@@ -136,6 +138,22 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
     assert [r["n"] for r in runs] == [1, 2, 3, 4, 5, 6] and runs[0]["prompt"] == "Implement add."
     assert [c["name"] for c in runs[0]["calls"]] == ["read_file", "write_file"] and runs[0]["answer"] == "Done."
     assert runs[0]["calls"][1]["result"]["file"] == "src/calc.py" and "seconds" in runs[0]["calls"][1]
+
+
+def test_a_change_that_breaks_the_syntax_is_not_made(project):
+    """With the syntax check (Python's needs no command), the broken write of the agent is
+    refused, it sees why, and the code stays as it was: nothing to undo."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    cfg["sources"]["code"]["syntax_commands"] = {}
+    (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0] + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient(write("def add(a, b:\n    return a + b\n") + write(ADD) + ["Done."] * 8)
+    report = develop(base / "plan.toml", cfg, client=client)
+    runs = [json.loads(l) for l in (cfg.workspace / "reports" / "develop-plan.calls.jsonl").read_text().splitlines()]
+    refused = runs[0]["calls"][1]["result"]
+    assert refused["error"].startswith("the change was not made: it breaks the syntax of src/calc.py")
+    assert (report["steps"][0]["kind"], report["steps"][0]["outcome"]) == ("task", "kept")
+    assert "undone" not in report["steps"][0]
 
 
 def test_a_round_that_fixes_the_test(project):

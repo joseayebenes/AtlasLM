@@ -313,3 +313,68 @@ def test_gnat_on_the_test_a_small_model_wrote_and_on_the_model_of_tester_md(proj
     shutil.rmtree(tools.build_dir)             # gnatmake decides by time stamps: a change a moment after the
     res = tools.run_test(str(test))            # last build can go unseen, so build from scratch
     assert res["passed"] is False and "300.0 should be Normal" in res["output"], res
+
+
+# --- the file tools of the same context: syntax first, check_code after ------------------------
+
+FAKE_SYNTAX = '''import sys
+from pathlib import Path
+for i, line in enumerate(Path(sys.argv[-1]).read_text().splitlines(), 1):
+    if "OPEN_BEGIN" in line:
+        print(f"{Path(sys.argv[-1]).name}:{i}:4: error: \\"end;\\" expected for \\"begin\\" at line {i}")
+        sys.exit(1)
+'''
+
+
+def test_a_change_that_breaks_the_syntax_is_not_made_and_each_change_is_checked(project, tmp_path, toml):
+    from types import SimpleNamespace
+    from atlas.code import CodeTools
+    ada, make = project
+    syntax = tmp_path / "bin1" / "syntax.py"
+    syntax.write_text(FAKE_SYNTAX)
+    build = make(extra=f'[sources.code.syntax_commands]\nadb = ["{sys.executable}", "{syntax}", "{{file}}"]\n')
+    files = build.files
+    build.hook()                                         # what CodeTools.for_context does in an agent
+    f = str(ada / "src" / "tracks.adb")
+    files.read_file(f)
+    text = Path(f).read_text()
+    broken = files.edit_file(f, "end Update;", "OPEN_BEGIN")      # the begin of Update is left open
+    assert broken["error"].startswith("the change was not made: it breaks the syntax")
+    assert broken["syntax_errors"][0]["message"].startswith('"end;" expected for "begin"')
+    assert ">" in broken["around"] and Path(f).read_text() == text           # nothing was written
+    done = files.edit_file(f, 'Logger.Log ("update");', 'Logger.Log ("updated");')
+    assert done["replacements"] == 1 and done["check"] == {"ok": True}       # check_code, in the same answer
+    Path(f).write_text(text.replace("procedure Update", "BROKEN procedure Update"))
+    files.read_file(f)
+    after = files.write_file(f, Path(f).read_text() + "\n")
+    assert after["check"]["ok"] is False and after["check"]["errors"][0]["message"] == '"Trk" is undefined'
+    # Python is checked with ast, with no command; a new file is written even if broken
+    py = ada / "src" / "calc.py"
+    py.write_text("def f():\n    return 1\n")
+    files.read_file(str(py))
+    assert "breaks the syntax" in files.edit_file(str(py), "return 1", "return (1")["error"]
+    assert files.write_file(str(ada / "src" / "new.py"), "def g(:\n")["created"] is True
+    # check_on_edit = false: no check in the answers
+    quiet = make(extra="check_on_edit = false")
+    quiet.hook()
+    quiet.files.read_file(f)
+    assert "check" not in quiet.files.write_file(f, Path(f).read_text() + "\n")
+    # in an agent's context the hooks come with the file tools
+    context = SimpleNamespace(cfg=load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\n')))
+    tools = CodeTools.for_context(context)
+    assert tools.syntax == context._build_tools.syntax_errors and tools.after_change is not None
+
+
+@gnat
+def test_gnat_rejects_a_begin_left_open(project):
+    ada, make = project
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+                 extra='[sources.code.syntax_commands]\nadb = ["gcc", "-c", "-gnats", "{file}"]\n')
+    tools.hook()
+    f = str(ada / "src" / "tracks.adb")
+    tools.files.read_file(f)
+    text = Path(f).read_text()
+    first_end = next(l.strip() for l in text.splitlines() if l.strip().startswith("end ") and l.strip() != "end;")
+    broken = tools.files.edit_file(f, first_end, "null;")
+    assert "breaks the syntax" in broken["error"] and Path(f).read_text() == text
+    assert any("expected" in e["message"] or "missing" in e["message"] for e in broken["syntax_errors"])

@@ -161,7 +161,7 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
     assert "## Compiler errors" in md and "| edits (failed) |" in md and "Edits: " in md
 
 
-def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project):
+def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project, caplog):
     """stall_steps: tool calls without changing the code end the run; develop starts it again,
     with a new conversation that says what the first one changed (restarts)."""
     from atlas.agents.develop import develop
@@ -182,6 +182,7 @@ def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project):
                               "calls without changing the code in its last steps")
     assert "+    return a + b + 0" in restart                    # what it changed, which stays
     assert (base / "src" / "calc.py").read_text() == ADD
+    assert "Failed to detach context" not in caplog.text        # the run of ADK ends cleanly when cut
 
 
 class ParallelClient:

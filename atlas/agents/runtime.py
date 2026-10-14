@@ -144,8 +144,8 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
                                   keep_tool_results=d.keep_tool_results)
     guarded = loop_guard(recorded(tools, record) if record is not None else tools)
-    if d.stall_steps and state is not None:
-        guarded = stall_guard(guarded, d.stall_steps, state)
+    if d.stall_steps and state is not None and set(d.tools) & {*CHANGES, "run_test"}:
+        guarded = stall_guard(guarded, d.stall_steps, state)    # one that only reads would always look stuck
     return LlmAgent(name=d.name, description=d.description, model=model, tools=guarded,
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it
 
@@ -164,9 +164,10 @@ async def ask(agent, question: str, max_steps: int = 8, state: dict | None = Non
     message = types.Content(role="user", parts=[types.Part(text=question)])
     calls, answer, stopped = [], "", False
     tokens, cost = {"prompt": 0, "completion": 0}, None
+    events = runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
+                              run_config=RunConfig(max_llm_calls=max_steps))
     try:
-        async for event in runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
-                                            run_config=RunConfig(max_llm_calls=max_steps)):
+        async for event in events:
             if event.usage_metadata:
                 tokens["prompt"] += event.usage_metadata.prompt_token_count or 0
                 tokens["completion"] += event.usage_metadata.candidates_token_count or 0
@@ -183,6 +184,8 @@ async def ask(agent, question: str, max_steps: int = 8, state: dict | None = Non
                 break
     except LlmCallsLimitExceededError:        # max_steps reached
         stopped = True
+    finally:                                  # closed here, in this task: closed later by asyncio, from
+        await events.aclose()                 # another context, OpenTelemetry logs errors for each span
     return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
             **({"stalled": True} if state is not None and state.get("stalled") else {}),
             **({"cost": round(cost, 6)} if cost is not None else {})}

@@ -14,6 +14,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
+| `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
 | `hints.toml` | las pistas de serie para los mensajes de GNAT |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
@@ -180,6 +181,30 @@ runtime: 2458 pasajes y 13 452 declaraciones) o con `atlas reference`, y se reha
 cambia. Es búsqueda léxica (BM25), sin modelo. Las unidades internas de GNAT (`System.*`) no
 entran. El manual de referencia del lenguaje (el ARM) no viene con GNAT: se puede descargar en
 HTML y añadir su carpeta.
+
+### El servidor de lenguaje
+
+Con `[sources.code] language_server`, tres herramientas preguntan a un servidor de lenguaje lo
+que sabe el compilador de un nombre:
+
+| Herramienta | Qué da |
+|---|---|
+| `find_definition(path, line, name)` | dónde se declara un nombre escrito en esa línea: fichero, línea y la línea |
+| `find_references(path, line, name)` | dónde se usa en el proyecto, con la declaración |
+| `describe_symbol(path, line, name)` | qué es: su declaración (perfil, tipo) y su comentario |
+
+El modelo da una línea y un nombre; la columna se busca en esa línea. Para Ada, el Ada
+Language Server que trae la extensión de Ada de VS Code (`["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]`):
+atlas escribe un proyecto GPR en `<workspace>/build` con las carpetas de las raíces que tienen
+fuentes Ada (o usa `language_server_project`), y el servidor encuentra el runtime de GNAT con
+el `tool_path` del proyecto. El servidor arranca en la primera llamada y sigue en marcha
+mientras dure el proceso; con el ALS 2026.3, la primera respuesta tarda un segundo y las
+siguientes, milisegundos. `To_Unbounded_String` en `controller.adb` lleva a `a-strunb.ads`,
+línea 122, con su perfil y su postcondición.
+
+Es lo que hace Serena con el servidor de lenguaje, y la versión posible a través de una API de
+la decodificación guiada por un monitor (MGD), que con el servidor de lenguaje sube un 19-25 %
+el código que compila en modelos de todos los tamaños pero necesita entrar en la decodificación.
 
 ### Subprogramas enteros
 

@@ -523,3 +523,44 @@ def test_search_reference_over_the_manuals_and_the_library(project, tmp_path, to
     with pytest.raises(SystemExit) as end:
         main(["reference", str(cfg)])
     assert end.value.code == 0 and "gnat_rm.info" in capsys.readouterr().out
+
+
+# --- the language server ---------------------------------------------------------------------
+
+def _line_with(path: Path, text: str) -> int:
+    return next(i for i, l in enumerate(path.read_text().split("\n"), 1) if text in l)
+
+
+def test_the_tools_of_a_language_server(project, tmp_path):
+    from atlas.code import LanguageTools
+    ada, make = project
+    fake = Path(__file__).parent / "fakes" / "fake_lsp.py"
+    tools = LanguageTools(make(), [sys.executable, str(fake)])
+    tracks = ada / "src" / "tracks.adb"
+    line = _line_with(tracks, "Logger.Log")
+    found = tools.find_definition(str(tracks), line, "Logger.Log")            # qualified: the last part
+    assert found["definitions"][0]["file"].endswith(("logger.ads", "logger.adb"))   # the fake takes the first
+    assert "procedure Log" in found["definitions"][0]["text"]
+    refs = tools.find_references(str(tracks), line, "Log")
+    assert refs["count"] >= 2 and any(r["file"].endswith("tracks.adb") for r in refs["references"])
+    assert tools.describe_symbol(str(tracks), line, "Log")["description"].startswith("procedure Log")
+    assert "is not in line 1" in tools.find_definition(str(tracks), 1, "Log")["error"]
+    assert "outside the code roots" in tools.find_definition("/etc/hosts", 1, "x")["error"]
+    assert "no language server configured" in LanguageTools(make(), []).find_definition(str(tracks), line, "Log")["error"]
+
+
+def _als() -> list[str]:
+    return glob.glob(os.path.expanduser("~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"))
+
+
+@gnat
+@pytest.mark.skipif(not _als(), reason="the Ada Language Server is not installed (the Ada extension of VS Code)")
+def test_the_ada_language_server(project):
+    from atlas.code import LanguageTools
+    ada, make = project
+    tools = LanguageTools(make(tool_path=GNAT_PATH), ["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"])
+    tracks = ada / "src" / "tracks.adb"
+    line = _line_with(tracks, "Logger.Log")
+    found = tools.find_definition(str(tracks), line, "Log")
+    assert found["definitions"][0]["file"].endswith("logger.ads"), found
+    assert "Log" in tools.describe_symbol(str(tracks), line, "Log")["description"]

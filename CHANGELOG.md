@@ -45,6 +45,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   ficheros pasan a la carpeta de trabajo.
 - `planner` en el plan de `atlas develop`: un agente de solo lectura dice cómo hacer cada
   encargo, y el implementador lo recibe con ese plan (el arquitecto y el editor de Aider).
+- `find_definition`, `find_references` y `describe_symbol` (`[sources.code] language_server`):
+  lo que sabe el compilador de un nombre, de un servidor de lenguaje. Probado con el Ada Language
+  Server de la extensión de VS Code, con un proyecto GPR que atlas escribe.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

@@ -211,9 +211,11 @@ el código que compila en modelos de todos los tamaños pero necesita entrar en 
 `replace_subprogram(path, name, new_text, line=0)` sustituye un subprograma entero: el agente
 da el subprograma nuevo completo, de `procedure Nombre` o `function Nombre` a su `end Nombre;`
 (en Python, de `def` al final del cuerpo), y no tiene que copiar nada del fichero.
-`add_subprogram(path, new_text, after="")` añade subprogramas detrás de otro o, sin `after`, al
-final de las declaraciones del paquete: antes de `private` en una especificación, antes del
-`begin` o del `end` de un cuerpo; en Python, al final del fichero. Las dos:
+`add_subprogram(path, new_text, after="", before="")` añade subprogramas detrás de otro, delante
+de otro (con su comentario: en Ada, un subprograma de un cuerpo tiene que ir antes del que lo
+llama) o, sin ninguno de los dos, al final de las declaraciones del paquete: antes de `private`
+en una especificación, antes del `begin` o del `end` de un cuerpo; en Python, al final del
+fichero. Las dos:
 - encuentran los subprogramas con tree-sitter (Ada) o `ast` (Python), en `symbols.py`;
 - distinguen el cuerpo de la declaración (en Ada un nombre puede tener los dos en el mismo
   fichero) y cambian el que corresponde al texto nuevo;

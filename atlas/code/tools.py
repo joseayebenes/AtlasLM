@@ -462,11 +462,13 @@ class CodeTools:
                 "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
                 **self._checked(p)}
 
-    def add_subprogram(self, path: str, new_text: str, after: str = "") -> dict:
+    def add_subprogram(self, path: str, new_text: str, after: str = "", before: str = "") -> dict:
         """Adds new subprograms to a file read before; `new_text` holds them complete. They go
-        right after the subprogram named `after`, or else at the end of the declarations of
-        the package (before `private` in a spec, before the `begin` or the `end` of a package
-        body; at the end of a Python file). Returns the diff."""
+        right after the subprogram named `after`, or right before the one named `before` (with
+        its comment: in Ada a subprogram of a body must come before the one that calls it), or
+        else at the end of the declarations of the package (before `private` in a spec, before
+        the `begin` or the `end` of a package body; at the end of a Python file). Returns the
+        diff."""
         p, err = self._subprogram_file(path)
         if err:
             return err
@@ -488,13 +490,21 @@ class CodeTools:
                     return {"error": f"{path} already has a {twin.kind} of {twin.qualified} (lines {twin.start}-"
                                      f"{twin.end}): change it with replace_subprogram (an overload: edit_file)"}
             lines = text.split("\n")
-            if after:
-                found = [s for s in spans if same(s.name, after.strip().split(".")[-1])
-                         and _qualified_match(s, after, same)]
+            if after or before:
+                anchor = after or before
+                found = [s for s in spans if same(s.name, anchor.strip().split(".")[-1])
+                         and _qualified_match(s, anchor, same)]
                 bodies = [s for s in found if s.kind == "body"] or found
                 if not bodies:
-                    return _missing(path, after.strip().split(".")[-1], "", [], spans)
-                where, indent = bodies[-1].end + 1, _indent(lines[bodies[-1].start - 1])
+                    return _missing(path, anchor.strip().split(".")[-1], "", [], spans)
+                target = bodies[-1] if after else bodies[0]
+                indent = _indent(lines[target.start - 1])
+                if after:
+                    where = target.end + 1
+                else:                                     # before it and before its comment
+                    where, mark = target.start, comment_mark(p.suffix)
+                    while where > 1 and lines[where - 2].strip().startswith(mark):
+                        where -= 1
             else:
                 place = insertion_line(p.suffix, text)
                 if place is None:

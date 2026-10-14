@@ -269,6 +269,13 @@ def test_add_subprograms_to_a_package_body_and_after_another(project, tmp_path):
     project.add_subprogram(f, "function Count return Natural is (0);", after="Update")
     lines = (tmp_path / f).read_text().split("\n")
     assert lines[5:8] == ["", "   function Count return Natural is (0);", ""]
+    # before another one, and before its comment: in Ada a subprogram must come before its caller
+    (tmp_path / f).write_text((tmp_path / f).read_text().replace("   procedure Delete_Track",
+                                                                 "   --  Req: SRS-0004\n   procedure Delete_Track"))
+    project.read_file(f)
+    project.add_subprogram(f, "procedure Do_Ping is\nbegin\n   null;\nend Do_Ping;", before="Delete_Track")
+    text = (tmp_path / f).read_text()
+    assert "   end Do_Ping;\n\n   --  Req: SRS-0004\n   procedure Delete_Track" in text
     assert "no complete subprogram" in project.add_subprogram(f, "X := 1;")["error"]
     assert "no subprogram named Nothing" in project.add_subprogram(f, "procedure Y is null;", after="Nothing")["error"]
     (tmp_path / "src" / "main.adb").write_text("procedure Main is\nbegin\n   null;\nend Main;\n")

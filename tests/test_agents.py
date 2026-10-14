@@ -598,3 +598,30 @@ def test_the_app_for_adk_web(workspace, monkeypatch):
     assert load("assistant").name == "assistant" and len(load("assistant").tools) == 8
     tracer = load("tracer")
     assert tracer.name == "tracer" and [t.__name__ for t in tracer.tools] == ["trace", "gaps", "build_context"]
+
+
+def test_old_tool_results_are_left_out_when_the_agent_keeps_a_few():
+    """keep_tool_results: a read of a file read again later goes (its text is old), and so do
+    the large results before the last ones, in groups of MASK_STEP; short fields stay."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from atlas.agents.model import MASK_STEP, to_messages
+    contents = [types.Content(role="user", parts=[types.Part(text="Fix it.")])]
+    results = [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "x" * 2000})]
+    results += [("check_code", {"file": "src/a.adb", "ok": False, "errors": [{"message": "e" * 900}]})] * 7
+    results += [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "y" * 2000}),
+                ("edit_file", {"file": "src/a.adb", "replacements": 1, "diff": "d" * 50})]
+    for i, (name, response) in enumerate(results):
+        contents.append(types.Content(role="model", parts=[types.Part(function_call=types.FunctionCall(
+            id=f"c{i}", name=name, args={}))]))
+        contents.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(
+            id=f"c{i}", name=name, response=response))]))
+    request = LlmRequest(contents=contents)
+    whole = [m["content"] for m in to_messages(request) if m["role"] == "tool"]
+    assert all("note" not in c for c in whole)                       # 0: all of them, as before
+    short = [json.loads(m["content"]) for m in to_messages(request, keep_tool_results=3) if m["role"] == "tool"]
+    assert short[0] == {"note": "an older read of src/a.adb (lines 1-300), left out: it was read again later"}
+    assert MASK_STEP == 5 and [("note" in r) for r in short[1:]] == [True] * 4 + [False] * 5
+    assert short[1]["ok"] is False and short[1]["file"] == "src/a.adb" and "errors" not in short[1]
+    assert short[-2]["source"] == "y" * 2000 and short[-1]["diff"] == "d" * 50      # the last read and the edit stay

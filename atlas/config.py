@@ -75,7 +75,8 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
-                "temperature": float, "top_p": float, "top_k": int}   # what [agents.<name>] can retouch
+                "temperature": float, "top_p": float, "top_k": int,
+                "keep_tool_results": int}                         # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,

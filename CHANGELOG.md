@@ -33,6 +33,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `search_reference`, `[sources.code] reference` y `atlas reference`: los manuales (los de
   GNAT vienen en formato info con Alire; también Markdown, texto y HTML) y las declaraciones de
   la biblioteca, por palabras y sin modelo, en su propio índice (`<workspace>/reference.db`).
+- `keep_tool_results` por agente: los resultados grandes de herramientas de antes de los últimos
+  quedan en una nota, y una lectura de un fichero que se volvió a leer se quita. En la tanda 4,
+  las vueltas de un arreglo llevaban 55 000 tokens de entrada, casi todo lecturas viejas.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez

@@ -113,7 +113,8 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     d = definition(name, cfg)
     text = d.instruction
     tools = agent_tools(d, context or context_for(cfg))
-    model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k)
+    model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
+                                  keep_tool_results=d.keep_tool_results)
     return LlmAgent(name=d.name, description=d.description, model=model,
                     tools=loop_guard(recorded(tools, record) if record is not None else tools),
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it

@@ -34,6 +34,7 @@ reasoning_effort: none     # opcional: "none" apaga el razonamiento
 temperature: 0.1           # opcional
 top_p: 0.95                # opcional: el muestreo de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64)
 top_k: 64                  # opcional: no es de la API de OpenAI, va en extra_body
+keep_tool_results: 10      # opcional: resultados grandes de herramientas que se conservan enteros
 ---
 You trace requirements of an engineering project...
 ```
@@ -63,6 +64,14 @@ lo apaga). Lo pide la ficha de gemma 4: el razonamiento de los turnos con llamad
 herramientas se queda en la conversación, y su plantilla de chat lo vuelve a poner si llega en
 `reasoning` o `reasoning_content`. Antes se tiraba: en cada vuelta, el modelo tenía que deducir
 otra vez qué estaba haciendo. `atlas probe` dice si un servidor lo aprovecha.
+
+Con `keep_tool_results` (en el fichero del agente), la conversación no crece sin fin: una
+lectura de un fichero que se ha vuelto a leer después se quita (su texto ya no es el del
+fichero, y el modelo lo copiaba en `edit_file`), y también los resultados grandes de antes de
+los últimos `keep_tool_results`, de cinco en cinco. En su lugar queda una nota con sus campos
+cortos (`ok`, `file`, `passed`...). JetBrains vio que esto acierta como resumir con el modelo
+y cuesta la mitad (*The Complexity Trap*, 2025). En la tanda 4, las vueltas de un arreglo
+llevaban 55 000 tokens de entrada, casi todo lecturas viejas. Por defecto, 0: todo se queda.
 
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
 servidor lo dice (OpenRouter, `usage.cost`), su coste.

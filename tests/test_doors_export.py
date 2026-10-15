@@ -1,6 +1,7 @@
 """tools/doors_export without DOORS: a fake DOORS answers the generated DXL at COM level,
 with the length-prefixed protocol, so everything but the DXL itself runs for real."""
 import json
+import logging
 import re
 import sqlite3
 import sys
@@ -268,6 +269,65 @@ def test_mapping_errors_and_module_selection(tmp_path):
     assert ExchangeAdapter({"exchange": {"path": str(out)}}).modules() == ["SRS_TMS", "SSS"]
     reports, out = _published(tmp_path, MAPPING.replace("SRS_TMS", "SRS_NEW"))     # renamed: the old one goes
     assert ExchangeAdapter({"exchange": {"path": str(out)}}).modules() == ["SRS_NEW", "SSS"]
+
+
+IS_REQUISITE = """
+[kinds]
+attribute = "is_requisite"
+others = "heading_or_information"
+[kinds.values]
+requirement = "Yes"
+"""
+
+
+def _kinds(out) -> dict[str, str]:
+    ad = ExchangeAdapter({"exchange": {"path": str(out)}})
+    return {r.id: r.attributes["kind"] for m in ad.modules() for r in ad.requirements(m)}
+
+
+def test_a_yes_no_attribute_tells_the_requirements_and_the_headings_stay(tmp_path, caplog):
+    from atlas.index.records import requirement_records
+    caplog.set_level(logging.INFO, logger="doors-publish")
+    _published(tmp_path)
+    with sqlite3.connect(tmp_path / "raw.sqlite") as c:          # only /P/SRS has it; SRS-1 is the chapter
+        c.executemany("INSERT INTO requirement_attributes SELECT id, 'is_requisite', ? FROM requirements "
+                      "WHERE module_path = '/P/SRS' AND absolute_number = ?",
+                      [("No", 1), ("Yes", 2), (" yes ", 3), ("no", 4)])
+        c.execute("INSERT INTO attribute_definitions VALUES ('/P/SRS', 'is_requisite', 'Enum', 0)")
+    reports, out = _published(tmp_path, MAPPING + IS_REQUISITE)
+    assert _kinds(out) == {"SRS-1": "heading", "SRS-2": "requirement", "SRS-3": "requirement",
+                           "SRS-4": "information", "SSS-5": "requirement"}       # SSS, by its content
+    assert reports[0].summary() == ("SRS_TMS (/P/SRS): 4 objects (requirement 2, heading 1, information 1), "
+                                    "2 links; 1 links to objects not downloaded")
+    assert "values of is_requisite not in [kinds.values], taken as heading_or_information: 'No' (1), 'no' (1)" \
+        in caplog.text and "/P/SSS: has no is_requisite; its kinds come from the content" in caplog.text
+    ad = ExchangeAdapter({"exchange": {"path": str(out)}})               # in atlas, the chapter of each one
+    rows = [{"id": r.id, "text": r.text, "parent": r.parent, "attributes": r.attributes}
+            for r in ad.requirements("SRS_TMS")]
+    assert [(r["kind"], r.get("ref", ""), r["path"]) for r in requirement_records("SRS_TMS", rows)] == [
+        ("requirement", "SRS-2", "1.1 Track management"), ("requirement", "SRS-3", "1.1 Track management"),
+        ("chunk", "", "1.1 Track management")]
+
+    # without others, what is not "Yes" is a requirement, the chapter too, and publish.py warns
+    caplog.clear()
+    _, out = _published(tmp_path, MAPPING + IS_REQUISITE.replace('others = "heading_or_information"\n', ""))
+    assert _kinds(out)["SRS-1"] == "requirement"
+    assert [r.levelname for r in caplog.records if "not in [kinds.values]" in r.getMessage()] == ["WARNING"]
+    # "No" as information: the chapter is information, and its requirements lose it
+    _, out = _published(tmp_path, MAPPING + IS_REQUISITE + 'information = "NO"\n')
+    assert (_kinds(out)["SRS-1"], _kinds(out)["SRS-4"]) == ("information", "information")
+
+
+@pytest.mark.parametrize("kinds, error", [
+    ('attribute = "is_requisite"\nothers = "maybe"\n', "others is 'maybe'"),
+    ('attribute = "is_requisite"\n[kinds.values]\nrequirement = "Yes"\ninformation = "yes"\n',
+     "'yes' is given to requirement and to information"),
+    ('others = "information"\n', "need attribute"),
+    ('attribute = "is_requisite"\n[kinds.values]\nrequirement = true\n', "must be a text or a list of texts")])
+def test_kinds_mapping_errors(tmp_path, kinds, error):
+    (tmp_path / "mapping.toml").write_text(MAPPING + "[kinds]\n" + kinds)
+    with pytest.raises(publish.MappingError, match=error):
+        publish.Mapping.load(tmp_path / "mapping.toml")
 
 
 def test_from_doors_to_atlas_run(tmp_path, toml, capsys):

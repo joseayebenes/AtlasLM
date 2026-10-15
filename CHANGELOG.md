@@ -74,6 +74,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   código en los cuerpos y con `-gnatc` en las especificaciones).
 - `run_agent` devuelve los tokens y, con OpenRouter, el coste de todas las vueltas, y con
   `record` apunta cada llamada a una herramienta con su resultado y su tiempo.
+- `tools/doors_export`: `[kinds] others` en `mapping.toml`, el tipo de los objetos cuyo valor
+  del atributo de `[kinds]` no está en `[kinds.values]`. Con `"heading_or_information"`, un
+  atributo que solo dice si el objeto es requisito (`is_requisite`, «Yes» o «No») decide los
+  requisitos y deja al contenido si el resto son títulos o información: atlas no pierde el
+  capítulo de cada requisito. Además, los valores no distinguen mayúsculas ni espacios de más,
+  un módulo sin el atributo se clasifica por contenido (antes, todo era requisito), y
+  `publish.py` cuenta los objetos de cada tipo y dice qué valores no estaban en `[kinds.values]`.
 
 ### Corregido
 - `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se

@@ -70,13 +70,42 @@ con su nombre exacto. Ver `mapping.example.toml`.
 | `[attributes]` | qué atributos de DOORS pasan a atlas y con qué nombre |
 | `[modules]` | cómo se llama cada módulo en atlas (por defecto, como en DOORS) |
 | `[link_types]` | qué tipo de enlace es cada módulo de enlaces (`satisfies`, `verifies`...) |
-| `[kinds]` | si hay un atributo que distingue requisitos de títulos e información |
+| `[kinds]` | si hay un atributo que distingue requisitos de títulos e información (ver [Qué es requisito](#qué-es-requisito-kinds)) |
 
 `publish.py` comprueba que los atributos de la correspondencia existen; si no, sugiere el
 nombre más parecido. Al publicar:
 - los objetos sin ID se omiten y se cuentan;
 - el padre de cada requisito es su antecesor más cercano que tenga ID;
 - un enlace a un objeto que no se ha descargado se omite y se cuenta.
+
+## Qué es requisito (`[kinds]`)
+
+Cada objeto publicado es `requirement`, `heading` o `information`. atlas indexa los
+requisitos, convierte la información en fragmentos de texto y usa los títulos como capítulo
+de los requisitos que cuelgan de ellos (`1.1 Track management`). Sin `[kinds]`, lo decide el
+contenido: un objeto con texto es requisito; uno con título y sin texto, título; el resto,
+información.
+
+Si un atributo de DOORS dice qué es cada objeto, se pone en `[kinds] attribute`, y sus valores
+en `[kinds.values]`. Los valores no distinguen mayúsculas ni espacios de más. `others` dice qué
+son los objetos con otro valor o sin valor: `requirement` (por defecto), `heading`,
+`information` o `heading_or_information`, que deja al contenido si son título o información.
+Es lo que hace falta cuando el atributo solo dice si el objeto es requisito:
+
+```toml
+[kinds]
+attribute = "is_requisite"
+others = "heading_or_information"   # lo que no es "Yes": título si tiene título y no texto; información si no
+[kinds.values]
+requirement = "Yes"
+```
+
+Con `information = "No"` en lugar de `others`, un título que diga «No» sería información y sus
+requisitos se quedarían sin capítulo. Un módulo que no tiene el atributo se clasifica por
+contenido, y `publish.py` lo avisa. El resumen de cada módulo cuenta los objetos de cada tipo
+(`4 objects (requirement 2, heading 1, information 1)`), y `publish.py` dice qué valores del
+atributo no estaban en `[kinds.values]`: sin `others` lo dice como aviso, porque esos objetos
+pasan a ser requisitos.
 
 ## El módulo de enlaces de cada enlace
 

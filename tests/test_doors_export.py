@@ -111,6 +111,11 @@ def test_dxl_of_the_page_reads_the_hierarchy_and_the_links():
     assert dd.escape('/P/"x"\n') == '/P/\\"x\\"\\n'
     assert '(t == "Link")' in dd.script_modules("/P", "abc123", kind="Link")
     assert dd.project_root("/P/Req/SRS") == "/P"
+    # no cast in the style of C: "incorrect concatenated token" against a real DOORS (2026-10-15)
+    every = [script, dd.script_page("/P/SRS", ["Object Text"], "abc123"), dd.script_modules("/P", "abc123"),
+             dd.script_attributes("/P/SRS", "abc123")] + [dd.script_check("/P/SRS", b, "abc123") for _, b, _ in dd.CHECKS]
+    assert not any("(int)" in s for s in every)
+    assert 'int oAbs = o."Absolute Number"' in script and 'int seenAbs = o."Absolute Number"' in script
 
 
 def test_download_hierarchy_links_and_incremental(tmp_path):
@@ -161,8 +166,10 @@ def test_check_probes_the_link_modules_instead_of_module_l():
     results = session(project()).check("/P/SRS")
     assert [(name, ok) for name, ok, _, _ in results] == [
         ("parent(o)", True), ("level(o)", True), ("ModName_ target(l) and fullName", True), ("targetAbsNo(l)", True),
-        ("link modules of /P", True), ('o -> "/P/Links/Satisfies"', True)]
+        ("link modules of /P", True), ('o -> "/P/Links/Satisfies"', True), ("a page of the download", True),
+        ("a page from a cursor", True)]
     assert results[4][2] == "2: /P/Links/Satisfies, /P/Links/Refines" and results[5][2] == "/P/SSS"
+    assert results[6][2] == "1 object, 3 attributes" and results[7][2] == "after 1"
 
 
 def test_an_interrupted_download_deletes_nothing(tmp_path):

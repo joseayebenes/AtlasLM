@@ -80,6 +80,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   pide con `module(l)`, que contra un DOORS real no compila (`incorrect arguments for (=)` en
   `--check`). Se listan los módulos de enlaces del proyecto y cada objeto recorre sus enlaces
   por cada uno de ellos, además de por `"*"`; `--check` prueba esas dos primitivas.
+- `tools/doors_export`: la descarga no compilaba en DOORS (`incorrect concatenated token`): el
+  número absoluto se convertía con `(int)(o."Absolute Number")`, un molde que DXL no tiene.
+  Ahora se asigna a un entero. `--check` ejecuta además una página de la descarga con un objeto.
 - Una vuelta de un agente tiene como mucho `[llm.network] timeout` segundos en total y, si
   tarda más, se pregunta otra vez. El tiempo máximo del cliente HTTP es entre dos lecturas, y
   OpenRouter mantiene viva la conexión mientras el modelo trabaja: una petición de

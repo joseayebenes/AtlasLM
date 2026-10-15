@@ -99,6 +99,14 @@ DOORS real (2026-10-15), `--check` dio bien la jerarquía (`parent`, `level`) y 
 de módulos de enlaces del proyecto y `o -> "<módulo de enlaces>"`, **está sin probar contra
 DOORS**: las pruebas automáticas usan un DOORS simulado que responde con el mismo protocolo.
 
+La descarga falló después en el mismo DOORS con `incorrect concatenated token`: el número
+absoluto se convertía con un molde al estilo de C, `(int)(o."Absolute Number")`, que venía de
+doors_kb y que DXL no tiene (toma `(int)` y lo que sigue como una concatenación). Ahora se
+asigna a un entero, `int a = o."Absolute Number"`.
+
 `--check` prueba cada primitiva por separado sobre un módulo real y dice cuál falla: también
-las dos de los módulos de enlaces. Si fallan, `--no-link-module` descarga los enlaces sin su
-tipo (`[links] default_type`). Con `--no-links` no se leen los enlaces.
+las dos de los módulos de enlaces. Y al final ejecuta **la DXL de la descarga misma** con un
+objeto: los atributos, la primera página y una página desde un cursor. Si todo sale OK, la
+descarga compila en ese DOORS. Si fallan las de los módulos de enlaces, `--no-link-module`
+descarga los enlaces sin su tipo (`[links] default_type`). Con `--no-links` no se leen los
+enlaces.

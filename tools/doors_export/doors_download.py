@@ -36,7 +36,10 @@ The link module of each link (what publish.py turns into the type of the link: s
 verifies...) is known by walking the links of each link module of the project apart,
 `for l in o -> "<link module>"`, besides `o -> "*"` for those of any other one. `module(l)`
 does not compile in every DOORS: "incorrect arguments for (=)" against a real database
-(2026-10-15).
+(2026-10-15). Nor does a cast in the style of C, `(int)(o."Absolute Number")` ("incorrect
+concatenated token": DXL takes `(int)` and what follows as a concatenation): an attribute
+becomes an integer by assigning it to one, `int a = o."Absolute Number"`. --check runs a page
+of the real download, one object, so that the next such surprise shows there.
 """
 from __future__ import annotations
 
@@ -269,7 +272,11 @@ Object o = null
 Object cursorObj = object({int(cursor)}, m)
 if (null cursorObj) {{
     o = first(m)
-    while (!null o && (int)(o."Absolute Number") <= {int(cursor)}) {{ o = next(o) }}
+    while (!null o) {{
+        int seenAbs = o."Absolute Number"
+        if (seenAbs > {int(cursor)}) {{ break }}
+        o = next(o)
+    }}
 }} else {{
     o = next(cursorObj)
 }}
@@ -287,12 +294,13 @@ while (!null o) {{
     if (emitted >= {int(page_size)}) {{ exhausted = false; break }}
     // Deleted objects and the inner cells of tables are not requirements.
     if (isDeleted(o) || table(o) || row(o) || cell(o)) {{ o = next(o); continue }}
-    last = (int)(o."Absolute Number")
+    int oAbs = o."Absolute Number"
+    last = oAbs
     data += nsInt(last)
     data += ns(identifier(o))
     data += ns(number(o))
     Object up = parent(o)
-    if (null up) {{ data += ns("") }} else {{ int upAbs = (int)(up."Absolute Number"); data += nsInt(upAbs) }}
+    if (null up) {{ data += ns("") }} else {{ int upAbs = up."Absolute Number"; data += nsInt(upAbs) }}
     int lv = level(o)
     data += nsInt(lv)
 {reads}{link_block}    emitted++
@@ -658,6 +666,25 @@ class DoorsSession:
                 results.append((f'o -> "{found[0]}"', True, reader.text(), needed_for))
             except DoorsError as e:
                 results.append((f'o -> "{found[0]}"', False, str(e)[:300], needed_for))
+        return results + self._check_download(module_path, found)
+
+    def _check_download(self, module_path: str, link_modules: Sequence[str]) -> list[tuple[str, bool, str, str]]:
+        """The DXL of the download itself, on one object: the attributes, the first page and
+        a page from a cursor. Every line of those scripts compiles in this DOORS, or the error
+        shows here and not halfway through a large module."""
+        needed_for, results = "the download", []
+        try:
+            attributes = _choose_attributes(self.attributes_of(module_path), module_path, Options())
+            objects, _ = self.page(module_path, attributes, cursor=None, page_size=1, max_attribute_chars=200,
+                                   link_modules=link_modules)
+            results.append(("a page of the download", True, f"{len(objects)} object, {len(attributes)} attributes",
+                            needed_for))
+            if objects:
+                self.page(module_path, attributes, cursor=objects[0].absolute_number, page_size=1,
+                          max_attribute_chars=200, link_modules=link_modules)
+                results.append(("a page from a cursor", True, f"after {objects[0].absolute_number}", needed_for))
+        except DoorsError as e:
+            results.append(("a page of the download", False, str(e)[:300], needed_for))
         return results
 
 

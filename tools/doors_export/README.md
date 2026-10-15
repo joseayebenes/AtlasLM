@@ -66,7 +66,7 @@ con su nombre exacto. Ver `mapping.example.toml`.
 
 | Sección | Qué dice |
 |---|---|
-| `[fields]` | de dónde salen el ID (`identifier`, un atributo como `"Requirement ID"`, o `absolute_number` con un solo módulo), el texto y el título |
+| `[fields]` | de dónde salen el ID (`identifier`, un atributo como `"Requirement ID"`, `absolute_number` con un solo módulo, o una lista: ver [El ID de cada objeto](#el-id-de-cada-objeto)), el texto y el título |
 | `[attributes]` | qué atributos de DOORS pasan a atlas y con qué nombre |
 | `[modules]` | cómo se llama cada módulo en atlas (por defecto, como en DOORS) |
 | `[link_types]` | qué tipo de enlace es cada módulo de enlaces (`satisfies`, `verifies`...) |
@@ -77,6 +77,24 @@ nombre más parecido. Al publicar:
 - los objetos sin ID se omiten y se cuentan;
 - el padre de cada requisito es su antecesor más cercano que tenga ID;
 - un enlace a un objeto que no se ha descargado se omite y se cuenta.
+
+## El ID de cada objeto
+
+`[fields] id` dice de dónde sale el ID, el que se cita en documentos y código. Si es un
+atributo que solo tienen los requisitos (`"Requirement ID"`, `"unique-identifier"`), los
+títulos y la información se quedan sin ID y no se publican, y atlas pierde el capítulo de cada
+requisito. Por eso `id` admite una lista, y vale el primero que tenga cada objeto:
+
+```toml
+[fields]
+id = ["unique-identifier", "module_number"]
+```
+
+`module_number` es el nombre del módulo en atlas y el Absolute Number (`SRS_TMS-123`), y no se
+repite entre módulos. `identifier` (`SRS-123`) también vale si todos los módulos tienen prefijo
+en DOORS; sin prefijo es solo el número, y se repite. `publish.py` avisa de los requisitos que
+no tienen el primero (un requisito sin nombre todavía) y dice qué ID se les ha dado; atlas solo
+comprueba `id_pattern` en los requisitos.
 
 ## Qué es requisito (`[kinds]`)
 

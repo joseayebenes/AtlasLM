@@ -98,6 +98,17 @@ hint = """A statement where a declaration goes, or the reverse: declarations go 
 statements between begin and end."""
 
 [[hint]]
+match = 'strings are delimited by double quote character'
+hint = """Ada has no escapes like '\\r' or '\\n', and a character literal holds one character: CR is \
+Character'Val (13) or ASCII.CR, LF is Character'Val (10) or ASCII.LF (or Ada.Characters.Latin_1). A \
+String goes between double quotes."""
+
+[[hint]]
+match = 'missing operand'
+hint = """An expression lacks a value where the compiler expects one: an empty () or an operator without its \
+second term. A record with every component at its default value is (others => <>)."""
+
+[[hint]]
 match = 'will raise Constraint_Error|would raise Constraint_Error|"Constraint_Error" will be raised|length check'
 hint = """This raises Constraint_Error when it runs, usually a String assigned one of another length: \
 declare it with its value (X : constant String := ...;) or use an Unbounded_String."""

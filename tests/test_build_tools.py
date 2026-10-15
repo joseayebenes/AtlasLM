@@ -397,6 +397,8 @@ def test_hints_come_with_the_errors_those_of_the_project_first(project, tmp_path
     hints = load_hints([HINTS])
     assert hint_for(hints, "no match here", ['possible misspelling of "Argument"']).startswith("The compiler knows Argument")
     assert hint_for(hints, "nothing to say") == ""
+    assert "Character'Val (13)" in hint_for(hints, "strings are delimited by double quote character")   # C, in Ada
+    assert "(others => <>)" in hint_for(hints, "missing operand")
     mine.write_text('[[hint]]\nmatch = "(unclosed"\nhint = "x"\n')
     with pytest.raises(ConfigError, match="not a valid regular expression"):
         load_hints([mine])

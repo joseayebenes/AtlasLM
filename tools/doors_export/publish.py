@@ -10,7 +10,9 @@ module is and, optionally, which attribute tells requirements from headings. It 
 need DOORS: changing the mapping only needs publishing again.
 
 Every completely downloaded module is published whole (one transaction per module):
-- objects without an ID are left out (and counted); a repeated ID keeps the first one;
+- the ID is the first one of [fields] id that the object has: the requirement ID and, for
+  the objects without it, another one; objects without any are left out (and counted), and
+  a repeated ID keeps the first one;
 - the kind (requirement, heading, information) comes from the [kinds] attribute in a
   module that has it, and from the content otherwise;
 - the parent is the nearest ancestor with an ID;
@@ -48,12 +50,17 @@ except ImportError:                       # Python < 3.11
 
 log = logging.getLogger("doors-publish")
 
-BUILT_IN = {"identifier", "absolute_number"}     # what `id` can be besides a DOORS attribute
-OTHERS = (*KINDS, "heading_or_information")      # what [kinds] others can be
+BUILT_IN = {"identifier", "absolute_number", "module_number"}    # what `id` can be besides a DOORS attribute
+OTHERS = (*KINDS, "heading_or_information")                       # what [kinds] others can be
 
 
 class MappingError(ValueError):
     pass
+
+
+def _listed(items: list[str], shown: int = 10) -> str:
+    """The first items, and how many more."""
+    return ", ".join(items[:shown]) + (f" and {len(items) - shown} more" if len(items) > shown else "")
 
 
 def _value_key(value: str) -> str:
@@ -78,7 +85,7 @@ def _invert(section: str, table: dict, path, key=lambda d: d) -> dict[str, str]:
 @dataclass
 class Mapping:
     """What mapping.toml says (see mapping.example.toml), ready to look up by DOORS name."""
-    id: str = "identifier"
+    id: tuple[str, ...] = ("identifier",)                         # the first one the object has
     text: str = "Object Text"
     heading: str = "Object Heading"
     attributes: dict[str, str] = field(default_factory=dict)      # atlas attribute -> DOORS attribute
@@ -106,6 +113,10 @@ class Mapping:
             if unknown:
                 raise MappingError(f"{path}: unknown keys {unknown} in [{section}] (valid: {', '.join(sorted(keys))})")
         fields, kinds = data.get("fields", {}), data.get("kinds", {})
+        ids = fields.get("id", "identifier")
+        ids = [ids] if isinstance(ids, str) else ids
+        if not isinstance(ids, list) or not ids or not all(isinstance(i, str) and i.strip() for i in ids):
+            raise MappingError(f"{path}: [fields] id must be a text or a list of texts")
         bad = sorted(set(kinds.get("values", {})) - set(KINDS))
         if bad:
             raise MappingError(f"{path}: [kinds] values has kinds {bad} (valid: {', '.join(KINDS)})")
@@ -113,7 +124,7 @@ class Mapping:
             raise MappingError(f"{path}: [kinds] others is {kinds['others']!r} (valid: {', '.join(OTHERS)})")
         if (kinds.get("values") or "others" in kinds) and not kinds.get("attribute"):
             raise MappingError(f"{path}: [kinds] values and others need attribute, the DOORS attribute they are of")
-        return cls(id=fields.get("id", "identifier"), text=fields.get("text", "Object Text"),
+        return cls(id=tuple(ids), text=fields.get("text", "Object Text"),
                    heading=fields.get("heading", "Object Heading"), attributes=dict(data.get("attributes", {})),
                    modules=_invert("modules", data.get("modules", {}), path),
                    link_types=_invert("link_types", data.get("link_types", {}), path),
@@ -124,7 +135,7 @@ class Mapping:
 
     def doors_attributes(self) -> set[str]:
         """Every DOORS attribute the mapping reads."""
-        names = {self.text, self.heading, *self.attributes.values()} | ({self.id} - BUILT_IN)
+        names = {self.text, self.heading, *self.attributes.values()} | (set(self.id) - BUILT_IN)
         return {n for n in names | {self.kind_attribute} if n}
 
     def module_name(self, path: str) -> str:
@@ -148,6 +159,7 @@ class Report:
     unresolved_links: int = 0
     kinds: Counter = field(default_factory=Counter)                # objects per kind
     other_values: Counter = field(default_factory=Counter)         # values of the [kinds] attribute without a kind
+    other_ids: list[str] = field(default_factory=list)             # requirements without the first [fields] id
     warnings: list[str] = field(default_factory=list)
     error: str = ""
 
@@ -162,22 +174,20 @@ class Report:
         return (f"{self.module} ({self.path}): {self.requirements} objects" + (f" ({kinds})" if kinds else "")
                 + f", {self.links} links" + (f"; {', '.join(extra)}" if extra else ""))
 
-    def other_values_text(self, shown: int = 10) -> str:
-        """The values of the [kinds] attribute without a kind, the most frequent first."""
-        text = ", ".join(f"{v!r} ({n})" for v, n in self.other_values.most_common(shown))
-        return text + (f" and {len(self.other_values) - shown} more" if len(self.other_values) > shown else "")
-
 
 class Publisher:
     def __init__(self, store: RawStore, mapping: Mapping):
         self.store, self.mapping = store, mapping
         self._ids: dict[str, dict[int, str]] = {}          # module path -> absolute number -> ID
 
-    def id_of(self, obj: DoorsObject) -> str:
-        m = self.mapping.id
-        value = obj.identifier if m == "identifier" else str(obj.absolute_number) if m == "absolute_number" \
-            else obj.attributes.get(m, "")
-        return " ".join(value.split())
+    def id_of(self, obj: DoorsObject, sources: tuple[str, ...] = ()) -> str:
+        """The first ID the object has of [fields] id (or of `sources`)."""
+        built_in = {"identifier": obj.identifier, "absolute_number": str(obj.absolute_number),
+                    "module_number": f"{self.mapping.module_name(obj.module_path)}-{obj.absolute_number}"}
+        for source in sources or self.mapping.id:
+            if value := " ".join(built_in.get(source, obj.attributes.get(source, "")).split()):
+                return value
+        return ""
 
     def ids(self, path: str) -> dict[int, str]:
         if path not in self._ids:
@@ -239,6 +249,8 @@ class Publisher:
             report.kinds[kind] += 1
             if by_attribute and _value_key(value := obj.attributes.get(m.kind_attribute, "")) not in m.kind_values:
                 report.other_values[" ".join(value.split())] += 1
+            if kind == "requirement" and len(m.id) > 1 and not self.id_of(obj, m.id[:1]):
+                report.other_ids.append(rid)
             requirements.append({
                 "id": rid, "text": obj.attributes.get(m.text, ""), "heading": obj.attributes.get(m.heading, ""),
                 "kind": kind, "parent": parent, "position": position, "level": obj.level or 1,
@@ -278,7 +290,11 @@ def publish(raw: str, mapping: Mapping, out: str, modules: list[str] | None = No
                 if report.other_values:          # expected with [kinds] others; without it, maybe a value left out
                     (log.info if mapping.kind_others else log.warning)(
                         "%s: values of %s not in [kinds.values], taken as %s: %s", report.module,
-                        mapping.kind_attribute, mapping.kind_others or "requirement", report.other_values_text())
+                        mapping.kind_attribute, mapping.kind_others or "requirement",
+                        _listed([f"{v!r} ({n})" for v, n in report.other_values.most_common()]))
+                if report.other_ids:             # documents and code cite requirements by the first one
+                    log.warning("%s: %d requirements without %s, published with another ID: %s", report.module,
+                                len(report.other_ids), mapping.id[0], _listed(report.other_ids))
                 try:
                     report.warnings = writer.replace_module(report.module, requirements, links, source=path)
                 except ExchangeError as e:

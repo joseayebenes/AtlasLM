@@ -190,7 +190,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `id_pattern` | texto | `""` | expresión de un ID válido; los que no casan se avisan |
+| `id_pattern` | texto | `""` | expresión de un ID válido; se avisan los requisitos que no casan (los títulos y la información, no) |
 | `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
 | `inline_reference_type` | texto | `"references"` | tipo de esos enlaces |

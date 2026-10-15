@@ -81,6 +81,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   capítulo de cada requisito. Además, los valores no distinguen mayúsculas ni espacios de más,
   un módulo sin el atributo se clasifica por contenido (antes, todo era requisito), y
   `publish.py` cuenta los objetos de cada tipo y dice qué valores no estaban en `[kinds.values]`.
+- `tools/doors_export`: `[fields] id` admite una lista, y vale el primer ID que tenga cada
+  objeto; y `module_number`, el nombre del módulo y el Absolute Number (`SRS_TMS-123`). Con
+  `["unique-identifier", "module_number"]`, los requisitos se publican con su nombre, y los
+  títulos y la información, que no lo tienen, con el otro ID: antes se quedaban fuera y atlas
+  perdía el capítulo de cada requisito. `publish.py` avisa de los requisitos sin el primero, y
+  atlas solo avisa de los ID fuera de `id_pattern` en los requisitos.
 
 ### Corregido
 - `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se

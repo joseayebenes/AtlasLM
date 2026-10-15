@@ -318,6 +318,38 @@ def test_a_yes_no_attribute_tells_the_requirements_and_the_headings_stay(tmp_pat
     assert (_kinds(out)["SRS-1"], _kinds(out)["SRS-4"]) == ("information", "information")
 
 
+def test_the_requirement_name_as_id_and_another_one_for_the_objects_without_it(tmp_path, caplog):
+    from atlas.index.records import requirement_records
+    _published(tmp_path)
+    with sqlite3.connect(tmp_path / "raw.sqlite") as c:          # only requirements have a name, SRS-3 not yet
+        c.executemany("INSERT INTO requirement_attributes SELECT id, ?, ? FROM requirements "
+                      "WHERE module_path = '/P/SRS' AND absolute_number = ?",
+                      [("is_requisite", "No", 1), ("is_requisite", "Yes", 2), ("is_requisite", "Yes", 3),
+                       ("is_requisite", "No", 4), ("unique-identifier", "TMS-REQ-002", 2)])
+        c.executemany("INSERT INTO attribute_definitions VALUES ('/P/SRS', ?, 'String', 0)",
+                      [("is_requisite",), ("unique-identifier",)])
+    mapping = MAPPING.replace('id = "identifier"', 'id = ["unique-identifier", "module_number"]') + IS_REQUISITE
+    reports, out = _published(tmp_path, mapping)
+    assert _kinds(out) == {"SRS_TMS-1": "heading", "TMS-REQ-002": "requirement", "SRS_TMS-3": "requirement",
+                           "SRS_TMS-4": "information", "SSS-5": "requirement"}
+    assert "SRS_TMS: 1 requirements without unique-identifier, published with another ID: SRS_TMS-3" in caplog.text
+    caplog.clear()
+    ad = ExchangeAdapter({"exchange": {"path": str(out)}, "convention": {"id_pattern": r"^TMS-REQ-\d{3}$"}})
+    assert {(l.source, l.target, l.type) for l in ad.links("SRS_TMS")} == \
+        {("TMS-REQ-002", "SSS-5", "satisfies"), ("SRS_TMS-3", "SSS-5", "satisfies")}
+    rows = [{"id": r.id, "text": r.text, "parent": r.parent, "attributes": r.attributes}
+            for r in ad.requirements("SRS_TMS")]
+    assert [m for m in caplog.messages if "outside the convention" in m] == \
+        [r"ID outside the convention (^TMS-REQ-\d{3}$): 'SRS_TMS-3' in SRS_TMS"]     # not the chapter
+    assert [(r["kind"], r.get("ref", ""), r["path"]) for r in requirement_records("SRS_TMS", rows)] == [
+        ("requirement", "TMS-REQ-002", "1.1 Track management"), ("requirement", "SRS_TMS-3", "1.1 Track management"),
+        ("chunk", "", "1.1 Track management")]
+    for bad in ("[]", '["unique-identifier", 3]'):
+        (tmp_path / "bad.toml").write_text(MAPPING.replace('id = "identifier"', f"id = {bad}"))
+        with pytest.raises(publish.MappingError, match="id must be a text or a list of texts"):
+            publish.Mapping.load(tmp_path / "bad.toml")
+
+
 @pytest.mark.parametrize("kinds, error", [
     ('attribute = "is_requisite"\nothers = "maybe"\n', "others is 'maybe'"),
     ('attribute = "is_requisite"\n[kinds.values]\nrequirement = "Yes"\ninformation = "yes"\n',

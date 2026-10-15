@@ -74,9 +74,14 @@ con su nombre exacto. Ver `mapping.example.toml`.
 
 `publish.py` comprueba que los atributos de la correspondencia existen; si no, sugiere el
 nombre más parecido. Al publicar:
-- los objetos sin ID se omiten y se cuentan;
+- los objetos sin ID se omiten y se cuentan. De un ID repetido se publica el primer objeto, y
+  `publish.py` lista los repetidos con el Absolute Number de los dos objetos, para buscarlos en
+  DOORS;
 - el padre de cada requisito es su antecesor más cercano que tenga ID;
-- un enlace a un objeto que no se ha descargado se omite y se cuenta.
+- un enlace a un objeto sin ID o que no se ha descargado se omite y se cuenta, y `publish.py`
+  dice a qué módulos sin descargar apuntan. Para publicar esos enlaces se descargan también
+  esos módulos (`--module` se puede repetir, o `--folder` con el proyecto entero); la descarga
+  es incremental.
 
 ## El ID de cada objeto
 

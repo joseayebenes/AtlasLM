@@ -87,6 +87,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   títulos y la información, que no lo tienen, con el otro ID: antes se quedaban fuera y atlas
   perdía el capítulo de cada requisito. `publish.py` avisa de los requisitos sin el primero, y
   atlas solo avisa de los ID fuera de `id_pattern` en los requisitos.
+- `tools/doors_export`: `publish.py` lista los ID repetidos, con el Absolute Number del objeto
+  publicado y del que se omite, y los módulos sin descargar a los que apuntan los enlaces que no
+  se publican. El resumen separa esos enlaces de los que van a objetos sin ID o borrados.
 
 ### Corregido
 - `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se

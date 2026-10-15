@@ -89,6 +89,8 @@ class ServiceConfig:
     max_tokens: int = 0          # LLM only: output cap; 0 = the server default
     reasoning_effort: str = ""   # LLM only: "none" turns reasoning off (Ollama); "" = the server default
     extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
+    reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
+                                         # an agent gives the model back its reasoning; "" = never
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -723,6 +725,20 @@ def describe(cfg: ServiceConfig) -> str:
 CHECK_MAX_TOKENS = 512
 
 
+def reasoning_of(message) -> str:
+    """The reasoning a server gives with a message: `reasoning` (OpenRouter, Ollama),
+    `reasoning_content` (vLLM, LM Studio) or the texts of `reasoning_details` (OpenRouter).
+    The OpenAI client keeps the fields it does not know in `model_extra`."""
+    extra = getattr(message, "model_extra", None) or {}
+    for name in ("reasoning", "reasoning_content"):
+        text = getattr(message, name, None) or extra.get(name)
+        if isinstance(text, str) and text.strip():
+            return text
+    details = getattr(message, "reasoning_details", None) or extra.get("reasoning_details") or []
+    texts = [d.get("text") if isinstance(d, dict) else getattr(d, "text", None) for d in details]
+    return "\n".join(t for t in texts if isinstance(t, str) and t.strip())
+
+
 def _reasoning(response, message) -> str:
     """Describes the reasoning of a reasoning model, or "" if there is none. The text comes
     as `reasoning` (Ollama) or `reasoning_content` (vLLM, LM Studio); servers that hide it
@@ -828,6 +844,9 @@ api_key = "${OPENAI_API_KEY:-local}"
 temperature = 0.1
 max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
 reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
+reasoning_field = "reasoning"   # agents: the reasoning of a turn with tool calls goes back to the model in this
+                                # field of the message (gemma 4 asks for it); "reasoning_content" for some
+                                # servers; "" = never
 
 # [llm.extra_body]              # fields added as is to every chat request, for options of the server
 # provider = { order = ["deepinfra"], allow_fallbacks = false }   # OpenRouter: always the same provider

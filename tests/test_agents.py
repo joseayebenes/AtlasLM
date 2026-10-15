@@ -150,6 +150,75 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     assert "tracks.delete_track" in result["content"] and "SSS-0005" in result["content"]
 
 
+class ThinkingClient(StubClient):
+    """A StubClient whose model reasons before each turn: `reasoning` (OpenRouter, Ollama) or,
+    with details=True, `reasoning_details` (OpenRouter)."""
+
+    def __init__(self, turns, details=False):
+        super().__init__(turns)
+        self.details, self.n = details, 0
+
+    def create(self, **kwargs):
+        response = super().create(**kwargs)
+        self.n += 1
+        thought = f"Thought {self.n}: SRS-0004 needs trace."
+        message = response.choices[0].message
+        if self.details:
+            message.model_extra = {"reasoning_details": [{"type": "reasoning.text", "text": thought}]}
+        else:
+            message.reasoning = thought
+        return response
+
+
+def test_the_reasoning_of_a_turn_with_tool_calls_goes_back_to_the_model(workspace, monkeypatch):
+    """The model card of gemma 4: the thoughts of the turns with tool calls stay in the
+    conversation. They go back in [llm] reasoning_field, never in the answer."""
+    from atlas.agents.model import reasoning_of
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    turns = [{"trace": {"req_id": "SRS-0004"}}, {"trace": {"req_id": "SRS-0005"}}, "tracks.delete_track."]
+    client = ThinkingClient(turns)
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"] == "tracks.delete_track."                       # the last thought is not in it
+    third = client.requests[2]["messages"]
+    calls = [m for m in third if m["role"] == "assistant"]
+    assert [m["reasoning"] for m in calls] == ["Thought 1: SRS-0004 needs trace.", "Thought 2: SRS-0004 needs trace."]
+    assert "reasoning" not in client.requests[0]["messages"][-1]
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": "reasoning_content"})
+    client = ThinkingClient(turns[1:], details=True)
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    call = client.requests[1]["messages"][-2]
+    assert call["reasoning_content"] == "Thought 1: SRS-0004 needs trace." and "reasoning" not in call
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": ""})        # never
+    client = ThinkingClient(turns[1:])
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert set(client.requests[1]["messages"][-2]) == {"role", "content", "tool_calls"}
+    assert reasoning_of(SimpleNamespace(content="x")) == ""
+
+
+def test_the_sampling_of_an_agent(workspace, monkeypatch):
+    """top_p and top_k of the agent (gemma 4: 0.95 and 64); top_k is not in the OpenAI API."""
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
+    monkeypatch.setitem(workspace["agents"], "assistant", {"top_p": 0.95, "top_k": 64})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    request = client.requests[0]
+    assert request["top_p"] == 0.95
+    assert request["extra_body"] == {"provider": {"order": ["deepinfra"]}, "top_k": 64}
+    monkeypatch.setitem(workspace["agents"], "assistant", {})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    assert "top_p" not in client.requests[0] and "top_k" not in client.requests[0]["extra_body"]
+    for bad, why in (({"top_p": 1.5}, "top_p must be"), ({"top_k": 0}, "top_k must be")):
+        monkeypatch.setitem(workspace["agents"], "assistant", bad)
+        with pytest.raises(ConfigError, match=why):
+            load_definitions(workspace)
+
+
 def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
     from atlas.agents import model
     from atlas.agents.runtime import run_agent
@@ -529,3 +598,56 @@ def test_the_app_for_adk_web(workspace, monkeypatch):
     assert load("assistant").name == "assistant" and len(load("assistant").tools) == 8
     tracer = load("tracer")
     assert tracer.name == "tracer" and [t.__name__ for t in tracer.tools] == ["trace", "gaps", "build_context"]
+
+
+def test_old_tool_results_are_left_out_when_the_agent_keeps_a_few():
+    """keep_tool_results: a read of a file read again later goes (its text is old), and so do
+    the large results before the last ones, in groups of MASK_STEP; short fields stay."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from atlas.agents.model import MASK_STEP, to_messages
+    contents = [types.Content(role="user", parts=[types.Part(text="Fix it.")])]
+    results = [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "x" * 2000})]
+    results += [("check_code", {"file": "src/a.adb", "ok": False, "errors": [{"message": "e" * 900}]})] * 7
+    results += [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "y" * 2000}),
+                ("edit_file", {"file": "src/a.adb", "replacements": 1, "diff": "d" * 50})]
+    for i, (name, response) in enumerate(results):
+        contents.append(types.Content(role="model", parts=[types.Part(function_call=types.FunctionCall(
+            id=f"c{i}", name=name, args={}))]))
+        contents.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(
+            id=f"c{i}", name=name, response=response))]))
+    request = LlmRequest(contents=contents)
+    whole = [m["content"] for m in to_messages(request) if m["role"] == "tool"]
+    assert all("note" not in c for c in whole)                       # 0: all of them, as before
+    short = [json.loads(m["content"]) for m in to_messages(request, keep_tool_results=3) if m["role"] == "tool"]
+    assert short[0] == {"note": "an older read of src/a.adb (lines 1-300), left out: it was read again later"}
+    assert MASK_STEP == 5 and [("note" in r) for r in short[1:]] == [True] * 4 + [False] * 5
+    assert short[1]["ok"] is False and short[1]["file"] == "src/a.adb" and "errors" not in short[1]
+    assert short[-2]["source"] == "y" * 2000 and short[-1]["diff"] == "d" * 50      # the last read and the edit stay
+
+
+def test_a_change_that_leaves_the_same_errors_is_not_progress():
+    """stall_guard: rewriting a file with the same compile errors again and again is a loop
+    (the server of a run of atlas develop, 17 times); fewer errors, or none, is progress."""
+    from atlas.agents.runtime import stall_guard
+    results = iter([{"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}}])
+
+    def write_file(path: str, content: str) -> dict:
+        return next(results)
+    state: dict = {}
+    write = stall_guard([write_file], 2, state)[0]
+    write(path="s.adb", content="a")              # the first check of the file: progress
+    write(path="s.adb", content="b")              # the same 2 errors: 1
+    assert not state
+    write(path="s.adb", content="c")              # 2: stalled
+    assert state == {"stalled": True}
+    state.clear()
+    write(path="s.adb", content="d")              # 1 error now: progress again
+    write(path="s.adb", content="e")
+    assert not state

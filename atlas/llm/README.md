@@ -8,6 +8,7 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 |---|---|
 | `connection.py` | configuración de red, cliente OpenAI con proxy, TLS, límites y reintentos, diagnóstico de errores, `atlas check` y los contadores de uso |
 | `structured.py` | `JsonLlm`: pedir un objeto JSON y recuperarlo aunque el modelo lo envuelva, lo corte o lo rompa |
+| `probe.py` | `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas |
 
 ## Conexión
 
@@ -33,6 +34,20 @@ hacen inútil seguir: el motor los trata como fatales.
 configuración efectiva con las claves enmascaradas. Reconoce los modelos que razonan: dice
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
 razonando sin contestar.
+
+`atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
+(`[llm] reasoning_effort`, o `low` si está vacío o es `none`):
+1. una pregunta que necesita una herramienta: el modelo tiene que llamarla con los argumentos
+   correctos;
+2. el resultado de la herramienta: tiene que contestar con él;
+3. la misma petición sin el razonamiento de la primera vuelta: si el servidor da los tokens
+   del prompt, la diferencia dice si vuelve a meter el razonamiento que atlas le devuelve en
+   `[llm] reasoning_field`. Si no lo aprovecha, propone el otro campo.
+
+Sirve para comprobar el gateway: las primeras plantillas de chat de gemma 4 cerraban el turno
+a mitad de una llamada a herramienta, y OpenCode entraba en bucles. Con `gemma-4-26b` en
+OpenRouter (2026-10-15): llama a la herramienta en 2 s, contesta con el resultado y el servidor
+mete el razonamiento en el prompt (222 tokens con él, 149 sin él).
 
 `[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
 agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no

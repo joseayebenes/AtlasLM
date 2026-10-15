@@ -68,7 +68,9 @@ def test_check_code_returns_the_messages_of_the_compiler(project):
     (ada / "src" / "tracks.adb").write_text("BROKEN")
     bad = tools.check_code(str(ada / "src" / "tracks.adb"))
     assert bad["ok"] is False
+    hint = bad["errors"][0].pop("hint")                                   # see test_hints_come_with_the_errors...
     assert bad["errors"] == [{"file": "tracks.adb", "line": 3, "column": 7, "message": '"Trk" is undefined'}]
+    assert hint.startswith("Trk is not declared or not visible here")
     assert bad["warnings"][0]["message"] == 'variable "H" is not referenced'
     # only inside the code roots; nothing without a command
     assert "error" in tools.check_code("/etc/hosts")
@@ -313,3 +315,254 @@ def test_gnat_on_the_test_a_small_model_wrote_and_on_the_model_of_tester_md(proj
     shutil.rmtree(tools.build_dir)             # gnatmake decides by time stamps: a change a moment after the
     res = tools.run_test(str(test))            # last build can go unseen, so build from scratch
     assert res["passed"] is False and "300.0 should be Normal" in res["output"], res
+
+
+# --- the file tools of the same context: syntax first, check_code after ------------------------
+
+FAKE_SYNTAX = '''import sys
+from pathlib import Path
+for i, line in enumerate(Path(sys.argv[-1]).read_text().splitlines(), 1):
+    if "OPEN_BEGIN" in line:
+        print(f"{Path(sys.argv[-1]).name}:{i}:4: error: \\"end;\\" expected for \\"begin\\" at line {i}")
+        sys.exit(1)
+'''
+
+
+def test_a_change_that_breaks_the_syntax_is_not_made_and_each_change_is_checked(project, tmp_path, toml):
+    from types import SimpleNamespace
+    from atlas.code import CodeTools
+    ada, make = project
+    syntax = tmp_path / "bin1" / "syntax.py"
+    syntax.write_text(FAKE_SYNTAX)
+    build = make(extra=f'[sources.code.syntax_commands]\nadb = ["{sys.executable}", "{syntax}", "{{file}}"]\n')
+    files = build.files
+    build.hook()                                         # what CodeTools.for_context does in an agent
+    f = str(ada / "src" / "tracks.adb")
+    files.read_file(f)
+    text = Path(f).read_text()
+    broken = files.edit_file(f, "end Update;", "OPEN_BEGIN")      # the begin of Update is left open
+    assert broken["error"].startswith("the change was not made: it breaks the syntax")
+    assert broken["syntax_errors"][0]["message"].startswith('"end;" expected for "begin"')
+    assert ">" in broken["around"] and Path(f).read_text() == text           # nothing was written
+    done = files.edit_file(f, 'Logger.Log ("update");', 'Logger.Log ("updated");')
+    assert done["replacements"] == 1 and done["check"] == {"ok": True}       # check_code, in the same answer
+    Path(f).write_text(text.replace("procedure Update", "BROKEN procedure Update"))
+    files.read_file(f)
+    after = files.write_file(f, Path(f).read_text() + "\n")
+    assert after["check"]["ok"] is False and after["check"]["errors"][0]["message"] == '"Trk" is undefined'
+    # Python is checked with ast, with no command; a new file is written even if broken
+    py = ada / "src" / "calc.py"
+    py.write_text("def f():\n    return 1\n")
+    files.read_file(str(py))
+    assert "breaks the syntax" in files.edit_file(str(py), "return 1", "return (1")["error"]
+    assert files.write_file(str(ada / "src" / "new.py"), "def g(:\n")["created"] is True
+    # check_on_edit = false: no check in the answers
+    quiet = make(extra="check_on_edit = false")
+    quiet.hook()
+    quiet.files.read_file(f)
+    assert "check" not in quiet.files.write_file(f, Path(f).read_text() + "\n")
+    # in an agent's context the hooks come with the file tools
+    context = SimpleNamespace(cfg=load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\n')))
+    tools = CodeTools.for_context(context)
+    assert tools.syntax == context._build_tools.syntax_errors and tools.after_change is not None
+
+
+@gnat
+def test_gnat_rejects_a_begin_left_open(project):
+    ada, make = project
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+                 extra='[sources.code.syntax_commands]\nadb = ["gcc", "-c", "-gnats", "{file}"]\n')
+    tools.hook()
+    f = str(ada / "src" / "tracks.adb")
+    tools.files.read_file(f)
+    text = Path(f).read_text()
+    first_end = next(l.strip() for l in text.splitlines() if l.strip().startswith("end ") and l.strip() != "end;")
+    broken = tools.files.edit_file(f, first_end, "null;")
+    assert "breaks the syntax" in broken["error"] and Path(f).read_text() == text
+    assert any("expected" in e["message"] or "missing" in e["message"] for e in broken["syntax_errors"])
+
+
+def test_hints_come_with_the_errors_those_of_the_project_first(project, tmp_path):
+    from atlas.code.build import HINTS, hint_for, load_hints
+    from atlas.config import ConfigError
+    ada, make = project
+    (ada / "src" / "tracks.adb").write_text("BROKEN")
+    error = make().check_code(str(ada / "src" / "tracks.adb"))["errors"][0]
+    assert error["hint"].startswith("Trk is not declared or not visible here")         # hints.toml, of serie
+    mine = tmp_path / "lessons.toml"
+    mine.write_text('[[hint]]\nmatch = \'"(?P<name>Trk)" is undefined\'\nhint = "{name} is Track, in this project."\n')
+    tools = make(extra=f'hints = ["{mine.as_posix()}"]')
+    assert tools.check_code(str(ada / "src" / "tracks.adb"))["errors"][0]["hint"] == "Trk is Track, in this project."
+    # a hint can match a detail of the message, and its groups go into the text
+    hints = load_hints([HINTS])
+    assert hint_for(hints, "no match here", ['possible misspelling of "Argument"']).startswith("The compiler knows Argument")
+    assert hint_for(hints, "nothing to say") == ""
+    assert "Character'Val (13)" in hint_for(hints, "strings are delimited by double quote character")   # C, in Ada
+    assert "(others => <>)" in hint_for(hints, "missing operand")
+    mine.write_text('[[hint]]\nmatch = "(unclosed"\nhint = "x"\n')
+    with pytest.raises(ConfigError, match="not a valid regular expression"):
+        load_hints([mine])
+    mine.write_text('[[hint]]\nmatch = "x"\n')
+    with pytest.raises(ConfigError, match="needs match and hint"):
+        load_hints([mine])
+
+
+# --- the real declarations of the library ----------------------------------------------------
+
+COMLIN = """package Ada.Command_Line is
+   function Argument_Count return Natural;
+   --  The number of arguments.
+
+   function Argument (Number : Positive) return String;
+   --  The argument at the position Number.
+
+   type Exit_Status is new Integer;
+   Success : constant Exit_Status;
+private
+   Hidden : Integer;
+end Ada.Command_Line;
+"""
+LATIN = "package Ada.Characters.Latin_1 is\n   LF : constant Character := Character'Val (10);\nend Ada.Characters.Latin_1;\n"
+OTHER = "package GNAT.Command_Line is\n   procedure Getopt (Switches : String);\nend GNAT.Command_Line;\n"
+
+
+def test_library_spec_and_the_errors_that_name_what_does_not_exist(project, tmp_path):
+    pytest.importorskip("tree_sitter_ada")
+    ada, make = project
+    lib = tmp_path / "adainclude"
+    lib.mkdir()
+    (lib / "a-comlin.ads").write_text(COMLIN)          # GNAT shortens the file names: found by the unit
+    (lib / "a-chlat1.ads").write_text(LATIN)
+    (lib / "g-comlin.ads").write_text(OTHER)
+    tools = make(extra=f'library = ["{tmp_path.as_posix()}/adain*"]')
+    spec = tools.library_spec("Ada.Command_Line")
+    assert spec["unit"] == "Ada.Command_Line" and spec["file"] == "a-comlin.ads"
+    assert [(d["kind"], d["name"]) for d in spec["declarations"]] == [
+        ("function", "Argument_Count"), ("function", "Argument"), ("type", "Exit_Status"), ("constant", "Success")]
+    assert spec["declarations"][1]["text"] == "function Argument (Number : Positive) return String"
+    assert spec["declarations"][1]["doc"] == "The argument at the position Number."          # the private part is not
+    assert [d["name"] for d in tools.library_spec("ada.command_line", name="count")["declarations"]] == ["Argument_Count"]
+    assert "similar: ada.command_line" in tools.library_spec("Ada.Comand_Line")["error"]
+    assert tools.library_spec("Tracks")["unit"] == "Tracks"                    # a spec of the project too
+    # an error that names what does not exist brings what does
+    errors = tools._hinted([{"message": '"Arguments" not declared in "Command_Line"'},
+                            {"message": '"LF" is undefined'}, {"message": '"Nothing" is undefined'}],
+                           text="with Ada.Command_Line;\nprocedure Main is begin null; end Main;\n")
+    assert errors[0]["declared_in"]["unit"] == "Ada.Command_Line"            # not GNAT.Command_Line: the with says so
+    assert errors[0]["declared_in"]["similar"][0] == "function Argument (Number : Positive) return String"
+    assert errors[0]["hint"].startswith("Command_Line has no Arguments")
+    assert errors[1]["found_in"] == ["Ada.Characters.Latin_1: LF : constant Character := Character'Val (10);"]
+    assert "found_in" not in errors[2]
+    with_gnat = tools._hinted([{"message": '"Getop" not declared in "Command_Line"'}], text="with GNAT.Command_Line;")
+    assert with_gnat[0]["declared_in"]["unit"] == "GNAT.Command_Line"
+
+
+@gnat
+def test_library_spec_reads_the_runtime_of_gnat(project):
+    ada, make = project
+    tools = make(extra='library = ["~/.local/share/alire/toolchains/gnat_native_*/lib/gcc/*/*/adainclude"]')
+    sockets = tools.library_spec("GNAT.Sockets", name="Receive_Socket")["declarations"]
+    assert sockets and all(d["name"] == "Receive_Socket" for d in sockets)
+    split = tools.library_spec("GNAT.String_Split")                       # an instance: its generic's declarations
+    assert split["instance_of"] == "GNAT.Array_Split" and any(d["name"] == "Create" for d in split["declarations"])
+    assert "Length (Source : Unbounded_String) return Natural" in str(tools.library_spec("Ada.Strings.Unbounded", "Length"))
+
+
+INFO = """This is gnat_rm.info, produced by makeinfo.
+
+\x1f
+File: gnat_rm.info,  Node: Pragma Assertion_Policy,  Next: Pragma Assume,  Up: Implementation Defined Pragmas
+
+2.17 Pragma Assertion_Policy
+============================
+
+Syntax: pragma Assertion_Policy (CHECK | DISABLE | IGNORE);
+This pragma controls the assertions that are checked.
+
+* Pragma Assume::
+
+\x1f
+File: gnat_rm.info,  Node: Pragma Assume,  Next: Pragma Elaborate_All,  Up: Implementation Defined Pragmas
+
+2.18 Pragma Assume
+==================
+
+Syntax: pragma Assume (Boolean_EXPRESSION);
+\x1f
+Tag Table:
+Node: Top 100
+"""
+
+
+def test_search_reference_over_the_manuals_and_the_library(project, tmp_path, toml, capsys):
+    pytest.importorskip("tree_sitter_ada")
+    from atlas.cli import main
+    ada, make = project
+    lib = tmp_path / "adainclude"
+    lib.mkdir()
+    (lib / "a-strfix.ads").write_text("package Ada.Strings.Fixed is\n   function Trim (Source : String) return String;\n"
+                                      "   --  Removes the leading and trailing blanks of Source.\nend Ada.Strings.Fixed;\n")
+    (lib / "s-imgint.ads").write_text("package System.Img_Int is\n   procedure Image_Integer (V : Integer);\n"
+                                      "   --  Removes nothing, internal.\nend System.Img_Int;\n")
+    docs = tmp_path / "manuals"
+    docs.mkdir()
+    (docs / "gnat_rm.info").write_text(INFO)
+    (docs / "style.md").write_text("# Naming\n\nPackages are nouns.\n\n# Blanks\n\nNo leading blanks in an image.\n")
+    tools = make(extra=f'library = ["{lib.as_posix()}"]\nreference = ["{docs.as_posix()}"]')
+    found = tools.search_reference("pragma Assume")["passages"]
+    assert found[0]["source"] == "gnat_rm.info: Pragma Assume" and "Boolean_EXPRESSION" in found[0]["text"]
+    blanks = [p["source"] for p in tools.search_reference("remove leading blanks")["passages"]]
+    assert "Ada.Strings.Fixed.Trim" in blanks and "style.md: Blanks" in blanks
+    assert not any(s.startswith("System.") for s in blanks)              # the internal units of GNAT are left out
+    # again when a manual changes; a manual taken out of the configuration goes
+    (docs / "style.md").write_text("# Blanks\n\nUse Ada.Strings.Fixed.Trim for an image without blanks.\n")
+    os.utime(docs / "style.md", (1, 1))
+    assert "Ada.Strings.Fixed.Trim for an image" in str(tools.search_reference("image without blanks"))
+    assert set(make(extra=f'library = ["{lib.as_posix()}"]').reference.ensure()) == {"library"}
+    assert "no manuals and no library" in make().search_reference("x")["error"]
+    # atlas reference builds it from the command line
+    cfg = toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\nreference = ["{docs.as_posix()}"]\n')
+    with pytest.raises(SystemExit) as end:
+        main(["reference", str(cfg)])
+    assert end.value.code == 0 and "gnat_rm.info" in capsys.readouterr().out
+
+
+# --- the language server ---------------------------------------------------------------------
+
+def _line_with(path: Path, text: str) -> int:
+    return next(i for i, l in enumerate(path.read_text().split("\n"), 1) if text in l)
+
+
+def test_the_tools_of_a_language_server(project, tmp_path):
+    from atlas.code import LanguageTools
+    ada, make = project
+    fake = Path(__file__).parent / "fakes" / "fake_lsp.py"
+    tools = LanguageTools(make(), [sys.executable, str(fake)])
+    tracks = ada / "src" / "tracks.adb"
+    line = _line_with(tracks, "Logger.Log")
+    found = tools.find_definition(str(tracks), line, "Logger.Log")            # qualified: the last part
+    assert found["definitions"][0]["file"].endswith(("logger.ads", "logger.adb"))   # the fake takes the first
+    assert "procedure Log" in found["definitions"][0]["text"]
+    refs = tools.find_references(str(tracks), line, "Log")
+    assert refs["count"] >= 2 and any(r["file"].endswith("tracks.adb") for r in refs["references"])
+    assert tools.describe_symbol(str(tracks), line, "Log")["description"].startswith("procedure Log")
+    assert "is not in line 1" in tools.find_definition(str(tracks), 1, "Log")["error"]
+    assert "outside the code roots" in tools.find_definition("/etc/hosts", 1, "x")["error"]
+    assert "no language server configured" in LanguageTools(make(), []).find_definition(str(tracks), line, "Log")["error"]
+
+
+def _als() -> list[str]:
+    return glob.glob(os.path.expanduser("~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"))
+
+
+@gnat
+@pytest.mark.skipif(not _als(), reason="the Ada Language Server is not installed (the Ada extension of VS Code)")
+def test_the_ada_language_server(project):
+    from atlas.code import LanguageTools
+    ada, make = project
+    tools = LanguageTools(make(tool_path=GNAT_PATH), ["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"])
+    tracks = ada / "src" / "tracks.adb"
+    line = _line_with(tracks, "Logger.Log")
+    found = tools.find_definition(str(tracks), line, "Log")
+    assert found["definitions"][0]["file"].endswith("logger.ads"), found
+    assert "Log" in tools.describe_symbol(str(tracks), line, "Log")["description"]

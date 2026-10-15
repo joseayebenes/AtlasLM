@@ -24,6 +24,10 @@
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
+    atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
+                                    whether the server uses the reasoning that the agents give back
+    atlas reference [atlas.toml]    indexes the manuals of [sources.code] reference and the declarations of
+                                    its library for search_reference (also done on the first search)
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
     atlas --version
@@ -906,8 +910,10 @@ def develop(cfg: Config, plan: str) -> int:
 
     def show(s: dict) -> None:
         cost = f" ${s['cost']:.4f}" if "cost" in s else ""
-        print(f"{s['n']:3d} {s['kind']:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, {s['calls']} calls"
-              f"{' (max_steps)' if s.get('stopped') else ''}{cost}; tests passing: {s.get('tests_passed', '?')}"
+        stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
+        attempt = f" #{s['attempt']}" if s.get("attempt") else ""
+        print(f"{s['n']:3d} {s['kind'] + attempt:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, "
+              f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
@@ -972,6 +978,26 @@ def check(cfg: Config) -> int:
     return check_connection(from_config(cfg))
 
 
+def probe(cfg: Config) -> int:
+    """The chat model as an agent: a tool call, its result and the reasoning given back."""
+    from atlas.llm import from_config
+    from atlas.llm.probe import probe as probe_model
+    return probe_model(from_config(cfg).llm)
+
+
+def reference(cfg: Config) -> int:
+    """The manuals and the library for search_reference: built, or brought up to date."""
+    from atlas.code import BuildTools
+    tools = BuildTools.from_config(cfg)
+    if not (tools.reference.patterns or tools.library.folders):
+        print("nothing to index: [sources.code] reference (manuals) and library (specs)", file=sys.stderr)
+        return 1
+    for name, records in tools.reference.ensure().items():
+        print(f"{name:30s} {records} passages" if name != "library" else f"{name:30s} {records} declarations")
+    print(f"index: {tools.reference.db}")
+    return 0
+
+
 def serve(cfg: Config) -> int:
     """The MCP server over stdio, until the client closes it."""
     from atlas.mcp import serve as serve_mcp
@@ -1010,7 +1036,7 @@ def main(argv: list[str] | None = None) -> None:
     if action == "init":
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "eval": evaluate, "check": check, "serve": serve}
+               "agents": list_agents, "eval": evaluate, "check": check, "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

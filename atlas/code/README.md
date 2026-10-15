@@ -9,8 +9,13 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
-| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file` |
-| `build.py` | `BuildTools`: `check_code`, `run_test` y `run_program`, el compilador, las pruebas y el programa del proyecto |
+| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
+| `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
+| `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
+| `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
+| `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
+| `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
+| `hints.toml` | las pistas de serie para los mensajes de GNAT |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
 ## Análisis
@@ -51,6 +56,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 | `read_file` | un fragmento numerado |
 | `edit_file` | sustituye un texto y devuelve el diff |
 | `write_file` | crea un fichero o lo reescribe entero |
+| `replace_subprogram` | sustituye un subprograma entero, buscado por su nombre (Ada y Python) |
+| `add_subprogram` | añade subprogramas tras otro o al final de las declaraciones del paquete |
 
 Protecciones:
 - No tocan nada fuera de las raíces ni de lo excluido con `exclude`; tampoco con `..` ni
@@ -91,6 +98,138 @@ pequeñas o reescribir el fichero con `write_file`. Con `gemma-4-26b` y un fiche
 líneas, los textos largos no eran copias del fichero sino reconstrucciones de memoria (uno de
 142 líneas tenía las funciones en otro sitio): dos tareas acabaron así en bucles de leer y
 editar de 27 y 45 minutos. Con el límite, la siguiente salió en 7 llamadas.
+
+### La sintaxis antes de escribir y el compilador después
+
+En el contexto de un agente, las herramientas que escriben reciben de `BuildTools` dos
+comprobaciones:
+- **Sintaxis.** Un cambio que deja mal la sintaxis de un fichero que estaba bien no se hace:
+  el agente recibe los errores y las líneas de alrededor, como habría quedado el fichero. La
+  comprueba `[sources.code] syntax_commands` por extensión, sobre una copia en
+  `<workspace>/build/syntax` (GNAT: `gcc -c -gnats`, solo sintaxis); Python, con `ast`, sin
+  comando. Un fichero nuevo se escribe aunque esté mal. Es lo que hace SWE-agent con su
+  linter. En la tanda 4, un `begin` sin cerrar que dejó una edición siguió en 5 compilaciones
+  de una ejecución de 37 minutos, hasta que se deshizo el encargo.
+- **Compilación.** Con `check_on_edit` (por defecto), cada cambio devuelve en `check` lo que
+  dice `check_code` del fichero: `ok` y los cinco primeros errores. El agente se ahorra la
+  vuelta de `check_code` (el 17 % de sus llamadas en la tanda 4) y no puede decir que compila
+  sin haberlo visto (`gemma-4-26b` lo dijo dos veces sin ser así).
+
+### Pistas para los errores del compilador
+
+Cada error de `check_code`, de `run_test`, de la comprobación de sintaxis y de la compilación
+tras un cambio lleva una `hint` si alguna pista casa con su mensaje o con sus detalles. Las de
+serie (`hints.toml`) salen de los errores de `gemma-4-26b` escribiendo un servidor en Ada con
+GNAT: un `String` sin límites (16 veces en una tanda), argumentos de otro tipo, nombres que no
+existen (`Ada.Command_Line.Arguments`), `with` que faltan, bloques sin cerrar, atributos
+inventados (`'Second`)... Las del proyecto, en los ficheros de `[sources.code] hints`, van
+antes:
+
+```toml
+[[hint]]
+match = '"(?P<name>[^"]+)" not declared in "Controller"'
+hint = "Controller declares Session and Execute; the commands are Do_* procedures of its body."
+```
+
+La regla del `String` ya estaba en las instrucciones del agente y el error salió igual 16
+veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
+errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
+lista de lecciones que crece tras cada tanda.
+
+### La biblioteca de verdad
+
+`library_spec(unit, name="")` da las declaraciones públicas de una unidad: sus subprogramas con
+sus parámetros, sus tipos, constantes y excepciones, con su comentario. Lee las
+especificaciones de las raíces del código y las de las carpetas de `[sources.code] library`
+(el runtime de GNAT, su carpeta `adainclude`), con tree-sitter: son las de la versión del
+compilador que se usa. Encuentra una unidad por su nombre, no por el del fichero (GNAT los
+acorta: `a-comlin.ads`), y de una instancia genérica (`GNAT.String_Split is new
+GNAT.Array_Split`) da las de su genérico. Las 896 especificaciones del runtime se leen en unos
+0,2 s, una vez por proceso.
+
+Un error que nombra algo que no existe trae lo que sí existe:
+- `"Arguments" not declared in "Command_Line"` lleva en `declared_in` lo que declara
+  `Ada.Command_Line` parecido (`function Argument (Number : Positive) return String`) y todos
+  sus nombres; el paquete se elige por los `with` del fichero del error;
+- `"LF" is undefined` o `is not visible` lleva en `found_in` las unidades que declaran `LF`
+  (`Ada.Characters.Latin_1`).
+
+En la tanda 4, unos 25 de los cerca de 100 errores de compilación eran nombres inventados o sin su
+`with`. Las instrucciones del `implementer` llevaban un resumen a mano de `GNAT.Sockets`
+porque el modelo se inventaba su API; con `library_spec`, cualquier paquete.
+
+### Los manuales
+
+`search_reference(query, k=5)` busca por palabras en los manuales de `[sources.code]
+reference` y en las declaraciones de la biblioteca (`library`, con su comentario), y da cada
+pasaje con su origen: el manual y su sección, o `Unidad.Nombre`. Sirve para saber qué paquete
+tiene algo o qué hace un pragma, un atributo o una opción del compilador:
+
+| Búsqueda | Primer resultado |
+|---|---|
+| `split a string by a separator` | `GNAT.Array_Split.Create` (el genérico de `GNAT.String_Split`) |
+| `Unbounded_String slice` | `Ada.Strings.Unbounded.Unbounded_Slice` |
+| `pragma Assertion_Policy` | `gnat_rm.info: Pragma Assertion_Policy` |
+| `-gnatwE warnings as errors` | `gnat_ugn.info: Warning Message Control` |
+| `convert integer to string without leading space` | `Ada.Strings.Fixed.Trim` |
+
+GNAT trae sus manuales en formato info (`share/info/gnat_rm.info` y `gnat_ugn.info` en la
+instalación de Alire); también se leen Markdown, texto y HTML. Van en su propio índice,
+`<workspace>/reference.db`, y no en `atlas.db`: `search` sigue buscando solo en los documentos
+del proyecto. Se construye en la primera búsqueda (0,4 s con los dos manuales de GNAT y su
+runtime: 2458 pasajes y 13 452 declaraciones) o con `atlas reference`, y se rehace lo que
+cambia. Es búsqueda léxica (BM25), sin modelo. Las unidades internas de GNAT (`System.*`) no
+entran. El manual de referencia del lenguaje (el ARM) no viene con GNAT: se puede descargar en
+HTML y añadir su carpeta.
+
+### El servidor de lenguaje
+
+Con `[sources.code] language_server`, tres herramientas preguntan a un servidor de lenguaje lo
+que sabe el compilador de un nombre:
+
+| Herramienta | Qué da |
+|---|---|
+| `find_definition(path, line, name)` | dónde se declara un nombre escrito en esa línea: fichero, línea y la línea |
+| `find_references(path, line, name)` | dónde se usa en el proyecto, con la declaración |
+| `describe_symbol(path, line, name)` | qué es: su declaración (perfil, tipo) y su comentario |
+
+El modelo da una línea y un nombre; la columna se busca en esa línea. Para Ada, el Ada
+Language Server que trae la extensión de Ada de VS Code (`["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]`):
+atlas escribe un proyecto GPR en `<workspace>/build` con las carpetas de las raíces que tienen
+fuentes Ada (o usa `language_server_project`), y el servidor encuentra el runtime de GNAT con
+el `tool_path` del proyecto. El servidor arranca en la primera llamada y sigue en marcha
+mientras dure el proceso; con el ALS 2026.3, la primera respuesta tarda un segundo y las
+siguientes, milisegundos. `To_Unbounded_String` en `controller.adb` lleva a `a-strunb.ads`,
+línea 122, con su perfil y su postcondición.
+
+Es lo que hace Serena con el servidor de lenguaje, y la versión posible a través de una API de
+la decodificación guiada por un monitor (MGD), que con el servidor de lenguaje sube un 19-25 %
+el código que compila en modelos de todos los tamaños pero necesita entrar en la decodificación.
+
+### Subprogramas enteros
+
+`replace_subprogram(path, name, new_text, line=0)` sustituye un subprograma entero: el agente
+da el subprograma nuevo completo, de `procedure Nombre` o `function Nombre` a su `end Nombre;`
+(en Python, de `def` al final del cuerpo), y no tiene que copiar nada del fichero.
+`add_subprogram(path, new_text, after="", before="")` añade subprogramas detrás de otro, delante
+de otro (con su comentario: en Ada, un subprograma de un cuerpo tiene que ir antes del que lo
+llama) o, sin ninguno de los dos, al final de las declaraciones del paquete: antes de `private`
+en una especificación, antes del `begin` o del `end` de un cuerpo; en Python, al final del
+fichero. Las dos:
+- encuentran los subprogramas con tree-sitter (Ada) o `ast` (Python), en `symbols.py`;
+- distinguen el cuerpo de la declaración (en Ada un nombre puede tener los dos en el mismo
+  fichero) y cambian el que corresponde al texto nuevo;
+- aceptan un nombre cualificado (`Controller.Execute`, `Calc.mul`), y `line` elige entre varios
+  con el mismo nombre (sobrecargas);
+- sangran el texto nuevo como el sitio donde va, y si empieza por comentarios, sustituyen
+  también los de encima del subprograma (las etiquetas `Req:`);
+- piden la misma lectura previa que `edit_file` y conservan codificación y finales de línea.
+
+Salen de la tanda 4 de `atlas develop` con `gemma-4-26b`: 80 de sus 151 `edit_file` fallaron,
+39 por un texto buscado de más de 30 líneas (quería sustituir bloques enteros) y 34 por no
+copiarlo exacto. Unos 43 de los 293 minutos se fueron en esas vueltas, y dos encargos acabaron
+en bucles de leer y editar mal. Con un subprograma por orden, como hace el plan del servidor,
+cada encargo cambia o añade un subprograma pequeño.
 
 También están registradas como plugins `tool` con esos nombres, para las herramientas de
 los agentes y `[mcp] tools`. Lo que se edite se vuelve a analizar en el siguiente

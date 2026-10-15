@@ -32,6 +32,10 @@ model: gemma4:12b          # opcional: [agents] model, o si no [llm] model
 max_steps: 6               # opcional: llamadas al modelo como mucho en una respuesta
 reasoning_effort: none     # opcional: "none" apaga el razonamiento
 temperature: 0.1           # opcional
+top_p: 0.95                # opcional: el muestreo de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64)
+top_k: 64                  # opcional: no es de la API de OpenAI, va en extra_body
+keep_tool_results: 10      # opcional: resultados grandes de herramientas que se conservan enteros
+stall_steps: 15            # opcional: llamadas sin cambiar el código que paran una ejecución
 ---
 You trace requirements of an engineering project...
 ```
@@ -54,6 +58,21 @@ el mismo fichero tras un error de compilación que no entendía, hasta agotar `m
 `write_file` avisa cuando el contenido no cambia. Un modelo que razona puede gastar todo
 `max_tokens` pensando y no contestar nada; ADK tomaría esa vuelta vacía como la respuesta
 final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces.
+
+El razonamiento de cada vuelta vuelve al modelo en las siguientes, en el mensaje del asistente
+que lleva las llamadas a herramientas (`[llm] reasoning_field`, `"reasoning"` por defecto; `""`
+lo apaga). Lo pide la ficha de gemma 4: el razonamiento de los turnos con llamadas a
+herramientas se queda en la conversación, y su plantilla de chat lo vuelve a poner si llega en
+`reasoning` o `reasoning_content`. Antes se tiraba: en cada vuelta, el modelo tenía que deducir
+otra vez qué estaba haciendo. `atlas probe` dice si un servidor lo aprovecha.
+
+Con `keep_tool_results` (en el fichero del agente), la conversación no crece sin fin: una
+lectura de un fichero que se ha vuelto a leer después se quita (su texto ya no es el del
+fichero, y el modelo lo copiaba en `edit_file`), y también los resultados grandes de antes de
+los últimos `keep_tool_results`, de cinco en cinco. En su lugar queda una nota con sus campos
+cortos (`ok`, `file`, `passed`...). JetBrains vio que esto acierta como resumir con el modelo
+y cuesta la mitad (*The Complexity Trap*, 2025). En la tanda 4, las vueltas de un arreglo
+llevaban 55 000 tokens de entrada, casi todo lecturas viejas. Por defecto, 0: todo se queda.
 
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
 servidor lo dice (OpenRouter, `usage.cost`), su coste.
@@ -96,6 +115,9 @@ build_fixes = 2                          # vueltas para arreglar lo que dice che
 advance_fixes = 2                        # vueltas para que avancen los tests de advances
 fix_rounds = 12                          # rondas para arreglar tests, tras los encargos
 stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
+restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
+attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
+planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
 
 [[tasks]]
 id = "ping-bye"
@@ -125,9 +147,37 @@ cambios que rompían lo que ya iba.
    cita, y los intentos anteriores sobre él. Una ronda que rompe algo se deshace. Un test que
    no avanza en `stuck_rounds` rondas se deja **para una persona**: el agente no insiste en lo
    que no sabe arreglar. Mientras un test avanza, sigue con él; si no, pasa al siguiente.
-4. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
-   cada encargo y cada ronda, su tiempo, tokens y coste, los tests que pasan y los que necesitan
-   a una persona, con su salida.
+4. Una ejecución que **se para sin acabar** vuelve a empezar con una conversación nueva, como
+   mucho `restarts` veces: el mismo encargo, el diff de lo que cambió (que se queda) y lo que
+   dice `check_code` ahora. Se para al agotar `max_steps` o, si el agente tiene `stall_steps`,
+   al llevar esas llamadas sin que el código avance: un cambio tras el que el fichero compila o
+   tiene menos errores que antes, o un test que pasa. Reescribir un fichero con los mismos
+   errores no es avanzar (en la prueba del 2026-10-15, un intento reescribió `server.adb` 17
+   veces con los mismos 2 errores). No cuenta en un agente que solo lee, como el planificador:
+   parecería atascado siempre. En la tanda 4, las 6
+   ejecuciones que agotaron sus 40 llamadas se llevaron el 41 % del tiempo, casi todo en
+   bucles de leer y editar mal: una conversación larga de ediciones fallidas no mejora con más
+   vueltas.
+5. Con `planner`, cada encargo pasa antes por ese agente, que solo lee (sus herramientas no
+   cambian nada) y escribe cómo hacerlo; el encargo llega al agente con ese plan. Es el
+   arquitecto y el editor de Aider: el modelo no tiene que pensar el cambio y acertar con las
+   herramientas en las mismas vueltas. Con el mismo modelo en los dos papeles, GPT-4o-mini
+   pasó del 55,6 al 60,2 % en su banco de pruebas.
+6. Con `attempts` mayor que 1, cada encargo (y su reintento) va a esos intentos **a la vez**,
+   cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las raíces del
+   código, los scripts del proyecto y su propia carpeta de compilación), con sus arreglos de
+   compilación y sus vueltas de `advances`. De los que no rompen nada gana el que deja más
+   tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la carpeta
+   de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo que
+   tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
+   unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
+   estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
+7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+   cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
+   sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
+   persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
+   frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
+   lecciones que añadir antes de la siguiente.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
@@ -159,6 +209,16 @@ protegidos, `run_program`, `code_at` y el registro del servidor con la traza de 
   `begin` sin cerrar que dos arreglos no resolvieron: se deshizo y el reintento se conservó.
   Un arreglo de compilación gastó sus 40 llamadas (37 min, 0,17 $) sin arreglar nada, y el
   agente dejó en `src` un fichero suyo de prueba.
+- **Con las mejoras del 2026-10-15** (razonamiento devuelto, subprogramas enteros, sintaxis y
+  compilación al editar, pistas, biblioteca y manuales, contexto corto, reinicios, planificador
+  y dos intentos a la vez; prueba corta con los 4 primeros encargos desde `src` vacío): fallaron
+  6 de 56 ediciones (11 %; el 53 % en la tanda 4). El servidor salió en 23 minutos de agente
+  repartidos entre dos intentos a la vez (65 en serie en la tanda 4) y el LF en 10, por 0,23 $
+  en total: más que antes por encargo, por los dos intentos, el planificador y el razonamiento
+  devuelto. Los dos errores sin pista más repetidos, escapes de C (`'\r'`, `'LF'`) y
+  `(others => ())`, son ya dos pistas de serie. La prueba destapó dos fallos, ya corregidos:
+  el corte por atasco cortaba también al planificador, que solo lee, y no contaba como atasco
+  reescribir un fichero con los mismos errores (un intento lo hizo 17 veces).
 
 ## Cumplimiento del código
 

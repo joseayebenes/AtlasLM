@@ -132,6 +132,7 @@ atlas solo se conecta a las URL de `[llm]` y `[embeddings]`. Ver
 
 ```powershell
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
+atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
 atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
 ```

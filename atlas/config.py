@@ -50,7 +50,8 @@ def _expand(v: Any) -> Any:
 SCHEMA: dict[str, dict[str, Any]] = {
     "project": {"name": str, "workspace": str, "log_level": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
-            "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "network": dict},
+            "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
+            "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
@@ -74,11 +75,14 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
-                "temperature": float}                             # what [agents.<name>] can retouch
+                "temperature": float, "top_p": float, "top_k": int,
+                "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
-               "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list}
+               "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
+               "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
+               "reference": list, "language_server": list, "language_server_project": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},

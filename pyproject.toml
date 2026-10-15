@@ -42,6 +42,7 @@ include = ["atlas*"]
 [tool.setuptools.package-data]
 "atlas.agents" = ["builtin/*.md"]            # los agentes de serie
 "atlas" = ["templates/*.toml"]               # la plantilla de atlas init
+"atlas.code" = ["hints.toml"]                # las pistas de serie para los mensajes del compilador
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

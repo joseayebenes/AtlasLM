@@ -7,6 +7,47 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas (una
+  llamada a una herramienta, su resultado y si el servidor aprovecha el razonamiento devuelto).
+  Para comprobar el gateway antes de usar agentes.
+- `top_p` y `top_k` por agente, en su fichero o en `[agents.<nombre>]`. La ficha de gemma 4
+  recomienda temperatura 1,0, `top_p` 0,95 y `top_k` 64, y no todos los proveedores usan esos
+  valores por defecto (EmpirioLabs documenta `top_k` 20). `top_k` va en `extra_body`.
+- `replace_subprogram` y `add_subprogram`: cambiar o añadir un subprograma entero, por su
+  nombre, sin copiar nada del fichero (Ada con tree-sitter y Python). En la tanda 4 de
+  `atlas develop`, 80 de las 151 ediciones de `gemma-4-26b` fallaron: 39 querían sustituir más
+  de 30 líneas y 34 no copiaron bien el texto. `atlas serve` solo las ofrece si se piden.
+- Las herramientas que escriben comprueban la sintaxis antes de escribir y compilan después:
+  un cambio que rompe la sintaxis de un fichero que estaba bien no se hace (`[sources.code]
+  syntax_commands`, con GNAT `gcc -c -gnats`; Python con `ast`), y cada cambio devuelve lo que
+  dice `check_code` del fichero (`check_on_edit`, por defecto).
+- Pistas para los errores del compilador: cada error lleva la `hint` que casa con su mensaje.
+  Las de serie (`atlas/code/hints.toml`) cubren los errores de GNAT más repetidos por
+  `gemma-4-26b`; las del proyecto van en `[sources.code] hints`. El informe de `atlas develop`
+  lista los errores de la tanda y dice cuáles no tenían pista, y cuenta por ejecución las
+  ediciones fallidas y las compilaciones con errores.
+- `library_spec` y `[sources.code] library`: las declaraciones públicas reales de un paquete del
+  runtime del compilador (la carpeta `adainclude` de GNAT) o del proyecto, leídas con
+  tree-sitter. Un error `"X" not declared in "P"` trae lo que declara `P` parecido a `X`, y uno
+  `"X" is undefined` las unidades que declaran `X`.
+- `search_reference`, `[sources.code] reference` y `atlas reference`: los manuales (los de
+  GNAT vienen en formato info con Alire; también Markdown, texto y HTML) y las declaraciones de
+  la biblioteca, por palabras y sin modelo, en su propio índice (`<workspace>/reference.db`).
+- `keep_tool_results` por agente: los resultados grandes de herramientas de antes de los últimos
+  quedan en una nota, y una lectura de un fichero que se volvió a leer se quita. En la tanda 4,
+  las vueltas de un arreglo llevaban 55 000 tokens de entrada, casi todo lecturas viejas.
+- `stall_steps` por agente y `restarts` en el plan de `atlas develop`: una ejecución que lleva
+  esas llamadas sin cambiar el código (o que agota `max_steps`) se para y vuelve a empezar con
+  una conversación nueva, el diff de lo hecho y lo que dice `check_code`. En la tanda 4, las 6
+  ejecuciones que agotaron sus 40 llamadas fueron el 41 % del tiempo.
+- `attempts` en el plan de `atlas develop`: varios intentos de cada encargo a la vez, cada uno en
+  una copia de la carpeta de trabajo; gana el que no rompe nada y deja más tests pasando, y sus
+  ficheros pasan a la carpeta de trabajo.
+- `planner` en el plan de `atlas develop`: un agente de solo lectura dice cómo hacer cada
+  encargo, y el implementador lo recibe con ese plan (el arquitecto y el editor de Aider).
+- `find_definition`, `find_references` y `describe_symbol` (`[sources.code] language_server`):
+  lo que sabe el compilador de un nombre, de un servidor de lenguaje. Probado con el Ada Language
+  Server de la extensión de VS Code, con un proyecto GPR que atlas escribe.
 - `atlas develop PLAN`: un agente escribe el código encargo a encargo y los tests de aceptación
   lo juzgan. Tras cada encargo, `check_code` y los tests; un encargo que deja errores o hace que
   un test falle antes se deshace (los ficheros vuelven a como estaban) y se intenta otra vez
@@ -97,6 +138,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   para los agentes está en los cambios siguientes.
 
 ### Cambiado
+- Los agentes devuelven al modelo el razonamiento de sus vueltas con llamadas a herramientas,
+  en el mensaje del asistente (`[llm] reasoning_field`, `"reasoning"` por defecto; `""` como
+  antes). Lo pide la ficha de gemma 4; antes se tiraba y el modelo tenía que deducir en cada
+  vuelta qué estaba haciendo. Con OpenRouter, el prompt de `gemma-4-26b` lo incluye.
 - `edit_file` rechaza un texto buscado de más de 30 líneas y pide varias ediciones pequeñas o
   `write_file`: `gemma-4-26b` reconstruía de memoria los textos largos y entraba en bucles de
   leer y editar de 27 y 45 minutos.
@@ -131,6 +176,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   el servidor (en OpenRouter, también el proveedor del modelo).
 
 ### Al actualizar
+- `edit_file`, `write_file` y las herramientas de subprogramas ya no escriben un cambio que
+  rompe la sintaxis de un fichero Python que estaba bien (también desde `atlas serve`, si se
+  ofrecen); `[sources.code.syntax_commands] py = []` lo apaga. Con un compilador configurado,
+  sus respuestas traen `check`.
 - El informe `reports/eval-<conjunto>.json` agrupa los resultados en `agents` y `retrieval`.
 - `code_doc` ya estaba en `[index] kinds` por defecto: la siguiente ejecución embebe todo el
   código una vez. Para no indexarlo, quítalo de `kinds`. El código compite con los documentos

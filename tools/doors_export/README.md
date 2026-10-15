@@ -78,13 +78,27 @@ nombre más parecido. Al publicar:
 - el padre de cada requisito es su antecesor más cercano que tenga ID;
 - un enlace a un objeto que no se ha descargado se omite y se cuenta.
 
+## El módulo de enlaces de cada enlace
+
+`publish.py` saca el tipo de cada enlace (`satisfies`, `verifies`...) del nombre de su módulo
+de enlaces. La primera versión lo pedía con `module(l)`, que contra un DOORS real no compila
+(`-E-DXL: <line:53> incorrect arguments for (=)`, 2026-10-15). Ahora no se pregunta: antes del
+primer módulo de un proyecto se listan sus módulos de enlaces (los elementos de tipo «Link»,
+como se listan los formales), y cada objeto recorre sus enlaces por `o -> "*"` y, aparte, por
+cada módulo de enlaces del proyecto (`o -> "/Proyecto/Enlaces/Satisfies"`). Un enlace que sale
+en un módulo de enlaces conocido se guarda con él; uno que solo sale por `"*"` (un módulo de
+enlaces de otro proyecto) se guarda sin él, y su tipo sale de `[links] default_type`. Con
+muchos módulos de enlaces, `--no-link-module` se ahorra esos recorridos y guarda todos los
+enlaces sin tipo.
+
 ## Lo que está sin validar contra DOORS real
 
-La DXL de atributos, recorrido por cursor y módulos ya estaba comprobada en doors_kb. La
-nueva de jerarquía (`parent`, `level`) y de enlaces (`target`, `targetAbsNo`, `module(l)`)
-**no se ha podido probar sin DOORS**. Las pruebas automáticas usan un DOORS simulado que
-responde con el mismo protocolo.
+La DXL de atributos, recorrido por cursor y módulos ya estaba comprobada en doors_kb. En un
+DOORS real (2026-10-15), `--check` dio bien la jerarquía (`parent`, `level`) y los enlaces
+(`target`, `targetAbsNo`); falló `module(l)`, que ya no se usa. Lo que lo sustituye, la lista
+de módulos de enlaces del proyecto y `o -> "<módulo de enlaces>"`, **está sin probar contra
+DOORS**: las pruebas automáticas usan un DOORS simulado que responde con el mismo protocolo.
 
-`--check` prueba cada primitiva por separado sobre un módulo real y dice cuál falla. Si
-falla solo la del módulo de enlaces, `--no-link-module` descarga los enlaces sin él; en ese
-caso los tipos salen de `[links] default_type`. Con `--no-links` no se leen los enlaces.
+`--check` prueba cada primitiva por separado sobre un módulo real y dice cuál falla: también
+las dos de los módulos de enlaces. Si fallan, `--no-link-module` descarga los enlaces sin su
+tipo (`[links] default_type`). Con `--no-links` no se leen los enlaces.

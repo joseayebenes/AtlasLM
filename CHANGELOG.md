@@ -76,6 +76,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `record` apunta cada llamada a una herramienta con su resultado y su tiempo.
 
 ### Corregido
+- `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se
+  pide con `module(l)`, que contra un DOORS real no compila (`incorrect arguments for (=)` en
+  `--check`). Se listan los módulos de enlaces del proyecto y cada objeto recorre sus enlaces
+  por cada uno de ellos, además de por `"*"`; `--check` prueba esas dos primitivas.
 - Una vuelta de un agente tiene como mucho `[llm.network] timeout` segundos en total y, si
   tarda más, se pregunta otra vez. El tiempo máximo del cliente HTTP es entre dos lecturas, y
   OpenRouter mantiene viva la conexión mientras el modelo trabaja: una petición de

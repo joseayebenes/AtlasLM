@@ -39,19 +39,36 @@ def project():
 
 
 class FakeDoors:
-    """Answers the DXL of doors_download like DOORS, from objects in memory."""
+    """Answers the DXL of doors_download like DOORS, from objects in memory. The link
+    modules of the project are LINK_MODULES; a script with module(l) does not compile, as in
+    a real DOORS (the previous result stays)."""
+    LINK_MODULES = ["/P/Links/Satisfies", "/P/Links/Refines"]
 
     def __init__(self, modules):
         self.modules, self.result, self.fail_on_page = modules, "", None
 
     def runStr(self, script):
+        if "module(l)" in script:
+            return
         token = re.search(r'ns\("([0-9a-f]{16})"\)', script).group(1)
-        path = re.search(r'read\("(.*?)", false\)', script).group(1)
         fields = ["DKB1", token]
+        walk = re.search(r'\(t == "(\w+)"\)', script)
+        if walk:                                              # the modules of a kind under a folder
+            root = re.search(r'Folder root = folder\("(.*?)"\)', script).group(1)
+            found = [m for m in (self.LINK_MODULES if walk.group(1) == "Link" else self.modules)
+                     if m.startswith(root + "/")]
+            self.result = "".join(f"{len(f)}:{f}" for f in fields + ["MODULES", str(len(found))] + found)
+            return
+        path = re.search(r'read\("(.*?)", false\)', script).group(1)
         if path not in self.modules:
             fields += ["ERROR", "NO_MODULE"]
         elif '"ATTRS"' in script:
             fields += ["ATTRS", str(len(DEFS))] + [x for n, t, s in DEFS for x in (n, t, "1" if s else "0")]
+        elif '"CHECK"' in script:                              # a probe: the first link of its loop, if any
+            name = re.search(r'for l in o -> "(.*?)" do', script)
+            links = [l for o in self.modules[path] for l in o.links
+                     if name and (name.group(1) == "*" or l.link_module == name.group(1))]
+            fields += ["CHECK", links[0].target_module if links else "ok"]
         else:
             cursor = re.search(r"object\((\d+), m\)", script)
             size, names = int(re.search(r"emitted >= (\d+)", script).group(1)), re.findall(r'o\."(.+?)" ""', script)
@@ -66,9 +83,11 @@ class FakeDoors:
                 fields += [str(o.absolute_number), o.identifier, o.outline_number,
                            "" if o.parent_absolute_number is None else str(o.parent_absolute_number), str(o.level)]
                 fields += [o.attributes.get(n, "") for n in names]
-                if "for l in o" in script:
-                    fields += [str(len(o.links))] + [x for l in o.links for x in (
-                        l.target_module, str(l.target_absolute_number), l.link_module if "module(l)" in script else "")]
+                found = [(l, name) for name in re.findall(r'for l in o -> "(.*?)" do', script) for l in o.links
+                         if name == "*" or l.link_module == name]
+                if found or "for l in o" in script:          # each loop: "*" with no link module, the others with theirs
+                    fields += [str(len(found))] + [x for l, name in found for x in (
+                        l.target_module, str(l.target_absolute_number), "" if name == "*" else name)]
         self.result = "".join(f"{len(f)}:{f}" for f in fields)
 
 
@@ -79,14 +98,19 @@ def session(modules):
 
 
 def test_dxl_of_the_page_reads_the_hierarchy_and_the_links():
-    script = dd.script_page("/P/SRS", ["Object Text"], "abc123", cursor=17, page_size=5)
+    script = dd.script_page("/P/SRS", ["Object Text"], "abc123", cursor=17, page_size=5,
+                            link_modules=["/P/Links/Satisfies"])
     for piece in ("Object up = parent(o)", "int lv = level(o)", 'for l in o -> "*" do', "targetAbsNo(l)",
-                  "ModName_ linkMod = module(l)", "object(17, m)", "emitted >= 5", 'o."Object Text" ""'):
+                  'for l in o -> "/P/Links/Satisfies" do', 'linkData += ns("/P/Links/Satisfies")',
+                  "ModName_ targetMod1 = target(l)", "object(17, m)", "emitted >= 5", 'o."Object Text" ""'):
         assert piece in script, piece
-    assert "module(l)" not in dd.script_page("/P/SRS", [], "abc123", link_module=False)
+    # module(l) did not compile against a real DOORS ("incorrect arguments for (=)", 2026-10-15)
+    assert "module(l)" not in script and not any("module(l)" in body for _, body, _ in dd.CHECKS)
+    assert script.count("for l in o") == 2 and dd.script_page("/P/SRS", [], "abc123").count("for l in o") == 1
     assert "for l in o" not in dd.script_page("/P/SRS", [], "abc123", links=False)
     assert dd.escape('/P/"x"\n') == '/P/\\"x\\"\\n'
-    assert [name for name, _, _ in dd.CHECKS][-1] == "ModName_ module(l) (link module)"
+    assert '(t == "Link")' in dd.script_modules("/P", "abc123", kind="Link")
+    assert dd.project_root("/P/Req/SRS") == "/P"
 
 
 def test_download_hierarchy_links_and_incremental(tmp_path):
@@ -112,6 +136,33 @@ def test_download_hierarchy_links_and_incremental(tmp_path):
     with RawStore(db) as store:
         assert [o.absolute_number for o in store.objects("/P/SRS")] == [1, 2, 4]
         assert store.conn.execute("SELECT COUNT(*) FROM links").fetchone()[0] == 2
+
+
+def test_the_links_get_their_link_module_from_the_link_modules_of_the_project(tmp_path):
+    """The type of a link comes from its link module: read through each link module of the
+    project, and through "*" the others (another project: no link module, the default type)."""
+    db, modules = str(tmp_path / "raw.sqlite"), project()
+    modules["/P/SRS"][0] = obj("/P/SRS", 1, "SRS-1", heading="Track management", level=1,
+                               links=[Link("/Q/SYS", 7, "/Q/Links/Traces")])
+    s = session(modules)
+    assert s.modules_of("/P", "Link") == FakeDoors.LINK_MODULES
+    dd.download(["/P/SRS"], db, s, dd.Options())
+    with RawStore(db) as store:
+        srs = {o.absolute_number: o for o in store.objects("/P/SRS")}
+        assert srs[1].links == (Link("/Q/SYS", 7, ""),)                          # of another project
+        assert srs[3].links == (Link("/P/Other", 9, "/P/Links/Refines"), Link("/P/SSS", 5, "/P/Links/Satisfies"))
+    untyped = str(tmp_path / "untyped.sqlite")                                   # --no-link-module
+    dd.download(["/P/SRS"], untyped, s, dd.Options(link_module=False))
+    with RawStore(untyped) as store:
+        assert {l.link_module for o in store.objects("/P/SRS") for l in o.links} == {""}
+
+
+def test_check_probes_the_link_modules_instead_of_module_l():
+    results = session(project()).check("/P/SRS")
+    assert [(name, ok) for name, ok, _, _ in results] == [
+        ("parent(o)", True), ("level(o)", True), ("ModName_ target(l) and fullName", True), ("targetAbsNo(l)", True),
+        ("link modules of /P", True), ('o -> "/P/Links/Satisfies"', True)]
+    assert results[4][2] == "2: /P/Links/Satisfies, /P/Links/Refines" and results[5][2] == "/P/SSS"
 
 
 def test_an_interrupted_download_deletes_nothing(tmp_path):

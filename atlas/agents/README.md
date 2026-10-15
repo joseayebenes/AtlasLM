@@ -209,6 +209,16 @@ protegidos, `run_program`, `code_at` y el registro del servidor con la traza de 
   `begin` sin cerrar que dos arreglos no resolvieron: se deshizo y el reintento se conservó.
   Un arreglo de compilación gastó sus 40 llamadas (37 min, 0,17 $) sin arreglar nada, y el
   agente dejó en `src` un fichero suyo de prueba.
+- **Con las mejoras del 2026-10-15** (razonamiento devuelto, subprogramas enteros, sintaxis y
+  compilación al editar, pistas, biblioteca y manuales, contexto corto, reinicios, planificador
+  y dos intentos a la vez; prueba corta con los 4 primeros encargos desde `src` vacío): fallaron
+  6 de 56 ediciones (11 %; el 53 % en la tanda 4). El servidor salió en 23 minutos de agente
+  repartidos entre dos intentos a la vez (65 en serie en la tanda 4) y el LF en 10, por 0,23 $
+  en total: más que antes por encargo, por los dos intentos, el planificador y el razonamiento
+  devuelto. Los dos errores sin pista más repetidos, escapes de C (`'\r'`, `'LF'`) y
+  `(others => ())`, son ya dos pistas de serie. La prueba destapó dos fallos, ya corregidos:
+  el corte por atasco cortaba también al planificador, que solo lee, y no contaba como atasco
+  reescribir un fichero con los mismos errores (un intento lo hizo 17 veces).
 
 ## Cumplimiento del código
 

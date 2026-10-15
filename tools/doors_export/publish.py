@@ -11,6 +11,8 @@ need DOORS: changing the mapping only needs publishing again.
 
 Every completely downloaded module is published whole (one transaction per module):
 - objects without an ID are left out (and counted); a repeated ID keeps the first one;
+- the kind (requirement, heading, information) comes from the [kinds] attribute in a
+  module that has it, and from the content otherwise;
 - the parent is the nearest ancestor with an ID;
 - a link is published if its target object is in the raw copy and has an ID;
 - a mapped attribute that no module has is an error, with the closest names.
@@ -24,6 +26,7 @@ import difflib
 import logging
 import os
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,23 +49,29 @@ except ImportError:                       # Python < 3.11
 log = logging.getLogger("doors-publish")
 
 BUILT_IN = {"identifier", "absolute_number"}     # what `id` can be besides a DOORS attribute
+OTHERS = (*KINDS, "heading_or_information")      # what [kinds] others can be
 
 
 class MappingError(ValueError):
     pass
 
 
-def _invert(section: str, table: dict, path) -> dict[str, str]:
-    """{atlas: DOORS or [DOORS...]} -> {DOORS: atlas}: in mapping.toml atlas is always on
+def _value_key(value: str) -> str:
+    """A value of the [kinds] attribute as it is compared: without case or extra spaces."""
+    return " ".join(value.split()).casefold()
+
+
+def _invert(section: str, table: dict, path, key=lambda d: d) -> dict[str, str]:
+    """{atlas: DOORS or [DOORS...]} -> {key(DOORS): atlas}: in mapping.toml atlas is always on
     the left and DOORS on the right, and one atlas value may gather several DOORS ones."""
     out: dict[str, str] = {}
     for atlas_value, doors in table.items():
-        for d in ([doors] if isinstance(doors, str) else doors):
+        for d in ([doors] if not isinstance(doors, list) else doors):
             if not isinstance(d, str):
                 raise MappingError(f"{path}: [{section}] {atlas_value} must be a text or a list of texts")
-            if d in out and out[d] != atlas_value:
-                raise MappingError(f"{path}: [{section}] {d!r} is given to {out[d]} and to {atlas_value}")
-            out[d] = atlas_value
+            if key(d) in out and out[key(d)] != atlas_value:
+                raise MappingError(f"{path}: [{section}] {d!r} is given to {out[key(d)]} and to {atlas_value}")
+            out[key(d)] = atlas_value
     return out
 
 
@@ -77,10 +86,11 @@ class Mapping:
     link_types: dict[str, str] = field(default_factory=dict)      # link module (path or name) -> link type
     default_link_type: str = ""                                   # "" = the link module name
     kind_attribute: str = ""                                      # "" = heading without text is a heading
-    kind_values: dict[str, str] = field(default_factory=dict)     # value of kind_attribute -> kind
+    kind_values: dict[str, str] = field(default_factory=dict)     # value of kind_attribute (_value_key) -> kind
+    kind_others: str = ""                                         # kind of the other values; "" = requirement
 
     SECTIONS = {"fields": {"id", "text", "heading"}, "attributes": None, "modules": None, "link_types": None,
-                "links": {"default_type"}, "kinds": {"attribute", "values"}}
+                "links": {"default_type"}, "kinds": {"attribute", "values", "others"}}
 
     @classmethod
     def load(cls, path: str | Path) -> "Mapping":
@@ -99,13 +109,18 @@ class Mapping:
         bad = sorted(set(kinds.get("values", {})) - set(KINDS))
         if bad:
             raise MappingError(f"{path}: [kinds] values has kinds {bad} (valid: {', '.join(KINDS)})")
+        if kinds.get("others", "requirement") not in OTHERS:
+            raise MappingError(f"{path}: [kinds] others is {kinds['others']!r} (valid: {', '.join(OTHERS)})")
+        if (kinds.get("values") or "others" in kinds) and not kinds.get("attribute"):
+            raise MappingError(f"{path}: [kinds] values and others need attribute, the DOORS attribute they are of")
         return cls(id=fields.get("id", "identifier"), text=fields.get("text", "Object Text"),
                    heading=fields.get("heading", "Object Heading"), attributes=dict(data.get("attributes", {})),
                    modules=_invert("modules", data.get("modules", {}), path),
                    link_types=_invert("link_types", data.get("link_types", {}), path),
                    default_link_type=data.get("links", {}).get("default_type", ""),
                    kind_attribute=kinds.get("attribute", ""),
-                   kind_values=_invert("kinds", kinds.get("values", {}), path))
+                   kind_values=_invert("kinds", kinds.get("values", {}), path, key=_value_key),
+                   kind_others=kinds.get("others", ""))
 
     def doors_attributes(self) -> set[str]:
         """Every DOORS attribute the mapping reads."""
@@ -131,6 +146,8 @@ class Report:
     without_id: int = 0
     repeated_ids: int = 0
     unresolved_links: int = 0
+    kinds: Counter = field(default_factory=Counter)                # objects per kind
+    other_values: Counter = field(default_factory=Counter)         # values of the [kinds] attribute without a kind
     warnings: list[str] = field(default_factory=list)
     error: str = ""
 
@@ -141,8 +158,14 @@ class Report:
                                                (self.repeated_ids, "repeated IDs left out"),
                                                (self.unresolved_links, "links to objects not downloaded"))
                  if n]
-        return (f"{self.module} ({self.path}): {self.requirements} objects, {self.links} links"
-                + (f"; {', '.join(extra)}" if extra else ""))
+        kinds = ", ".join(f"{k} {self.kinds[k]}" for k in KINDS if self.kinds[k])
+        return (f"{self.module} ({self.path}): {self.requirements} objects" + (f" ({kinds})" if kinds else "")
+                + f", {self.links} links" + (f"; {', '.join(extra)}" if extra else ""))
+
+    def other_values_text(self, shown: int = 10) -> str:
+        """The values of the [kinds] attribute without a kind, the most frequent first."""
+        text = ", ".join(f"{v!r} ({n})" for v, n in self.other_values.most_common(shown))
+        return text + (f" and {len(self.other_values) - shown} more" if len(self.other_values) > shown else "")
 
 
 class Publisher:
@@ -170,21 +193,33 @@ class Publisher:
             hints = [f"{n!r} (closest: {', '.join(difflib.get_close_matches(n, sorted(everywhere), 3, 0.5)) or '-'})"
                      for n in missing]
             raise MappingError(f"no downloaded module has the DOORS attributes {', '.join(hints)}")
-        return [f"{p}: has no {', '.join(sorted(self.mapping.doors_attributes() - names[p]))}"
-                for p in paths if self.mapping.doors_attributes() - names[p]]
+        notes = []
+        for p in paths:
+            missing = self.mapping.doors_attributes() - names[p]
+            if missing:
+                notes.append(f"{p}: has no {', '.join(sorted(missing))}"
+                             + ("; its kinds come from the content" if self.mapping.kind_attribute in missing else ""))
+        return notes
 
-    def kind(self, obj: DoorsObject) -> str:
+    def kind(self, obj: DoorsObject, by_attribute: bool = True) -> str:
+        """By the [kinds] attribute if the mapping has one and the module too; otherwise, by the content."""
         m = self.mapping
-        if m.kind_attribute:
-            return m.kind_values.get(obj.attributes.get(m.kind_attribute, ""), "requirement")
         text, heading = obj.attributes.get(m.text, "").strip(), obj.attributes.get(m.heading, "").strip()
-        return "requirement" if text else "heading" if heading else "information"
+        if not (m.kind_attribute and by_attribute):
+            return "requirement" if text else "heading" if heading else "information"
+        found = m.kind_values.get(_value_key(obj.attributes.get(m.kind_attribute, "")))
+        if found:
+            return found
+        if m.kind_others == "heading_or_information":              # the attribute only tells the requirements
+            return "heading" if heading and not text else "information"
+        return m.kind_others or "requirement"
 
     def module(self, path: str) -> tuple[list[dict], list[dict], Report]:
         """The requirements and links of a module, as the exchange database wants them."""
         m, report = self.mapping, Report(module=self.mapping.module_name(path), path=path)
         objects = self.store.objects(path)
         by_number = {o.absolute_number: o for o in objects}
+        by_attribute = bool(m.kind_attribute) and m.kind_attribute in self.store.attribute_names(path)
         ids, seen, requirements, links = self.ids(path), set(), [], []
         for position, obj in enumerate(objects, 1):
             rid = ids.get(obj.absolute_number, "")
@@ -200,9 +235,13 @@ class Publisher:
                 visited.add(up)
                 parent = ids.get(up)
                 up = by_number[up].parent_absolute_number if up in by_number else None
+            kind = self.kind(obj, by_attribute)
+            report.kinds[kind] += 1
+            if by_attribute and _value_key(value := obj.attributes.get(m.kind_attribute, "")) not in m.kind_values:
+                report.other_values[" ".join(value.split())] += 1
             requirements.append({
                 "id": rid, "text": obj.attributes.get(m.text, ""), "heading": obj.attributes.get(m.heading, ""),
-                "kind": self.kind(obj), "parent": parent, "position": position, "level": obj.level or 1,
+                "kind": kind, "parent": parent, "position": position, "level": obj.level or 1,
                 "outline": obj.outline_number, "source_key": str(obj.absolute_number),
                 "attributes": {name: obj.attributes.get(doors, "") for name, doors in m.attributes.items()}})
             for link in obj.links:
@@ -236,6 +275,10 @@ def publish(raw: str, mapping: Mapping, out: str, modules: list[str] | None = No
                     writer.remove_module(old)
             for path in paths:
                 requirements, links, report = publisher.module(path)
+                if report.other_values:          # expected with [kinds] others; without it, maybe a value left out
+                    (log.info if mapping.kind_others else log.warning)(
+                        "%s: values of %s not in [kinds.values], taken as %s: %s", report.module,
+                        mapping.kind_attribute, mapping.kind_others or "requirement", report.other_values_text())
                 try:
                     report.warnings = writer.replace_module(report.module, requirements, links, source=path)
                 except ExchangeError as e:

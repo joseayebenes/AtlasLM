@@ -34,9 +34,23 @@ default_type = ""           # tipo de los demás enlaces; vacío = el nombre del
 
 [kinds]
 # Sin esta sección: un objeto con texto es "requirement", uno con título y sin texto es
-# "heading" y el resto, "information". Si el proyecto tiene un atributo que lo dice:
+# "heading" y el resto, "information". Los títulos dan a atlas el capítulo de cada requisito.
+# Si el proyecto tiene un atributo que lo dice:
 # attribute = "Object Type"
 # [kinds.values]            # tipo en atlas = valor(es) de ese atributo en DOORS
 # requirement = ["Requirement", "Functional", "Performance"]
 # heading = "Heading"
 # information = ["Note", "Comment"]
+#
+# Si el atributo solo dice si el objeto es requisito (sí o no), el resto, por contenido:
+# attribute = "is_requisite"
+# others = "heading_or_information"
+# [kinds.values]
+# requirement = "Yes"
+#
+# others: el tipo de los objetos cuyo valor no está en [kinds.values] o está vacío.
+#   "requirement" (por defecto), "heading", "information" o "heading_or_information"
+#   ("heading" si tiene título y no texto; "information" si no). Con information = "No",
+#   un título que diga "No" sería "information" y sus requisitos se quedarían sin capítulo.
+# Los valores no distinguen mayúsculas ni espacios de más ("Yes" vale para "yes" y "YES").
+# Un módulo que no tiene el atributo se clasifica por contenido, como sin esta sección.

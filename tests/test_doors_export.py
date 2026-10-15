@@ -237,6 +237,7 @@ def test_publish_applies_the_mapping(tmp_path):
     reports, out = _published(tmp_path)
     assert [(r.module, r.requirements, r.links, r.unresolved_links) for r in reports] == \
         [("SRS_TMS", 4, 2, 1), ("SSS", 1, 0, 0)]
+    assert reports[0].not_downloaded == {"/P/Other": 1}
     ad = ExchangeAdapter({"exchange": {"path": str(out)}})
     reqs = {r.id: r for r in ad.requirements("SRS_TMS")}
     assert reqs["SRS-1"].attributes["kind"] == "heading" and reqs["SRS-1"].text == "Track management"
@@ -254,6 +255,15 @@ def test_publish_applies_the_mapping(tmp_path):
     assert (reports[0].requirements, reports[0].without_id) == (3, 1)
     reqs = {r.id: r for r in ExchangeAdapter({"exchange": {"path": str(out)}}).requirements("SRS_TMS")}
     assert reqs["R-4"].parent == "R-1"                                   # SRS-3 has no Req ID
+
+    with sqlite3.connect(tmp_path / "raw.sqlite") as c:                  # two objects with R-2; SSS-5 without ID
+        c.execute("UPDATE requirement_attributes SET value_text = 'R-2' WHERE name = 'Req ID' AND value_text = 'R-4'")
+        c.execute("DELETE FROM requirement_attributes WHERE name = 'Req ID' AND value_text = 'R-5'")
+    reports, out = _published(tmp_path, MAPPING.replace('id = "identifier"', 'id = "Req ID"'))
+    assert reports[0].repeated_ids == ["R-2 (2, 4)"]                     # by Absolute Number, to find them
+    assert reports[0].summary() == ("SRS_TMS (/P/SRS): 2 objects (requirement 1, heading 1), 0 links; "
+                                    "1 objects without an ID left out, 1 repeated IDs left out, "
+                                    "1 links to objects without an ID or deleted")
 
 
 def test_mapping_errors_and_module_selection(tmp_path):
@@ -298,7 +308,7 @@ def test_a_yes_no_attribute_tells_the_requirements_and_the_headings_stay(tmp_pat
     assert _kinds(out) == {"SRS-1": "heading", "SRS-2": "requirement", "SRS-3": "requirement",
                            "SRS-4": "information", "SSS-5": "requirement"}       # SSS, by its content
     assert reports[0].summary() == ("SRS_TMS (/P/SRS): 4 objects (requirement 2, heading 1, information 1), "
-                                    "2 links; 1 links to objects not downloaded")
+                                    "2 links; 1 links to modules not downloaded")
     assert "values of is_requisite not in [kinds.values], taken as heading_or_information: 'No' (1), 'no' (1)" \
         in caplog.text and "/P/SSS: has no is_requisite; its kinds come from the content" in caplog.text
     ad = ExchangeAdapter({"exchange": {"path": str(out)}})               # in atlas, the chapter of each one

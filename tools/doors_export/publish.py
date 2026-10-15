@@ -12,11 +12,12 @@ need DOORS: changing the mapping only needs publishing again.
 Every completely downloaded module is published whole (one transaction per module):
 - the ID is the first one of [fields] id that the object has: the requirement ID and, for
   the objects without it, another one; objects without any are left out (and counted), and
-  a repeated ID keeps the first one;
+  a repeated ID keeps the first one (the others are listed);
 - the kind (requirement, heading, information) comes from the [kinds] attribute in a
   module that has it, and from the content otherwise;
 - the parent is the nearest ancestor with an ID;
-- a link is published if its target object is in the raw copy and has an ID;
+- a link is published if its target object is in the raw copy and has an ID; the others are
+  counted, and the modules of their targets that are not downloaded are listed;
 - a mapped attribute that no module has is an error, with the closest names.
 The exchange database belongs to this publication: modules published before and no
 longer downloaded are removed, unless --keep-others.
@@ -155,8 +156,9 @@ class Report:
     requirements: int = 0
     links: int = 0
     without_id: int = 0
-    repeated_ids: int = 0
+    repeated_ids: list[str] = field(default_factory=list)          # "ID (first, repeated)", by Absolute Number
     unresolved_links: int = 0
+    not_downloaded: Counter = field(default_factory=Counter)       # module of link targets not downloaded -> links
     kinds: Counter = field(default_factory=Counter)                # objects per kind
     other_values: Counter = field(default_factory=Counter)         # values of the [kinds] attribute without a kind
     other_ids: list[str] = field(default_factory=list)             # requirements without the first [fields] id
@@ -166,9 +168,11 @@ class Report:
     def summary(self) -> str:
         if self.error:
             return f"{self.module} ({self.path}): FAILED: {self.error}"
+        missing = sum(self.not_downloaded.values())
         extra = [f"{n} {what}" for n, what in ((self.without_id, "objects without an ID left out"),
-                                               (self.repeated_ids, "repeated IDs left out"),
-                                               (self.unresolved_links, "links to objects not downloaded"))
+                                               (len(self.repeated_ids), "repeated IDs left out"),
+                                               (missing, "links to modules not downloaded"),
+                                               (self.unresolved_links - missing, "links to objects without an ID or deleted"))
                  if n]
         kinds = ", ".join(f"{k} {self.kinds[k]}" for k in KINDS if self.kinds[k])
         return (f"{self.module} ({self.path}): {self.requirements} objects" + (f" ({kinds})" if kinds else "")
@@ -179,6 +183,7 @@ class Publisher:
     def __init__(self, store: RawStore, mapping: Mapping):
         self.store, self.mapping = store, mapping
         self._ids: dict[str, dict[int, str]] = {}          # module path -> absolute number -> ID
+        self.downloaded = set(store.modules(complete_only=False))
 
     def id_of(self, obj: DoorsObject, sources: tuple[str, ...] = ()) -> str:
         """The first ID the object has of [fields] id (or of `sources`)."""
@@ -230,16 +235,16 @@ class Publisher:
         objects = self.store.objects(path)
         by_number = {o.absolute_number: o for o in objects}
         by_attribute = bool(m.kind_attribute) and m.kind_attribute in self.store.attribute_names(path)
-        ids, seen, requirements, links = self.ids(path), set(), [], []
+        ids, seen, requirements, links = self.ids(path), {}, [], []
         for position, obj in enumerate(objects, 1):
             rid = ids.get(obj.absolute_number, "")
             if not rid:
                 report.without_id += 1
                 continue
             if rid in seen:
-                report.repeated_ids += 1
+                report.repeated_ids.append(f"{rid} ({seen[rid]}, {obj.absolute_number})")
                 continue
-            seen.add(rid)
+            seen[rid] = obj.absolute_number
             parent, up, visited = None, obj.parent_absolute_number, set()
             while up is not None and up not in visited and parent is None:    # nearest ancestor with an ID
                 visited.add(up)
@@ -260,6 +265,8 @@ class Publisher:
                 target = self.ids(link.target_module).get(link.target_absolute_number)
                 if not target:
                     report.unresolved_links += 1
+                    if link.target_module not in self.downloaded:
+                        report.not_downloaded[link.target_module] += 1
                     continue
                 links.append({"source": rid, "target": target, "type": m.link_type(link.link_module),
                               "target_module": m.module_name(link.target_module)})
@@ -295,6 +302,13 @@ def publish(raw: str, mapping: Mapping, out: str, modules: list[str] | None = No
                 if report.other_ids:             # documents and code cite requirements by the first one
                     log.warning("%s: %d requirements without %s, published with another ID: %s", report.module,
                                 len(report.other_ids), mapping.id[0], _listed(report.other_ids))
+                if report.repeated_ids:
+                    log.warning("%s: %d repeated IDs left out (Absolute Number of the object published and of the "
+                                "one left out): %s", report.module, len(report.repeated_ids),
+                                _listed(report.repeated_ids))
+                if report.not_downloaded:        # published once those modules are downloaded too
+                    log.info("%s: links to modules not downloaded: %s", report.module,
+                             _listed([f"{p} ({n})" for p, n in report.not_downloaded.most_common()]))
                 try:
                     report.warnings = writer.replace_module(report.module, requirements, links, source=path)
                 except ExchangeError as e:

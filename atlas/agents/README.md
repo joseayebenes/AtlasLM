@@ -14,7 +14,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
 | `comply.py` | el cumplimiento del código con un requisito, obligación a obligación |
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
-| `tools.py` | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
+| `tools.py` | `build_context`, `context_at`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 | `develop.py` | `atlas develop`: un agente escribe el código encargo a encargo y los tests lo juzgan; lo que rompe algo se deshace |
 
@@ -89,6 +89,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 | Pieza | Qué hace | Modelo |
 |---|---|---|
 | `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
+| `context_at` | `build_context` del código de una línea de un fichero (`path`, `line`): lo que el editor tiene abierto. También vale `build_context("src/tracks.adb:12")` | no |
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
 | `atlas comply` | si el código que implementa cada requisito hace todo lo que pide, obligación a obligación: cumplida, no cumplida, en parte o imposible de saber leyendo el código. También es la herramienta `check_compliance` | `compliance_checker` |
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |

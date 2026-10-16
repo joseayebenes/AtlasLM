@@ -5,8 +5,9 @@ Every answer is a compact, JSON-serialisable dict, ready to be a tool of an agen
 the MCP server: lists are capped (`limit`) and say whether they were `truncated`; a name
 that is not found answers with `error` and `similar` names instead of raising.
 
-A code element can be given as its identifier ("tracks.update"), in any case, or by its
-simple name ("Update") when only one element has it; if several do, the answer lists them.
+A code element can be given as its identifier ("tracks.update"), in any case, by its
+simple name ("Update") when only one element has it (if several do, the answer lists them),
+or by a file and a line ("src/tracks.adb:12", the element that holds that line: `at`).
 A requirement, by its ID in any case; a module, document or section, by its identifier
 ("module:SRS_TMS", "doc:hmi_manual.md", "doc:hmi_manual.md#003").
 
@@ -28,9 +29,10 @@ it calls, directly or not, code that implements it ("calls").
 from __future__ import annotations
 
 import difflib
+import os
 import re
 from collections import Counter, defaultdict
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import networkx as nx
 
@@ -79,6 +81,8 @@ class KnowledgeGraph:
         self.doors = any(d.get("kind") == "module" for _, d in G.nodes(data=True))
         self._covering: dict[str, set[str]] | None = None
         self._groups: list[set[str]] | None = None
+        self._paths: dict[str, str] = {}                     # file -> its key (_path_key)
+        self._in_file: dict[str, list[str]] | None = None    # key of a file -> the nodes in it
 
     @classmethod
     def open(cls, db: str | Path, root: str | Path = ".") -> "KnowledgeGraph":
@@ -93,10 +97,14 @@ class KnowledgeGraph:
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
-        """(identifier, None) or (None, error answer)."""
+        """(identifier, None) or (None, error answer). "file:line" is the element at that
+        line (`at`), when what follows the last ':' is a number: C:\\src\\tracks.adb:42 too."""
         key = name.strip().lower()
         if key in self._lower:
             return self._lower[key], None
+        file, sep, line = name.strip().rpartition(":")
+        if sep and file and line.strip().isdigit():
+            return self.at(file, int(line))
         found = self._by_name.get(key.rsplit(".", 1)[-1], [])
         if "." in key:
             found = [n for n in found if n.lower().endswith("." + key)] or found
@@ -106,6 +114,85 @@ class KnowledgeGraph:
             return None, {"error": f"'{name}' is ambiguous", "candidates": sorted(found)[:20]}
         simple = key.rsplit(".", 1)[-1]
         return None, {"error": f"'{name}' is not in the graph", "similar": sorted(n for n in self.G if simple in n.lower())[:10]}
+
+    def _path_key(self, file: str) -> str:
+        """A file as CodeTools takes it: absolute, or relative to the root; without case on
+        Windows. The files of the graph and those of the editor compare by it."""
+        key = self._paths.get(file)
+        if key is None:
+            path = Path(file).expanduser()
+            key = os.path.normcase(str((path if path.is_absolute() else self.root / path).resolve()))
+            self._paths[file] = key
+        return key
+
+    def _file_nodes(self) -> dict[str, list[str]]:
+        """Key of a file -> the code elements in it (by their file or the spec that declares
+        them) and the units it belongs to."""
+        if self._in_file is None:
+            found: dict[str, list[str]] = defaultdict(list)
+            for n, d in self.G.nodes(data=True):
+                if d.get("kind") not in CODE_KINDS:
+                    continue
+                files = d.get("files", []) if d.get("kind") == "unit" else [d.get("file"), d.get("spec_file")]
+                for f in dict.fromkeys(f for f in files if f):
+                    found[self._path_key(f)].append(n)
+            self._in_file = dict(found)
+        return self._in_file
+
+    def at(self, file: str, line: int) -> tuple[str | None, dict | None]:
+        """The code element at a line of a file: (identifier, None) or (None, error answer).
+        The innermost subprogram or test that holds the line; else the type, variable or
+        constant declared on it; else the unit of the file. The subprogram is looked for in
+        the file as it is now (atlas.code.symbols), so that lines added since the last build
+        do not move it; the lines of the graph are what is left when it cannot be read. A
+        file that is not in the graph answers with the files of the graph of the same name."""
+        key = self._path_key(file)
+        nodes = self._file_nodes().get(key, [])
+        if not nodes:
+            name = PureWindowsPath(file).name.lower()          # either separator
+            similar = sorted({f for f in self._all_files() if PureWindowsPath(f).name.lower() == name})
+            return None, {"error": f"{file} is not a file of the graph", "similar": similar[:10]}
+        subprograms = [n for n in nodes if self._kind(n) in ("subprogram", "test")]
+        found, parsed = self._subprogram_at(key, line, subprograms)
+        if not parsed:                                       # the lines of the last build
+            holding = [n for n in subprograms if self._path_key(self.G.nodes[n].get("file", "")) == key
+                       and (self.G.nodes[n].get("start_line") or 0) <= line <= (self.G.nodes[n].get("end_line") or 0)]
+            found = max(holding, key=lambda n: self.G.nodes[n]["start_line"], default=None)
+        if found is None:
+            found = next((n for n in nodes if self._kind(n) in ("type", "variable", "constant")
+                          and self.G.nodes[n].get("line") == line
+                          and self._path_key(self.G.nodes[n].get("file", "")) == key), None)
+        if found is None:
+            found = next((n for n in nodes if self._kind(n) == "unit"), None)
+        if found is None:
+            return None, {"error": f"nothing of the graph at line {line} of {file}"}
+        return found, None
+
+    def _all_files(self) -> set[str]:
+        files: set[str] = set()
+        for _, d in self.G.nodes(data=True):
+            if d.get("kind") == "unit":
+                files.update(d.get("files", []))
+        return files
+
+    def _subprogram_at(self, key: str, line: int, candidates: list[str]) -> tuple[str | None, bool]:
+        """(node, parsed): the node of the innermost subprogram that holds the line in the file
+        as it is now, by its name, or None; and whether the file could be read and has
+        subprograms (if not, the lines of the graph are all there is)."""
+        from atlas.code.symbols import subprograms
+        try:
+            text = Path(key).read_text(encoding="utf-8", errors="replace")
+            spans = subprograms(Path(key).suffix, text)
+        except Exception:                    # unreadable, or no parser (tree-sitter-ada)
+            return None, False
+        holding = sorted((s for s in spans or [] if s.start <= line <= s.end), key=lambda s: -s.start)
+        for span in holding:                 # innermost first; outwards if it is not in the graph
+            same = [n for n in candidates if (self.G.nodes[n].get("name") or "").lower() == span.name.lower()]
+            names = {span.qualified.lower(), f"{span.parents[0]}.{span.name}".lower() if span.parents else ""}
+            same = [n for n in same if n.lower() in names] or same
+            if same:                         # overloads: the one that starts nearest
+                return min(same, key=lambda n: abs((self.G.nodes[n].get("start_line") or 0) - span.start)), True
+        return None, bool(spans)
 
     def summary(self, n: str) -> dict:
         d = self.G.nodes[n]

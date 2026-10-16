@@ -162,8 +162,9 @@ def _unit_blocks(g: KnowledgeGraph, n: str) -> list[tuple[str, str]]:
 
 
 def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000) -> dict:
-    """The package of `target` (a requirement ID, a code identifier or simple name, or a
-    unit). {"target", "kind", "markdown", "tokens", "truncated", "omitted"} or {"error"}."""
+    """The package of `target` (a requirement ID, a code identifier or simple name, a unit,
+    or "file:line"). {"target", "kind", "markdown", "tokens", "truncated", "omitted"} or
+    {"error"}."""
     n, err = g.resolve(target)
     if err:
         return err

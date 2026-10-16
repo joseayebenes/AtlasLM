@@ -2,6 +2,7 @@
 
     build_context        everything about a requirement, a code element or a unit, in one
                          Markdown package within a budget of tokens, without a model
+    context_at           the same for the element at a line of a file (what the editor has open)
     verify_requirement   whether the official text of a requirement and the documents agree,
                          judged by the agent requirement_verifier (needs the model)
     link_requirement     the code that may implement a requirement, proposed by the agent
@@ -23,7 +24,8 @@ from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "check_compliance", "ask_atlas")
+TOOL_NAMES = ("build_context", "context_at", "verify_requirement", "link_requirement", "check_compliance",
+              "ask_atlas")
 
 
 class AgentTools:
@@ -48,6 +50,17 @@ class AgentTools:
         Call it before changing code, instead of many searches."""
         g = self.graph.graph()
         return build_context(g, target, budget_tokens) if g is not None else {"error": NO_GRAPH}
+
+    def context_at(self, path: str, line: int, budget_tokens: int = 4000) -> dict:
+        """build_context of the code at a line of a file: the subprogram that holds it (or
+        the type, variable or unit), with its requirements, callers, tests, documents and
+        source. For the file and the line that the editor has open, before changing them.
+        `path` is relative to the folder of the project, or absolute."""
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        n, err = g.at(path, line)
+        return err or build_context(g, n, budget_tokens)
 
     def verify_requirement(self, req_id: str) -> dict:
         """Whether the official text of a requirement (DOORS) and the documents say the same:

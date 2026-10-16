@@ -283,6 +283,40 @@ def test_trace_and_trace_code(unified):
     assert "use trace" in g.trace_code("SRS-0004")["error"]
 
 
+def test_the_element_at_a_line_of_a_file(unified, samples, tmp_path):
+    """What the editor has open: a file (relative to the project, or absolute) and a line."""
+    import shutil
+    from atlas.agents.context import build_context
+    _, g, _ = unified
+    g = KnowledgeGraph(g.G, samples.parents[1])         # the folder of the project, where the editor is
+    body = "examples/samples/ada/src/tracks.adb"
+    assert (samples.parents[1] / body).read_text().splitlines()[11] == "   begin"     # line 12, in Delete_Track
+    assert g.at(body, 12) == ("tracks.delete_track", None)
+    assert g.at(str(samples / "ada" / "src" / "tracks.adb"), 3) == ("tracks.update", None)
+    assert g.at(body, 1) == ("tracks", None)                                       # `with`: the unit
+    spec = "examples/samples/ada/src/tracks.ads"
+    assert [g.at(spec, n)[0] for n in (4, 10, 17, 18)] == ["tracks.track", "tracks.trk_db", "tracks.delete_track",
+                                                           "tracks"]
+    assert g.at("examples/samples/ada/tests/test_tracks.adb", 5)[0] == "test_tracks.test_tracks"
+    assert "procedure Delete_Track" in build_context(g, f"{body}:12")["markdown"]
+    assert g.trace_code(f"{body}:12")["id"] == "tracks.delete_track"
+    _, err = g.at("src/elsewhere/tracks.adb", 12)
+    assert "is not a file of the graph" in err["error"]
+    assert [Path(f) for f in err["similar"]] == [samples / "ada" / "src" / "tracks.adb"]
+    _, err = g.resolve("C:\\src\\tracks.adb:42")                                  # a path of Windows, and its line
+    assert [Path(f) for f in err["similar"]] == [samples / "ada" / "src" / "tracks.adb"]
+
+    # lines added since the build: the file as it is now; if it cannot be read, the lines of the graph
+    ada = tmp_path / "ada"
+    shutil.copytree(samples / "ada", ada)
+    stale = KnowledgeGraph(build_code_graph(_units(sorted(ada.rglob("*.ad?"))))[0])
+    copy = ada / "src" / "tracks.adb"
+    copy.write_text(copy.read_text().replace("package body Tracks is\n", "package body Tracks is\n" + "   --\n" * 4))
+    assert stale.at(str(copy), 16) == ("tracks.delete_track", None) and stale.at(str(copy), 12)[0] == "tracks.update"
+    copy.unlink()
+    assert stale.at(str(copy), 12) == ("tracks.delete_track", None)
+
+
 def test_impact_of_code_and_of_requirements(unified):
     _, g, _ = unified
     i = g.impact("Logger.Log")

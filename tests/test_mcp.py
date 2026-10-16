@@ -35,7 +35,7 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     cfg = load_config(toml(code + docs))
     names = tool_names(cfg)                       # with code, the profile of an editor
     assert names == ["list_documents", "search", "get_section", "get_requirement", "find_symbol", "impact",
-                     "read_source", "trace", "trace_code", "build_context", "read_file"]
+                     "read_source", "trace", "trace_code", "build_context", "context_at", "read_file"]
     checked = load_config(toml(code + 'check_command = ["gcc", "-c", "{file}"]\n' + docs))
     assert tool_names(checked)[-1] == "check_code"
     names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "all"\n')))
@@ -190,7 +190,7 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
 
     anyio.run(client)
     log = errlog.read_text()
-    assert "MCP server over" in log and "27 tools (profile all)" in log                     # logs go to stderr
+    assert "MCP server over" in log and "28 tools (profile all)" in log                     # logs go to stderr
 
 
 def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):

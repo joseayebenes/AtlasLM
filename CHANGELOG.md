@@ -11,12 +11,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `editor` (por defecto con `[sources.code]`) da las que necesita el agente de un editor para
   cambiar código: `search`, `get_requirement`, `get_section`, `list_documents`, `trace`,
   `trace_code`, `impact`, `build_context`, `find_symbol`, `read_source`, `read_file` y
-  `check_code`, 11 o 12 en vez de 27 con documentos y código. `trace` da las de trazabilidad
+  `check_code` (y `context_at`), 12 o 13 en vez de 28 con documentos y código. `trace` da las de trazabilidad
   de DOORS y los documentos, y `all` (por defecto sin código), todas las de las fuentes, como
   antes.
 - Cada herramienta del servidor MCP lleva un título (`Trace code`), y las que solo leen el
   workspace y el código, sin el modelo, se anotan como idempotentes y sin salida al exterior
   (`idempotentHint`, `openWorldHint` falso): el cliente puede repetirlas sin preguntar.
+- Un elemento de código se puede dar por un fichero y una línea, `src/tracks.adb:12` (también
+  `C:\src\tracks.adb:12`): `trace_code`, `impact`, `read_source`, `get_node` y
+  `build_context` dan lo del subprograma que contiene esa línea, o el tipo, la variable o la
+  unidad. `context_at` (`path`, `line`) es `build_context` del fichero y la línea que el
+  editor tiene abiertos. El subprograma se busca en el fichero tal como está ahora, para que
+  las líneas añadidas desde el último `atlas run` no lo muevan. En la librería,
+  `KnowledgeGraph.at(fichero, línea)`.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,

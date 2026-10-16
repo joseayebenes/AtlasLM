@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -323,7 +324,7 @@ def test_genai_schemas_become_json_schemas():
                                                             "ys": {"type": "array", "items": {"type": "integer"}}}}}}]
 
 
-def test_build_context_fits_a_budget(workspace, monkeypatch):
+def test_build_context_fits_a_budget(workspace, samples, monkeypatch):
     from atlas.agents.tools import AgentTools
     monkeypatch.chdir(workspace.path.parent)
     plugins.load_plugins()
@@ -350,6 +351,11 @@ def test_build_context_fits_a_budget(workspace, monkeypatch):
     small = tools.run(target="tracks", budget_tokens=200)
     assert small["truncated"] and small["tokens"] <= 200 and "Spec" in small["omitted"]
     assert "not in the graph" in tools.run(target="nothing")["error"]
+
+    at = plugins.get("tool", "context_at")(context)                 # the file and line of the editor
+    assert at.run(path=str(samples / "ada" / "src" / "tracks.adb"), line=12)["target"] == "tracks.delete_track"
+    assert [Path(f) for f in at.run(path="nowhere/tracks.adb", line=12)["similar"]] == [
+        samples / "ada" / "src" / "tracks.adb"]
 
 
 # --- verification of requirements against the documentation ---------------------------------

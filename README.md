@@ -12,8 +12,9 @@ agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
   que lo citan (y si dicen otra cifra), el código que lo implementa y las pruebas que lo
   cubren. Y a la inversa, el impacto de un cambio.
 
-Versión 0.1.0: fases 0 a 6 del plan (`legacy/PLAN.md`). Los cambios de cada versión están
-en el [CHANGELOG](CHANGELOG.md).
+Versión 0.2.0: las fases 0 a 6 del plan (`legacy/PLAN.md`) y, desde la 0.1.0, agentes que
+escriben y prueban código, el código en el índice, Python, OpenRouter para comparar modelos y
+preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGELOG.md).
 
 ## Documentación
 

@@ -17,6 +17,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `scope_chars`. Cambiarlo no reprocesa nada.
 - `atlas search` y `atlas ask` aceptan `--k`, `--kind` y `--document`, como la herramienta
   `search`.
+- El asistente tiene `list_documents`, `list_requirements` y `ask_docs` para las preguntas
+  amplias.
 - `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas (una
   llamada a una herramienta, su resultado y si el servidor aprovecha el razonamiento devuelto).
   Para comprobar el gateway antes de usar agentes.

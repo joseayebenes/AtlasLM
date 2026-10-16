@@ -41,7 +41,9 @@ You trace requirements of an engineering project...
 ```
 
 Vienen de serie, en `builtin/`, seis agentes:
-- `assistant`, con herramientas de documentos, DOORS y código, todas de lectura;
+- `assistant`, con herramientas de documentos, DOORS y código, todas de lectura; para una
+  pregunta amplia (un resumen, todos los requisitos de algo) lista los documentos y módulos
+  y llama a `ask_docs` con `whole`, que los lee enteros;
 - `requirement_verifier`, `req_linker`, `compliance_checker`, `impact_analyst` y
   `coverage_auditor`, sin herramientas: juzgan o redactan el paso final de un flujo fijo.
 

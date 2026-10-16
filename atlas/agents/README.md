@@ -120,6 +120,9 @@ stuck_rounds = 2                         # rondas sin avanzar antes de dejar un 
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
+task_calls = 0                           # presupuesto de cada intento: llamadas (0 = sin límite)
+task_seconds = 0                         # ... segundos
+task_cost = 0.0                          # ... coste, el que dice el servidor del modelo
 
 [[tasks]]
 id = "ping-bye"
@@ -180,6 +183,23 @@ cambios que rompían lo que ya iba.
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
    lecciones que añadir antes de la siguiente.
+
+Antes de la primera ejecución se comprueba el plan: que sus agentes existen y pueden hacer su
+parte (alguna herramienta que cambia el código; `check_code` si `[sources.code]` tiene
+compilador; `run_test` el `fix_agent`) y que los tests están protegidos. Antes, un agente que
+no existía dejaba cada encargo con un error y la tanda los recorría todos sin llamar al modelo.
+`atlas develop PLAN atlas.toml --check` hace además, sin modelo y sin cambiar nada, lo que
+haría la tanda al empezar: `check_code` sobre los ficheros de `check` y los tests una vez, y
+avisa de los encargos de más de 1200 caracteres (un modelo pequeño va mejor con encargos
+pequeños).
+
+Cada intento de un encargo (el encargo, su reintento o una ronda), con sus arreglos de
+compilación, sus vueltas de `advances` y sus reinicios, tiene un **presupuesto**: `task_calls`,
+`task_seconds` y `task_cost` (0 = sin límite). Al llegar a él no se lanza ninguna ejecución más
+de ese intento; lo hecho se conserva o se deshace como siempre, y el paso lo dice
+(`budget_exceeded`). En la tanda 4, un arreglo de compilación gastó 40 llamadas y 37 minutos
+sin arreglar nada. Una ejecución que falla por el servidor del modelo queda como `error`, no
+como encargo conservado, y el resumen final las cuenta.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos

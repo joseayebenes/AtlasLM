@@ -22,7 +22,7 @@ check(2, getattr(calc, "mul", lambda a, b: None)(2, 3), 6)
 '''
 AGENT = """---
 name: NAME
-tools: [read_file, write_file, edit_file]
+tools: [read_file, write_file, edit_file, check_code, run_test]
 max_steps: 6
 ---
 You write the code of src.
@@ -58,6 +58,8 @@ class StubClient:
         if len(kwargs["messages"]) == 2:                    # the first turn of a run: system and task
             self.prompts.append(kwargs["messages"][1]["content"])
         turn = self.turns.pop(0)
+        if isinstance(turn, BaseException):                 # the model server fails, or Ctrl+C
+            raise turn
         if isinstance(turn, dict):
             calls = [SimpleNamespace(id=f"c{i}", type="function", function=SimpleNamespace(name=n, arguments=json.dumps(a)))
                      for i, (n, a) in enumerate(turn.items())]
@@ -121,7 +123,7 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
     assert second["undone"] == ["src/calc.py"]
     assert second["broke"][0].startswith("tests/test_calc.py got to 2 and now got to 1: Step 1: expected 3")
     assert "does not compile" in retry["broke"][0]
-    assert report["final"] == {"tests_passed": 0, "tests": 1, "check_errors": [],
+    assert report["final"] == {"tests_passed": 0, "tests": 1, "check_errors": [], "errors": 0,
                                "failing": {"tests/test_calc.py": "Step 2: expected 6, received None"}}
     first_round, second_round = client.prompts[-2:]
     assert first_round.startswith("The test tests/test_calc.py fails. What it printed:\n\nStep 2: expected 6")
@@ -239,7 +241,7 @@ def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
     from atlas.config import ConfigError
     base, cfg = project
     (base / "agents" / "planner.md").write_text(AGENT.replace("NAME", "planner").replace(
-        "tools: [read_file, write_file, edit_file]", "tools: [read_file]"))
+        "tools: [read_file, write_file, edit_file, check_code, run_test]", "tools: [read_file]"))
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
     (base / "plan.toml").write_text(plan + 'planner = "planner"\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
     client = StubClient([{"read_file": {"path": "src/calc.py"}}, "Replace the body of add: return a + b."]
@@ -336,6 +338,90 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\n[[tasks]]\ntext = "x"\nadvance = ["test_calc.py"]\n')
     with pytest.raises(ConfigError, match="not \\['advance'\\]"):
         load_plan(base / "bad.toml")
+    (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\ntask_calls = -1\n')
+    with pytest.raises(ConfigError, match="task_calls is a number, 0 or more"):
+        load_plan(base / "bad.toml")
+
+
+def test_a_plan_is_checked_before_any_run(project):
+    """An agent that does not exist or cannot do its part, or tests that an agent could change:
+    a ConfigError at the start, and not a plan that goes through every task with an error."""
+    from atlas.agents.develop import Developer, load_plan
+    base, cfg = project
+    head = PLAN.split("[[tasks]]")[0]
+    for name, tools in (("reader", "read_file, check_code, run_test"), ("blind", "read_file, write_file, run_test"),
+                        ("untested", "read_file, write_file, check_code")):
+        (base / "agents" / f"{name}.md").write_text(AGENT.replace("NAME", name).replace(
+            "read_file, write_file, edit_file, check_code, run_test", tools))
+
+    def developer(plan: str):
+        (base / "bad.toml").write_text(plan)
+        return Developer(load_plan(base / "bad.toml"), cfg)
+
+    with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        developer(head.replace('agent = "implementer"', 'agent = "nobody"'))
+    with pytest.raises(ConfigError, match="agent reader has no tool that changes the code"):
+        developer(head.replace('agent = "implementer"', 'agent = "reader"'))
+    with pytest.raises(ConfigError, match="agent blind needs check_code among its tools"):
+        developer(head.replace('agent = "implementer"', 'agent = "blind"'))
+    with pytest.raises(ConfigError, match="fix_agent untested needs run_test among its tools: .* run the failing test"):
+        developer(head.replace('fix_agent = "fixer"', 'fix_agent = "untested"'))
+    developer(head.replace('agent = "implementer"', 'agent = "untested"'))      # the agent of the tasks needs no run_test
+    cfg["sources"]["code"]["protected"] = []
+    with pytest.raises(ConfigError, match="the test tests/test_calc.py is not protected"):
+        developer(head)
+
+
+def test_check_says_what_a_plan_starts_from_without_a_model(project, capsys):
+    from atlas.agents.develop import Developer, load_plan
+    from atlas.cli import main
+    base, cfg = project
+    (base / "src" / "broken.py").write_text("def f(:\n")
+    (base / "plan.toml").write_text(PLAN + '\n[[tasks]]\nid = "long"\ntext = "' + "x" * 1300 + '"\n')
+    found = Developer(load_plan(base / "plan.toml"), cfg).check()
+    assert (found["tasks"], found["tests_passed"]) == (3, 0)
+    assert found["tests"] == {"tests/test_calc.py": "Step 1: expected 3, received 0"}
+    assert list(found["check_errors"]) == ["src/broken.py"]
+    assert found["warnings"] == ["task long has 1300 characters, more than 1200: a small model does better with "
+                                 "smaller tasks"]
+    assert found["agents"] == {"agent": "implementer", "fix_agent": "fixer"}
+    with pytest.raises(SystemExit) as stop:
+        main(["develop", str(base / "plan.toml"), str(cfg.path), "--check"])
+    assert stop.value.code == 0
+    out = capsys.readouterr().out
+    assert "plan plan: 3 tasks, 1 tests; agent implementer, fix_agent fixer" in out
+    assert "check_code: 1 files with errors\n  src/broken.py: line" in out
+    assert "tests: 0 of 1 pass at the start\n  tests/test_calc.py: Step 1: expected 3, received 0" in out
+    assert "warning: task long has 1300 characters" in out
+    assert not (cfg.workspace / "reports" / "develop-plan.json").exists()          # nothing ran
+
+
+def test_a_budget_stops_the_runs_of_an_attempt(project):
+    """task_calls: once an attempt at a task has spent it, no build fix (nor restart, nor turn
+    of advances) starts; the task is undone or kept as always, and its step says why."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'task_calls = 2\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient(write("def add(a, b:\n    return a + b\n") + write(ADD))     # no turns for a build fix
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["outcome"]) for s in report["steps"]] == [("task", "undone"), ("task-retry", "kept")]
+    assert report["steps"][0]["budget_exceeded"] == "task_calls = 2, spent 2"
+    assert "budget_exceeded" not in report["steps"][1]                     # a new attempt, a new budget
+    assert (base / "src" / "calc.py").read_text() == ADD and not client.turns
+    assert "(budget spent: task_calls = 2, spent 2)" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+
+
+def test_a_run_that_fails_is_an_error_and_not_a_task_done(project):
+    from atlas.agents.develop import develop
+    base, cfg = project
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    report = develop(base / "plan.toml", cfg, client=StubClient([RuntimeError("the server is down")]))
+    (step,) = report["steps"]
+    assert step["outcome"] == "error" and "the server is down" in step["error"]
+    assert report["final"]["errors"] == 1
+    assert "1 agent runs failed with an error." in (cfg.workspace / "reports" / "develop-plan.md").read_text()
 
 
 def test_a_failure_in_a_line():

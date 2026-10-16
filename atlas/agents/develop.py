@@ -16,6 +16,9 @@ The plan is a TOML file:
     restarts = 1                             # fresh starts of a run that stopped (max_steps, stall_steps)
     attempts = 1                             # parallel attempts at each task, each in a copy: the tests choose
     planner = "planner"                      # optional: an agent that reads and says how to do each task
+    task_calls = 0                           # budget of an attempt at a task: tool calls (0: no limit)
+    task_seconds = 0                         # ... seconds
+    task_cost = 0.0                          # ... cost, as the model server reports it
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -71,6 +74,18 @@ calls without changing the code) starts again with a fresh conversation, at most
 times: the same prompt, the diff of what it changed, which stays, and what check_code says
 now. A long conversation of failed edits does not get better with more turns.
 
+Each attempt at a task (the task, its retry, a round), with its build fixes, its turns of
+`advances` and its restarts, has a budget: task_calls, task_seconds and task_cost (0: no
+limit). When it is spent no more runs of it start; what it did is kept or undone as always, and
+its step says so (`budget_exceeded`). A build fix of gemma-4-26b spent its 40 calls and 37
+minutes without fixing anything.
+
+The plan is checked before any run: its agents exist and can do their part (a tool that
+changes the code; check_code when [sources.code] has a compiler; run_test for the fix agent),
+and its tests are protected. Developer.check() (`atlas develop PLAN --check`) also runs
+check_code and the tests once, without a model, and says which tasks are too long. A run that
+fails (the model server) is an `error` step, not a kept task.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 """
@@ -101,6 +116,7 @@ MAX_CHANGES = 3000         # characters of the diff of what a stopped run change
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
 WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
+MAX_TASK_CHARS = 1200      # a longer task gets a warning from check(): small models do better with small tasks
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -156,6 +172,9 @@ class Plan:
     restarts: int = 1
     attempts: int = 1
     planner: str = ""
+    task_calls: int = 0
+    task_seconds: int = 0
+    task_cost: float = 0.0
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -186,6 +205,10 @@ def load_plan(path: str | Path) -> Plan:
             re.compile(data["progress"])
         except re.error as e:
             raise ConfigError(f"plan {path}: progress is not a valid regular expression: {e}") from None
+    for key in ("task_calls", "task_seconds", "task_cost"):
+        value = data.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"plan {path}: {key} is a number, 0 or more (0: no limit)")
     plan = Plan(name=path.stem, tasks=tasks, **data)
     plan.fix_agent = plan.fix_agent or plan.agent
     if not plan.tests:
@@ -227,6 +250,31 @@ class _Files:
         return sorted(changed)
 
 
+class _Budget:
+    """What one attempt at a task (or a round) has spent, against task_calls, task_seconds and
+    task_cost of the plan (0: no limit)."""
+
+    def __init__(self, plan: Plan):
+        self.plan, self.started = plan, time.time()
+        self.calls, self.cost, self.exceeded = 0, 0.0, ""
+
+    def spend(self, step: dict) -> None:
+        self.calls += step.get("calls", 0)
+        self.cost += step.get("cost", 0)
+
+    def spent(self) -> str:
+        """Why no more runs start ("task_calls = 40, spent 43"), or "" while there is budget
+        left; the first reason stays in `exceeded`."""
+        seconds = round(time.time() - self.started)
+        for key, used, limit in (("task_calls", self.calls, self.plan.task_calls),
+                                 ("task_seconds", seconds, self.plan.task_seconds),
+                                 ("task_cost", round(self.cost, 4), self.plan.task_cost)):
+            if limit and used >= limit:
+                self.exceeded = self.exceeded or f"{key} = {limit:g}, spent {used:g}"
+                return self.exceeded
+        return ""
+
+
 def _files(patterns: list[str], base: Path | None = None) -> list[str]:
     """The files of some patterns, from the working folder or from `base` (a copy of it), as
     paths relative to it."""
@@ -246,6 +294,7 @@ class _Workspace:
         self.code = CodeTools.from_config(dev.cfg, base=base)
         self.build = BuildTools.from_config(dev.cfg, self.code, base=base)
         self.files = _Files(self.code)
+        self.budget = _Budget(dev.plan)      # of the attempt that runs here now
 
     def context(self):
         """What the tools of an agent receive: their file and build tools on this folder."""
@@ -282,15 +331,34 @@ class Developer:
         self.main = _Workspace(self)
         self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
         self.tests = _files(plan.tests)
+        from atlas.agents.runtime import definition       # each agent exists, or a ConfigError now and not after a task
         if plan.planner:
-            from atlas.agents.runtime import definition
-            definition(plan.planner, cfg)                 # it exists, or a ConfigError now and not after a task
+            definition(plan.planner, cfg)
+        compiler = bool(self.build.check_command or self.build.check_commands)
+        for key, name, needs in (("agent", plan.agent, ["check_code"] * compiler),
+                                 ("fix_agent", plan.fix_agent, ["check_code"] * compiler + ["run_test"])):
+            tools = definition(name, cfg).tools
+            if not set(tools) & set(WRITES):
+                raise ConfigError(f"plan {plan.name}: {key} {name} has no tool that changes the code "
+                                  f"({', '.join(WRITES)})")
+            missing = [t for t in needs if t not in tools]
+            if missing:
+                raise ConfigError(f"plan {plan.name}: {key} {name} needs {' and '.join(missing)} among its tools: "
+                                  "the prompts of develop tell it to check every file it changes"
+                                  + (" and to run the failing test" if "run_test" in missing else ""))
         outside = [r for r in self.code.roots if Path.cwd().resolve() not in (r, *r.parents)]
         if plan.attempts > 1 and outside:
             raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder where atlas runs, "
                               f"to copy them (not {self.code._show(outside[0])})")
         if not self.tests:
             raise ConfigError(f"plan {plan.name}: no file matches its tests {plan.tests}")
+        for t in self.tests:
+            p, err = self.code._resolve(t)
+            if err:
+                raise ConfigError(f"plan {plan.name}: run_test cannot run the test {t}: {err['error']}")
+            if not self.code.protected_file(p):
+                raise ConfigError(f"plan {plan.name}: the test {t} is not protected ([sources.code] protected, "
+                                  "e.g. [\"tests/**\"]): an agent could change what judges its code")
         if plan.check and not (self.build.check_command or self.build.check_commands):
             raise ConfigError(f"plan {plan.name} checks {plan.check}, but [sources.code] has no check_command")
         unknown = [t for t in self.tests if Path(t).suffix.lstrip(".").lower() not in self.build.test_commands
@@ -350,7 +418,7 @@ class Developer:
         before = ws.files.snapshot() if self.plan.restarts else {}
         step = self._run_once(agent, prompt, kind, task, ws)
         for _ in range(self.plan.restarts):
-            if not step.get("stopped") or step.get("error"):
+            if not step.get("stopped") or step.get("error") or ws.budget.spent():
                 break
             changes, check = self._changes(before, ws)
             step["outcome"] = "restarted"
@@ -398,6 +466,7 @@ class Developer:
         except Exception as e:                   # the model server failed: the task did not happen
             step.update({"calls": 0, "stopped": True, "error": f"{type(e).__name__}: {e}"[:MAX_ANSWER], "answer": ""})
         step["seconds"] = round(time.time() - t0)
+        ws.budget.spend(step)
         use, errors = tool_use(record)
         with self._lock:
             step["n"] = len(self.report["steps"]) + 1
@@ -421,7 +490,7 @@ class Developer:
         """`after`, or the state after the build fixes of what check finds that `before` had not."""
         new_errors = lambda state: set(state["check"]) - set(before["check"])
         for _ in range(self.plan.build_fixes):
-            if not new_errors(after):
+            if not new_errors(after) or (ws or self.main).budget.spent():
                 break
             errors = "\n".join(f"{f}:{e.get('line', '')}: {_message(e)}" for f, es in after["check"].items()
                                for e in es[:10])
@@ -441,12 +510,12 @@ class Developer:
                  ws: _Workspace | None = None) -> dict:
         """The turns that make the tests of `advances` get further (see the module): the state
         after them. A turn that breaks something is undone, and the turns end there."""
+        ws = ws or self.main
         for _ in range(self.plan.advance_fixes):
             stuck = self.not_advanced(advances, before, after)
-            if not stuck:
+            if not stuck or ws.budget.spent():
                 break
             result = after["tests"][stuck[0]]
-            ws = ws or self.main
             snapshot = ws.files.snapshot()
             fix = self.run(agent, self.plan.advance_prompt.format(
                 test=stuck[0], output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result)), "advance-fix",
@@ -466,8 +535,10 @@ class Developer:
                 advances: list[str] = (), ws: _Workspace | None = None) -> tuple[dict, dict, list]:
         """One change of the agent with its build fixes and the turns that make the tests of
         `advances` get further: (step, state after, what it broke). What breaks something is
-        undone, and the state is `before` again."""
+        undone, and the state is `before` again. No more runs start once its budget is spent
+        (task_calls, task_seconds, task_cost)."""
         ws = ws or self.main
+        ws.budget = _Budget(self.plan)
         snapshot = ws.files.snapshot()
         step = self.run(agent, prompt, kind, task, ws)
         after = self.compiled(agent, task, before, self.evaluate(ws), ws)
@@ -481,6 +552,8 @@ class Developer:
             step["undone"] = ws.files.restore(snapshot)
             step["broke"] = broken
             after = before
+        if ws.budget.exceeded:
+            step["budget_exceeded"] = ws.budget.exceeded
         return step, after, broken
 
     def attempts(self, agent: str, prompt: str, kind: str, task: str, before: dict,
@@ -548,17 +621,39 @@ class Developer:
         self.on_step(step)
 
     # --- the plan --------------------------------------------------------------------------
+    def check(self) -> dict:
+        """What the plan starts from, without a model and without changing anything: check_code
+        on the files of `check`, the tests run once, and the tasks too long for a small model.
+        The plan itself was checked when the Developer was made (see the module)."""
+        state = self.evaluate()
+        return {"plan": self.plan.name, "tasks": len(self.plan.tasks),
+                "agents": {k: v for k, v in (("agent", self.plan.agent), ("fix_agent", self.plan.fix_agent),
+                                             ("planner", self.plan.planner)) if v},
+                "tests_passed": self.passing(state),
+                "tests": {t: "passes" if r["passed"] else _last_lines(r["output"]) for t, r in state["tests"].items()},
+                "check_errors": {f: [f"line {e.get('line', '?')}: {_message(e)}" for e in errors[:3]]
+                                 for f, errors in state["check"].items()},
+                "warnings": [f"task {t['id']} has {len(t['text'])} characters, more than {MAX_TASK_CHARS}: a small "
+                             "model does better with smaller tasks" for t in self.plan.tasks
+                             if len(t["text"]) > MAX_TASK_CHARS]}
+
+    @staticmethod
+    def _outcome(step: dict, broken: list) -> str:
+        """Of a task: undone if it broke something; error if the run failed (the model server)
+        and nothing broke, which is not a task done; kept otherwise."""
+        return "undone" if broken else "error" if step.get("error") else "kept"
+
     def tasks(self, state: dict) -> dict:
         for task in self.plan.tasks:
             text = self.planned(task, state)
             step, state, broken = self.attempts(self.plan.agent, text, "task", task["id"], state,
                                                 task["advances"])
-            step["outcome"] = "undone" if broken else "kept"
+            step["outcome"] = self._outcome(step, broken)
             self._done(step, state)
             if broken:
                 retry, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
                     broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
-                retry["outcome"] = "undone" if broken else "kept"
+                retry["outcome"] = self._outcome(retry, broken)
                 self._done(retry, state)
         return state
 
@@ -567,6 +662,7 @@ class Developer:
         and it answered."""
         if not self.plan.planner:
             return task["text"]
+        self.main.budget = _Budget(self.plan)
         step = self.run(self.plan.planner, task["text"], "plan", task["id"])
         step["outcome"] = "planned" if step.get("answer") else "no plan"
         self._done(step, state)
@@ -597,13 +693,15 @@ class Developer:
                 outcome = "fixed"
             elif after_score > before_score:
                 outcome = "further"
+            elif step.get("error"):              # the model server failed: not a try of the agent
+                outcome = "error"
             else:
                 outcome = "no progress"
             step["outcome"] = outcome
             kept_turn = outcome == "further"
             if outcome in ("fixed", "further"):
                 stuck[target] = 0
-            else:
+            elif outcome != "error":
                 stuck[target] = stuck.get(target, 0) + 1
                 attempts.setdefault(target, []).append(
                     f"{step.get('answer') or step.get('error') or '(no answer)'} -> {outcome}"
@@ -626,7 +724,8 @@ class Developer:
         self.report["final"] = {
             "tests_passed": self.passing(state), "tests": len(self.tests),
             "failing": {t: _last_lines(r["output"]) for t, r in state["tests"].items() if not r["passed"]},
-            "check_errors": sorted(state["check"])}
+            "check_errors": sorted(state["check"]),
+            "errors": sum(1 for s in self.report["steps"] if s.get("error"))}
         self.report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self.save()
         return self.report
@@ -703,7 +802,8 @@ def markdown(report: dict) -> str:
                                               ", running") + ".", ""]
     if report.get("final"):
         f = report["final"]
-        out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**", ""]
+        out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**"
+                + (f" {f['errors']} agent runs failed with an error." if f.get("errors") else ""), ""]
     edits, compiles = t.get("edits", {}), t.get("compiles", {})
     out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min, {t['calls']} tool calls, "
             f"{t['prompt_tokens'] + t['completion_tokens']} tokens" + (f", ${t['cost']}" if "cost" in t else "") + ".",
@@ -715,6 +815,8 @@ def markdown(report: dict) -> str:
         outcome = s.get("outcome", "")
         if s.get("error"):
             outcome = f"{outcome} (error: {s['error'][:80]})"
+        if s.get("budget_exceeded"):
+            outcome = f"{outcome} (budget spent: {s['budget_exceeded']})"
         e, c = s.get("edits") or {}, s.get("compiles") or {}
         stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
         kind = s["kind"] + (f" #{s['attempt']}" if s.get("attempt") else "")

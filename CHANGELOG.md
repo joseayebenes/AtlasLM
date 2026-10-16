@@ -6,6 +6,21 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas develop` comprueba el plan antes de la primera ejecución: que `agent` y `fix_agent`
+  existen y tienen una herramienta que cambia el código, `check_code` si hay compilador y
+  `run_test` el `fix_agent`, y que los tests están protegidos. Antes, un agente que no existía
+  dejaba cada encargo con un error y la tanda recorría el plan entero sin llamar al modelo.
+- `atlas develop PLAN atlas.toml --check` (`Developer.check()`): `check_code` y los tests una
+  vez, sin modelo y sin cambiar nada, y aviso de los encargos de más de 1200 caracteres.
+- Presupuesto por intento de un encargo en el plan: `task_calls`, `task_seconds` y `task_cost`
+  (0 = sin límite). Al llegar a él no se lanzan más arreglos de compilación, vueltas de
+  `advances` ni reinicios, y el paso lo dice (`budget_exceeded`).
+
+### Cambiado
+- Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
+  no como `kept`; el resumen final cuenta los errores.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -45,7 +45,7 @@ Si el wheel está publicado en el repositorio interno (Nexus, Artifactory, devpi
 
 ```powershell
 py -3.12 -m venv C:\atlas\venv
-C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.1.0" -c constraints.txt --index-url https://<repositorio>/simple
+C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.2.0" -c constraints.txt --index-url https://<repositorio>/simple
 ```
 
 `-c constraints.txt` instala exactamente las versiones probadas.

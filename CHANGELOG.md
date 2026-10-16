@@ -6,6 +6,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+## [0.2.0] — 2026-10-16
+
+Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el
+código en el índice, Python, OpenRouter para comparar modelos, `tools/doors_export` contra un
+DOORS real, y preguntas amplias que leen documentos enteros.
+
 ### Añadido
 - Preguntas amplias en `atlas ask` y `ask_docs`: al reescribir la pregunta, el modelo dice si
   necesita mucho de un documento (un resumen, una función entera, todos los requisitos de
@@ -102,29 +108,6 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `tools/doors_export`: `publish.py` lista los ID repetidos, con el Absolute Number del objeto
   publicado y del que se omite, y los módulos sin descargar a los que apuntan los enlaces que no
   se publican. El resumen separa esos enlaces de los que van a objetos sin ID o borrados.
-
-### Corregido
-- La búsqueda da como mucho 3 resultados de cada documento o unidad de código mientras otros
-  tengan (`[search] per_document`). Cada elemento de una unidad repite su nombre, y una
-  unidad cuyo nombre estaba en la pregunta se llevaba todos los puestos: «how are tracks
-  deleted» daba 8 elementos de `tracks` y ningún requisito ni documento.
-- `atlas serve` sin el proxy del entorno: el cliente MCP arranca el servidor con su entorno, no
-  con el de la terminal (los hechos con la librería de MCP, como Claude Desktop o ADK, solo
-  pasan `PATH` y pocas más), y `${HTTPS_PROXY:-}` quedaba vacío sin decir nada. Al arrancar,
-  el servidor escribe en su registro cómo llega al modelo (con el proxy o sin él) y qué
-  variables de `atlas.toml` no tiene; las herramientas que usan el modelo y `atlas check` las
-  nombran en su error. La guía de instalación explica cómo pasarlas a cada cliente.
-- `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se
-  pide con `module(l)`, que contra un DOORS real no compila (`incorrect arguments for (=)` en
-  `--check`). Se listan los módulos de enlaces del proyecto y cada objeto recorre sus enlaces
-  por cada uno de ellos, además de por `"*"`; `--check` prueba esas dos primitivas.
-- `tools/doors_export`: la descarga no compilaba en DOORS (`incorrect concatenated token`): el
-  número absoluto se convertía con `(int)(o."Absolute Number")`, un molde que DXL no tiene.
-  Ahora se asigna a un entero. `--check` ejecuta además una página de la descarga con un objeto.
-- Una vuelta de un agente tiene como mucho `[llm.network] timeout` segundos en total y, si
-  tarda más, se pregunta otra vez. El tiempo máximo del cliente HTTP es entre dos lecturas, y
-  OpenRouter mantiene viva la conexión mientras el modelo trabaja: una petición de
-  `gemma-4-26b` se quedó colgada una hora con `atlas develop` esperando.
 - `atlas eval` mide también la recuperación, sin modelo: casos `search` (acierto@1, @3, @5 y
   @10 y rango recíproco medio, con la búsqueda híbrida y con la léxica) y casos con una
   consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`, `search_code_docs`).
@@ -207,6 +190,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - La huella de `docs.process` incluye el extractor, y `atlas sections` dice cuál se usa.
 
 ### Corregido
+- La búsqueda da como mucho 3 resultados de cada documento o unidad de código mientras otros
+  tengan (`[search] per_document`). Cada elemento de una unidad repite su nombre, y una
+  unidad cuyo nombre estaba en la pregunta se llevaba todos los puestos: «how are tracks
+  deleted» daba 8 elementos de `tracks` y ningún requisito ni documento.
+- `atlas serve` sin el proxy del entorno: el cliente MCP arranca el servidor con su entorno, no
+  con el de la terminal (los hechos con la librería de MCP, como Claude Desktop o ADK, solo
+  pasan `PATH` y pocas más), y `${HTTPS_PROXY:-}` quedaba vacío sin decir nada. Al arrancar,
+  el servidor escribe en su registro cómo llega al modelo (con el proxy o sin él) y qué
+  variables de `atlas.toml` no tiene; las herramientas que usan el modelo y `atlas check` las
+  nombran en su error. La guía de instalación explica cómo pasarlas a cada cliente.
+- `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se
+  pide con `module(l)`, que contra un DOORS real no compila (`incorrect arguments for (=)` en
+  `--check`). Se listan los módulos de enlaces del proyecto y cada objeto recorre sus enlaces
+  por cada uno de ellos, además de por `"*"`; `--check` prueba esas dos primitivas.
+- `tools/doors_export`: la descarga no compilaba en DOORS (`incorrect concatenated token`): el
+  número absoluto se convertía con `(int)(o."Absolute Number")`, un molde que DXL no tiene.
+  Ahora se asigna a un entero. `--check` ejecuta además una página de la descarga con un objeto.
+- Una vuelta de un agente tiene como mucho `[llm.network] timeout` segundos en total y, si
+  tarda más, se pregunta otra vez. El tiempo máximo del cliente HTTP es entre dos lecturas, y
+  OpenRouter mantiene viva la conexión mientras el modelo trabaja: una petición de
+  `gemma-4-26b` se quedó colgada una hora con `atlas develop` esperando.
 - Una vuelta de un agente que gasta todo `max_tokens` razonando, sin texto ni llamadas, se
   repite con el doble (como mucho dos veces); antes el agente acababa en silencio.
 - `edit_file`, cuando no encuentra el texto, dice si el cambio ya está hecho y enseña el bloque

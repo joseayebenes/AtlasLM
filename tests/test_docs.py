@@ -34,6 +34,7 @@ KEYS = {
     "[sources.code]": CODE_SCHEMA,
     "[graph]": SCHEMA["graph"],
     "[index]": SCHEMA["index"],
+    "[search]": SCHEMA["search"],
     "[agents]": {*SCHEMA["agents"], *AGENT_SCHEMA, "sets", "runs"},
     "[mcp]": SCHEMA["mcp"],
     "[tests]": {*SCHEMA["tests"], "path", "template", "match"},

@@ -7,6 +7,10 @@ between scores of different kinds:
 - dense: cosine similarity with the vectors of the current embeddings model;
 - lexical: BM25 over the same texts (FTS5), with every token as an exact phrase.
 
+A search over every document keeps at most `per_document` hits of each document (or code
+unit) while others have hits: otherwise the elements of one code unit, which all repeat
+its name, can take every place.
+
 Optionally the model first rewrites the question into 1-3 search queries plus exact
 keywords. An answer takes the hits, replaces every chunk by itself and its neighbours (up
 to a character budget) and asks the model to answer only from those numbered sources,
@@ -15,17 +19,18 @@ citing them as [n].
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from pathlib import Path
 
 from atlas.index.embeddings import Embedder
 from atlas.index.store import IndexStore
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "cite", "rrf", "search", "section_file"]
+__all__ = ["answer", "build_context", "cite", "diverse", "rrf", "search", "section_file"]
 
 log = logging.getLogger(__name__)
 
-CONTEXT_CHARS = 14000   # largest context passed to the model when answering
+CONTEXT_CHARS = 14000   # largest context passed to the model when answering from passages
 
 REWRITE_SYSTEM = """You turn a user question into search queries for a technical document \
 collection. Reply with JSON: {"queries": [...], "keywords": [...]}. "queries": 1-3 short, \
@@ -56,11 +61,31 @@ def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
     return sorted(score, key=lambda r: -score[r])
 
 
+def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
+    """The first k records, with at most `per_document` of each document while others
+    have some; in their order."""
+    chosen, count = set(), Counter()
+    for r in records:
+        if count[r["doc"]] < per_document:
+            chosen.add(r["id"])
+            count[r["doc"]] += 1
+            if len(chosen) == k:
+                break
+    for r in records:                       # few documents: the rest, in order
+        if len(chosen) >= k:
+            break
+        chosen.add(r["id"])
+    return [r for r in records if r["id"] in chosen]
+
+
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
-           kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True) -> list[dict]:
+           kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
+           per_document: int = 0) -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
-    its title) and `kinds` to some kinds of record; with `llm`, the query is rewritten first.
-    With dense=False there are no vectors (IDs and BM25 only): no request to any model."""
+    its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
+    no limit) is the most hits of one document while others have some. With `llm`, the
+    query is rewritten first. With dense=False there are no vectors (IDs and BM25 only): no
+    request to any model."""
     allowed = store.allowed(document, kinds)
     queries, keywords = [query], []
     if llm is not None:
@@ -78,7 +103,10 @@ def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, docume
         rankings.append(store.lexical(q, n, allowed))
     if keywords:
         rankings.append(store.lexical(" ".join(keywords), n, allowed))
-    return store.records(rrf([r for r in rankings if r])[:k])
+    ranked = rrf([r for r in rankings if r])
+    if per_document and not document:
+        return diverse(store.records(ranked), k, per_document)
+    return store.records(ranked[:k])
 
 
 def cite(r: dict) -> str:
@@ -115,10 +143,11 @@ def build_context(store: IndexStore, hits: list[dict], max_chars: int = CONTEXT_
 
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
-           document: str = "", rewrite: bool = True) -> dict:
+           document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
+           context_chars: int = CONTEXT_CHARS) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}]}"""
-    hits = search(store, embedder, question, k, document, llm=llm if rewrite else None)
-    sources = build_context(store, hits)
+    hits = search(store, embedder, question, k, document, kinds, llm if rewrite else None, per_document=per_document)
+    sources = build_context(store, hits, context_chars)
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": []}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))

@@ -54,6 +54,15 @@ def test_unknown_key_fails_with_context(toml):
     assert "[pipeline]" in str(e.value) and "workerz" in str(e.value)
 
 
+def test_search_settings(toml):
+    cfg = load_config(toml('[search]\nresults = 12'))
+    assert cfg["search"]["results"] == 12 and cfg["search"]["per_document"] == 3       # the rest by default
+    with pytest.raises(ConfigError, match="'results' must be at least 1"):
+        load_config(toml('[search]\nresults = 0'))
+    # what search and ask take changes nothing of the index
+    assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
+
+
 def test_wrong_type(toml):
     with pytest.raises(ConfigError, match="integer"):
         load_config(toml('[pipeline]\nworkers = "many"'))

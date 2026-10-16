@@ -10,7 +10,7 @@
     from atlas.index import Index
     idx = Index.from_config(cfg)                    # the atlas.db of the workspace
     idx.embed_missing(texts, workers=4)             # optional: many documents' texts in full batches
-    hits = idx.search("track deletion latency", k=8)
+    hits = idx.search("track deletion latency")     # [search] results, per_document
     res = idx.answer("How long does a track take to be deleted?")
     print(res["answer"], [s["cite"] for s in res["sources"]])
 """
@@ -155,20 +155,25 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
 
 class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
-    (`llm`) is only needed to rewrite queries and to answer, and it is created on first use."""
+    (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
+    `settings` are those of [search] (results, per_document, context_chars); what is not
+    given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None):
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
+        from atlas.config import DEFAULTS
         self.store = IndexStore(db)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
+        self.settings = {**DEFAULTS["search"], **(settings or {})}
 
     @classmethod
     def from_config(cls, cfg) -> "Index":
-        """The index of <workspace>/atlas.db with the [embeddings] and [llm] of atlas.toml."""
+        """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
+        atlas.toml."""
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm)
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
 
     @property
     def llm(self) -> JsonLlm:
@@ -201,12 +206,19 @@ class Index:
     def documents(self) -> list[dict]:
         return self.store.documents()
 
-    def search(self, query: str, k: int = 8, document: str = "", kinds: list[str] | None = None,
-               rewrite: bool = False, dense: bool = True) -> list[dict]:
-        return search(self.store, self.embedder, query, k, document, kinds, self.llm if rewrite else None, dense)
+    def search(self, query: str, k: int = 0, document: str = "", kinds: list[str] | None = None,
+               rewrite: bool = False, dense: bool = True, per_document: int | None = None) -> list[dict]:
+        """k = 0 and per_document = None: those of the settings."""
+        per = self.settings["per_document"] if per_document is None else per_document
+        return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
+                      self.llm if rewrite else None, dense, per)
 
-    def answer(self, question: str, k: int = 8, document: str = "", rewrite: bool = True) -> dict:
-        return answer(self.store, self.embedder, self.llm, question, k, document, rewrite)
+    def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
+               kinds: list[str] | None = None) -> dict:
+        """k = 0: that of the settings; see search.answer."""
+        s = self.settings
+        return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
+                      s["per_document"], s["context_chars"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

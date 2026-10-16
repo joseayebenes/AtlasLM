@@ -39,6 +39,7 @@ de ella:
 | `[llm] model` | los documentos con `analysis = "llm"` |
 | `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
+| `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
 | `[graph]` | el grafo |
@@ -251,6 +252,17 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
 | `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+
+## [search]
+
+Lo que `atlas search`, `atlas ask` y las herramientas `search` y `ask_docs` toman del índice.
+Cambiarlo no reprocesa nada.
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `results` | entero | `8` | resultados de una búsqueda y pasajes de una respuesta (`--k` en la línea de comandos) |
+| `per_document` | entero | `3` | como mucho, resultados de un mismo documento, módulo o unidad de código mientras otros tengan; `0` = sin límite. No se aplica si la búsqueda se limita a un documento |
+| `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
 
 ## [agents]
 

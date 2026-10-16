@@ -93,6 +93,7 @@ atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, document
 atlas matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
 atlas search "track deletion latency" atlas.dev.toml   # búsqueda en documentos, requisitos y código
 atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
+atlas search "deletion" atlas.dev.toml --kind requirement --k 5   # solo requisitos, 5 resultados
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente

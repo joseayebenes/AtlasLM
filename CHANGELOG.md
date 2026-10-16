@@ -7,6 +7,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `[search]`: `results` (cuántos resultados, 8), `per_document` y `context_chars`. Cambiarlo
+  no reprocesa nada.
+- `atlas search` y `atlas ask` aceptan `--k`, `--kind` y `--document`, como la herramienta
+  `search`.
 - `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas (una
   llamada a una herramienta, su resultado y si el servidor aprovecha el razonamiento devuelto).
   Para comprobar el gateway antes de usar agentes.
@@ -92,6 +96,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   se publican. El resumen separa esos enlaces de los que van a objetos sin ID o borrados.
 
 ### Corregido
+- La búsqueda da como mucho 3 resultados de cada documento o unidad de código mientras otros
+  tengan (`[search] per_document`). Cada elemento de una unidad repite su nombre, y una
+  unidad cuyo nombre estaba en la pregunta se llevaba todos los puestos: «how are tracks
+  deleted» daba 8 elementos de `tracks` y ningún requisito ni documento.
 - `atlas serve` sin el proxy del entorno: el cliente MCP arranca el servidor con su entorno, no
   con el de la terminal (los hechos con la librería de MCP, como Claude Desktop o ADK, solo
   pasan `PATH` y pocas más), y `${HTTPS_PROXY:-}` quedaba vacío sin decir nada. Al arrancar,

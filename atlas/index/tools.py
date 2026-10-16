@@ -106,19 +106,20 @@ class DocTools:
                                "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
                               for d in docs]}
 
-    def search(self, query: str, k: int = 8, document: str = "", kind: str = "") -> dict:
+    def search(self, query: str, k: int = 0, document: str = "", kind: str = "") -> dict:
         """Hybrid search in the documents, in the requirements of DOORS and in the code:
-        exact IDs, meaning and keywords. `document` limits it to one document, DOORS module or
-        code unit (its name or part of its title); `kind` to one kind of passage: chunk |
-        section_summary | requirement | definition | open_issue | overview | code_doc (a
-        subprogram, type or variable with its comment and code). Each result has its
-        citation, its document and section (for get_section; for a DOORS requirement,
-        get_requirement with its ref; for code, read_source or trace_code with its ref) and
-        its text."""
+        exact IDs, meaning and keywords. `k` results (0: the configured number, 8 by default;
+        at most a few of each document unless `document` is given). `document` limits it to
+        one document, DOORS module or code unit (its name or part of its title); `kind` to
+        one kind of passage: chunk | section_summary | requirement | definition | open_issue |
+        overview | code_doc (a subprogram, type or variable with its comment and code). Each
+        result has its citation, its document and section (for get_section; for a DOORS
+        requirement, get_requirement with its ref; for code, read_source or trace_code with
+        its ref) and its text."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:
-            hits = self.index.search(query, k=max(1, min(k, MAX_RESULTS)), document=document,
+            hits = self.index.search(query, k=min(k, MAX_RESULTS) if k > 0 else 0, document=document,
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
             return model_failed(e, self.cfg)

@@ -87,6 +87,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
+    "search": {"results": int, "per_document": int, "context_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -117,6 +118,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
+    # what search and ask take from the index; changing it reprocesses nothing
+    "search": {"results": 8, "per_document": 3, "context_chars": 14000},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
     "tests": {"languages": {}, "steps": []},
@@ -168,6 +171,12 @@ def _validate_tests(tests: dict) -> None:
                               f"({', '.join(languages) or 'none'})")
         if not all(isinstance(v, str) for v in step.values()):
             raise ConfigError(f"[{where}] the code of each language must be a string")
+
+
+def _validate_search(search: dict) -> None:
+    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000)):
+        if key in search and search[key] < least:
+            raise ConfigError(f"[search] '{key}' must be at least {least}")
 
 
 @dataclass
@@ -276,6 +285,7 @@ def load_config(path: str | Path) -> Config:
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
+    _validate_search(data.get("search", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

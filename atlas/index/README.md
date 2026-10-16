@@ -63,9 +63,17 @@ Una búsqueda combina tres listas con Reciprocal Rank Fusion:
 - la similitud de los vectores;
 - BM25 sobre el mismo texto (FTS5 de SQLite).
 
+Una búsqueda en todos los documentos da como mucho `[search] per_document` resultados (3)
+de cada documento, módulo de DOORS o unidad de código mientras otros tengan alguno; si no
+hay bastantes, completa con los demás. Cada elemento de una unidad de código repite su
+nombre (`ada unit tracks > constant tracks.max_tracks`), y sin ese límite una unidad cuyo
+nombre está en la pregunta ocupaba todos los puestos: en las muestras, «how are tracks
+deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no hay límite.
+`[search] results` dice cuántos resultados (8).
+
 `atlas ask` reescribe antes la pregunta en consultas de búsqueda. Después pasa al modelo
-los mejores resultados, con los fragmentos vecinos, y le pide responder solo con esas
-fuentes y citándolas como `[n]`.
+los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
+pide responder solo con esas fuentes y citándolas como `[n]`.
 
 Un proceso que vive mucho (el servidor MCP) ve lo que indexa otro: los vectores se vuelven
 a leer cuando cambia la base.
@@ -77,8 +85,8 @@ Sobre las muestras, con `embeddinggemma`, la híbrida pone lo buscado en primer 
 
 El código compite con los documentos. En las muestras, «show the tracks on the operator
 screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de
-`tracks` habla de *tracks*. Para buscar solo en una clase de texto, `kind` en la herramienta
-`search` (o `kinds` en `Index.search`).
+`tracks` habla de *tracks*. Para buscar solo en una clase de texto, `--kind` en `atlas
+search` y `atlas ask`, `kind` en la herramienta `search` (o `kinds` en `Index.search`).
 
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
@@ -100,5 +108,5 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS), `tests/test_cli.py` (pasos de `atlas
+documentos, cambio de modelo, herramientas, DOORS, límite por documento), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

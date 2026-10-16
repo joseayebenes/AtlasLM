@@ -38,7 +38,8 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
     old_emb = cx.ServiceConfig(base_url=llm.base_url, model="embeddinggemma", api_key="x",
                                batch=fake_embeddings.batch, net=net)
     old_store, old_embedder = rag.Store(str(tmp_path / "rag.db")), rag.Embedder(old_emb)
-    new = Index(tmp_path / "atlas.db", fake_embeddings, llm)
+    new = Index(tmp_path / "atlas.db", fake_embeddings, llm,
+                {"per_document": 0})                                     # what doc_rag.py did
 
     for f in ("spec_with_bookmarks.pdf", "spec_without_bookmarks.pdf", "hmi_manual.md"):
         data = process_document(docs_samples / f, tmp_path / "docs" / f, DocsOptions(), llm=llm)

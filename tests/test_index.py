@@ -200,6 +200,27 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert [d["name"] for d in idx.documents()] == ["hmi_manual.md"]
 
 
+def test_a_few_hits_of_each_document():
+    """The elements of a code unit all repeat its name: without a limit, one unit can take
+    every place of a search."""
+    from atlas.index.search import diverse
+    records = [{"id": i, "doc": doc} for i, doc in enumerate("aaaaabcab")]
+    assert [r["id"] for r in diverse(records, 4, 2)] == [0, 1, 5, 6]
+    assert [r["id"] for r in diverse(records, 8, 2)] == [0, 1, 2, 3, 4, 5, 6, 8]    # few documents: the rest
+    assert [r["id"] for r in diverse(records, 3, 9)] == [0, 1, 2]
+
+
+def test_search_keeps_a_few_hits_of_each_document(docs, tmp_path, fake_llm, fake_embeddings):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"results": 4, "per_document": 2})
+    for data in docs.values():
+        _add(idx, data)
+    hits = idx.search("track alarm shall")
+    assert len(hits) == 4 and [h["doc_name"] for h in hits].count("hmi_manual.md") == 2
+    assert len(idx.search("track alarm shall", per_document=0)) == 4
+    assert {h["doc_name"] for h in idx.search("track alarm shall", k=6, document="spec_with_bookmarks.pdf")} \
+        == {"spec_with_bookmarks.pdf"}                                       # one document: no limit
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

@@ -160,6 +160,20 @@ patterns = ["*.md"]
     with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
         main(["search", "keep logs", str(path)])
     assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:              # options anywhere: --name value or --name=value
+        main(["search", "track event", str(path), "--k", "2", "--kind=requirement"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "[2]" in out and "[3]" not in out and out.count("(requirement)") == 2
+    with pytest.raises(SystemExit) as e:
+        main(["ask", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
+    assert e.value.code == 0 and "hmi_manual.md › 2 Alarms" in capsys.readouterr().out
+    for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
+                        (["search", "x", "--whole"], "unknown option --whole"),
+                        (["ask", "x", "--k", "many"], "--k must be an integer"),
+                        (["status", "--k", "3"], "it takes none")):
+        with pytest.raises(SystemExit) as e:
+            main(args + [str(path)])
+        assert error in str(e.value.code)
 
     # a changed document: reprocessed and reindexed; a failed embeddings batch is retried
     (docs / "hmi_manual.md").write_text((docs / "hmi_manual.md").read_text().replace("30 days", "60 days"))

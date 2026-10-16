@@ -63,6 +63,11 @@ languages = ["ada"]
 exclude = ["**/obj/**", "**/build/**"]
 test_patterns = ["**/tests/**"]        # sus subprogramas son pruebas
 
+# --- Búsqueda y respuestas ---------------------------------------------------------------
+[search]                               # cambiarlo no reprocesa nada
+results = 8                            # resultados de atlas search y pasajes de atlas ask
+per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
+
 # --- Agentes y servidor MCP ------------------------------------------------------------
 [agents]
 dirs = ["agents"]                      # los agentes del proyecto (.md), junto a este fichero

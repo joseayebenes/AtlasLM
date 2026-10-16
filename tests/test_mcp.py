@@ -76,6 +76,43 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
         create_server(load_config(toml("[mcp]\nenabled = false\n")))
 
 
+def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(toml, samples):
+    """Each tool, offered alone, has its paragraph in the instructions (the compiler and the
+    language server had none), and only the tools that write or run code are not read-only."""
+    pytest.importorskip("mcp")
+    from atlas.mcp import INSTRUCTIONS, create_server, tool_groups
+    from atlas.plugins import Requirement
+    from atlas.store import Store
+    plugins.load_plugins()
+    code = f'[sources.code]\nroots = ["{(samples / "ada").as_posix()}"]\nlanguages = ["ada"]\n'
+    groups = tool_groups()
+    for name in plugins.available("tool"):
+        cfg = load_config(toml(f'{code}[mcp]\ntools = ["{name}"]\n'))
+        server = create_server(cfg)
+        paragraphs = [INSTRUCTIONS[g] for g, tools in groups.items() if name in tools]
+        assert paragraphs and all(p in server.instructions for p in paragraphs), name
+        tool = plugins.get("tool", name)
+        assert _tools(server)[name]["annotations"]["readOnlyHint"] is (not tool.writes), name
+    assert "`run_program` runs the program" in create_server(load_config(
+        toml(code + '[mcp]\ntools = ["run_program"]\n'))).instructions
+
+    # how this project cites requirements, its IDs and modules, and the steps of a change
+    cfg = load_config(toml(code))
+    store = Store(cfg.workspace)
+    store.replace_module("SRS_TMS", [Requirement("SRS-0004", "Delete.", "SRS_TMS")], [], {"SRS-0004": "h"})
+    text = create_server(cfg).instructions
+    assert "Traceability of this project: The code cites the requirements it implements in a comment with the " \
+           "tag `Req:` (`-- Req: SRS-0004`)" in text
+    assert "Requirement IDs match `^(?:SRS|SSS)-\\d{4}$`. DOORS modules: SRS_TMS." in text
+    assert "A change: `context_at` or `build_context` of the code to change -> edit it -> compile it -> run the " \
+           "tests that `trace` gives for its requirements." in text
+    text = create_server(load_config(toml(code.replace("languages", 'req_regex = "@req (.+)"\nlanguages') +
+                                          '[mcp]\ntools = ["read_file", "check_code", "run_test"]\n'))).instructions
+    assert "in comments that match `@req (.+)`" in text
+    assert "A change: read the code to change -> edit it -> `check_code` the file until it has no errors -> " \
+           "`run_test` its tests." in text
+
+
 @pytest.fixture
 def project(toml, samples, docs_samples, tmp_path, fake):
     """A workspace that `atlas run` has filled: DOORS, the code graph of the Ada samples and

@@ -69,6 +69,12 @@ Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
+Las instrucciones del servidor explican cada grupo de herramientas ofrecidas y, en un
+párrafo «Traceability of this project», cómo cita el código los requisitos (`req_tag` o
+`req_regex`), cómo son sus ID (`id_pattern`), qué módulos de DOORS hay y los pasos de un
+cambio: contexto (`context_at` o `build_context`), editar, `check_code` y `run_test` de las
+pruebas que da `trace`, con las herramientas que se ofrecen.
+
 Cada herramienta lleva un título (`Trace code`) y unas anotaciones que el cliente puede
 usar para pedir confirmación o repetir llamadas sin preguntar:
 - las que escriben (`edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) y las

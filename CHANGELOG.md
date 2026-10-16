@@ -24,6 +24,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   editor tiene abiertos. El subprograma se busca en el fichero tal como está ahora, para que
   las líneas añadidas desde el último `atlas run` no lo muevan. En la librería,
   `KnowledgeGraph.at(fichero, línea)`.
+- Las instrucciones de `atlas serve` llevan un párrafo «Traceability of this project»: la
+  etiqueta con la que el código cita los requisitos (`[sources.code] req_tag` o `req_regex`),
+  el patrón de los ID (`id_pattern`), los módulos de DOORS leídos y los pasos de un cambio
+  con las herramientas ofrecidas (contexto, editar, `check_code`, `run_test` de las pruebas
+  que da `trace`). También explican el servidor de lenguaje (`find_definition`,
+  `find_references`, `describe_symbol`), `run_program` y `search_reference`.
+
+### Corregido
+- Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
+  `library_spec`, aunque `check_code` se ofrece por defecto con un compilador.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,

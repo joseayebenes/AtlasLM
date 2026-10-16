@@ -46,7 +46,8 @@ from atlas import plugins
 from atlas.config import Config, ConfigError
 from atlas.store import Store
 
-__all__ = ["create_server", "default_tools", "instructions", "profile", "profile_tools", "serve", "tool_names"]
+__all__ = ["create_server", "default_tools", "instructions", "profile", "profile_tools", "serve", "tool_groups",
+           "tool_names", "traceability"]
 
 log = logging.getLogger(__name__)
 
@@ -81,9 +82,14 @@ INSTRUCTIONS = {
     "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
             "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
     "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
-             "every change; `run_test` builds a test procedure and runs it; `library_spec` gives the real "
-             "declarations of a package of the runtime or of the project.",
+             "every change; `run_test` builds a test procedure and runs it; `run_program` runs the program with "
+             "an input and returns its output; `library_spec` gives the real declarations of a package of the "
+             "runtime or of the project; `search_reference` searches the manuals of the compiler and the "
+             "declarations of the library by words.",
+    "lsp": "`find_definition`, `find_references` and `describe_symbol` ask the language server about a name written "
+           "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
+GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "edit", "build", "lsp")
 
 
 def _server_class() -> type:
@@ -165,21 +171,74 @@ def tool_names(cfg: Config) -> list[str]:
     return wanted
 
 
-def instructions(names: list[str]) -> str:
-    """What the server tells the client about its tools."""
+def tool_groups() -> dict[str, tuple[str, ...]]:
+    """Group of INSTRUCTIONS -> its tools: the paragraph of a group goes in the instructions
+    when the server offers any of them."""
+    from atlas.code.build import BUILD_TOOL_NAMES
+    from atlas.code.lsp import LSP_TOOL_NAMES
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test", "library_spec"),
-              "context": ("build_context", "context_at"),
-              "agents": ("ask_atlas", "verify_requirement", "link_requirement", "check_compliance")}
-    try:
+    groups = {"docs": DOC_TOOLS, "files": tuple(n for n in FILE_TOOLS if n not in WRITING_TOOLS),
+              "edit": WRITING_TOOLS, "build": BUILD_TOOL_NAMES, "lsp": LSP_TOOL_NAMES}
+    try:                                    # networkx, of the [code] extra
+        from atlas.agents.tools import TOOL_NAMES as AGENT_TOOLS
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
-        groups["graph"] = GRAPH_TOOLS
     except ImportError:
-        pass
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "agents", "files", "edit")
-                                  if g in groups and set(groups[g]) & set(names)]
-    return "\n\n".join(parts)
+        return groups
+    return {**groups, "graph": GRAPH_TOOLS, "context": tuple(n for n in AGENT_TOOLS if n not in MODEL_TOOLS),
+            "agents": tuple(n for n in AGENT_TOOLS if n in MODEL_TOOLS)}
+
+
+def instructions(names: list[str], cfg: Config | None = None, store: Store | None = None) -> str:
+    """What the server tells the client about its tools and, with `cfg`, about the
+    traceability of the project (traceability)."""
+    groups = tool_groups()
+    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
+    if cfg is not None:
+        parts.append(traceability(cfg, names, store))
+    return "\n\n".join(p for p in parts if p)
+
+
+def traceability(cfg: Config, names: list[str], store: Store | None = None) -> str:
+    """The paragraph "Traceability of this project": how the code cites the requirements
+    ([sources.code] req_tag or req_regex), what their IDs look like ([sources.doors.convention]
+    id_pattern), the DOORS modules read (`store`), and the steps of a change with the tools
+    offered. "" without code or DOORS."""
+    sources, said = cfg["sources"], []
+    code = sources.get("code") if _enabled(sources.get("code")) else None
+    doors = sources.get("doors") if _enabled(sources.get("doors")) else None
+    try:
+        modules = store.modules() if store is not None and doors else []
+        example = (store.requirement_ids("", 1) if modules else []) or ["<ID>"]
+    except Exception:                       # a workspace that atlas run has not filled
+        modules, example = [], ["<ID>"]
+    if code:
+        if code.get("req_regex"):
+            said.append(f"The code cites the requirements it implements in comments that match `{code['req_regex']}`, "
+                        "and a test the requirements it verifies.")
+        else:
+            tag = (code.get("req_tag") or "Req:").strip()
+            mark = "#" if (code.get("languages") or ["ada"])[0] == "python" else "--"
+            said.append(f"The code cites the requirements it implements in a comment with the tag `{tag}` "
+                        f"(`{mark} {tag} {example[0]}`) by the subprogram or type, or by its declaration in a spec; a "
+                        "test cites those it verifies the same way. Add the tag to the code that implements a "
+                        "requirement.")
+    if doors:
+        pattern = (doors.get("convention") or {}).get("id_pattern")
+        if pattern:
+            said.append(f"Requirement IDs match `{pattern}`.")
+        if modules:
+            said.append(f"DOORS modules: {', '.join(modules)}.")
+    if code:
+        offered = set(names)
+        context = [f"`{n}`" for n in ("context_at", "build_context") if n in offered] or \
+            (["`trace_code`"] if "trace_code" in offered else [])
+        steps = [" or ".join(context) + " of the code to change" if context else "read the code to change", "edit it",
+                 "`check_code` the file until it has no errors" if "check_code" in offered else "compile it",
+                 ("`run_test` " if "run_test" in offered else "run ") +
+                 ("the tests that `trace` gives for its requirements" if "trace" in offered else "its tests")]
+        said.append("A change: " + " -> ".join(steps) + ".")
+    return "Traceability of this project: " + " ".join(said) if said else ""
 
 
 def create_server(cfg: Config, context: Any = None) -> Any:
@@ -193,7 +252,7 @@ def create_server(cfg: Config, context: Any = None) -> Any:
         plugins.load_plugins(cfg["plugins"]["modules"])
         context = SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
     names = tool_names(cfg)
-    server = server_class("atlas", instructions=instructions(names))
+    server = server_class("atlas", instructions=instructions(names, cfg, getattr(context, "store", None)))
     for name in names:
         tool = plugins.get("tool", name, cfg["plugins"]["disabled"])(context)
         server.add_tool(tool.function(), name=name, title=name.replace("_", " ").capitalize(),

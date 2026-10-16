@@ -16,7 +16,9 @@
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
-    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
+                   [--k N] [--kind KIND] [--document NAME]
+    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
+                   [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -847,10 +849,50 @@ def coverage(cfg: Config, module: str) -> int:
     return 0
 
 
-def search(cfg: Config, query: str) -> int:
+# options of the actions that take them: --name -> type (bool: a flag)
+OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
+
+
+def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
+    """The positional arguments and the --options of an action ({"k": 5, "whole": True})."""
+    allowed, positional, options = OPTIONS.get(action, {}), [], {}
+    it = iter(args)
+    for arg in it:
+        if not arg.startswith("--") or arg == "--":
+            positional.append(arg)
+            continue
+        name, has_value, value = arg.partition("=")
+        if name not in allowed:
+            sys.exit(f"atlas {action}: unknown option {name}"
+                     + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
+        kind = allowed[name]
+        if kind is bool:
+            options[name[2:]] = True
+            continue
+        if not has_value:
+            value = next(it, None)
+            if value is None:
+                sys.exit(f"atlas {action}: {name} needs a value")
+        try:
+            options[name[2:]] = kind(value)
+        except ValueError:
+            sys.exit(f"atlas {action}: {name} must be {'an integer' if kind is int else 'a text'}")
+    return positional, options
+
+
+def _kinds(kind: str) -> list[str] | None:
+    from atlas.index import KINDS
+    if kind and kind not in KINDS:
+        sys.exit(f"unknown kind '{kind}' (valid: {', '.join(KINDS)})")
+    return [kind] if kind else None
+
+
+def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = "") -> int:
     from atlas.index import Index, cite
+    kinds = _kinds(kind)
     _context(cfg)
-    hits = Index.from_config(cfg).search(query, k=8)
+    hits = Index.from_config(cfg).search(query, k=k, document=document, kinds=kinds)
     if not hits:
         print("nothing found (has `atlas run` indexed any document?)")
     for i, h in enumerate(hits, 1):
@@ -858,15 +900,19 @@ def search(cfg: Config, query: str) -> int:
     return 0
 
 
-def ask(cfg: Config, question: str) -> int:
+def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
     from atlas.index import Index
+    kinds = _kinds(kind)
     _context(cfg)
-    res = Index.from_config(cfg).answer(question)
+    res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
+                                        scope="whole" if whole else "")
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")
     for s in res["sources"]:
         print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+    if res["scope"] == "whole":
+        print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
     return 0
 
 
@@ -1051,11 +1097,12 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(f"configuration: {e}")
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
+    rest, options = _options(action, rest)
     if action in with_text and not rest:
         sys.exit(f"usage: atlas {action} TEXT [atlas.toml]")
     try:
         if action in with_text:
-            sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0]))
+            sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0], **options))
         sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")

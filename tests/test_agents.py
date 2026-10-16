@@ -595,7 +595,7 @@ def test_the_app_for_adk_web(workspace, monkeypatch):
         spec.loader.exec_module(module)
         return module.root_agent
 
-    assert load("assistant").name == "assistant" and len(load("assistant").tools) == 8
+    assert load("assistant").name == "assistant" and len(load("assistant").tools) == 11
     tracer = load("tracer")
     assert tracer.name == "tracer" and [t.__name__ for t in tracer.tools] == ["trace", "gaps", "build_context"]
 

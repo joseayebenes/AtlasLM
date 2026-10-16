@@ -6,7 +6,8 @@
     get_section       the Markdown of a section
     get_requirement   a requirement by its ID: its official text (DOORS) and the documents
                       that state it
-    ask_docs          an answer written only from the documents, citing them
+    ask_docs          an answer written only from the documents, citing them; a broad
+                      question (or whole=True) reads its documents whole
 
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
@@ -106,19 +107,20 @@ class DocTools:
                                "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
                               for d in docs]}
 
-    def search(self, query: str, k: int = 8, document: str = "", kind: str = "") -> dict:
+    def search(self, query: str, k: int = 0, document: str = "", kind: str = "") -> dict:
         """Hybrid search in the documents, in the requirements of DOORS and in the code:
-        exact IDs, meaning and keywords. `document` limits it to one document, DOORS module or
-        code unit (its name or part of its title); `kind` to one kind of passage: chunk |
-        section_summary | requirement | definition | open_issue | overview | code_doc (a
-        subprogram, type or variable with its comment and code). Each result has its
-        citation, its document and section (for get_section; for a DOORS requirement,
-        get_requirement with its ref; for code, read_source or trace_code with its ref) and
-        its text."""
+        exact IDs, meaning and keywords. `k` results (0: the configured number, 8 by default;
+        at most a few of each document unless `document` is given). `document` limits it to
+        one document, DOORS module or code unit (its name or part of its title); `kind` to
+        one kind of passage: chunk | section_summary | requirement | definition | open_issue |
+        overview | code_doc (a subprogram, type or variable with its comment and code). Each
+        result has its citation, its document and section (for get_section; for a DOORS
+        requirement, get_requirement with its ref; for code, read_source or trace_code with
+        its ref) and its text."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:
-            hits = self.index.search(query, k=max(1, min(k, MAX_RESULTS)), document=document,
+            hits = self.index.search(query, k=min(k, MAX_RESULTS) if k > 0 else 0, document=document,
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
@@ -172,12 +174,15 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         return out
 
-    def ask_docs(self, question: str, document: str = "") -> dict:
+    def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
-        passages. `document` limits it to one document."""
+        passages. `document` limits it to one document or DOORS module. A broad question (a
+        summary, a whole function, every requirement about a topic) reads its documents
+        whole instead of the best passages, in parts if they are long; `whole` = true makes
+        it read them whole always (`scope` in the answer says how it was read)."""
         try:
-            return self.index.answer(question, document=document)
+            return self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:
             return model_failed(e, self.cfg)
 

@@ -20,7 +20,8 @@ Qué se envía al modelo:
   sección para el resumen del documento;
 - los textos que se indexan, para los embeddings: fragmentos de los documentos, resúmenes,
   requisitos de DOORS, definiciones;
-- en `atlas ask`, la pregunta y los pasajes encontrados;
+- en `atlas ask`, la pregunta y los pasajes encontrados; si la pregunta es amplia, los
+  documentos o módulos de los que trata, enteros;
 - en los agentes (`atlas agent`, `verify`, `impact`, `coverage`, `eval`, `ask_atlas`), la
   pregunta y lo que devuelven sus herramientas: requisitos, código fuente, documentos.
 

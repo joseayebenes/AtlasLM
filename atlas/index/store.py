@@ -202,6 +202,13 @@ class IndexStore:
         by_id = {r["id"]: dict(r) for r in rows}
         return [by_id[i] for i in ids if i in by_id]
 
+    def document_records(self, doc: str) -> list[dict]:
+        """Every record of a document (by its key), in the order it was indexed: that of the
+        document."""
+        return [dict(r) for r in self._query(
+            f"SELECT {_RECORD_COLUMNS}, d.name AS doc_name, d.title AS doc_title, d.out_dir "
+            f"FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE r.doc = ? ORDER BY r.id", (doc,))]
+
     def neighbours(self, rec: dict, radius: int = 1) -> list[dict]:
         """The adjacent chunks of the same section ('small-to-big' context)."""
         if rec["kind"] != "chunk":

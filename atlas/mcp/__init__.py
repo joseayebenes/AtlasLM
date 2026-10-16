@@ -6,16 +6,27 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 
     atlas serve atlas.toml        stdio, the transport of local MCP clients
 
-[mcp] tools chooses the tools. When it is empty, the server offers those of the configured
-sources: the document tools with [[sources.docs]] (with only [sources.doors],
-get_requirement, and search when "index" is a step), the graph tools and read_file with
-[sources.code] (and check_code when it has a check_command), and without code the
-traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step;
-build_context with the graph. ask_atlas, verify_requirement, link_requirement and
-check_compliance (which need the model, and ask_atlas also ADK) are only offered when listed.
-So are the tools that write (edit_file, write_file, replace_subprogram, add_subprogram: atlas
-provides knowledge and the editor edits) and run_test, which runs code.
+[mcp] tools chooses the tools. When it is empty, [mcp] profile does:
+    editor   what the agent of an editor needs to change code (search, get_requirement,
+             get_section, list_documents, trace, trace_code, impact, build_context,
+             find_symbol, read_source, read_file, check_code); the default with [sources.code]
+    trace    the traceability of DOORS and the documents (trace, matrix, gaps,
+             list_requirements, neighbors, get_requirement, search)
+    all      the tools of the configured sources; the default without code
+The tools of the configured sources (default_tools) are the document tools with
+[[sources.docs]] (with only [sources.doors], get_requirement, and search when "index" is a
+step), the graph tools and read_file with [sources.code] (and check_code when it has a
+check_command), and without code the traceability tools of the graph (trace, matrix, gaps...)
+when "graph" is a step; build_context with the graph. A profile only keeps some of them.
+ask_atlas, verify_requirement, link_requirement and check_compliance (which need the model,
+and ask_atlas also ADK) are only offered when listed. So are the tools that write (edit_file,
+write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
+edits) and run_test, which runs code.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
+
+Every tool has a title ("Trace code") and annotations: those that write or run code are
+destructive; the others are read-only, and those that do not ask the model are also
+idempotent and closed-world (they only read the workspace and the code).
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
 is seen at once: the graph and the vectors are read again after it.
@@ -33,11 +44,14 @@ from atlas import plugins
 from atlas.config import Config, ConfigError
 from atlas.store import Store
 
-__all__ = ["create_server", "default_tools", "instructions", "serve", "tool_names"]
+__all__ = ["create_server", "default_tools", "instructions", "profile", "profile_tools", "serve", "tool_names"]
 
 log = logging.getLogger(__name__)
 
 WRITING_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
+MODEL_TOOLS = ("ask_docs", "ask_atlas", "verify_requirement", "link_requirement", "check_compliance")
+EDITOR_TOOLS = ("search", "get_requirement", "get_section", "list_documents", "trace", "trace_code", "impact",
+                "build_context", "find_symbol", "read_source", "read_file", "check_code")
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
@@ -107,13 +121,35 @@ def default_tools(cfg: Config) -> list[str]:
     return names
 
 
+def profile(cfg: Config) -> str:
+    """[mcp] profile, or the one of the sources: editor with code, all without."""
+    return cfg["mcp"]["profile"] or ("editor" if _enabled(cfg["sources"].get("code")) else "all")
+
+
+def profile_tools(cfg: Config) -> list[str]:
+    """The tools of the configured sources that the profile keeps: what an empty [mcp]
+    tools means."""
+    names, name = default_tools(cfg), profile(cfg)
+    if name == "all":
+        return names
+    if name == "editor":
+        wanted = EDITOR_TOOLS
+    else:
+        try:
+            from atlas.graph.tools import TRACE_TOOLS
+        except ImportError:                 # networkx: default_tools has said it
+            TRACE_TOOLS = ()
+        wanted = (*TRACE_TOOLS, "get_requirement", "search")
+    return [n for n in names if n in wanted]
+
+
 def tool_names(cfg: Config) -> list[str]:
-    """The tools the server offers: [mcp] tools, or default_tools(cfg) if it is empty.
+    """The tools the server offers: [mcp] tools, or profile_tools(cfg) if it is empty.
     The plugins must be loaded (atlas.plugins.load_plugins)."""
     available, disabled = set(plugins.available("tool")), set(cfg["plugins"]["disabled"])
     wanted = list(dict.fromkeys(cfg["mcp"]["tools"]))
     if not wanted:
-        return [n for n in default_tools(cfg) if n in available and f"tool:{n}" not in disabled]
+        return [n for n in profile_tools(cfg) if n in available and f"tool:{n}" not in disabled]
     unknown = [n for n in wanted if n not in available]
     if unknown:
         raise ConfigError(f"[mcp] tools: unknown tools {unknown} (available: {', '.join(sorted(available))})")
@@ -154,10 +190,22 @@ def create_server(cfg: Config, context: Any = None) -> Any:
     server = server_class("atlas", instructions=instructions(names))
     for name in names:
         tool = plugins.get("tool", name, cfg["plugins"]["disabled"])(context)
-        server.add_tool(tool.function(), name=name, description=tool.description or None,
-                        annotations=ToolAnnotations(readOnlyHint=not tool.writes, destructiveHint=tool.writes))
-    log.info("MCP server over %s with %d tools: %s", cfg.workspace, len(names), ", ".join(names))
+        server.add_tool(tool.function(), name=name, title=name.replace("_", " ").capitalize(),
+                        description=tool.description or None, annotations=_annotations(ToolAnnotations, name, tool))
+    log.info("MCP server over %s with %d tools (profile %s): %s", cfg.workspace, len(names),
+             profile(cfg) if not cfg["mcp"]["tools"] else "[mcp] tools", ", ".join(names))
     return server
+
+
+def _annotations(annotations: type, name: str, tool: Any) -> Any:
+    """What a tool does, for the client: one that writes or runs code is destructive; one that
+    only reads the workspace and the code, without the model, gives the same answer to the
+    same call and reaches nothing outside."""
+    if tool.writes:
+        return annotations(readOnlyHint=False, destructiveHint=True)
+    if name in MODEL_TOOLS:
+        return annotations(readOnlyHint=True, destructiveHint=False)
+    return annotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def serve(cfg: Config, context: Any = None) -> None:

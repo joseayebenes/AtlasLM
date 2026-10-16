@@ -6,6 +6,23 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[mcp] profile`: qué herramientas ofrece `atlas serve` cuando `[mcp] tools` está vacío.
+  `editor` (por defecto con `[sources.code]`) da las que necesita el agente de un editor para
+  cambiar código: `search`, `get_requirement`, `get_section`, `list_documents`, `trace`,
+  `trace_code`, `impact`, `build_context`, `find_symbol`, `read_source`, `read_file` y
+  `check_code`, 11 o 12 en vez de 27 con documentos y código. `trace` da las de trazabilidad
+  de DOORS y los documentos, y `all` (por defecto sin código), todas las de las fuentes, como
+  antes.
+- Cada herramienta del servidor MCP lleva un título (`Trace code`), y las que solo leen el
+  workspace y el código, sin el modelo, se anotan como idempotentes y sin salida al exterior
+  (`idempotentHint`, `openWorldHint` falso): el cliente puede repetirlas sin preguntar.
+
+### Al actualizar
+- Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
+  `callees`, `matrix`, `gaps`, `ask_docs` y las demás. `[mcp] profile = "all"` vuelve a las
+  de antes; una lista en `[mcp] tools` sigue mandando.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

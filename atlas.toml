@@ -41,4 +41,5 @@ test_patterns = ["**/tests/**"]       # sus subprogramas son pruebas: verifican 
 dirs = ["agents"]                    # los .md del proyecto, junto a este fichero
 
 [mcp]                                # atlas serve atlas.toml: servidor MCP para OpenCode, VS Code...
-tools = []                           # vacío: las de las fuentes; edit_file y write_file solo si se piden
+tools = []                           # vacío: las del perfil; edit_file y write_file solo si se piden
+# profile = "editor"                 # editor (con código) | trace | all (sin código)

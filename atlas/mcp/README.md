@@ -32,23 +32,48 @@ Cambios respecto a los servidores anteriores:
 
 ## Qué herramientas ofrece
 
-- Con `[mcp] tools = []`, que es el valor por defecto, ofrece las de las fuentes
-  configuradas:
-  - con `[[sources.docs]]`, las de documentos;
-  - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
-    pasos;
-  - con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
-  - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
-    `list_requirements` y `neighbors`), si `graph` está entre los pasos;
-  - con el grafo, `build_context`.
+Con `[mcp] tools = []`, que es el valor por defecto, el perfil (`[mcp] profile`) elige
+entre las herramientas de las fuentes configuradas:
+
+| Perfil | Herramientas | Por defecto |
+|---|---|---|
+| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `find_symbol`, `read_source`, `read_file` y `check_code` (si hay `check_command`) | con `[sources.code]` |
+| `trace` | `trace`, `matrix`, `gaps`, `list_requirements`, `neighbors`, `get_requirement` y `search` | |
+| `all` | todas las de las fuentes configuradas (abajo) | sin código |
+
+`editor` es lo que necesita el agente de un editor para cambiar código: 11 o 12
+herramientas en vez de 27. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
+descripción en cada petición. `trace` es para quien revisa la trazabilidad sin tocar el
+código.
+
+Las herramientas de las fuentes configuradas son:
+- con `[[sources.docs]]`, las de documentos;
+- con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
+  pasos;
+- con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
+- sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
+  `list_requirements` y `neighbors`), si `graph` está entre los pasos;
+- con el grafo, `build_context`.
+
+Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
+- Con una lista en `[mcp] tools`, ofrece exactamente esas herramientas, sea cual sea el
+  perfil.
 - `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` necesitan el
   modelo (y `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
-- Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
-  y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
-  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, que ejecuta código.
+  y el editor edita. Lo mismo `run_test`, que ejecuta código.
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
+
+Cada herramienta lleva un título (`Trace code`) y unas anotaciones que el cliente puede
+usar para pedir confirmación o repetir llamadas sin preguntar:
+- las que escriben (`edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) y las
+  que ejecutan código (`run_test`, `run_program`) son destructivas (`destructiveHint`);
+- las demás solo leen (`readOnlyHint`);
+- y las que no preguntan al modelo (todas menos `ask_docs`, `ask_atlas`,
+  `verify_requirement`, `link_requirement` y `check_compliance`) dan la misma respuesta a la
+  misma llamada y no salen del workspace y el código (`idempotentHint`, y `openWorldHint`
+  falso).
 
 El servidor responde con lo que hay en el workspace. Puedes lanzar `atlas run` con el
 servidor arrancado: el grafo y los vectores se vuelven a leer cuando cambian, sin
@@ -118,8 +143,8 @@ DocTools.from_config(cfg).get_requirement("SRS-0004")    # DOORS y documentos
 GraphTools.from_config(cfg).trace("SRS-0004")            # DOORS, documentos, código y pruebas
 ```
 
-`atlas.mcp.create_server(cfg)` da el servidor (de la librería `mcp`) sin arrancarlo, y
-`tool_names(cfg)` las herramientas que ofrecería.
+`atlas.mcp.create_server(cfg)` da el servidor (de la librería `mcp`) sin arrancarlo,
+`tool_names(cfg)` las herramientas que ofrecería y `profile(cfg)` el perfil que aplica.
 
 ## Pruebas
 

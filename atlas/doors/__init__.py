@@ -248,7 +248,7 @@ class ExchangeAdapter(RequirementsAdapter):
             f"ORDER BY position", (module, *self.kinds))
         for row in rows:
             rid = norm(row["id"])
-            if self._id_re and not self._id_re.match(rid):
+            if self._id_re and row["kind"] == "requirement" and not self._id_re.match(rid):   # the ones cited
                 log.warning("ID outside the convention (%s): %r in %s", self.conv["id_pattern"], row["id"], module)
             attributes = {**json.loads(row["attributes"] or "{}"), "kind": row["kind"], "heading": row["heading"],
                           "outline": row["outline"], "level": row["level"]}

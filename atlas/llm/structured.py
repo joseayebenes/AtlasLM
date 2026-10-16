@@ -145,6 +145,8 @@ class JsonLlm:
             kwargs["max_tokens"] = self.cfg.max_tokens
         if self.cfg.reasoning_effort:
             kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+        if self.cfg.extra_body:
+            kwargs["extra_body"] = self.cfg.extra_body
         return kwargs
 
     def ask_text(self, system: str, user: str) -> str:

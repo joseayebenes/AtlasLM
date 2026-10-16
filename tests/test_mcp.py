@@ -178,6 +178,26 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
     assert "MCP server over" in log and "27 tools" in log                     # logs go to stderr
 
 
+def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):
+    """The client gives the server its own environment: the log says whether it has the
+    proxy, and which variables of atlas.toml it lacks."""
+    import logging
+    from atlas.mcp import _log_connection
+    monkeypatch.delenv("TEST_PROXY", raising=False)
+    path = toml('[llm]\nbase_url = "https://gateway/v1"\n[network]\nproxy = "${TEST_PROXY:-}"\nno_proxy = ""\n')
+    with caplog.at_level(logging.INFO, logger="atlas.mcp"):
+        _log_connection(load_config(path))
+    assert "model: https://gateway/v1 without proxy" in caplog.text
+    assert any(r.levelno == logging.WARNING and "TEST_PROXY of atlas.toml not set" in r.getMessage()
+               for r in caplog.records)
+    caplog.clear()
+    monkeypatch.setenv("TEST_PROXY", "http://jane:Secret1@proxy:8080")
+    with caplog.at_level(logging.INFO, logger="atlas.mcp"):
+        _log_connection(load_config(path))
+    assert "model: https://gateway/v1 through the proxy http://***@proxy:8080" in caplog.text
+    assert "Secret1" not in caplog.text and not any(r.levelno == logging.WARNING for r in caplog.records)
+
+
 def test_serve_turned_off(toml):
     pytest.importorskip("mcp")
     from atlas.cli import main

@@ -26,7 +26,8 @@ def _agent(folder, file, name="tracer", description="Traces.", tools="[trace]", 
 
 def test_the_agents_come_from_markdown_files(toml, tmp_path):
     builtin = load_definitions()
-    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor"}
+    assert set(builtin) == {"assistant", "requirement_verifier", "impact_analyst", "coverage_auditor", "req_linker",
+                            "compliance_checker"}
     assistant = builtin["assistant"]
     assert assistant.instruction.startswith("You answer questions about an engineering project")
     assert assistant.max_steps == 10 and assistant.reasoning_effort == "none"
@@ -81,7 +82,8 @@ def test_atlas_agents_lists_them(toml, capsys):
 
 class StubClient:
     """An OpenAI client that answers with scripted turns and keeps the requests: a dict is a
-    turn of tool calls ({name: args}), a string the final answer."""
+    turn of tool calls ({name: args}), a string the final answer, None a turn that spent the
+    whole max_tokens reasoning (no text, finish_reason "length")."""
 
     def __init__(self, turns):
         self.turns, self.requests = list(turns), []
@@ -96,10 +98,13 @@ class StubClient:
                                      function=SimpleNamespace(name=n, arguments=arguments(a)))
                      for i, (n, a) in enumerate(turn.items())]
             message, finish = SimpleNamespace(content=None, tool_calls=calls), "tool_calls"
+        elif turn is None:
+            message, finish = SimpleNamespace(content="", tool_calls=None), "length"
         else:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
         return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
-                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110))
+                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110,
+                                                     cost=0.0001))
 
 
 @pytest.fixture
@@ -123,13 +128,16 @@ test_patterns = ["**/tests/**"]
 def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatch):
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
-                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}]}
+                   "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}],
+                   "tokens": {"prompt": 200, "completion": 20}, "cost": 0.0002}    # what each turn used
 
     first, second = client.requests
     assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file
+    assert first["extra_body"] == {"provider": {"order": ["deepinfra"]}}           # [llm] extra_body, as is
     assert first["messages"][0]["role"] == "system" and "engineering project" in first["messages"][0]["content"]
     assert first["messages"][-1] == {"role": "user", "content": "Who implements SRS-0004?"}
     tools = {t["function"]["name"]: t["function"] for t in first["tools"]}
@@ -140,6 +148,75 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     assert call["role"] == "assistant" and call["tool_calls"][0]["function"]["name"] == "trace"
     assert result["role"] == "tool" and result["tool_call_id"] == "call_0"
     assert "tracks.delete_track" in result["content"] and "SSS-0005" in result["content"]
+
+
+class ThinkingClient(StubClient):
+    """A StubClient whose model reasons before each turn: `reasoning` (OpenRouter, Ollama) or,
+    with details=True, `reasoning_details` (OpenRouter)."""
+
+    def __init__(self, turns, details=False):
+        super().__init__(turns)
+        self.details, self.n = details, 0
+
+    def create(self, **kwargs):
+        response = super().create(**kwargs)
+        self.n += 1
+        thought = f"Thought {self.n}: SRS-0004 needs trace."
+        message = response.choices[0].message
+        if self.details:
+            message.model_extra = {"reasoning_details": [{"type": "reasoning.text", "text": thought}]}
+        else:
+            message.reasoning = thought
+        return response
+
+
+def test_the_reasoning_of_a_turn_with_tool_calls_goes_back_to_the_model(workspace, monkeypatch):
+    """The model card of gemma 4: the thoughts of the turns with tool calls stay in the
+    conversation. They go back in [llm] reasoning_field, never in the answer."""
+    from atlas.agents.model import reasoning_of
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    turns = [{"trace": {"req_id": "SRS-0004"}}, {"trace": {"req_id": "SRS-0005"}}, "tracks.delete_track."]
+    client = ThinkingClient(turns)
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"] == "tracks.delete_track."                       # the last thought is not in it
+    third = client.requests[2]["messages"]
+    calls = [m for m in third if m["role"] == "assistant"]
+    assert [m["reasoning"] for m in calls] == ["Thought 1: SRS-0004 needs trace.", "Thought 2: SRS-0004 needs trace."]
+    assert "reasoning" not in client.requests[0]["messages"][-1]
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": "reasoning_content"})
+    client = ThinkingClient(turns[1:], details=True)
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    call = client.requests[1]["messages"][-2]
+    assert call["reasoning_content"] == "Thought 1: SRS-0004 needs trace." and "reasoning" not in call
+
+    monkeypatch.setitem(workspace.data, "llm", {"reasoning_field": ""})        # never
+    client = ThinkingClient(turns[1:])
+    run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert set(client.requests[1]["messages"][-2]) == {"role", "content", "tool_calls"}
+    assert reasoning_of(SimpleNamespace(content="x")) == ""
+
+
+def test_the_sampling_of_an_agent(workspace, monkeypatch):
+    """top_p and top_k of the agent (gemma 4: 0.95 and 64); top_k is not in the OpenAI API."""
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
+    monkeypatch.setitem(workspace["agents"], "assistant", {"top_p": 0.95, "top_k": 64})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    request = client.requests[0]
+    assert request["top_p"] == 0.95
+    assert request["extra_body"] == {"provider": {"order": ["deepinfra"]}, "top_k": 64}
+    monkeypatch.setitem(workspace["agents"], "assistant", {})
+    client = StubClient(["Nothing to trace."])
+    run_agent("assistant", "Hello", workspace, client=client)
+    assert "top_p" not in client.requests[0] and "top_k" not in client.requests[0]["extra_body"]
+    for bad, why in (({"top_p": 1.5}, "top_p must be"), ({"top_k": 0}, "top_k must be")):
+        monkeypatch.setitem(workspace["agents"], "assistant", bad)
+        with pytest.raises(ConfigError, match=why):
+            load_definitions(workspace)
 
 
 def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
@@ -162,6 +239,73 @@ def test_max_steps_and_broken_tool_calls(workspace, toml, monkeypatch):
     assert end.value.code == 0 and stub.requests[0]["messages"][-1]["content"] == "Hello"
     with pytest.raises(SystemExit, match="there is no agent 'nobody'"):
         main(["agent", "nobody", "Hello", str(workspace.path)])
+
+
+def test_the_same_call_a_third_time_in_a_row_is_not_run(workspace, monkeypatch):
+    import inspect
+    from atlas.agents.runtime import REPEATS, loop_guard, run_agent
+    ran = []
+
+    def trace(req_id: str) -> dict:
+        """Everything about a requirement."""
+        ran.append(req_id)
+        return {"id": req_id}
+    guarded = loop_guard([trace])[0]
+    assert guarded.__name__ == "trace" and list(inspect.signature(guarded).parameters) == ["req_id"]   # for ADK
+    results = [guarded(req_id="SRS-0004") for _ in range(REPEATS + 1)] + [guarded(req_id="SRS-0005")]
+    assert ran == ["SRS-0004"] * (REPEATS - 1) + ["SRS-0005"]
+    assert all("times in a row" in r["error"] for r in results[REPEATS - 1:REPEATS + 1])
+
+    # in a real agent: the third identical call gets the error, and the agent goes on
+    monkeypatch.chdir(workspace.path.parent)
+    same = {"trace": {"req_id": "SRS-0004"}}
+    client = StubClient([same, same, same, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented") and len(res["calls"]) == 3
+    third = client.requests[3]["messages"][-1]
+    assert third["role"] == "tool" and "3 times in a row" in third["content"]
+    assert "tracks.delete_track" in client.requests[2]["messages"][-1]["content"]      # the second one ran
+
+
+def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, monkeypatch, caplog):
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"max_tokens": 100})
+    client = StubClient([None, None, "SRS-0004 is implemented by tracks.delete_track."])
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented")
+    assert [r["max_tokens"] for r in client.requests] == [100, 200, 400]
+    assert "spent the whole max_tokens (100) reasoning" in caplog.text
+    client = StubClient([None, None, None])                    # at most twice: then the empty answer
+    assert run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)["answer"] == ""
+    assert len(client.requests) == 3
+
+
+def test_a_turn_that_hangs_is_asked_again(workspace, monkeypatch, caplog):
+    """The timeout of the HTTP client is between two reads: a server that keeps the connection
+    alive never reaches it. A turn has [llm.network] timeout seconds in all."""
+    import time
+    from atlas.agents.runtime import run_agent
+    monkeypatch.chdir(workspace.path.parent)
+    monkeypatch.setitem(workspace.data, "llm", {"network": {"timeout": 0.5}})
+
+    class Hangs(StubClient):
+        def create(self, **kwargs):
+            if len(self.requests) < self.hangs:
+                self.requests.append(kwargs)
+                time.sleep(5)                            # a request that does not end
+            return super().create(**kwargs)
+
+    client = Hangs(["SRS-0004 is implemented by tracks.delete_track."])
+    client.hangs = 1
+    t0 = time.time()
+    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert res["answer"].startswith("SRS-0004 is implemented") and time.time() - t0 < 3
+    assert len(client.requests) == 2 and "did not answer in 0.5 s" in caplog.text
+    client = Hangs([])
+    client.hangs = 3                                     # every time: an error, and the agent ends
+    with pytest.raises(TimeoutError, match="did not answer in 0.5 s, 3 times"):
+        run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
 
 
 def test_genai_schemas_become_json_schemas():
@@ -280,6 +424,81 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert verify_command(documented, "SSS-0001") == 0 and "1 requirements: 0 inconsistent" in capsys.readouterr().out
 
 
+def test_links_are_proposed_and_the_code_is_not_changed(workspace, samples, capsys):
+    from atlas.agents.link import candidates, link, link_all
+    from atlas.cli import link as link_command
+    from atlas.graph import KnowledgeGraph
+    code = {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")}
+    g = KnowledgeGraph.from_config(workspace)
+    # SRS-0005 refines SRS-0004, which tracks.delete_track implements: a candidate, without a model
+    c = candidates("SRS-0005", g)
+    assert [x["id"] for x in c["candidates"]] == ["tracks.delete_track"] and c["implemented_by"] == []
+    assert c["candidates"][0]["evidence"] == ["implements SRS-0004, linked to SRS-0005 (references)"]
+    assert "Removes track I" in c["candidates"][0]["doc"] and "Delete_Track" in c["candidates"][0]["code"]
+
+    judge = StubJudge({"summary": "It deletes tracks.", "links": [
+        {"code": "Tracks.Delete_Track", "confidence": "certain", "reason": "It deletes the track."},
+        {"code": "tracks.invented", "confidence": "high", "reason": "Not offered."}]})
+    res = link("SRS-0005", workspace, llm=judge, graph=g)
+    assert res["verdict"] == "proposed" and len(res["links"]) == 1          # what was not offered is dropped
+    x = res["links"][0]
+    assert (x["code"], x["confidence"], x["tag"]) == ("tracks.delete_track", "low", "-- Req: SRS-0005")
+    assert x["tag_at"].endswith("tracks.ads:17")                            # the declaration in the spec
+    system, prompt = judge.prompts[0]
+    assert system.startswith("You help keep the traceability") and "Official text (DOORS): The TMF shall" in prompt
+    assert "Why it is a candidate: implements SRS-0004, linked to SRS-0005 (references)" in prompt
+    assert link("SRS-0005", workspace, llm=judge, graph=g) == res and len(judge.prompts) == 1     # the cache
+
+    # a module: its requirements without code; those without candidates are not asked
+    judge = StubJudge({"links": [], "summary": "None."})
+    report = link_all("SRS_TMS", workspace, llm=judge, graph=g)
+    assert report["counts"] == {"proposed": 1, "none": 0, "no_candidates": 35} and report["asked"] == 0
+    md = (workspace.workspace / "reports" / "link-SRS_TMS.md").read_text()
+    assert "Add `-- Req: SRS-0005` at" in md and "Nothing has been changed in the code" in md
+    assert "neither a requirement nor a module" in link_all("NOPE", workspace, llm=judge, graph=g)["error"]
+    assert link_command(workspace, "SRS-0005") == 0
+    out = capsys.readouterr().out
+    assert "SRS-0005 -> tracks.delete_track (low)" in out and "nothing changed in the code" in out
+    assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
+
+
+def test_the_code_of_a_requirement_is_judged_obligation_by_obligation(workspace, capsys):
+    from atlas.agents.comply import comply, comply_all, evidence
+    from atlas.cli import comply as comply_command
+    from atlas.graph import KnowledgeGraph
+    g = KnowledgeGraph.from_config(workspace)
+    ev = evidence("SRS-0004", g)
+    assert ev["text"].startswith("The TMF shall process track event 4") and ev["tests"] == ["test_tracks.test_tracks"]
+    [code] = ev["code"]
+    assert code["id"] == "tracks.delete_track" and "Logger.Log" in code["source"]
+    assert code["calls"] == [{"id": "logger.log", "doc": "Writes a line to the log.\nReq: SRS-0103"}]
+
+    # the verdict follows from the obligations, whatever the model says
+    judge = StubJudge({"verdict": "complies", "summary": "Timing cannot be told.", "obligations": [
+        {"text": "process track event 4", "status": "met", "evidence": "Trk_DB (I).Id := 0;"},
+        {"text": "within 320 ms", "status": "cannot_tell", "evidence": "no timing in the code"},
+        {"text": "", "status": "met"}, "not an obligation"]})
+    res = comply("SRS-0004", workspace, llm=judge, graph=g)
+    assert res["verdict"] == "cannot_tell" and len(res["obligations"]) == 2 and res["code"] == ["tracks.delete_track"]
+    system, prompt = judge.prompts[0]
+    assert system.startswith("You check whether the code that implements a requirement")
+    assert "[tracks.delete_track] (subprogram" in prompt and "It calls: logger.log (Writes a line to the log." in prompt
+    assert "Tests that verify or cover it: test_tracks.test_tracks" in prompt
+    assert comply("SRS-0004", workspace, llm=judge, graph=g) == res and len(judge.prompts) == 1     # the cache
+
+    # a module: what has no code is not asked; one obligation not met is enough
+    judge = StubJudge({"obligations": [{"text": "a", "status": "met", "evidence": "x"},
+                                       {"text": "b", "status": "partial", "evidence": "y"}], "summary": "No."})
+    report = comply_all("SRS_TMS", workspace, llm=judge, graph=g)
+    assert report["counts"] == {"complies": 0, "does_not_comply": 3, "cannot_tell": 1, "no_code": 36}
+    assert report["asked"] == 3                                   # SRS-0004 came from the cache
+    md = (workspace.workspace / "reports" / "comply-SRS_TMS.md").read_text()
+    assert "## SRS-0001: does_not_comply" in md and "- ◐ b: y" in md and "not a proof" in md
+    assert "neither a requirement nor a module" in comply_all("NOPE", workspace, llm=judge, graph=g)["error"]
+    assert comply_command(workspace, "SRS-0004") == 0
+    assert "SRS-0004 (tracks.delete_track): cannot_tell" in capsys.readouterr().out
+
+
 # --- reports written by an agent from the graph -----------------------------------------------
 
 class StubWriter:
@@ -340,7 +559,7 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
                           "  tools: [trace]\n- id: wrong\n  question: And SRS-0002?\n  expect: SRS-0002\n")
     cases = load_cases(cases_file)
     assert cases[1] == {"id": "wrong", "question": "And SRS-0002?", "expect": ["SRS-0002"], "tools": [],
-                        "agent": "assistant"}
+                        "agent": "assistant", "kind": "agent"}
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "tracks.Delete_Track, through SSS-0005.",
                          "I do not know."])
     res = evaluate(cases, workspace, client=client)
@@ -350,13 +569,14 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
 
     bad = tmp_path / "bad.yaml"
     bad.write_text("- id: a\n  question: q\n")
-    with pytest.raises(ConfigError, match="a case has id, question and expect"):
+    with pytest.raises(ConfigError, match="a case has id, expect and one of question"):
         load_cases(bad)
     with pytest.raises(ConfigError, match=r"\[agents.eval\] sets"):
         evaluate_sets(workspace)
     monkeypatch.setitem(workspace["agents"], "eval", {"sets": [str(cases_file)], "runs": 2})
     out = evaluate_sets(workspace, client=StubClient(["delete_track SSS-0005"] * 4))
-    assert out["set"]["total"] == 4 and (workspace.workspace / "reports" / "eval-set.json").exists()
+    assert set(out["set"]) == {"agents"} and out["set"]["agents"]["total"] == 4
+    assert (workspace.workspace / "reports" / "eval-set.json").exists()
 
 
 def test_the_app_for_adk_web(workspace, monkeypatch):
@@ -375,6 +595,59 @@ def test_the_app_for_adk_web(workspace, monkeypatch):
         spec.loader.exec_module(module)
         return module.root_agent
 
-    assert load("assistant").name == "assistant" and len(load("assistant").tools) == 8
+    assert load("assistant").name == "assistant" and len(load("assistant").tools) == 11
     tracer = load("tracer")
     assert tracer.name == "tracer" and [t.__name__ for t in tracer.tools] == ["trace", "gaps", "build_context"]
+
+
+def test_old_tool_results_are_left_out_when_the_agent_keeps_a_few():
+    """keep_tool_results: a read of a file read again later goes (its text is old), and so do
+    the large results before the last ones, in groups of MASK_STEP; short fields stay."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from atlas.agents.model import MASK_STEP, to_messages
+    contents = [types.Content(role="user", parts=[types.Part(text="Fix it.")])]
+    results = [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "x" * 2000})]
+    results += [("check_code", {"file": "src/a.adb", "ok": False, "errors": [{"message": "e" * 900}]})] * 7
+    results += [("read_file", {"file": "src/a.adb", "start": 1, "end": 300, "source": "y" * 2000}),
+                ("edit_file", {"file": "src/a.adb", "replacements": 1, "diff": "d" * 50})]
+    for i, (name, response) in enumerate(results):
+        contents.append(types.Content(role="model", parts=[types.Part(function_call=types.FunctionCall(
+            id=f"c{i}", name=name, args={}))]))
+        contents.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(
+            id=f"c{i}", name=name, response=response))]))
+    request = LlmRequest(contents=contents)
+    whole = [m["content"] for m in to_messages(request) if m["role"] == "tool"]
+    assert all("note" not in c for c in whole)                       # 0: all of them, as before
+    short = [json.loads(m["content"]) for m in to_messages(request, keep_tool_results=3) if m["role"] == "tool"]
+    assert short[0] == {"note": "an older read of src/a.adb (lines 1-300), left out: it was read again later"}
+    assert MASK_STEP == 5 and [("note" in r) for r in short[1:]] == [True] * 4 + [False] * 5
+    assert short[1]["ok"] is False and short[1]["file"] == "src/a.adb" and "errors" not in short[1]
+    assert short[-2]["source"] == "y" * 2000 and short[-1]["diff"] == "d" * 50      # the last read and the edit stay
+
+
+def test_a_change_that_leaves_the_same_errors_is_not_progress():
+    """stall_guard: rewriting a file with the same compile errors again and again is a loop
+    (the server of a run of atlas develop, 17 times); fewer errors, or none, is progress."""
+    from atlas.agents.runtime import stall_guard
+    results = iter([{"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}, {"m": 2}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}},
+                    {"file": "s.adb", "lines": 9, "check": {"ok": False, "errors": [{"m": 1}]}}])
+
+    def write_file(path: str, content: str) -> dict:
+        return next(results)
+    state: dict = {}
+    write = stall_guard([write_file], 2, state)[0]
+    write(path="s.adb", content="a")              # the first check of the file: progress
+    write(path="s.adb", content="b")              # the same 2 errors: 1
+    assert not state
+    write(path="s.adb", content="c")              # 2: stalled
+    assert state == {"stalled": True}
+    state.clear()
+    write(path="s.adb", content="d")              # 1 error now: progress again
+    write(path="s.adb", content="e")
+    assert not state

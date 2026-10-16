@@ -22,6 +22,8 @@ model = "gemma4:12b"
 api_key = "${ATLAS_API_KEY:-local}"    # en el gateway: export ATLAS_API_KEY=... (o setx en Windows)
 max_tokens = 8192
 reasoning_effort = "none"              # gemma4 razona por defecto y tarda minutos por sección
+# reasoning_field = "reasoning"        # agentes: el razonamiento vuelve al modelo en este campo; "" = no
+#                                      # (atlas probe dice si el servidor lo aprovecha)
 
 [embeddings]
 model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]
@@ -60,6 +62,13 @@ roots = ["src"]
 languages = ["ada"]
 exclude = ["**/obj/**", "**/build/**"]
 test_patterns = ["**/tests/**"]        # sus subprogramas son pruebas
+
+# --- Búsqueda y respuestas ---------------------------------------------------------------
+[search]                               # cambiarlo no reprocesa nada
+results = 8                            # resultados de atlas search y pasajes de atlas ask
+per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
+scope = "auto"                         # auto: una pregunta amplia lee sus documentos enteros; passages: nunca
+scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
 
 # --- Agentes y servidor MCP ------------------------------------------------------------
 [agents]

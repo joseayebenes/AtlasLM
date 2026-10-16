@@ -12,8 +12,9 @@ agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
   que lo citan (y si dicen otra cifra), el código que lo implementa y las pruebas que lo
   cubren. Y a la inversa, el impacto de un cambio.
 
-Versión 0.1.0: fases 0 a 6 del plan (`legacy/PLAN.md`). Los cambios de cada versión están
-en el [CHANGELOG](CHANGELOG.md).
+Versión 0.2.0: las fases 0 a 6 del plan (`legacy/PLAN.md`) y, desde la 0.1.0, agentes que
+escriben y prueban código, el código en el índice, Python, OpenRouter para comparar modelos y
+preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGELOG.md).
 
 ## Documentación
 
@@ -22,6 +23,7 @@ en el [CHANGELOG](CHANGELOG.md).
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
+| [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
 | [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
 | [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |
 | [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |
@@ -42,18 +44,19 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 158 pruebas sin modelo (+5 de agentes con Ollama)
+python -m pytest -q                                # 203 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
-### Tres niveles de modelo
+### Niveles de modelo
 
 | Nivel | Para qué | Configuración |
 |---|---|---|
 | **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409, 401, respuestas cortadas, prosa, modelo que razona, lentitud) | `atlas.test.toml` |
 | **Modelo local** (Ollama o LM Studio) | probar la calidad real de análisis, búsqueda y agentes sin cupo ni red | `atlas.dev.toml` |
+| **OpenRouter** | comparar modelos de chat sobre las muestras, también el del gateway, sin descargarlos ([guía](docs/openrouter.md)) | `atlas.openrouter.toml` |
 | **Gateway corporativo** | producción | `atlas.toml` |
 
-Los tres usan la misma API compatible con OpenAI: cambiar de nivel es cambiar `base_url`.
+Todos usan la misma API compatible con OpenAI: cambiar de nivel es cambiar `base_url`.
 
 ### Ollama o LM Studio
 
@@ -89,16 +92,24 @@ atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al model
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
 atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
 atlas matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
-atlas search "track deletion latency" atlas.dev.toml   # búsqueda en los documentos
+atlas search "track deletion latency" atlas.dev.toml   # búsqueda en documentos, requisitos y código
 atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
+atlas ask "Resume los requisitos de SRS_TMS" atlas.dev.toml   # una pregunta amplia lee el módulo entero
+atlas search "deletion" atlas.dev.toml --kind requirement --k 5   # solo requisitos, 5 resultados
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente
 atlas verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación, con el modelo
 atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
 atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
-atlas eval     atlas.dev.toml # evaluación de los agentes con preguntas de respuesta conocida
+atlas link SRS_TMS atlas.dev.toml      # código que puede implementar los requisitos sin código (propuestas)
+atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace todo lo que pide, obligación a obligación
+atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
+atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
+atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas check    atlas.dev.toml # conexión con el modelo
+atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
+atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
 atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
 atlas --version
 ```
@@ -123,9 +134,9 @@ atlas search "alarm latency" atlas.test.toml
 Para medir el motor con un proyecto grande, `make large` genera uno sintético en
 `examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
 procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
-- la primera ejecución tarda unos 17 s;
+- la primera ejecución tarda unos 7 s;
 - la segunda, sin cambios, 0,1 s y sin ninguna petición;
-- tras cambiar un plazo en una página de un PDF, 1,4 s y una sola petición al modelo.
+- tras cambiar un plazo en una página de un PDF, 0,9 s y una sola petición al modelo.
 
 ## Estructura
 

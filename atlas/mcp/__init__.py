@@ -9,10 +9,12 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 [mcp] tools chooses the tools. When it is empty, the server offers those of the configured
 sources: the document tools with [[sources.docs]] (with only [sources.doors],
 get_requirement, and search when "index" is a step), the graph tools and read_file with
-[sources.code], and without code the traceability tools of the graph (trace, matrix,
-gaps...) when "graph" is a step; build_context with the graph. ask_atlas and
-verify_requirement (which need the model, and ask_atlas also ADK) are only offered when
-listed. So are edit_file and write_file: atlas provides knowledge and the editor edits.
+[sources.code] (and check_code when it has a check_command), and without code the
+traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step;
+build_context with the graph. ask_atlas, verify_requirement, link_requirement and
+check_compliance (which need the model, and ask_atlas also ADK) are only offered when listed.
+So are the tools that write (edit_file, write_file, replace_subprogram, add_subprogram: atlas
+provides knowledge and the editor edits) and run_test, which runs code.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
@@ -35,7 +37,7 @@ __all__ = ["create_server", "default_tools", "instructions", "serve", "tool_name
 
 log = logging.getLogger(__name__)
 
-WRITING_TOOLS = ("edit_file", "write_file")
+WRITING_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
@@ -53,10 +55,16 @@ INSTRUCTIONS = {
                "(requirements, signatures, callers, tests, documents and source): use it before changing code.",
     "agents": "`ask_atlas` asks the assistant of atlas, which searches by itself and answers with citations "
               "(slower: use it for questions that need several searches); `verify_requirement` checks with the "
-              "model whether a requirement and the documents agree.",
+              "model whether a requirement and the documents agree; `link_requirement` proposes the code that "
+              "may implement a requirement, without changing anything; `check_compliance` judges whether the code "
+              "of a requirement does all it asks, obligation by obligation.",
     "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
              "can be read.",
-    "edit": "edit_file and write_file only change a file after a read_file of it; check the diff they return.",
+    "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
+            "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
+    "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
+             "every change; `run_test` builds a test procedure and runs it; `library_spec` gives the real "
+             "declarations of a package of the runtime or of the project.",
 }
 
 
@@ -94,6 +102,8 @@ def default_tools(cfg: Config) -> list[str]:
             log.warning("no graph tools: %s", e)
     if code:
         names.append("read_file")
+        if sources["code"].get("check_command"):          # a compiler: the errors the model cannot see
+            names.append("check_code")
     return names
 
 
@@ -117,8 +127,9 @@ def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "context": ("build_context",),
-              "agents": ("ask_atlas", "verify_requirement")}
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test", "library_spec"),
+              "context": ("build_context",),
+              "agents": ("ask_atlas", "verify_requirement", "link_requirement", "check_compliance")}
     try:
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
         groups["graph"] = GRAPH_TOOLS
@@ -160,4 +171,19 @@ def serve(cfg: Config, context: Any = None) -> None:
                     cfg.workspace, cfg.path.name)
     else:
         log.info("data: %s", counts)
+    _log_connection(cfg)
     server.run("stdio")
+
+
+def _log_connection(cfg: Config) -> None:
+    """How the server reaches the model, and the variables of the configuration that the
+    client did not pass: it starts atlas with its own environment, not that of a terminal."""
+    from atlas.config import unset_hint
+    from atlas.llm import effective_proxy, from_config, mask_credentials
+    conn = from_config(cfg)
+    for name, service in (("model", conn.llm), ("embeddings", conn.embeddings)):
+        proxy = effective_proxy(service)
+        log.info("%s: %s %s", name, mask_credentials(service.base_url),
+                 f"through the proxy {mask_credentials(proxy)}" if proxy else "without proxy")
+    if cfg.unset:
+        log.warning(unset_hint(cfg))

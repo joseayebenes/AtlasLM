@@ -264,3 +264,109 @@ analysis = "regex"
     assert res["verdict"] == "inconsistent", res
     assert any("499" in i["official"] and "301" in i["document"] and "spec_with_bookmarks" in i["source"]
                for i in res["issues"]), res
+
+
+def test_req_linker_proposes_the_code_that_implements_a_requirement(ollama, toml, samples, tmp_path):
+    """Two requirements stated in a document and without code: one that tracks.delete_track
+    implements (the search over the indexed code finds it) and one that no code of the
+    samples implements (the display of the HMI). The agent proposes the first and nothing
+    sure for the second, and the code is not changed."""
+    pytest.importorskip("tree_sitter_ada")
+    import contextlib
+    import io
+    from atlas.agents.link import link_all
+    from atlas.cli import run
+    from atlas.index import Index
+    base_url, api_key, model = ollama
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "operations.md").write_text(
+        "# Operations\n\n1 Tracks\n\nReq: SRS-0150 The software shall remove a track from the track database "
+        "when the operator deletes it.\n\n2 Display\n\nReq: SRS-0151 The HMI shall show the speed of each "
+        "track in knots.\n")
+    code = {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")}
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code", "docs", "graph", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    res = {r["id"]: r for r in link_all("SRS-0150", cfg, index=Index.from_config(cfg))["results"]}
+    res |= {r["id"]: r for r in link_all("SRS-0151", cfg, index=Index.from_config(cfg))["results"]}
+    remove, show = res["SRS-0150"], res["SRS-0151"]
+    assert "tracks.delete_track" in [c["id"] for c in remove["candidates"]], remove
+    assert [x["code"] for x in remove["links"]][:1] == ["tracks.delete_track"], remove
+    assert remove["links"][0]["confidence"] in ("high", "medium"), remove
+    assert all(x["confidence"] != "high" for x in show["links"]), show
+    assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
+
+
+def test_compliance_checker_finds_a_wrong_boundary(ollama, toml, samples, tmp_path):
+    """The code of a requirement that says "from 50 to 300 inclusive is Normal": with
+    `Speed < 300.0` it does not comply (300 is Fast), with `Speed <= 300.0` it does."""
+    pytest.importorskip("tree_sitter_ada")
+    import contextlib
+    import io
+    import shutil
+    from atlas.agents.comply import comply
+    from atlas.cli import run
+    base_url, api_key, model = ollama
+    ada, docs = tmp_path / "ada", tmp_path / "docs"
+    shutil.copytree(samples / "ada", ada)
+    docs.mkdir()
+    (docs / "speeds.md").write_text("# Speeds\n\n1 Classification\n\nReq: SRS-0160 The software shall classify a "
+                                    "speed in knots: below 0 is Invalid, below 50 is Slow, from 50 to 300 inclusive "
+                                    "is Normal, above 300 is Fast.\n")
+    (ada / "src" / "speeds.ads").write_text(
+        "package Speeds is\n   type Speed_Class is (Invalid, Slow, Normal, Fast);\n   -- Classifies a speed in knots."
+        "\n   -- Req: SRS-0160\n   function Classify (Speed : Float) return Speed_Class;\nend Speeds;\n")
+    body = ("package body Speeds is\n   function Classify (Speed : Float) return Speed_Class is\n   begin\n"
+            "      if Speed < 0.0 then\n         return Invalid;\n      elsif Speed < 50.0 then\n         return Slow;\n"
+            "      elsif Speed {op} 300.0 then\n         return Normal;\n      else\n         return Fast;\n"
+            "      end if;\n   end Classify;\nend Speeds;\n")
+    dev = load_config(ROOT / "atlas.dev.toml")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{base_url}"
+api_key = "{api_key}"
+model = "{model}"
+[embeddings]
+model = "{dev["embeddings"]["model"]}"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["code", "docs", "graph"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+analysis = "regex"
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''))
+    verdicts = {}
+    for op in ("<", "<="):
+        (ada / "src" / "speeds.adb").write_text(body.replace("{op}", op))
+        with contextlib.redirect_stdout(io.StringIO()):
+            assert run(cfg) == 0
+        verdicts[op] = comply("SRS-0160", cfg)
+    assert verdicts["<"]["verdict"] == "does_not_comply", verdicts["<"]
+    assert verdicts["<="]["verdict"] == "complies", verdicts["<="]

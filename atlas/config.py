@@ -8,6 +8,8 @@
   changing a password reprocesses nothing, and no hash of it is stored.
 - Secrets come from the environment: an API key for a server that is not local, or a
   password in a proxy URL or in an ODBC DSN, written as is in the file is an error.
+- `Config.unset` names the ${VAR} that expanded to nothing, because this process does not
+  have them: a program that starts atlas (an MCP client) may not pass the terminal's.
 """
 
 from __future__ import annotations
@@ -46,11 +48,33 @@ def _expand(v: Any) -> Any:
     return v
 
 
+def unset_variables(v: Any) -> list[str]:
+    """The ${VAR} of `v` (the TOML before expanding) that expand to nothing: not set, or
+    empty, in the environment, and without a default value."""
+    if isinstance(v, str):
+        return [m.group(1) for m in _VAR.finditer(v) if not os.environ.get(m.group(1)) and not m.group(2)]
+    if isinstance(v, (dict, list)):
+        names = [n for x in (v.values() if isinstance(v, dict) else v) for n in unset_variables(x)]
+        return list(dict.fromkeys(names))
+    return []
+
+
+def unset_hint(cfg: "Config") -> str:
+    """Which ${VAR} of the configuration this process lacks, and where to give them; "" if
+    none."""
+    if not getattr(cfg, "unset", None):
+        return ""
+    return (f"{', '.join(cfg.unset)} of {cfg.path.name} not set in the environment of atlas. A program "
+            "that starts atlas, such as an MCP client, gives it its own environment, not that of the "
+            "terminal: pass them in its configuration (env; environment in OpenCode)")
+
+
 # Schema: section -> {key: type | "any"}. "list" = list, "dict" = free nested table.
 SCHEMA: dict[str, dict[str, Any]] = {
     "project": {"name": str, "workspace": str, "log_level": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
-            "max_tokens": int, "reasoning_effort": str, "network": dict},
+            "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
+            "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
@@ -63,9 +87,13 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
+    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
+    "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
 }
+
+SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -73,9 +101,14 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
-                "temperature": float}                             # what [agents.<name>] can retouch
+                "temperature": float, "top_p": float, "top_k": int,
+                "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
-               "test_patterns": list, "summaries": str, "enabled": bool}
+               "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
+               "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
+               "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
+               "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
+               "reference": list, "language_server": list, "language_server_project": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},
@@ -87,8 +120,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
+    # what search and ask take from the index; changing it reprocesses nothing
+    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
+    "tests": {"languages": {}, "steps": []},
 }
 
 
@@ -113,6 +149,40 @@ def _validate(data: dict, schema: dict, where: str) -> None:
             raise ConfigError(f"[{where}] '{k}' must be of type {kind.__name__}")
 
 
+def _validate_tests(tests: dict) -> None:
+    """[tests]: each language with its path and template; each step with its match, a valid
+    regular expression, and the code of some of those languages."""
+    languages = tests.get("languages", {})
+    for name, spec in languages.items():
+        if not isinstance(spec, dict):
+            raise ConfigError(f"[tests.languages.{name}] must be a table with path and template")
+        _validate(spec, {"path": str, "template": str}, f"tests.languages.{name}")
+        if "path" not in spec or "template" not in spec:
+            raise ConfigError(f"[tests.languages.{name}] needs path and template")
+    for i, step in enumerate(tests.get("steps", [])):
+        where = f"tests.steps[{i}]"
+        if not isinstance(step, dict) or not isinstance(step.get("match"), str):
+            raise ConfigError(f"[{where}] needs match, a regular expression")
+        try:
+            re.compile(step["match"])
+        except re.error as e:
+            raise ConfigError(f"[{where}] match is not a valid regular expression: {e}") from None
+        unknown = sorted(k for k in step if k != "match" and k not in languages)
+        if unknown:
+            raise ConfigError(f"[{where}] {unknown} are not languages of [tests.languages] "
+                              f"({', '.join(languages) or 'none'})")
+        if not all(isinstance(v, str) for v in step.values()):
+            raise ConfigError(f"[{where}] the code of each language must be a string")
+
+
+def _validate_search(search: dict) -> None:
+    if search.get("scope", "auto") not in SEARCH_SCOPES:
+        raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
+    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000)):
+        if key in search and search[key] < least:
+            raise ConfigError(f"[search] '{key}' must be at least {least}")
+
+
 @dataclass
 class Config:
     """Validated configuration. Sections are read as dictionaries (`cfg["llm"]`) and each
@@ -120,6 +190,7 @@ class Config:
 
     path: Path
     data: dict = field(default_factory=dict)
+    unset: list[str] = field(default_factory=list)      # ${VAR} of the file this process lacks
 
     def __getitem__(self, section: str) -> Any:
         return self.data[section]
@@ -217,6 +288,8 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
+    _validate_tests(data.get("tests", {}))
+    _validate_search(data.get("search", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "
@@ -226,4 +299,4 @@ def load_config(path: str | Path) -> Config:
     for section, defaults in DEFAULTS.items():
         data[section] = {**defaults, **data.get(section, {})}
     data.setdefault("sources", {})
-    return Config(path=path, data=data)
+    return Config(path=path, data=data, unset=unset_variables(raw))

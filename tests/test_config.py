@@ -11,10 +11,58 @@ def test_defaults_and_expansion(toml, monkeypatch):
     assert cfg.workspace.name == "ws"
 
 
+def test_the_variables_this_process_lacks(toml, monkeypatch):
+    """An MCP client may start atlas without the variables of the terminal: the
+    configuration says which ones expanded to nothing."""
+    from atlas.config import unset_hint
+    for name in ("TEST_USER", "TEST_PASS", "TEST_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("TEST_KEY", "abc")
+    monkeypatch.setenv("TEST_EMPTY", "")
+    cfg = load_config(toml('[llm]\napi_key = "${TEST_KEY}"\nmodel = "${TEST_MODEL:-gemma}"\n'
+                           'base_url = "https://${TEST_EMPTY}gateway/v1"\n'
+                           '[network]\nproxy = "http://${TEST_USER}:${TEST_PASS:-}@proxy:8080"\n'
+                           'no_proxy = "${TEST_USER}"\n'))
+    # a default value is not missing; an empty variable is; each name once
+    assert cfg.unset == ["TEST_EMPTY", "TEST_USER", "TEST_PASS"]
+    hint = unset_hint(cfg)
+    assert hint.startswith("TEST_EMPTY, TEST_USER, TEST_PASS of atlas.toml not set") and "MCP client" in hint
+    monkeypatch.setenv("TEST_USER", "jane")
+    monkeypatch.setenv("TEST_PASS", "secret")
+    monkeypatch.setenv("TEST_EMPTY", "api.")
+    cfg = load_config(cfg.path)
+    assert cfg.unset == [] and unset_hint(cfg) == ""
+
+
+def test_the_error_of_a_tool_names_the_variables_it_lacks(toml, monkeypatch):
+    import httpx
+    import openai
+    from atlas.llm import model_failed
+    monkeypatch.delenv("TEST_PROXY", raising=False)
+    cfg = load_config(toml('[network]\nproxy = "${TEST_PROXY:-}"\n'))
+    e = openai.APIConnectionError(request=httpx.Request("POST", "https://gateway/v1/chat/completions"))
+    error = model_failed(e, cfg)["error"]
+    assert error.startswith("the model server failed: ") and "TEST_PROXY of atlas.toml not set" in error
+    monkeypatch.setenv("TEST_PROXY", "http://proxy:8080")
+    assert "not set" not in model_failed(e, load_config(cfg.path))["error"]
+    assert "not set" not in model_failed(e)["error"]
+
+
 def test_unknown_key_fails_with_context(toml):
     with pytest.raises(ConfigError) as e:
         load_config(toml('[pipeline]\nworkerz = 3'))
     assert "[pipeline]" in str(e.value) and "workerz" in str(e.value)
+
+
+def test_search_settings(toml):
+    cfg = load_config(toml('[search]\nresults = 12'))
+    assert cfg["search"]["results"] == 12 and cfg["search"]["scope"] == "auto"          # the rest by default
+    with pytest.raises(ConfigError, match="scope must be one of auto, passages, whole"):
+        load_config(toml('[search]\nscope = "all"'))
+    with pytest.raises(ConfigError, match="'results' must be at least 1"):
+        load_config(toml('[search]\nresults = 0'))
+    # what search and ask take changes nothing of the index
+    assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
 
 
 def test_wrong_type(toml):

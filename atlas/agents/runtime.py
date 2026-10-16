@@ -7,11 +7,17 @@
 An agent gets its model from [llm] (with the model, temperature and reasoning of its file or
 of [agents]) through AtlasLlm, and its tools from the "tool" plugins with the names of its
 file: the same functions that atlas serve offers. max_steps caps the calls to the model in
-one answer.
+one answer, and the same tool call repeated REPEATS times in a row is not run again (see
+loop_guard). With stall_steps, a run that goes that many tool calls without changing the code
+or making a test pass ends there, `stalled` (see stall_guard): atlas develop starts it again
+with a fresh conversation.
 """
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -22,7 +28,11 @@ from atlas.config import Config, ConfigError
 from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
-__all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "run_agent"]
+__all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
+           "recorded", "run_agent", "stall_guard"]
+
+REPEATS = 3      # the same call this many times in a row is a loop
+CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 
 
 def context_for(cfg: Config) -> SimpleNamespace:
@@ -58,8 +68,90 @@ def agent_tools(d: AgentDef, context: Any) -> list:
     return [plugins.get("tool", t, context.disabled)(context).function() for t in d.tools]
 
 
-def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None):
-    """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests."""
+def loop_guard(functions: list) -> list:
+    """The tools of one agent, wrapped so that the same call with the same arguments, the
+    REPEATS-th time in a row, is not run: the model gets an error that tells it to do something
+    else. Small models fall into these loops (gemma-4-26b wrote a file 17 times with the same
+    content after an error it did not understand) and spend every step of the agent."""
+    last: dict = {"call": None, "times": 0}
+
+    def wrap(f):
+        @functools.wraps(f)
+        def guarded(*args, **kwargs):
+            call = (f.__name__, json.dumps([args, kwargs], sort_keys=True, ensure_ascii=False, default=str))
+            last["times"] = last["times"] + 1 if call == last["call"] else 1
+            last["call"] = call
+            if last["times"] >= REPEATS:
+                return {"error": f"this is the same {f.__name__} call, with the same arguments, {last['times']} "
+                                 "times in a row: it gives the same result every time. Do something different: if "
+                                 "a tool reported an error, change what causes it; if the work is done, answer."}
+            return f(*args, **kwargs)
+        return guarded
+    return [wrap(f) for f in functions]
+
+
+def stall_guard(functions: list, limit: int, state: dict) -> list:
+    """The tools of one agent, wrapped to count the calls since the code last moved: a change
+    after which the file compiles, or has fewer errors than at its last check (a change with no
+    compiler counts), or a test that passed. At `limit` such calls, state["stalled"] is set,
+    and ask() ends the run after that turn. In the tanda 4 of atlas develop, the 6 runs that
+    spent their 40 calls took 41 % of the time, most of it in loops of reading and editing
+    badly; a run of the server rewrote its file 17 times with the same 2 errors. A fresh start
+    with what is done goes further than a long conversation."""
+    since, errors = {"calls": 0}, {}            # errors: file -> errors at its last check
+
+    def count(check: dict) -> int:
+        return 0 if check.get("ok") else max(1, len(check.get("errors", [])) + check.get("more_errors", 0))
+
+    def moved(name: str, result: Any) -> bool:
+        if not isinstance(result, dict) or "error" in result:
+            return False
+        if name == "run_test":
+            return bool(result.get("passed"))
+        if name == "check_code" and "ok" in result:
+            errors[result.get("file", "")] = count(result)
+            return False
+        if name not in CHANGES or result.get("unchanged"):
+            return False
+        check = result.get("check")
+        if not isinstance(check, dict):
+            return True
+        before, now = errors.get(result.get("file", "")), count(check)
+        errors[result.get("file", "")] = now
+        return before is None or now == 0 or now < before
+
+    def wrap(f):
+        @functools.wraps(f)
+        def guarded(*args, **kwargs):
+            result = f(*args, **kwargs)
+            since["calls"] = 0 if moved(f.__name__, result) else since["calls"] + 1
+            if since["calls"] >= limit:
+                state["stalled"] = True
+            return result
+        return guarded
+    return [wrap(f) for f in functions]
+
+
+def recorded(functions: list, record: list) -> list:
+    """The tools, wrapped so that each call goes to `record` with its arguments, its result
+    and its seconds, to study afterwards what an agent did."""
+    def wrap(f):
+        @functools.wraps(f)
+        def logged(*args, **kwargs):
+            t0 = time.time()
+            result = f(*args, **kwargs)
+            record.append({"name": f.__name__, "args": kwargs, "result": result,
+                           "seconds": round(time.time() - t0, 2)})
+            return result
+        return logged
+    return [wrap(f) for f in functions]
+
+
+def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None,
+                state: dict | None = None):
+    """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests;
+    `record`, a list, gets every tool call with its result (see recorded); `state`, a dict,
+    gets "stalled" when the agent has stall_steps (see stall_guard)."""
     try:
         from google.adk.agents import LlmAgent
     except ImportError as e:
@@ -67,14 +159,21 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None)
     from atlas.agents.model import AtlasLlm
     d = definition(name, cfg)
     text = d.instruction
-    return LlmAgent(name=d.name, description=d.description, model=AtlasLlm.from_service(agent_service(d, cfg), client),
-                    tools=agent_tools(d, context or context_for(cfg)),
+    tools = agent_tools(d, context or context_for(cfg))
+    model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
+                                  keep_tool_results=d.keep_tool_results)
+    guarded = loop_guard(recorded(tools, record) if record is not None else tools)
+    if d.stall_steps and state is not None and set(d.tools) & {*CHANGES, "run_test"}:
+        guarded = stall_guard(guarded, d.stall_steps, state)    # one that only reads would always look stuck
+    return LlmAgent(name=d.name, description=d.description, model=model, tools=guarded,
                     instruction=lambda _: text)   # a function: ADK does not fill {placeholders} in it
 
 
-async def ask(agent, question: str, max_steps: int = 8) -> dict:
-    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped"}.
-    `stopped` says that it reached max_steps calls to the model before answering."""
+async def ask(agent, question: str, max_steps: int = 8, state: dict | None = None) -> dict:
+    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped",
+    "tokens": {"prompt", "completion"}, and "cost" when the server says it (OpenRouter)}.
+    `stopped` says that it reached max_steps calls to the model before answering, or that
+    `state` (of stall_guard) says it stalled: then "stalled" is true too."""
     from google.adk.agents.invocation_context import LlmCallsLimitExceededError
     from google.adk.agents.run_config import RunConfig
     from google.adk.runners import InMemoryRunner
@@ -83,20 +182,38 @@ async def ask(agent, question: str, max_steps: int = 8) -> dict:
     session = await runner.session_service.create_session(app_name="atlas", user_id="atlas")
     message = types.Content(role="user", parts=[types.Part(text=question)])
     calls, answer, stopped = [], "", False
+    tokens, cost = {"prompt": 0, "completion": 0}, None
+    events = runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
+                              run_config=RunConfig(max_llm_calls=max_steps))
     try:
-        async for event in runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
-                                            run_config=RunConfig(max_llm_calls=max_steps)):
+        async for event in events:
+            if event.usage_metadata:
+                tokens["prompt"] += event.usage_metadata.prompt_token_count or 0
+                tokens["completion"] += event.usage_metadata.candidates_token_count or 0
+            if (event.custom_metadata or {}).get("cost") is not None:
+                cost = (cost or 0.0) + float(event.custom_metadata["cost"])
             for part in (event.content.parts if event.content else None) or []:
                 if part.function_call:
                     calls.append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
                 elif part.text and not part.thought and event.is_final_response():
                     answer += part.text
+            if state is not None and state.get("stalled") and event.content and \
+                    any(p.function_response for p in event.content.parts or []):
+                stopped = True                    # no progress in stall_steps calls: the run ends here
+                break
     except LlmCallsLimitExceededError:        # max_steps reached
         stopped = True
-    return {"answer": answer.strip(), "calls": calls, "stopped": stopped}
+    finally:                                  # closed here, in this task: closed later by asyncio, from
+        await events.aclose()                 # another context, OpenTelemetry logs errors for each span
+    return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
+            **({"stalled": True} if state is not None and state.get("stalled") else {}),
+            **({"cost": round(cost, 6)} if cost is not None else {})}
 
 
-def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None) -> dict:
-    """Builds the agent `name` and asks it `question` (see ask)."""
-    agent = build_agent(name, cfg, context, client)
-    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps))
+def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None,
+              record: list | None = None) -> dict:
+    """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
+    with their results."""
+    state: dict = {}
+    agent = build_agent(name, cfg, context, client, record, state)
+    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps, state))

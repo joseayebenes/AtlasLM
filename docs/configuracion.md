@@ -7,6 +7,8 @@ de comandos solo dice qué acción lanzar y con qué fichero: `atlas run atlas.t
 Ejemplos completos en el repositorio:
 - `atlas.toml`: producción, con el gateway;
 - `atlas.dev.toml`: Ollama y las muestras;
+- `atlas.openrouter.toml`: modelos de OpenRouter y las muestras, para compararlos
+  ([guía](openrouter.md));
 - `atlas.test.toml`: la API falsa de las pruebas.
 
 ## Cómo se lee
@@ -37,6 +39,7 @@ de ella:
 | `[llm] model` | los documentos con `analysis = "llm"` |
 | `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
+| `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
 | `[graph]` | el grafo |
@@ -63,6 +66,8 @@ con OpenAI.
 | `temperature` | número | `0.1` | temperatura del análisis y de las respuestas |
 | `max_tokens` | entero | `0` | tope de la respuesta; 0 = el del servidor. Con modelos que razonan, el razonamiento cuenta dentro |
 | `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
+| `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
+| `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
 ## [embeddings]
@@ -122,7 +127,7 @@ limitador.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `modules` | lista | `[]` | módulos Python con plugins propios (`"mi_paquete.analizador_cpp"`); también se cargan los entry points `atlas.plugins` de los paquetes instalados |
-| `disabled` | lista | `[]` | plugins apagados: `"code_analyzer:ada"`, `"extractor:markitdown"`, `"tool:ask_docs"`... |
+| `disabled` | lista | `[]` | plugins apagados: `"code_analyzer:ada"`, `"extractor:pymupdf"` (los PDF vuelven a markitdown), `"tool:ask_docs"`... |
 
 ## [[sources.docs]]
 
@@ -158,7 +163,7 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 | `exchange` | tabla | — | `[sources.doors.exchange]` |
 | `database` | tabla | — | `[sources.doors.database]` |
 | `convention` | tabla | — | `[sources.doors.convention]` |
-| `attributes` | lista | — | reservada: sin efecto en 0.1.0 (los atributos que pasan los elige el relleno de la base) |
+| `attributes` | lista | — | reservada: todavía sin efecto (los atributos que pasan los elige el relleno de la base) |
 
 ### [sources.doors.exchange]
 
@@ -186,7 +191,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `id_pattern` | texto | `""` | expresión de un ID válido; los que no casan se avisan |
+| `id_pattern` | texto | `""` | expresión de un ID válido; se avisan los requisitos que no casan (los títulos y la información, no) |
 | `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
 | `inline_reference_type` | texto | `"references"` | tipo de esos enlaces |
@@ -199,13 +204,39 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `roots` | lista | `[]` | carpetas del código (se recorren enteras); también las únicas que pueden leer y editar las herramientas de ficheros |
-| `languages` | lista | `["ada"]` | analizadores (plugins `code_analyzer`) |
+| `languages` | lista | `["ada"]` | analizadores (plugins `code_analyzer`): `"ada"` y `"python"` |
 | `exclude` | lista | `[]` | patrones que no se analizan ni se dejan leer: `["**/obj/**"]` |
 | `req_tag` | texto | `"Req:"` | la etiqueta de trazabilidad en los comentarios |
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |
 | `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos |
-| `summaries` | texto | — | reservada: sin efecto en 0.1.0 (resúmenes de subprogramas con el modelo) |
+| `summaries` | texto | — | reservada: todavía sin efecto (resúmenes de subprogramas con el modelo) |
+| `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
+| `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
+| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza |
+| `run_command` | lista | `["{exe}"]` | cómo se ejecuta lo que construyó `test_command`. Un envoltorio puede arrancar antes lo que la prueba necesita: `["with_server", "{exe}"]` |
+| `test_commands` | tabla | `{}` | pruebas que no se construyen, por extensión: el comando que las ejecuta tal cual, `{ py = ["python3", "{file}"] }` |
+| `program_command` | lista | `[]` | lo que ejecuta la herramienta `run_program`, con las líneas que le da el agente en su entrada estándar: el programa, o un cliente que se las pasa, `["with_server", "session"]`. Vacía: sin `run_program` |
+| `protected` | lista | `[]` | patrones de ficheros que los agentes leen pero no cambian: `["tests/**"]`. Los tests, para que el agente que escribe el código no pueda cambiar lo que lo juzga |
+| `syntax_commands` | tabla | `{}` | la comprobación de sintaxis por extensión, sobre una copia del texto nuevo: un cambio que rompe la sintaxis de un fichero que no tenía errores no se hace, y el agente recibe los errores y las líneas de alrededor. GNAT: `{ adb = ["gcc", "-c", "-gnats", "{file}"], ads = [...] }`. Python no necesita comando (`ast`); una lista vacía apaga la comprobación de su extensión (`py = []`) |
+| `hints` | lista | `[]` | ficheros de pistas para los mensajes del compilador, relativos a `atlas.toml`: `[[hint]]` con `match` (expresión regular; sus grupos con nombre van al texto como `{nombre}`) y `hint`. Van antes que las de serie (`atlas/code/hints.toml`, para GNAT). El informe de `atlas develop` dice qué errores salieron sin pista: se añade una tras cada tanda |
+| `library` | lista | `[]` | carpetas de especificaciones (`.ads`) de bibliotecas que el proyecto usa, con comodines: el runtime de GNAT, `["~/.local/share/alire/toolchains/gnat_native_*/lib/gcc/*/*/adainclude"]` (`gcc -print-file-name=adainclude` dice cuál). Para la herramienta `library_spec` y para los errores que nombran algo que no existe; las especificaciones de las raíces del código van siempre |
+| `reference` | lista | `[]` | manuales para la herramienta `search_reference` (y `atlas reference`), con comodines; una carpeta, todos los suyos: `.info` (los de GNAT, `~/.local/share/alire/toolchains/gnat_native_*/share/info/gnat_rm.info` y `gnat_ugn.info`), `.md`, `.txt` y `.html`. Van con las declaraciones de `library` en `<workspace>/reference.db`, no en el índice del proyecto |
+| `language_server` | lista | `[]` | el servidor de lenguaje de las herramientas `find_definition`, `find_references` y `describe_symbol`, con comodines en el programa: el Ada Language Server de la extensión de VS Code, `["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]` |
+| `language_server_project` | texto | `""` | el proyecto GPR que lee el servidor, relativo a `atlas.toml`; vacío: atlas escribe uno con las carpetas de las raíces que tienen fuentes Ada |
+| `check_on_edit` | sí/no | `true` | cada cambio de las herramientas de ficheros devuelve en `check` lo que dice `check_code` del fichero (si hay compilador para su extensión): una vuelta menos, y el agente no puede decir que compila sin verlo |
+| `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a la carpeta desde la que se lanza atlas, como las raíces del código |
+| `command_timeout` | entero | `120` | segundos como mucho para compilar o ejecutar una prueba |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
+
+## [tests]
+
+Para `atlas tests`, que escribe un test por procedimiento de prueba y lenguaje a partir de sus
+pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desde-los-procedimientos-de-prueba)).
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `languages` | tabla | `{}` | `[tests.languages.<lenguaje>]`, con `path`, dónde se escribe el test (`"tests/ada/test_{slug}.adb"`; `{id}`, `{slug}` y `{Slug}` salen del ID), y `template`, la plantilla del fichero entero, con `{steps}` en su propia línea |
+| `steps` | lista | `[]` | `[[tests.steps]]`: `match`, una expresión regular para el texto entero de un paso, sin su punto final, y el código del paso en cada lenguaje, con `{n}`, `{text}` y los grupos con nombre de `match`; `{grupo:str}` lo escribe como cadena del lenguaje |
 
 ## [graph]
 
@@ -220,7 +251,27 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 |---|---|---|---|
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
-| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (este, reservado: el código se busca con `search_code_docs`) |
+| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+
+## [search]
+
+Lo que `atlas search`, `atlas ask` y las herramientas `search` y `ask_docs` toman del índice.
+Cambiarlo no reprocesa nada.
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `results` | entero | `8` | resultados de una búsqueda y pasajes de una respuesta (`--k` en la línea de comandos) |
+| `per_document` | entero | `3` | como mucho, resultados de un mismo documento, módulo o unidad de código mientras otros tengan; `0` = sin límite. No se aplica si la búsqueda se limita a un documento |
+| `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
+| `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
+| `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+
+`scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
+tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
+peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30 000. Las
+partes se leen de cuatro en cuatro; `[network] max_concurrent` lo limita. En un Mac de 24 GB
+con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
+caracteres en partes de 5000 tardó 11 minutos.
 
 ## [agents]
 
@@ -244,17 +295,21 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `max_steps` | entero | llamadas al modelo como mucho en una respuesta |
 | `reasoning_effort` | texto | `"none"` apaga el razonamiento |
 | `temperature` | número | su temperatura |
+| `top_p` | número | su `top_p` (de 0 a 1); sin poner, el del servidor. La ficha de gemma 4 recomienda 0,95 |
+| `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
+| `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos |
+| `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `atlas develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
 
 ### [agents.eval]
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `sets` | lista | obligatoria para `atlas eval` | conjuntos de preguntas (YAML), relativos al fichero |
-| `runs` | entero | `1` | veces que se hace cada pregunta: los modelos no responden siempre igual |
+| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice y consultas del grafo |
+| `runs` | entero | `1` | veces que se hace cada pregunta a un agente: los modelos no responden siempre igual |
 
 ## [mcp]
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
-| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `verify_requirement` y `ask_atlas` solo se ofrecen si se piden |
+| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |

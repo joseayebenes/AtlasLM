@@ -10,7 +10,8 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
-| Agentes | `build_context`, `verify_requirement`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
+| Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
+| Agentes | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
 - Tres herramientas cambian de nombre para que no se confundan:
@@ -36,16 +37,16 @@ Cambios respecto a los servidores anteriores:
   - con `[[sources.docs]]`, las de documentos;
   - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
     pasos;
-  - con `[sources.code]`, las del grafo y `read_file`;
+  - con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
   - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
     `list_requirements` y `neighbors`), si `graph` está entre los pasos;
   - con el grafo, `build_context`.
-- `verify_requirement` y `ask_atlas` necesitan el modelo (y `ask_atlas`, también ADK): solo
-  se ofrecen si están en la lista.
+- `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` necesitan el
+  modelo (y `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
 - Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
-  puede pedir confirmación antes de usarlas.
+  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, que ejecuta código.
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
@@ -92,9 +93,17 @@ VS Code (`.vscode/mcp.json`):
 ```
 
 En Windows, el ejecutable es `<entorno>\Scripts\atlas.exe` (ver la
-[guía de instalación](../../docs/instalacion.md)). Si `atlas.toml` lee secretos del
-entorno (`${ATLAS_API_KEY}`), el servidor los hereda del editor; si no, se pasan con
-`environment` en OpenCode o con `env` o `envFile` en VS Code.
+[guía de instalación](../../docs/instalacion.md)).
+
+El servidor recibe el entorno del cliente, no el de la terminal. Si `atlas.toml` lee el
+proxy o la clave del entorno (`${HTTPS_PROXY}`, `${ATLAS_API_KEY}`), el cliente tiene que
+tenerlos: un editor abierto antes del `setx` hay que reiniciarlo, y los clientes hechos con
+la librería de MCP (Claude Desktop, el `McpToolset` de ADK) solo pasan `PATH` y pocas más.
+Se dan con `environment` en OpenCode, con `env` o `envFile` en VS Code y con `env` en los
+demás. Al arrancar, el servidor escribe en su registro cómo llega al modelo (con proxy o
+sin él) y qué variables de `atlas.toml` no tiene; las herramientas que usan el modelo las
+añaden a su error. Ver [el entorno del
+servidor](../../docs/instalacion.md#el-entorno-del-servidor-proxy-y-clave).
 
 ## Como librería
 

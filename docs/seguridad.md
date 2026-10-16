@@ -20,12 +20,15 @@ Qué se envía al modelo:
   sección para el resumen del documento;
 - los textos que se indexan, para los embeddings: fragmentos de los documentos, resúmenes,
   requisitos de DOORS, definiciones;
-- en `atlas ask`, la pregunta y los pasajes encontrados;
+- en `atlas ask`, la pregunta y los pasajes encontrados; si la pregunta es amplia, los
+  documentos o módulos de los que trata, enteros;
 - en los agentes (`atlas agent`, `verify`, `impact`, `coverage`, `eval`, `ask_atlas`), la
   pregunta y lo que devuelven sus herramientas: requisitos, código fuente, documentos.
 
 Por eso el modelo tiene que ser el gateway corporativo o uno local. atlas no lo decide: va
-a donde diga `base_url`.
+a donde diga `base_url`. La excepción es `atlas.openrouter.toml`, que manda a OpenRouter, un
+servicio externo, las muestras sintéticas de `examples/samples` para comparar modelos
+([guía](openrouter.md)); no se usa con datos del proyecto.
 
 Otras piezas que podrían conectarse y no lo hacen:
 - **ADK**: los agentes usan `AtlasLlm`, que va por el cliente de `atlas.llm`; no se usan
@@ -34,8 +37,8 @@ Otras piezas que podrían conectarse y no lo hacen:
   variables `OTEL_*`.
 - **`adk web`** abre un servidor web en `127.0.0.1`: solo se ve desde el propio puesto.
 - **`atlas serve`** habla por stdio con el editor: no abre ningún puerto.
-- **markitdown** solo recibe rutas de ficheros locales; su detector de tipos (magika) lleva
-  el modelo dentro del paquete.
+- **pymupdf** y **markitdown** solo reciben rutas de ficheros locales; el detector de tipos
+  de markitdown (magika) lleva el modelo dentro del paquete.
 
 ## Qué se guarda
 
@@ -46,7 +49,7 @@ Todo en el workspace del proyecto (`[project] workspace`):
 | `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro y perfiles de las ejecuciones |
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
-| `reports/` | verificaciones, informes y evaluaciones |
+| `reports/` | verificaciones, propuestas de enlaces, juicios de cumplimiento, informes y evaluaciones |
 
 Es información del proyecto, con la misma confidencialidad que los documentos y el código
 de los que sale: la carpeta necesita los mismos permisos. Nada está cifrado por atlas; en un
@@ -95,8 +98,12 @@ Además:
 
 | Pieza | Puede | Límites |
 |---|---|---|
-| Herramientas de ficheros (`list_files`, `grep`, `read_file`, `edit_file`, `write_file`) | leer y, si se piden, escribir código | solo dentro de `[sources.code] roots`, sin `..` ni enlaces simbólicos que salgan, y nada de lo excluido. `edit_file` y `write_file` no se ofrecen si no se piden en `[mcp] tools` o en las herramientas de un agente, y el servidor MCP las marca como destructivas para que el editor pida confirmación |
-| Agentes de serie | consultar documentos, requisitos, grafo y código | ninguno tiene herramientas de escritura; `max_steps` limita sus llamadas al modelo |
+| Herramientas de ficheros (`list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) | leer y, si se piden, escribir código | solo dentro de `[sources.code] roots`, sin `..` ni enlaces simbólicos que salgan, y nada de lo excluido. Las que escriben no se ofrecen si no se piden en `[mcp] tools` o en las herramientas de un agente, y el servidor MCP las marca como destructivas para que el editor pida confirmación. Antes de escribir, la comprobación de sintaxis (`syntax_commands`) se lanza sobre una copia en `<workspace>/build/syntax` |
+| Biblioteca y manuales (`library_spec`, `search_reference`) | leer las especificaciones y los manuales de `[sources.code] library` y `reference`, fuera de las raíces | solo lectura y solo de lo que nombra el TOML; el índice de los manuales va a `<workspace>/reference.db` |
+| Servidor de lenguaje (`find_definition`, `find_references`, `describe_symbol`) | lanzar el programa de `[sources.code] language_server`, que lee el código del proyecto | el programa viene del TOML y tiene su confianza; habla por su entrada y salida estándar, sin red; atlas le escribe un proyecto GPR en `<workspace>/build`. Solo pregunta por ficheros de las raíces |
+| Compilador (`check_code`, `run_test`) | lanzar los comandos de `[sources.code]` sobre un fichero del código; `run_test` ejecuta además la prueba compilada | los comandos vienen del TOML, como listas de argumentos y sin intérprete de órdenes, y tienen la confianza del propio `atlas.toml`; solo con ficheros dentro de las raíces del código; lo que producen va a `<workspace>/build`; tiempo máximo `command_timeout`. `run_test` solo se ofrece si se pide, y el servidor MCP la marca como destructiva |
+| `atlas develop` con `attempts` | copiar la carpeta de trabajo (sin `.git` ni el workspace) en `<workspace>/attempts/<n>` y ejecutar en cada copia los comandos de `[sources.code]` | las copias se borran al acabar cada encargo; las raíces del código tienen que estar dentro de la carpeta de trabajo |
+| Agentes de serie | consultar documentos, requisitos, grafo y código | ninguno tiene herramientas de escritura ni de ejecución; `max_steps` limita sus llamadas al modelo. Los de `examples/agents/` sí escriben y compilan: son ejemplos para copiar |
 | Lectura de requisitos | leer la base de intercambio o la base de DOORS | solo lectura; las consultas del adaptador `database` vienen del TOML y el módulo va como parámetro (`:module`), nunca pegado al SQL |
 | Plugins (`[plugins] modules` y entry points `atlas.plugins`) | ejecutar código Python al cargarse | tienen la confianza del propio `atlas.toml`: quien puede editarlo puede ejecutar código con el usuario que lanza atlas |
 | Agentes del proyecto (`agents/*.md`) y conjuntos de evaluación | definir instrucciones y herramientas | YAML leído con `safe_load`; solo pueden usar herramientas registradas |

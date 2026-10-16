@@ -11,6 +11,11 @@ id = "identifier"           # ID del requisito tal como aparece en documentos y 
                             #   "identifier" (prefijo del módulo + Absolute Number, p. ej. SRS-123),
                             #   o un atributo de DOORS con el ID oficial, p. ej. "Requirement ID".
                             #   "absolute_number" solo vale con un único módulo (se repite entre módulos).
+                            # Si solo los requisitos tienen ese atributo, una lista: vale el primero que
+                            # tenga cada objeto, y los títulos y la información se quedan con el otro:
+                            #   id = ["Requirement ID", "module_number"]
+                            #   "module_number": el nombre del módulo en atlas + Absolute Number
+                            #   (SRS_TMS-123), que no se repite aunque los módulos no tengan prefijo.
 text = "Object Text"        # texto del requisito
 heading = "Object Heading"  # título (los objetos de título no suelen tener texto)
 
@@ -34,9 +39,23 @@ default_type = ""           # tipo de los demás enlaces; vacío = el nombre del
 
 [kinds]
 # Sin esta sección: un objeto con texto es "requirement", uno con título y sin texto es
-# "heading" y el resto, "information". Si el proyecto tiene un atributo que lo dice:
+# "heading" y el resto, "information". Los títulos dan a atlas el capítulo de cada requisito.
+# Si el proyecto tiene un atributo que lo dice:
 # attribute = "Object Type"
 # [kinds.values]            # tipo en atlas = valor(es) de ese atributo en DOORS
 # requirement = ["Requirement", "Functional", "Performance"]
 # heading = "Heading"
 # information = ["Note", "Comment"]
+#
+# Si el atributo solo dice si el objeto es requisito (sí o no), el resto, por contenido:
+# attribute = "is_requisite"
+# others = "heading_or_information"
+# [kinds.values]
+# requirement = "Yes"
+#
+# others: el tipo de los objetos cuyo valor no está en [kinds.values] o está vacío.
+#   "requirement" (por defecto), "heading", "information" o "heading_or_information"
+#   ("heading" si tiene título y no texto; "information" si no). Con information = "No",
+#   un título que diga "No" sería "information" y sus requisitos se quedarían sin capítulo.
+# Los valores no distinguen mayúsculas ni espacios de más ("Yes" vale para "yes" y "YES").
+# Un módulo que no tiene el atributo se clasifica por contenido, como sin esta sección.

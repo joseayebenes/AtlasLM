@@ -662,7 +662,17 @@ eval` hace las preguntas de conjuntos en YAML (`examples/eval/`) y puntúa sin m
 - un caso está bien si la respuesta contiene los textos esperados;
 - y si el agente ha llamado a las herramientas esperadas.
 
-La medición de la recuperación sin modelo sigue pendiente.
+La recuperación sin modelo se mide desde después de la 0.1.0, con los mismos conjuntos:
+- un caso `search` busca en el índice dos veces, híbrida (IDs, vectores y BM25) y léxica (IDs
+  y BM25, sin ningún modelo), y anota en qué posición sale cada texto esperado: acierto@1, @3,
+  @5 y @10 y rango recíproco medio;
+- un caso con una consulta del grafo (`trace`, `trace_code`, `impact`, `find_symbol`,
+  `search_code_docs`) acierta si el resultado contiene lo esperado.
+
+`examples/eval/retrieval.yaml` tiene 20 búsquedas (3 de código) y 10 consultas del grafo
+sobre las muestras. Con `embeddinggemma` y el código en el índice: híbrida, acierto@1 75 %,
+@3 90 %, @5 100 %, MRR 0,84; léxica, 55 %, 70 %, 90 %, MRR 0,68; el grafo, 10 de 10. Las muestras son sintéticas y
+repetitivas: la cifra que vale es la de un conjunto escrito sobre el proyecto real.
 
 ---
 
@@ -980,7 +990,7 @@ Estado (11 de octubre de 2026), versión 0.1.0:
 
   En el proyecto grande, 189 peticiones de embeddings en vez de 207. Con la API falsa, que
   contesta al instante, el tiempo es CPU (la extracción de los PDF, unos 50 ms por página)
-  y no cambia: entre 17 y 18 s.
+  y no cambia: entre 17 y 18 s. Con pymupdf, después de la 0.1.0, 6,1 s.
 - **Empaquetado.** Versión 0.1.0, rangos de versiones, ADK fijado a 2.11 y `truststore` como
   dependencia. Lo demás:
   - `constraints.txt`, con las versiones exactas probadas en una instalación limpia;
@@ -1003,22 +1013,41 @@ Estado (11 de octubre de 2026), versión 0.1.0:
 - **Arreglos.** La caché de análisis de secciones no se escribía de forma atómica: un corte
   podía dejar un fichero roto y la sección en error para siempre. Ahora se escribe de forma
   atómica, y uno roto se vuelve a analizar.
-- **Sin hacer.** Extraer los PDF en varios procesos (la extracción es Python puro y ocupa
-  una CPU); pymupdf sería más rápido, pero cambia el texto extraído. `[sources.code]
-  summaries` y `[sources.doors] attributes` se aceptan sin efecto. Las rutas de las fuentes
+- **Sin hacer.** `[sources.code] summaries` y `[sources.doors] attributes` se aceptan sin
+  efecto. Las rutas de las fuentes
   son relativas a la carpeta desde la que se lanza atlas, y las demás, a la del fichero.
+- **Después de la 0.1.0.** Los PDF se extraen con pymupdf en vez de markitdown (pdfminer):
+  1,5 ms por página en vez de 45, y el texto respeta el orden en que se escribió, así que el
+  número de un título no se separa de él. En la muestra sin marcadores salen las 27
+  subsecciones, y no 9. Ya no hace falta extraer en varios procesos.
+- **Después de la 0.1.0.** `atlas comply` y el agente `compliance_checker`: el cumplimiento
+  del código con cada requisito, obligación a obligación, con el veredicto calculado a partir
+  de ellas. Una ayuda para la inspección, no una prueba.
+- **Después de la 0.1.0.** `check_code` y `run_test`: el compilador (GNAT, instalado con Alire)
+  y las pruebas del proyecto para los agentes, configurados en `[sources.code]`. Con
+  `gemma4:12b`, los cambios pequeños salen bien, pero los de varios ficheros no: el modelo no
+  usa el compilador de forma fiable y en un Mac de 24 GB se queda sin memoria con contextos
+  largos (ver [atlas.code](../atlas/code/README.md)).
+- **Después de la 0.1.0.** `atlas link` y el agente `req_linker`: para cada requisito sin
+  código, los candidatos salen sin modelo (lo que mencionan sus secciones, el código de los
+  requisitos enlazados y la búsqueda en el código indexado) y el agente propone los que lo
+  implementan, con confianza. El informe dice qué etiqueta `Req:` añadir y dónde; el código
+  no se toca.
+- **Después de la 0.1.0.** El código se indexa (paso `index.code`, registros `code_doc`):
+  cada subprograma, tipo y variable con su comentario, sus requisitos y su código, por
+  unidad (especificación y cuerpo juntos).
 
 Metas medibles de la sección 1, con proyectos sintéticos y el servidor falso:
 
 | Meta | Cómo se comprueba | Resultado |
 |---|---|---|
 | 1. Procesar una vez | 80 PDF (1040 páginas, 2080 secciones), 20 910 requisitos y 3060 subprogramas | segunda ejecución sin cambios: 0,3 s y ninguna petición (la primera, 62 s) |
-| 2. Solo los cambios | `tests/test_large.py`, `test_cli.py`, `test_docs_process.py` | un plazo cambiado en una página del proyecto grande: 1,4 s, 1 petición al modelo y 2 textos embebidos |
+| 2. Solo los cambios | `tests/test_large.py`, `test_cli.py`, `test_docs_process.py` | un plazo cambiado en una página del proyecto grande: 0,9 s (1,4 s con markitdown), 1 petición al modelo y 2 textos embebidos |
 | 3. Recuperable | `tests/test_pipeline.py`: `kill -9`, Ctrl+C (también con varios hilos), errores fatales | se reanuda sin repetir unidades ni dejar escrituras a medias |
 | 4. Configurable por fichero | la línea de comandos solo elige acción y fichero | cada clave en la guía de configuración, comprobado por las pruebas |
 | 5. Importable | cada módulo sin ADK, sin MCP y sin los demás | `examples/library`, ejecutados por las pruebas |
 | 6. Trazabilidad | `trace` en una llamada, y `impact` a la inversa | `tests/test_graph.py` y el ejemplo de trazabilidad |
-| 7. Evaluable | `atlas eval` | 23 de 24 con `gemma4:12b` (fase 5); la recuperación sin modelo sigue pendiente (8.4) |
+| 7. Evaluable | `atlas eval` | agentes: 23 de 24 con `gemma4:12b`; recuperación sin modelo (8.4): búsqueda híbrida con acierto@3 del 90 % y MRR 0,84, grafo 10 de 10 |
 
 ---
 
@@ -1061,7 +1090,7 @@ gantt
 | Integración sin API | ingesta completa | servidores falsos de chat y embeddings con fallos inyectables (ya existen): 409, respuestas cortadas, prosa, cortes de conexión |
 | Recuperación | reanudación tras `kill -9`, Ctrl+C y error fatal en cada paso | prueba que mata el proceso en puntos aleatorios y comprueba registro, ficheros y base de datos |
 | Incrementalidad | contadores de peticiones y unidades procesadas tras cada tipo de cambio | aserciones sobre el `Ledger` y el servidor falso |
-| Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo |
+| Recuperación de información | acierto@k del índice y del grafo | conjunto de preguntas con respuesta conocida, sin modelo (`atlas eval`, casos `search` y del grafo; hecho después de la 0.1.0) |
 | Agentes | trayectoria de herramientas y calidad de respuesta | `adk eval` con `.evalset.json`; umbral mínimo en `pytest` |
 | Rendimiento | tiempo y peticiones por fase sobre el proyecto real | perfil de cada ejecución en `atlas.db`, con la versión (`atlas status`; hecho en la fase 6) |
 
@@ -1258,7 +1287,7 @@ desarrollar en el Mac sin acceso a documentos, código ni DOORS reales.
 - `examples/library/`: ejemplos de uso como librería, que las pruebas ejecutan.
 - `examples/make_samples.py`: PDFs de prueba con y sin marcadores, proyecto Ada con
   comentarios `Req:` y pruebas, y `doors.sqlite` con dos módulos, enlaces y referencias.
-- `tests/`: 163 pruebas, 158 sin modelo:
+- `tests/`: 183 pruebas, 176 sin modelo:
   - configuración, plugins y DOORS; secretos escritos en el fichero, huellas sin secretos
     y credenciales enmascaradas;
   - motor: reanudación tras un corte y tras `kill -9`, cuarentena, poda, dependencias,

@@ -6,7 +6,8 @@
     get_section       the Markdown of a section
     get_requirement   a requirement by its ID: its official text (DOORS) and the documents
                       that state it
-    ask_docs          an answer written only from the documents, citing them
+    ask_docs          an answer written only from the documents, citing them; a broad
+                      question (or whole=True) reads its documents whole
 
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
@@ -29,7 +30,7 @@ import openai
 
 from atlas.index.records import DOORS_PREFIX, KINDS
 from atlas.index.search import cite
-from atlas.llm.connection import diagnose
+from atlas.llm import model_failed
 from atlas.plugins import register_methods
 from atlas.store import Store
 
@@ -43,10 +44,6 @@ TOOL_NAMES = ("list_documents", "search", "get_section", "get_requirement", "ask
 MAX_RESULTS = 20            # results of a search
 MAX_SUMMARY_CHARS = 500     # characters of the summary of a document in list_documents
 MAX_SECTION_CHARS = 20000   # characters of a section
-
-
-def _failed(e: openai.APIError) -> dict:
-    return {"error": f"the model server failed: {diagnose(e)}"}
 
 
 def _heading(f: Path) -> dict:
@@ -78,15 +75,16 @@ def _asks_for(wanted: str, title: str) -> bool:
 
 
 class DocTools:
-    def __init__(self, index: "Index", store: Store | None = None):
+    def __init__(self, index: "Index", store: Store | None = None, cfg=None):
         self.index = index
         self.store = store          # the requirements read from DOORS (atlas.db)
+        self.cfg = cfg              # for the variables it lacks, when the model fails
 
     @classmethod
     def from_config(cls, cfg, store: Store | None = None) -> "DocTools":
         """Over the atlas.db of the workspace, with the [embeddings] and [llm] of atlas.toml."""
         from atlas.index import Index
-        return cls(Index.from_config(cfg), store or Store(cfg.workspace))
+        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg)
 
     @classmethod
     def for_context(cls, context: Any) -> "DocTools":
@@ -109,20 +107,23 @@ class DocTools:
                                "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
                               for d in docs]}
 
-    def search(self, query: str, k: int = 8, document: str = "", kind: str = "") -> dict:
-        """Hybrid search in the documents and in the requirements of DOORS: exact IDs,
-        meaning and keywords. `document` limits it to one document or DOORS module (its name
-        or part of its title); `kind` to one kind of passage: chunk | section_summary |
-        requirement | definition | open_issue | overview. Each result has its citation, its
-        document and section (for get_section; for a DOORS requirement, get_requirement with
+    def search(self, query: str, k: int = 0, document: str = "", kind: str = "") -> dict:
+        """Hybrid search in the documents, in the requirements of DOORS and in the code:
+        exact IDs, meaning and keywords. `k` results (0: the configured number, 8 by default;
+        at most a few of each document unless `document` is given). `document` limits it to
+        one document, DOORS module or code unit (its name or part of its title); `kind` to
+        one kind of passage: chunk | section_summary | requirement | definition | open_issue |
+        overview | code_doc (a subprogram, type or variable with its comment and code). Each
+        result has its citation, its document and section (for get_section; for a DOORS
+        requirement, get_requirement with its ref; for code, read_source or trace_code with
         its ref) and its text."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:
-            hits = self.index.search(query, k=max(1, min(k, MAX_RESULTS)), document=document,
+            hits = self.index.search(query, k=min(k, MAX_RESULTS) if k > 0 else 0, document=document,
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
-            return _failed(e)
+            return model_failed(e, self.cfg)
         return {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
                              "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
 
@@ -173,14 +174,17 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         return out
 
-    def ask_docs(self, question: str, document: str = "") -> dict:
+    def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
-        passages. `document` limits it to one document."""
+        passages. `document` limits it to one document or DOORS module. A broad question (a
+        summary, a whole function, every requirement about a topic) reads its documents
+        whole instead of the best passages, in parts if they are long; `whole` = true makes
+        it read them whole always (`scope` in the answer says how it was read)."""
         try:
-            return self.index.answer(question, document=document)
+            return self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:
-            return _failed(e)
+            return model_failed(e, self.cfg)
 
 
 register_methods(DocTools, TOOL_NAMES)

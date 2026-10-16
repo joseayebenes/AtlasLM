@@ -42,8 +42,10 @@ include = ["atlas*"]
 [tool.setuptools.package-data]
 "atlas.agents" = ["builtin/*.md"]            # los agentes de serie
 "atlas" = ["templates/*.toml"]               # la plantilla de atlas init
+"atlas.code" = ["hints.toml"]                # las pistas de serie para los mensajes del compilador
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)"]
-filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning"]       # notices of ADK about its own features
+filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning",       # notices of ADK about its own features
+                  "ignore:builtin type [Ss]wig.* has no __module__:DeprecationWarning"]   # pymupdf on Python 3.13

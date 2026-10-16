@@ -4,6 +4,10 @@
                          Markdown package within a budget of tokens, without a model
     verify_requirement   whether the official text of a requirement and the documents agree,
                          judged by the agent requirement_verifier (needs the model)
+    link_requirement     the code that may implement a requirement, proposed by the agent
+                         req_linker (needs the model); it changes nothing
+    check_compliance     whether the code of a requirement does all it asks, obligation by
+                         obligation, judged by the agent compliance_checker (needs the model)
     ask_atlas            a question to the agent assistant, which searches with its own tools
                          (needs the model and ADK): one call for the client, several behind
 
@@ -19,7 +23,7 @@ from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "verify_requirement", "ask_atlas")
+TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "check_compliance", "ask_atlas")
 
 
 class AgentTools:
@@ -53,15 +57,49 @@ class AgentTools:
         import openai
         from atlas.agents.verify import verify
         from atlas.index import Index
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         g = self.graph.graph()
         if g is None:
             return {"error": NO_GRAPH}
         try:
             return verify(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
+    def link_requirement(self, req_id: str) -> dict:
+        """The code elements that may implement a requirement, proposed by the agent
+        req_linker: for each one, a confidence (high | medium | low), the reason, the
+        evidence that made it a candidate and the `Req:` tag to add and where. It changes
+        nothing in the code. Asks the model: slower than trace."""
+        import openai
+        from atlas.agents.link import link
+        from atlas.index import Index
+        from atlas.llm import model_failed
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        try:
+            return link(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
+        except openai.APIError as e:
+            return model_failed(e, self.cfg)
+
+
+    def check_compliance(self, req_id: str) -> dict:
+        """Whether the code that implements a requirement (by its Req: tags) does all that it
+        asks: the requirement split into obligations, each met, not_met, partial or
+        cannot_tell (timing, performance, code not shown), with the code that decides it,
+        and a verdict (complies | does_not_comply | cannot_tell | no_code). A help for the
+        inspection, not a proof. Asks the model: slower than trace."""
+        import openai
+        from atlas.agents.comply import comply
+        from atlas.llm import model_failed
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        try:
+            return comply(req_id, self.cfg, graph=g)
+        except openai.APIError as e:
+            return model_failed(e, self.cfg)
 
     def ask_atlas(self, question: str) -> dict:
         """Asks the assistant of atlas, an agent that answers from the documents, the DOORS
@@ -70,13 +108,13 @@ class AgentTools:
         called."""
         import openai
         from atlas.agents.runtime import run_agent
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         try:
             return run_agent("assistant", question, self.cfg, self.context)
         except ImportError as e:
             return {"error": str(e)}
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
 
 register_methods(AgentTools, TOOL_NAMES)

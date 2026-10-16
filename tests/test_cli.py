@@ -75,6 +75,13 @@ lang = "Spanish"
     rep = go()
     assert rep["processed"] == {} and rep["skipped"] == {"docs.process": 2} and fake_chats() == chats
 
+    # another extractor gives another text: the PDF is processed again, the Markdown is not
+    assert run(load_config(toml(sources + '[plugins]\ndisabled = ["extractor:pymupdf"]\n'))) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"] == {"docs.process": 1} and rep["skipped"] == {"docs.process": 1}
+    rep = go()
+    assert rep["processed"] == {"docs.process": 1} and fake_chats() == chats
+
     # a changed document whose analysis fails: output written, unit in error, retried next time
     (docs / "hmi_manual.md").write_text((docs / "hmi_manual.md").read_text().replace("30 days", "60 days"))
     control.write_text(json.dumps({"prose": True}))
@@ -153,6 +160,21 @@ patterns = ["*.md"]
     with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
         main(["search", "keep logs", str(path)])
     assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out
+    with pytest.raises(SystemExit) as e:              # options anywhere: --name value or --name=value
+        main(["search", "track event", str(path), "--k", "2", "--kind=requirement"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "[2]" in out and "[3]" not in out and out.count("(requirement)") == 2
+    with pytest.raises(SystemExit) as e:
+        main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
+    for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
+                        (["search", "x", "--whole"], "unknown option --whole"),
+                        (["ask", "x", "--k", "many"], "--k must be an integer"),
+                        (["status", "--k", "3"], "it takes none")):
+        with pytest.raises(SystemExit) as e:
+            main(args + [str(path)])
+        assert error in str(e.value.code)
 
     # a changed document: reprocessed and reindexed; a failed embeddings batch is retried
     (docs / "hmi_manual.md").write_text((docs / "hmi_manual.md").read_text().replace("30 days", "60 days"))
@@ -319,6 +341,57 @@ steps = ["doors", "index"]
     assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
     assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
+
+
+def test_code_is_indexed_by_unit(toml, samples, tmp_path, fake, fake_stats, capsys):
+    import shutil
+    import pytest
+    from atlas.cli import search
+    pytest.importorskip("tree_sitter_ada")
+    ada = tmp_path / "ada"
+    shutil.copytree(samples / "ada", ada)
+    extra = f'''
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["code", "index"]
+[sources.code]
+roots = ["{ada.as_posix()}"]
+test_patterns = ["**/tests/**"]
+'''
+    cfg = load_config(toml(extra))
+
+    def go(config=cfg):
+        assert run(config) == 0
+        return json.loads(capsys.readouterr().out)
+
+    # one unit per package (spec and body together), and one per test procedure
+    assert go()["processed"] == {"code.parse": 5, "index.code": 3}
+    assert search(cfg, "remove a track from the database") == 0
+    out = capsys.readouterr().out
+    assert "[1] tracks › tracks.delete_track · tracks.adb:11-15 (code_doc)" in out
+    assert "Removes track I from the database." in out and 'Logger.Log ("delete");' in out
+
+    embedded = fake_stats()["emb_texts"]
+    assert go()["skipped"] == {"code.parse": 5, "index.code": 3} and fake_stats()["emb_texts"] == embedded
+    # a changed body: that file is analysed again and its unit indexed again, embedding only
+    # the record whose text changed
+    body = ada / "src" / "tracks.adb"
+    body.write_text(body.read_text().replace('"delete"', '"track deleted"'))
+    assert go()["processed"] == {"code.parse": 1, "index.code": 1}
+    assert fake_stats()["emb_texts"] == embedded + 1
+    # a unit that disappears is pruned, and without code_doc in [index] kinds nothing is indexed
+    for f in ("logger.ads", "logger.adb"):
+        (ada / "src" / f).unlink()
+    assert go()["pruned"] == {"code.parse": 2, "index.code": 1}
+    rep = go(load_config(toml(extra + '[index]\nkinds = ["chunk"]\n')))
+    assert "index.code" not in rep["processed"] and "index.code" not in rep["skipped"]
 
 
 def test_step_workers_and_documents_with_the_same_name_in_parallel(toml, docs_samples, tmp_path, capsys):

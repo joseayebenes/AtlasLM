@@ -79,6 +79,8 @@ model = "fake"                              # vacío: el de [llm]
 dirs = ["agents"]                           # carpetas con los .md del proyecto; un nombre repetido sustituye al de serie
 [agents.assistant]                          # retoques de un agente sin tocar su fichero
 max_steps = 10
+[agents.eval]                               # atlas eval: el índice y el grafo, sin modelo
+sets = ["examples/eval/retrieval.yaml"]
 
 [mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...
 enabled = true

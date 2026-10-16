@@ -45,7 +45,7 @@ Si el wheel está publicado en el repositorio interno (Nexus, Artifactory, devpi
 
 ```powershell
 py -3.12 -m venv C:\atlas\venv
-C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.1.0" -c constraints.txt --index-url https://<repositorio>/simple
+C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.2.0" -c constraints.txt --index-url https://<repositorio>/simple
 ```
 
 `-c constraints.txt` instala exactamente las versiones probadas.
@@ -70,6 +70,25 @@ python3.12 -m venv ~/atlas/venv
 | `agents` | agentes ADK: `atlas agent`, `verify`, `impact`, `coverage`, `eval` (google-adk 2.11) | sin agentes |
 
 Por ejemplo, `"atlaslm[docs,code,mcp]"` para procesar y servir sin agentes.
+
+### El compilador de Ada (opcional)
+
+Para que los agentes compilen el código y ejecuten las pruebas (`check_code` y `run_test`, ver
+[atlas.code](../atlas/code/README.md)), GNAT. GNAT FSF es libre (GPL 3 con la excepción de la
+biblioteca de ejecución de GCC: los programas que compila se pueden distribuir con cualquier
+licencia). En un Mac con Apple Silicon no está en Homebrew; se instala con Alire, el gestor
+de paquetes de Ada:
+
+```bash
+curl -LO https://github.com/alire-project/alire/releases/download/v2.1.1/alr-2.1.1-bin-aarch64-macos.zip
+unzip alr-2.1.1-bin-aarch64-macos.zip -d ~/.local/alire
+~/.local/alire/bin/alr -n toolchain --select gnat_native gprbuild
+```
+
+Deja GNAT y gprbuild en `~/.local/share/alire/toolchains` (unos 640 MB con GNAT 16.1 y
+gprbuild 26.0) sin tocar la configuración de la shell: `[sources.code] tool_path` los pone
+delante del `PATH` solo para atlas. En Windows, Alire tiene instalador propio. Un proyecto que
+ya use GNAT Pro pone sus comandos en `check_command` y `test_command`.
 
 ## 2. Crear el proyecto
 
@@ -113,6 +132,7 @@ atlas solo se conecta a las URL de `[llm]` y `[embeddings]`. Ver
 
 ```powershell
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
+atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
 atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
 ```
@@ -159,9 +179,33 @@ VS Code (`.vscode/mcp.json`):
 }
 ```
 
-El servidor hereda el entorno del editor, `ATLAS_API_KEY` incluida. Si el editor se abrió
-antes del `setx`, hay que reiniciarlo; o pasar la variable con `environment` en OpenCode o
-con `env` o `envFile` en VS Code.
+### El entorno del servidor: proxy y clave
+
+El editor arranca `atlas serve` con su entorno, no con el de la terminal. Por eso
+`atlas check` puede funcionar en PowerShell y el servidor no tener el proxy ni la clave:
+
+- `$env:HTTPS_PROXY = "..."` solo vale en esa ventana de PowerShell, y lo que hay en el
+  `$PROFILE`, solo en PowerShell. Para los demás programas: `setx HTTPS_PROXY "..."` (o
+  «Editar las variables de entorno de esta cuenta») y reiniciar el editor, cerrando todas
+  sus ventanas. Abrir el editor desde esa PowerShell (`code .`, `opencode`) también le da
+  sus variables.
+- Los clientes hechos con la librería de MCP (Claude Desktop, el `McpToolset` de ADK o un
+  script con `stdio_client`) solo pasan unas pocas variables: `PATH`, `USERPROFILE`,
+  `APPDATA`, `TEMP` y alguna más. El proxy, su usuario y contraseña y la clave hay que
+  dárselos en `env`, aunque estén en el entorno.
+- En OpenCode van en `environment` y en VS Code en `env` o `envFile`. Con `envFile` las
+  contraseñas no se escriben en `.vscode/mcp.json`: van en un fichero fuera del repositorio.
+
+Al arrancar, el servidor escribe en su registro (en VS Code, en la salida «MCP: atlas»)
+cómo llega al modelo y qué variables de `atlas.toml` no tiene:
+
+```text
+INFO atlas.mcp: model: https://gateway.empresa/v1 without proxy
+WARNING atlas.mcp: HTTPS_PROXY of atlas.toml not set in the environment of atlas. ...
+```
+
+Las herramientas que usan el modelo (`search`, `ask_docs`, `ask_atlas`...) añaden esas
+variables al error que devuelven, y `atlas check` también las nombra.
 
 ## Actualizar y desinstalar
 

@@ -66,25 +66,99 @@ con su nombre exacto. Ver `mapping.example.toml`.
 
 | Sección | Qué dice |
 |---|---|
-| `[fields]` | de dónde salen el ID (`identifier`, un atributo como `"Requirement ID"`, o `absolute_number` con un solo módulo), el texto y el título |
+| `[fields]` | de dónde salen el ID (`identifier`, un atributo como `"Requirement ID"`, `absolute_number` con un solo módulo, o una lista: ver [El ID de cada objeto](#el-id-de-cada-objeto)), el texto y el título |
 | `[attributes]` | qué atributos de DOORS pasan a atlas y con qué nombre |
 | `[modules]` | cómo se llama cada módulo en atlas (por defecto, como en DOORS) |
 | `[link_types]` | qué tipo de enlace es cada módulo de enlaces (`satisfies`, `verifies`...) |
-| `[kinds]` | si hay un atributo que distingue requisitos de títulos e información |
+| `[kinds]` | si hay un atributo que distingue requisitos de títulos e información (ver [Qué es requisito](#qué-es-requisito-kinds)) |
 
 `publish.py` comprueba que los atributos de la correspondencia existen; si no, sugiere el
 nombre más parecido. Al publicar:
-- los objetos sin ID se omiten y se cuentan;
+- los objetos sin ID se omiten y se cuentan. De un ID repetido se publica el primer objeto, y
+  `publish.py` lista los repetidos con el Absolute Number de los dos objetos, para buscarlos en
+  DOORS;
 - el padre de cada requisito es su antecesor más cercano que tenga ID;
-- un enlace a un objeto que no se ha descargado se omite y se cuenta.
+- un enlace a un objeto sin ID o que no se ha descargado se omite y se cuenta, y `publish.py`
+  dice a qué módulos sin descargar apuntan. Para publicar esos enlaces se descargan también
+  esos módulos (`--module` se puede repetir, o `--folder` con el proyecto entero); la descarga
+  es incremental.
+
+## El ID de cada objeto
+
+`[fields] id` dice de dónde sale el ID, el que se cita en documentos y código. Si es un
+atributo que solo tienen los requisitos (`"Requirement ID"`, `"unique-identifier"`), los
+títulos y la información se quedan sin ID y no se publican, y atlas pierde el capítulo de cada
+requisito. Por eso `id` admite una lista, y vale el primero que tenga cada objeto:
+
+```toml
+[fields]
+id = ["unique-identifier", "module_number"]
+```
+
+`module_number` es el nombre del módulo en atlas y el Absolute Number (`SRS_TMS-123`), y no se
+repite entre módulos. `identifier` (`SRS-123`) también vale si todos los módulos tienen prefijo
+en DOORS; sin prefijo es solo el número, y se repite. `publish.py` avisa de los requisitos que
+no tienen el primero (un requisito sin nombre todavía) y dice qué ID se les ha dado; atlas solo
+comprueba `id_pattern` en los requisitos.
+
+## Qué es requisito (`[kinds]`)
+
+Cada objeto publicado es `requirement`, `heading` o `information`. atlas indexa los
+requisitos, convierte la información en fragmentos de texto y usa los títulos como capítulo
+de los requisitos que cuelgan de ellos (`1.1 Track management`). Sin `[kinds]`, lo decide el
+contenido: un objeto con texto es requisito; uno con título y sin texto, título; el resto,
+información.
+
+Si un atributo de DOORS dice qué es cada objeto, se pone en `[kinds] attribute`, y sus valores
+en `[kinds.values]`. Los valores no distinguen mayúsculas ni espacios de más. `others` dice qué
+son los objetos con otro valor o sin valor: `requirement` (por defecto), `heading`,
+`information` o `heading_or_information`, que deja al contenido si son título o información.
+Es lo que hace falta cuando el atributo solo dice si el objeto es requisito:
+
+```toml
+[kinds]
+attribute = "is_requisite"
+others = "heading_or_information"   # lo que no es "Yes": título si tiene título y no texto; información si no
+[kinds.values]
+requirement = "Yes"
+```
+
+Con `information = "No"` en lugar de `others`, un título que diga «No» sería información y sus
+requisitos se quedarían sin capítulo. Un módulo que no tiene el atributo se clasifica por
+contenido, y `publish.py` lo avisa. El resumen de cada módulo cuenta los objetos de cada tipo
+(`4 objects (requirement 2, heading 1, information 1)`), y `publish.py` dice qué valores del
+atributo no estaban en `[kinds.values]`: sin `others` lo dice como aviso, porque esos objetos
+pasan a ser requisitos.
+
+## El módulo de enlaces de cada enlace
+
+`publish.py` saca el tipo de cada enlace (`satisfies`, `verifies`...) del nombre de su módulo
+de enlaces. La primera versión lo pedía con `module(l)`, que contra un DOORS real no compila
+(`-E-DXL: <line:53> incorrect arguments for (=)`, 2026-10-15). Ahora no se pregunta: antes del
+primer módulo de un proyecto se listan sus módulos de enlaces (los elementos de tipo «Link»,
+como se listan los formales), y cada objeto recorre sus enlaces por `o -> "*"` y, aparte, por
+cada módulo de enlaces del proyecto (`o -> "/Proyecto/Enlaces/Satisfies"`). Un enlace que sale
+en un módulo de enlaces conocido se guarda con él; uno que solo sale por `"*"` (un módulo de
+enlaces de otro proyecto) se guarda sin él, y su tipo sale de `[links] default_type`. Con
+muchos módulos de enlaces, `--no-link-module` se ahorra esos recorridos y guarda todos los
+enlaces sin tipo.
 
 ## Lo que está sin validar contra DOORS real
 
-La DXL de atributos, recorrido por cursor y módulos ya estaba comprobada en doors_kb. La
-nueva de jerarquía (`parent`, `level`) y de enlaces (`target`, `targetAbsNo`, `module(l)`)
-**no se ha podido probar sin DOORS**. Las pruebas automáticas usan un DOORS simulado que
-responde con el mismo protocolo.
+La DXL de atributos, recorrido por cursor y módulos ya estaba comprobada en doors_kb. En un
+DOORS real (2026-10-15), `--check` dio bien la jerarquía (`parent`, `level`) y los enlaces
+(`target`, `targetAbsNo`); falló `module(l)`, que ya no se usa. Lo que lo sustituye, la lista
+de módulos de enlaces del proyecto y `o -> "<módulo de enlaces>"`, **está sin probar contra
+DOORS**: las pruebas automáticas usan un DOORS simulado que responde con el mismo protocolo.
 
-`--check` prueba cada primitiva por separado sobre un módulo real y dice cuál falla. Si
-falla solo la del módulo de enlaces, `--no-link-module` descarga los enlaces sin él; en ese
-caso los tipos salen de `[links] default_type`. Con `--no-links` no se leen los enlaces.
+La descarga falló después en el mismo DOORS con `incorrect concatenated token`: el número
+absoluto se convertía con un molde al estilo de C, `(int)(o."Absolute Number")`, que venía de
+doors_kb y que DXL no tiene (toma `(int)` y lo que sigue como una concatenación). Ahora se
+asigna a un entero, `int a = o."Absolute Number"`.
+
+`--check` prueba cada primitiva por separado sobre un módulo real y dice cuál falla: también
+las dos de los módulos de enlaces. Y al final ejecuta **la DXL de la descarga misma** con un
+objeto: los atributos, la primera página y una página desde un cursor. Si todo sale OK, la
+descarga compila en ese DOORS. Si fallan las de los módulos de enlaces, `--no-link-module`
+descarga los enlaces sin su tipo (`[links] default_type`). Con `--no-links` no se leen los
+enlaces.

@@ -31,6 +31,15 @@ four rules of the original, born of real failures against DOORS, still hold:
 
 The walk is by cursor: every page goes on from object(absno, m) with next(o), instead of
 walking the module from the start and skipping objects (linear instead of quadratic cost).
+
+The link module of each link (what publish.py turns into the type of the link: satisfies,
+verifies...) is known by walking the links of each link module of the project apart,
+`for l in o -> "<link module>"`, besides `o -> "*"` for those of any other one. `module(l)`
+does not compile in every DOORS: "incorrect arguments for (=)" against a real database
+(2026-10-15). Nor does a cast in the style of C, `(int)(o."Absolute Number")` ("incorrect
+concatenated token": DXL takes `(int)` and what follows as a concatenation): an attribute
+becomes an integer by assigning it to one, `int a = o."Absolute Number"`. --check runs a page
+of the real download, one object, so that the next such surprise shows there.
 """
 from __future__ import annotations
 
@@ -143,9 +152,11 @@ if (null m) {{
 """
 
 
-def script_modules(folder: str, token: str, run_limit: int = 0) -> str:
-    """Every formal module under a folder or project, recursively (link and descriptive
-    modules hold no requirements)."""
+def script_modules(folder: str, token: str, run_limit: int = 0, kind: str = "Formal") -> str:
+    """Every module of a kind under a folder or project, recursively: "Formal" (the ones with
+    requirements) or "Link" (the link modules, whose names are the types of the links)."""
+    if kind not in ("Formal", "Link", "Descriptive"):
+        raise ValueError(f"unknown kind of module: {kind!r}")
     return _preamble(run_limit) + _HELPERS + f"""
 Buffer data = create
 int total = 0
@@ -155,7 +166,7 @@ void walk(Folder f) {{
     Item it
     for it in f do {{
         string t = type(it)
-        if (t == "Formal") {{
+        if (t == "{kind}") {{
             data += ns(fullName(it))
             total++
         }} else if (t == "Folder" || t == "Project") {{
@@ -212,34 +223,40 @@ delete b
 
 
 # Outgoing links of the object `o`: target module and Absolute Number (both without opening
-# the target module) and the link module. Not validated against DOORS when written: run
-# --check first.
-_LINKS = """    setempty(linkData)
-    int nLinks = 0
-    Link l
-    for l in o -> "*" do {{
-        ModName_ targetMod = target(l)
-        int targetAbs = targetAbsNo(l)
-        linkData += ns(fullName(targetMod))
-        linkData += nsInt(targetAbs)
-        {link_module}
+# the target module) and the link module. Every link through "*", with no link module; then
+# those of each known link module, with its name: the reader keeps a link with its link module
+# when it has one. module(l) is not used: it does not compile in every DOORS.
+# Each loop has its own names: the same declaration in two sibling blocks is not left to
+# the scoping rules of DXL, and each one is the form that --check validates.
+_LINK_LOOP = """    for l in o -> "{links}" do {{
+        ModName_ targetMod{n} = target(l)
+        int targetAbs{n} = targetAbsNo(l)
+        linkData += ns(fullName(targetMod{n}))
+        linkData += nsInt(targetAbs{n})
+        linkData += ns("{link_module}")
         nLinks++
     }}
-    data += nsInt(nLinks)
-    data += stringOf linkData
 """
-_LINK_MODULE = "ModName_ linkMod = module(l)\n        linkData += ns(fullName(linkMod))"
+
+
+def _links_block(link_modules: Sequence[str]) -> str:
+    loops = _LINK_LOOP.format(links="*", link_module="", n=0) + "".join(
+        _LINK_LOOP.format(links=escape(name), link_module=escape(name), n=i)
+        for i, name in enumerate(link_modules, start=1))
+    return ("    setempty(linkData)\n    int nLinks = 0\n    Link l\n" + loops
+            + "    data += nsInt(nLinks)\n    data += stringOf linkData\n")
 
 
 def script_page(module_path: str, attributes: Sequence[str], token: str, *, cursor: int | None = None,
                 page_size: int = 100, max_attribute_chars: int = 20_000, links: bool = True,
-                link_module: bool = True, run_limit: int = 0) -> str:
+                link_modules: Sequence[str] = (), run_limit: int = 0) -> str:
     """One page of objects from the cursor.
 
     Emits PAGE, the next cursor (empty at the end of the module) and, for every object: its
     Absolute Number, identifier, outline number, the Absolute Number of its parent (empty at
     the top), its level, the requested attributes in order and, with `links`, its outgoing
-    links. Attribute names do not travel: the order is the contract with the reader.
+    links (by the `link_modules` given, see _LINK_LOOP). Attribute names do not travel: the
+    order is the contract with the reader.
 
     An empty next cursor is the only sign that the module was walked whole, and marking the
     missing ones as deleted depends on it; that is why the objects go to a separate buffer:
@@ -255,13 +272,17 @@ Object o = null
 Object cursorObj = object({int(cursor)}, m)
 if (null cursorObj) {{
     o = first(m)
-    while (!null o && (int)(o."Absolute Number") <= {int(cursor)}) {{ o = next(o) }}
+    while (!null o) {{
+        int seenAbs = o."Absolute Number"
+        if (seenAbs > {int(cursor)}) {{ break }}
+        o = next(o)
+    }}
 }} else {{
     o = next(cursorObj)
 }}
 """
     reads = "".join(f'    data += ns(cut(o."{escape(name)}" "", {int(max_attribute_chars)}))\n' for name in attributes)
-    link_block = _LINKS.format(link_module=_LINK_MODULE if link_module else 'linkData += ns("")') if links else ""
+    link_block = _links_block(link_modules) if links else ""
     return _preamble(run_limit) + _HELPERS + _open_module(module_path, token) + position + f"""
 Buffer b = create
 Buffer data = create
@@ -273,12 +294,13 @@ while (!null o) {{
     if (emitted >= {int(page_size)}) {{ exhausted = false; break }}
     // Deleted objects and the inner cells of tables are not requirements.
     if (isDeleted(o) || table(o) || row(o) || cell(o)) {{ o = next(o); continue }}
-    last = (int)(o."Absolute Number")
+    int oAbs = o."Absolute Number"
+    last = oAbs
     data += nsInt(last)
     data += ns(identifier(o))
     data += ns(number(o))
     Object up = parent(o)
-    if (null up) {{ data += ns("") }} else {{ int upAbs = (int)(up."Absolute Number"); data += nsInt(upAbs) }}
+    if (null up) {{ data += ns("") }} else {{ int upAbs = up."Absolute Number"; data += nsInt(upAbs) }}
     int lv = level(o)
     data += nsInt(lv)
 {reads}{link_block}    emitted++
@@ -302,7 +324,7 @@ string value = "no object with outgoing links"
 bool found = false
 while (!null o && !found) {{
     Link l
-    for l in o -> "*" do {{
+    for l in o -> "{links}" do {{
         if (!found) {{
             {body}
             found = true
@@ -316,13 +338,14 @@ CHECKS: tuple[tuple[str, str, str], ...] = (
                   'string value = (null c) ? "no object with a parent" : identifier(parent(c))', "the hierarchy"),
     ("level(o)", 'Object o = first(m)\nint lv = level(o)\nstring value = lv ""', "the hierarchy"),
     ("ModName_ target(l) and fullName",
-     _LINK_PROBE.format(body="ModName_ t = target(l)\n            value = fullName(t)"), "the links (or --no-links)"),
-    ("targetAbsNo(l)", _LINK_PROBE.format(body='int a = targetAbsNo(l)\n            value = a ""'),
+     _LINK_PROBE.format(links="*", body="ModName_ t = target(l)\n            value = fullName(t)"),
      "the links (or --no-links)"),
-    ("ModName_ module(l) (link module)",
-     _LINK_PROBE.format(body="ModName_ lm = module(l)\n            value = fullName(lm)"),
-     "the link module (or --no-link-module)"),
+    ("targetAbsNo(l)", _LINK_PROBE.format(links="*", body='int a = targetAbsNo(l)\n            value = a ""'),
+     "the links (or --no-links)"),
 )
+# Checked by check() after them, with the link modules of the project: listing them, and the
+# links of one of them (o -> "<link module>"), which give the link module of each link.
+TARGET = "ModName_ t = target(l)\n            value = fullName(t)"
 
 
 def script_check(module_path: str, body: str, token: str) -> str:
@@ -411,6 +434,14 @@ def parse(raw: str, token: str) -> tuple[str, Reader]:
     return reader.text(), reader
 
 
+def _merged(links: list[Link]) -> tuple[Link, ...]:
+    """The links of an object once each: those read through a link module, with it; those
+    of "*" only when no link module gave them (a link module of another project)."""
+    typed = {(l.target_module, l.target_absolute_number) for l in links if l.link_module}
+    return tuple(dict.fromkeys(l for l in links if l.link_module
+                               or (l.target_module, l.target_absolute_number) not in typed))
+
+
 def read_page(reader: Reader, module_path: str, attributes: Sequence[str],
               links: bool = True) -> tuple[list[DoorsObject], int | None]:
     """The objects of a PAGE answer and the next cursor (None at the end of the module)."""
@@ -420,7 +451,7 @@ def read_page(reader: Reader, module_path: str, attributes: Sequence[str],
         absno, identifier, outline = reader.integer(), reader.text(), reader.text()
         parent, level = reader.optional_integer(), reader.integer()
         values = {name: reader.text() for name in attributes}
-        found = tuple(Link(reader.text(), reader.integer(), reader.text()) for _ in range(reader.integer())) \
+        found = _merged([Link(reader.text(), reader.integer(), reader.text()) for _ in range(reader.integer())]) \
             if links else ()
         objects.append(DoorsObject(module_path=module_path, absolute_number=absno, identifier=identifier,
                                    outline_number=outline, parent_absolute_number=parent, level=level,
@@ -584,10 +615,10 @@ class DoorsSession:
         return kind, reader
 
     # --- queries ------------------------------------------------------------------------
-    def modules_of(self, folder: str) -> list[str]:
-        """Full paths of every formal module under a folder or project."""
+    def modules_of(self, folder: str, kind: str = "Formal") -> list[str]:
+        """Full paths of every module of a kind ("Formal", "Link") under a folder or project."""
         token = self.new_token()
-        _, reader = self.run(script_modules(folder, token, self.run_limit), token, folder)
+        _, reader = self.run(script_modules(folder, token, self.run_limit, kind), token, folder)
         return [reader.text() for _ in range(reader.integer())]
 
     def attributes_of(self, module_path: str) -> list[tuple[str, str, bool]]:
@@ -598,16 +629,18 @@ class DoorsSession:
 
     def page(self, module_path: str, attributes: Sequence[str], *, cursor: int | None, page_size: int,
              max_attribute_chars: int, links: bool = True,
-             link_module: bool = True) -> tuple[list[DoorsObject], int | None]:
+             link_modules: Sequence[str] = ()) -> tuple[list[DoorsObject], int | None]:
         """One page of objects and the next cursor (None at the end of the module)."""
         token = self.new_token()
         _, reader = self.run(script_page(module_path, attributes, token, cursor=cursor, page_size=page_size,
                                          max_attribute_chars=max_attribute_chars, links=links,
-                                         link_module=link_module, run_limit=self.run_limit), token, module_path)
+                                         link_modules=link_modules, run_limit=self.run_limit), token, module_path)
         return read_page(reader, module_path, attributes, links)
 
     def check(self, module_path: str) -> list[tuple[str, bool, str, str]]:
-        """(primitive, ok, value or error, what depends on it) for every CHECKS entry."""
+        """(primitive, ok, value or error, what depends on it) for every CHECKS entry, and
+        then for the link modules of the project of the module: listing them, and the links of
+        the first one, which give the link module (the type) of each link."""
         results = []
         for name, body, needed_for in CHECKS:
             token = self.new_token()
@@ -617,7 +650,41 @@ class DoorsSession:
             except DoorsError as e:
                 results.append((name, False, str(e)[:300], needed_for))
                 if self.blocked:
-                    break
+                    return results
+        needed_for = "the link modules, the types of the links (or --no-link-module)"
+        root = project_root(module_path)
+        try:
+            found = self.modules_of(root, "Link")
+            results.append((f"link modules of {root}", True, f"{len(found)}: " + ", ".join(found[:3]), needed_for))
+        except DoorsError as e:
+            return results + [(f"link modules of {root}", False, str(e)[:300], needed_for)]
+        if found:
+            token = self.new_token()
+            body = _LINK_PROBE.format(links=escape(found[0]), body=TARGET)
+            try:
+                _, reader = self.run(script_check(module_path, body, token), token, module_path)
+                results.append((f'o -> "{found[0]}"', True, reader.text(), needed_for))
+            except DoorsError as e:
+                results.append((f'o -> "{found[0]}"', False, str(e)[:300], needed_for))
+        return results + self._check_download(module_path, found)
+
+    def _check_download(self, module_path: str, link_modules: Sequence[str]) -> list[tuple[str, bool, str, str]]:
+        """The DXL of the download itself, on one object: the attributes, the first page and
+        a page from a cursor. Every line of those scripts compiles in this DOORS, or the error
+        shows here and not halfway through a large module."""
+        needed_for, results = "the download", []
+        try:
+            attributes = _choose_attributes(self.attributes_of(module_path), module_path, Options())
+            objects, _ = self.page(module_path, attributes, cursor=None, page_size=1, max_attribute_chars=200,
+                                   link_modules=link_modules)
+            results.append(("a page of the download", True, f"{len(objects)} object, {len(attributes)} attributes",
+                            needed_for))
+            if objects:
+                self.page(module_path, attributes, cursor=objects[0].absolute_number, page_size=1,
+                          max_attribute_chars=200, link_modules=link_modules)
+                results.append(("a page from a cursor", True, f"after {objects[0].absolute_number}", needed_for))
+        except DoorsError as e:
+            results.append(("a page of the download", False, str(e)[:300], needed_for))
         return results
 
 
@@ -635,7 +702,13 @@ class Options:
     link_module: bool = True
 
 
-def download_module(session: DoorsSession, store: RawStore, module_path: str, options: Options) -> Stats:
+def project_root(module_path: str) -> str:
+    """The project (or top folder) of a module: its first part, "/Project" of "/Project/Req/SRS"."""
+    return "/" + module_path.strip("/").split("/", 1)[0]
+
+
+def download_module(session: DoorsSession, store: RawStore, module_path: str, options: Options,
+                    link_modules: Sequence[str] = ()) -> Stats:
     """Downloads a whole module to the raw copy and returns its statistics. The order of
     the steps matters:
 
@@ -658,7 +731,7 @@ def download_module(session: DoorsSession, store: RawStore, module_path: str, op
         while True:
             objects, cursor = session.page(module_path, attributes, cursor=cursor, page_size=options.page_size,
                                            max_attribute_chars=options.max_attribute_chars, links=options.links,
-                                           link_module=options.link_module)
+                                           link_modules=link_modules)
             with store.transaction():
                 for obj in objects:
                     seen.append(obj.absolute_number)
@@ -706,12 +779,24 @@ def download(module_paths: Sequence[str], db_path: str, session: DoorsSession, o
     """Downloads several modules; the failure of one does not stop the others (a module the
     user cannot read is normal in a large project). What was saved of the previous modules
     is consistent, because every page was committed in its own transaction."""
-    results = []
+    results, link_modules = [], {}
     with RawStore(db_path) as store:
         for n, module_path in enumerate(module_paths, start=1):
             log.info("[%d/%d] Downloading %s", n, len(module_paths), module_path)
+            root = project_root(module_path)
+            if options.links and options.link_module and root not in link_modules:
+                try:
+                    link_modules[root] = session.modules_of(root, "Link")
+                    log.info("%s: %d link modules", root, len(link_modules[root]))
+                except DoorsError as e:            # the links are read anyway, without their type
+                    log.warning("%s: the link modules could not be listed, the links go without their type: %s",
+                                root, e)
+                    link_modules[root] = []
+                    if session.blocked:
+                        results.append(Stats(module_path=module_path, error=str(e)))
+                        break
             try:
-                stats = download_module(session, store, module_path, options)
+                stats = download_module(session, store, module_path, options, link_modules.get(root, ()))
             except DoorsError as e:
                 log.error("%s: %s", module_path, e)
                 results.append(Stats(module_path=module_path, error=str(e)))
@@ -746,7 +831,8 @@ def _arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
                         help="also the system attributes (Created By, Last Modified On...)")
     parser.add_argument("--no-links", action="store_true", help="do not read the outgoing links")
     parser.add_argument("--no-link-module", action="store_true",
-                        help="read the links without their link module (if --check says module(l) fails)")
+                        help="read the links without their link module, which gives their type (faster with "
+                             "many link modules)")
     parser.add_argument("--page", type=int, default=100, help="objects per DXL call")
     parser.add_argument("--max-attribute-chars", type=int, default=20_000,
                         help="limit of characters per attribute; the rest is cut with a mark")

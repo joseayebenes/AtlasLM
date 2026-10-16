@@ -50,8 +50,10 @@ def test_same_result_as_pdf_struct(name, legacy, docs_samples, tmp_path, fake):
     old = ps.procesar(docs_samples / name, tmp_path / "old", lang="Spanish", min_chars=1000,
                       llm_cfg=cx.ServiceConfig(base_url=url, model="fake", api_key="x", net=cx.NetConfig(**net)))
     from atlas.llm import NetConfig, ServiceConfig
+    # pdf_struct.py reads PDFs with markitdown: the comparison is of what was migrated, with the same text
     new = process_document(docs_samples / name, tmp_path / "new", DocsOptions(lang="Spanish", min_chars=1000),
-                           llm=ServiceConfig(base_url=url, model="fake", api_key="x", net=NetConfig(**net)))
+                           llm=ServiceConfig(base_url=url, model="fake", api_key="x", net=NetConfig(**net)),
+                           disabled=["extractor:pymupdf"])
     old = _english(old)
     assert {k: new[k] for k in KEYS} == {k: old[k] for k in KEYS}
     assert [{k: s[k] for k in SECTION_KEYS} for s in new["sections"]] == \

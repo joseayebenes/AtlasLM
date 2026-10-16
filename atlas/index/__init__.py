@@ -1,7 +1,7 @@
 """Index and hybrid search over the documents (legacy/doc_rag.py).
 
-    records.py      search records of a document (overview, sections, chunks, requirements...)
-                    and of a DOORS module (its requirements)
+    records.py      search records of a document (overview, sections, chunks, requirements...),
+                    of a DOORS module (its requirements) and of a code unit (its elements)
     embeddings.py   Embedder: vectors through the [embeddings] connection
     store.py        IndexStore: records, vectors, FTS5 and embeddings cache in atlas.db
     search.py       hybrid search (IDs + vectors + BM25, merged with RRF) and cited answers
@@ -10,9 +10,10 @@
     from atlas.index import Index
     idx = Index.from_config(cfg)                    # the atlas.db of the workspace
     idx.embed_missing(texts, workers=4)             # optional: many documents' texts in full batches
-    hits = idx.search("track deletion latency", k=8)
+    hits = idx.search("track deletion latency")     # [search] results, per_document
     res = idx.answer("How long does a track take to be deleted?")
     print(res["answer"], [s["cite"] for s in res["sources"]])
+    idx.answer("Summarise the track management requirements", scope="whole")   # whole documents
 """
 from __future__ import annotations
 
@@ -26,17 +27,18 @@ from typing import Iterable
 import numpy as np
 
 from atlas.index.embeddings import Embedder
-from atlas.index.records import DOORS_PREFIX, KINDS, build_records, chunk_text, requirement_records
-from atlas.index.search import answer, build_context, cite, search
+from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
+                                  requirement_records)
+from atlas.index.search import answer, answer_whole, build_context, cite, search
 from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer", "build_context",
-           "build_records", "chunk_text", "cite", "embed_missing", "index_document", "index_module",
-           "requirement_records", "search"]
+__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
+           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "embed_missing",
+           "index_code", "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +67,17 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": f"{module} (DOORS)", "out_dir": "",
                                                      "overview": {"summary": summary}})
+
+
+def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dict], sources: dict[str, str],
+               tests: Iterable[str] = (), chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+    """Indexes a code unit (its files, as code.parse leaves them; see code_records) as one
+    more document, "code:<unit>". Same batches, cache and result as index_document."""
+    records = code_records(unit, parts, sources, tests, chunk_chars, kinds)
+    files = ", ".join(sorted(p["file"] for p in parts))
+    return _index_records(store, embedder, records, {"doc": CODE_PREFIX + unit, "name": unit,
+                                                     "title": f"{unit} (code)", "out_dir": "",
+                                                     "overview": {"summary": f"code unit {unit}: {files}"}})
 
 
 def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
@@ -143,20 +156,25 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
 
 class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
-    (`llm`) is only needed to rewrite queries and to answer, and it is created on first use."""
+    (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
+    `settings` are those of [search] (results, per_document, context_chars, scope,
+    scope_chars); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None):
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
+        from atlas.config import DEFAULTS
         self.store = IndexStore(db)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
+        self.settings = {**DEFAULTS["search"], **(settings or {})}
 
     @classmethod
     def from_config(cls, cfg) -> "Index":
-        """The index of <workspace>/atlas.db with the [embeddings] and [llm] of atlas.toml."""
+        """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
+        atlas.toml."""
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm)
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
 
     @property
     def llm(self) -> JsonLlm:
@@ -174,6 +192,11 @@ class Index:
         """See index_module."""
         return index_module(self.store, self.embedder, module, requirements, kinds)
 
+    def add_code(self, unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
+                 chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+        """See index_code."""
+        return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds)
+
     def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
         """See embed_missing."""
         return embed_missing(self.store, self.embedder, texts, workers)
@@ -184,12 +207,19 @@ class Index:
     def documents(self) -> list[dict]:
         return self.store.documents()
 
-    def search(self, query: str, k: int = 8, document: str = "", kinds: list[str] | None = None,
-               rewrite: bool = False) -> list[dict]:
-        return search(self.store, self.embedder, query, k, document, kinds, self.llm if rewrite else None)
+    def search(self, query: str, k: int = 0, document: str = "", kinds: list[str] | None = None,
+               rewrite: bool = False, dense: bool = True, per_document: int | None = None) -> list[dict]:
+        """k = 0 and per_document = None: those of the settings."""
+        per = self.settings["per_document"] if per_document is None else per_document
+        return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
+                      self.llm if rewrite else None, dense, per)
 
-    def answer(self, question: str, k: int = 8, document: str = "", rewrite: bool = True) -> dict:
-        return answer(self.store, self.embedder, self.llm, question, k, document, rewrite)
+    def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
+               kinds: list[str] | None = None, scope: str = "") -> dict:
+        """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
+        s = self.settings
+        return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

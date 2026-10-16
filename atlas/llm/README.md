@@ -8,6 +8,7 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 |---|---|
 | `connection.py` | configuración de red, cliente OpenAI con proxy, TLS, límites y reintentos, diagnóstico de errores, `atlas check` y los contadores de uso |
 | `structured.py` | `JsonLlm`: pedir un objeto JSON y recuperarlo aunque el modelo lo envuelva, lo corte o lo rompa |
+| `probe.py` | `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas |
 
 ## Conexión
 
@@ -18,19 +19,39 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
   sistema);
 - respeta el límite de peticiones y de tokens por minuto, repartiendo las peticiones en el
   tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave;
-- con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*` o espera creciente) hasta
+- con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*`, cuyo `reset` puede venir en
+  segundos o en milisegundos, o espera creciente) hasta
   `rate_limit_max_wait`, sin contarlo como reintento; si es adaptativo, baja el ritmo un
   30 % y lo recupera poco a poco;
 - reintenta los 5xx y los fallos de conexión puntuales, pero no los de certificado.
 
 `diagnose(e)` convierte los errores típicos de una red corporativa (certificado, proxy con
-autenticación, TLS mutuo, credenciales, URL sin `/v1`) en una indicación concreta, y
-`is_connection_error(e)` dice cuáles hacen inútil seguir: el motor los trata como fatales.
+autenticación, TLS mutuo, credenciales, URL sin `/v1`) y la falta de crédito (402) en una
+indicación concreta, con lo que diga el servidor (y, en OpenRouter, el proveedor), y `is_connection_error(e)` dice cuáles
+hacen inútil seguir: el motor los trata como fatales.
 
 `atlas check atlas.toml` hace una petición real al chat y otra a los embeddings y muestra la
 configuración efectiva con las claves enmascaradas. Reconoce los modelos que razonan: dice
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
 razonando sin contestar.
+
+`atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
+(`[llm] reasoning_effort`, o `low` si está vacío o es `none`):
+1. una pregunta que necesita una herramienta: el modelo tiene que llamarla con los argumentos
+   correctos;
+2. el resultado de la herramienta: tiene que contestar con él;
+3. la misma petición sin el razonamiento de la primera vuelta: si el servidor da los tokens
+   del prompt, la diferencia dice si vuelve a meter el razonamiento que atlas le devuelve en
+   `[llm] reasoning_field`. Si no lo aprovecha, propone el otro campo.
+
+Sirve para comprobar el gateway: las primeras plantillas de chat de gemma 4 cerraban el turno
+a mitad de una llamada a herramienta, y OpenCode entraba en bucles. Con `gemma-4-26b` en
+OpenRouter (2026-10-15): llama a la herramienta en 2 s, contesta con el resultado y el servidor
+mete el razonamiento en el prompt (222 tokens con él, 149 sin él).
+
+`[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
+agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no
+tiene, como `provider` en OpenRouter o `chat_template_kwargs` en vLLM.
 
 ## Respuestas en JSON
 

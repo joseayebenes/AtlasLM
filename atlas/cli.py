@@ -974,7 +974,10 @@ def evaluate(cfg: Config) -> int:
 
 
 def check(cfg: Config) -> int:
+    from atlas.config import unset_hint
     from atlas.llm import check as check_connection, from_config
+    if cfg.unset:
+        print(f"WARNING {unset_hint(cfg)}", file=sys.stderr)
     return check_connection(from_config(cfg))
 
 

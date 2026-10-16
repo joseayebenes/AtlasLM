@@ -93,9 +93,17 @@ VS Code (`.vscode/mcp.json`):
 ```
 
 En Windows, el ejecutable es `<entorno>\Scripts\atlas.exe` (ver la
-[guía de instalación](../../docs/instalacion.md)). Si `atlas.toml` lee secretos del
-entorno (`${ATLAS_API_KEY}`), el servidor los hereda del editor; si no, se pasan con
-`environment` en OpenCode o con `env` o `envFile` en VS Code.
+[guía de instalación](../../docs/instalacion.md)).
+
+El servidor recibe el entorno del cliente, no el de la terminal. Si `atlas.toml` lee el
+proxy o la clave del entorno (`${HTTPS_PROXY}`, `${ATLAS_API_KEY}`), el cliente tiene que
+tenerlos: un editor abierto antes del `setx` hay que reiniciarlo, y los clientes hechos con
+la librería de MCP (Claude Desktop, el `McpToolset` de ADK) solo pasan `PATH` y pocas más.
+Se dan con `environment` en OpenCode, con `env` o `envFile` en VS Code y con `env` en los
+demás. Al arrancar, el servidor escribe en su registro cómo llega al modelo (con proxy o
+sin él) y qué variables de `atlas.toml` no tiene; las herramientas que usan el modelo las
+añaden a su error. Ver [el entorno del
+servidor](../../docs/instalacion.md#el-entorno-del-servidor-proxy-y-clave).
 
 ## Como librería
 

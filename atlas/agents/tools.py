@@ -57,14 +57,14 @@ class AgentTools:
         import openai
         from atlas.agents.verify import verify
         from atlas.index import Index
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         g = self.graph.graph()
         if g is None:
             return {"error": NO_GRAPH}
         try:
             return verify(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
     def link_requirement(self, req_id: str) -> dict:
         """The code elements that may implement a requirement, proposed by the agent
@@ -74,14 +74,14 @@ class AgentTools:
         import openai
         from atlas.agents.link import link
         from atlas.index import Index
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         g = self.graph.graph()
         if g is None:
             return {"error": NO_GRAPH}
         try:
             return link(req_id, self.cfg, graph=g, index=Index.from_config(self.cfg))
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
 
     def check_compliance(self, req_id: str) -> dict:
@@ -92,14 +92,14 @@ class AgentTools:
         inspection, not a proof. Asks the model: slower than trace."""
         import openai
         from atlas.agents.comply import comply
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         g = self.graph.graph()
         if g is None:
             return {"error": NO_GRAPH}
         try:
             return comply(req_id, self.cfg, graph=g)
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
     def ask_atlas(self, question: str) -> dict:
         """Asks the assistant of atlas, an agent that answers from the documents, the DOORS
@@ -108,13 +108,13 @@ class AgentTools:
         called."""
         import openai
         from atlas.agents.runtime import run_agent
-        from atlas.llm.connection import diagnose
+        from atlas.llm import model_failed
         try:
             return run_agent("assistant", question, self.cfg, self.context)
         except ImportError as e:
             return {"error": str(e)}
         except openai.APIError as e:
-            return {"error": f"the model server failed: {diagnose(e)}"}
+            return model_failed(e, self.cfg)
 
 
 register_methods(AgentTools, TOOL_NAMES)

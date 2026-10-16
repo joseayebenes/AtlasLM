@@ -92,6 +92,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   se publican. El resumen separa esos enlaces de los que van a objetos sin ID o borrados.
 
 ### Corregido
+- `atlas serve` sin el proxy del entorno: el cliente MCP arranca el servidor con su entorno, no
+  con el de la terminal (los hechos con la librería de MCP, como Claude Desktop o ADK, solo
+  pasan `PATH` y pocas más), y `${HTTPS_PROXY:-}` quedaba vacío sin decir nada. Al arrancar,
+  el servidor escribe en su registro cómo llega al modelo (con el proxy o sin él) y qué
+  variables de `atlas.toml` no tiene; las herramientas que usan el modelo y `atlas check` las
+  nombran en su error. La guía de instalación explica cómo pasarlas a cada cliente.
 - `tools/doors_export`: el módulo de enlaces de cada enlace (de donde sale su tipo) ya no se
   pide con `module(l)`, que contra un DOORS real no compila (`incorrect arguments for (=)` en
   `--check`). Se listan los módulos de enlaces del proyecto y cada objeto recorre sus enlaces

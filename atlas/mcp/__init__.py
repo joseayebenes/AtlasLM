@@ -171,4 +171,19 @@ def serve(cfg: Config, context: Any = None) -> None:
                     cfg.workspace, cfg.path.name)
     else:
         log.info("data: %s", counts)
+    _log_connection(cfg)
     server.run("stdio")
+
+
+def _log_connection(cfg: Config) -> None:
+    """How the server reaches the model, and the variables of the configuration that the
+    client did not pass: it starts atlas with its own environment, not that of a terminal."""
+    from atlas.config import unset_hint
+    from atlas.llm import effective_proxy, from_config, mask_credentials
+    conn = from_config(cfg)
+    for name, service in (("model", conn.llm), ("embeddings", conn.embeddings)):
+        proxy = effective_proxy(service)
+        log.info("%s: %s %s", name, mask_credentials(service.base_url),
+                 f"through the proxy {mask_credentials(proxy)}" if proxy else "without proxy")
+    if cfg.unset:
+        log.warning(unset_hint(cfg))

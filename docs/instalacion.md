@@ -179,9 +179,33 @@ VS Code (`.vscode/mcp.json`):
 }
 ```
 
-El servidor hereda el entorno del editor, `ATLAS_API_KEY` incluida. Si el editor se abrió
-antes del `setx`, hay que reiniciarlo; o pasar la variable con `environment` en OpenCode o
-con `env` o `envFile` en VS Code.
+### El entorno del servidor: proxy y clave
+
+El editor arranca `atlas serve` con su entorno, no con el de la terminal. Por eso
+`atlas check` puede funcionar en PowerShell y el servidor no tener el proxy ni la clave:
+
+- `$env:HTTPS_PROXY = "..."` solo vale en esa ventana de PowerShell, y lo que hay en el
+  `$PROFILE`, solo en PowerShell. Para los demás programas: `setx HTTPS_PROXY "..."` (o
+  «Editar las variables de entorno de esta cuenta») y reiniciar el editor, cerrando todas
+  sus ventanas. Abrir el editor desde esa PowerShell (`code .`, `opencode`) también le da
+  sus variables.
+- Los clientes hechos con la librería de MCP (Claude Desktop, el `McpToolset` de ADK o un
+  script con `stdio_client`) solo pasan unas pocas variables: `PATH`, `USERPROFILE`,
+  `APPDATA`, `TEMP` y alguna más. El proxy, su usuario y contraseña y la clave hay que
+  dárselos en `env`, aunque estén en el entorno.
+- En OpenCode van en `environment` y en VS Code en `env` o `envFile`. Con `envFile` las
+  contraseñas no se escriben en `.vscode/mcp.json`: van en un fichero fuera del repositorio.
+
+Al arrancar, el servidor escribe en su registro (en VS Code, en la salida «MCP: atlas»)
+cómo llega al modelo y qué variables de `atlas.toml` no tiene:
+
+```text
+INFO atlas.mcp: model: https://gateway.empresa/v1 without proxy
+WARNING atlas.mcp: HTTPS_PROXY of atlas.toml not set in the environment of atlas. ...
+```
+
+Las herramientas que usan el modelo (`search`, `ask_docs`, `ask_atlas`...) añaden esas
+variables al error que devuelven, y `atlas check` también las nombra.
 
 ## Actualizar y desinstalar
 

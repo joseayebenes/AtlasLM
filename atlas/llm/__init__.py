@@ -10,9 +10,17 @@ from dataclasses import fields, replace
 
 from atlas.llm.connection import (  # noqa: F401
     Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
-    is_connection_error, mask_credentials, rate_limiter_for, show, usage,
+    effective_proxy, is_connection_error, mask_credentials, rate_limiter_for, show, usage,
 )
 from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json  # noqa: F401
+
+
+def model_failed(e: BaseException, cfg=None) -> dict:
+    """What a tool answers when the model server fails: the diagnosis and, if the
+    configuration reads variables this process lacks (the proxy, the key), which ones."""
+    from atlas.config import unset_hint
+    hint = unset_hint(cfg) if cfg is not None else ""
+    return {"error": f"the model server failed: {diagnose(e)}" + (f". {hint}" if hint else "")}
 
 
 def from_config(cfg) -> Connection:

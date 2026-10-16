@@ -29,7 +29,7 @@ import openai
 
 from atlas.index.records import DOORS_PREFIX, KINDS
 from atlas.index.search import cite
-from atlas.llm.connection import diagnose
+from atlas.llm import model_failed
 from atlas.plugins import register_methods
 from atlas.store import Store
 
@@ -43,10 +43,6 @@ TOOL_NAMES = ("list_documents", "search", "get_section", "get_requirement", "ask
 MAX_RESULTS = 20            # results of a search
 MAX_SUMMARY_CHARS = 500     # characters of the summary of a document in list_documents
 MAX_SECTION_CHARS = 20000   # characters of a section
-
-
-def _failed(e: openai.APIError) -> dict:
-    return {"error": f"the model server failed: {diagnose(e)}"}
 
 
 def _heading(f: Path) -> dict:
@@ -78,15 +74,16 @@ def _asks_for(wanted: str, title: str) -> bool:
 
 
 class DocTools:
-    def __init__(self, index: "Index", store: Store | None = None):
+    def __init__(self, index: "Index", store: Store | None = None, cfg=None):
         self.index = index
         self.store = store          # the requirements read from DOORS (atlas.db)
+        self.cfg = cfg              # for the variables it lacks, when the model fails
 
     @classmethod
     def from_config(cls, cfg, store: Store | None = None) -> "DocTools":
         """Over the atlas.db of the workspace, with the [embeddings] and [llm] of atlas.toml."""
         from atlas.index import Index
-        return cls(Index.from_config(cfg), store or Store(cfg.workspace))
+        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg)
 
     @classmethod
     def for_context(cls, context: Any) -> "DocTools":
@@ -124,7 +121,7 @@ class DocTools:
             hits = self.index.search(query, k=max(1, min(k, MAX_RESULTS)), document=document,
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
-            return _failed(e)
+            return model_failed(e, self.cfg)
         return {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
                              "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
 
@@ -182,7 +179,7 @@ class DocTools:
         try:
             return self.index.answer(question, document=document)
         except openai.APIError as e:
-            return _failed(e)
+            return model_failed(e, self.cfg)
 
 
 register_methods(DocTools, TOOL_NAMES)

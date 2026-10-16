@@ -8,6 +8,8 @@
   changing a password reprocesses nothing, and no hash of it is stored.
 - Secrets come from the environment: an API key for a server that is not local, or a
   password in a proxy URL or in an ODBC DSN, written as is in the file is an error.
+- `Config.unset` names the ${VAR} that expanded to nothing, because this process does not
+  have them: a program that starts atlas (an MCP client) may not pass the terminal's.
 """
 
 from __future__ import annotations
@@ -44,6 +46,27 @@ def _expand(v: Any) -> Any:
     if isinstance(v, list):
         return [_expand(x) for x in v]
     return v
+
+
+def unset_variables(v: Any) -> list[str]:
+    """The ${VAR} of `v` (the TOML before expanding) that expand to nothing: not set, or
+    empty, in the environment, and without a default value."""
+    if isinstance(v, str):
+        return [m.group(1) for m in _VAR.finditer(v) if not os.environ.get(m.group(1)) and not m.group(2)]
+    if isinstance(v, (dict, list)):
+        names = [n for x in (v.values() if isinstance(v, dict) else v) for n in unset_variables(x)]
+        return list(dict.fromkeys(names))
+    return []
+
+
+def unset_hint(cfg: "Config") -> str:
+    """Which ${VAR} of the configuration this process lacks, and where to give them; "" if
+    none."""
+    if not getattr(cfg, "unset", None):
+        return ""
+    return (f"{', '.join(cfg.unset)} of {cfg.path.name} not set in the environment of atlas. A program "
+            "that starts atlas, such as an MCP client, gives it its own environment, not that of the "
+            "terminal: pass them in its configuration (env; environment in OpenCode)")
 
 
 # Schema: section -> {key: type | "any"}. "list" = list, "dict" = free nested table.
@@ -154,6 +177,7 @@ class Config:
 
     path: Path
     data: dict = field(default_factory=dict)
+    unset: list[str] = field(default_factory=list)      # ${VAR} of the file this process lacks
 
     def __getitem__(self, section: str) -> Any:
         return self.data[section]
@@ -261,4 +285,4 @@ def load_config(path: str | Path) -> Config:
     for section, defaults in DEFAULTS.items():
         data[section] = {**defaults, **data.get(section, {})}
     data.setdefault("sources", {})
-    return Config(path=path, data=data)
+    return Config(path=path, data=data, unset=unset_variables(raw))

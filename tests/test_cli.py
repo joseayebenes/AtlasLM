@@ -165,8 +165,9 @@ patterns = ["*.md"]
     out = capsys.readouterr().out
     assert e.value.code == 0 and "[2]" in out and "[3]" not in out and out.count("(requirement)") == 2
     with pytest.raises(SystemExit) as e:
-        main(["ask", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
-    assert e.value.code == 0 and "hmi_manual.md › 2 Alarms" in capsys.readouterr().out
+        main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
     for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
                         (["search", "x", "--whole"], "unknown option --whole"),
                         (["ask", "x", "--k", "many"], "--k must be an integer"),

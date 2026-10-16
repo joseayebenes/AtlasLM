@@ -7,8 +7,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
-- `[search]`: `results` (cuántos resultados, 8), `per_document` y `context_chars`. Cambiarlo
-  no reprocesa nada.
+- Preguntas amplias en `atlas ask` y `ask_docs`: al reescribir la pregunta, el modelo dice si
+  necesita mucho de un documento (un resumen, una función entera, todos los requisitos de
+  algo) y de cuáles trata. Entonces se leen enteros, sección a sección: en una petición si
+  caben en `[search] scope_chars` y, si no, por partes cuyas notas junta una última petición.
+  Antes llegaban al modelo 8 pasajes: en las muestras, 8 de los 40 requisitos de SRS_TMS.
+  `--whole` (o `whole` en `ask_docs`) los lee enteros siempre.
+- `[search]`: `results` (cuántos resultados, 8), `per_document`, `context_chars`, `scope` y
+  `scope_chars`. Cambiarlo no reprocesa nada.
 - `atlas search` y `atlas ask` aceptan `--k`, `--kind` y `--document`, como la herramienta
   `search`.
 - `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas (una

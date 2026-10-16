@@ -221,6 +221,62 @@ def test_search_keeps_a_few_hits_of_each_document(docs, tmp_path, fake_llm, fake
         == {"spec_with_bookmarks.pdf"}                                       # one document: no limit
 
 
+def test_whole_sources_follow_the_document(docs, tmp_path, fake_llm, fake_embeddings):
+    from atlas.index import requirement_records  # noqa: F401
+    from atlas.index.records import reflow
+    from atlas.index.search import whole_sources
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    data = docs["spec_with_bookmarks.pdf"]
+    idx.add_document(data, doc="test:spec", name="spec.pdf", out_dir=data["out_dir"], chunk_chars=300,
+                     chunk_overlap=80)
+    sources = whole_sources(idx.store, "test:spec")
+    bodies = [s for s in data["sections"] if s.get("body", "").strip()]
+    assert [s["section_id"] for s in sources] == [s["id"] for s in bodies]
+    for source, section in zip(sources, bodies):                   # the whole text, without the overlaps
+        assert " ".join(source["context"].split()) == " ".join(reflow(section["body"]).split())
+    assert sources[0]["kind"] == "section" and sources[0]["page_start"] >= 1
+
+    idx.add_module("SRS_TMS", MODULE)                              # a module: requirements in its order
+    module = whole_sources(idx.store, "doors:SRS_TMS")
+    assert [s["section_title"] for s in module] == ["1.1 Deletion", ""]
+    assert module[0]["context"].splitlines() == ["SRS-0004: The TMF shall delete a lost track within 320 ms.",
+                                                 "SRS-0005: Deleted tracks shall be logged.",
+                                                 "A track is lost after three missed scans."]
+
+
+def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE)
+
+    before = fake_chats()
+    res = idx.answer("When does the HMI raise an alarm?")                  # a specific question: passages
+    assert res["scope"] == "passages" and res["requests"] == 2 == fake_chats() - before
+
+    before = fake_chats()
+    res = idx.answer("Summarise all the requirements of SRS_TMS")        # broad, and it names the module
+    assert (res["scope"], res["documents"], res["requests"]) == ("whole", ["SRS_TMS"], 2)
+    assert fake_chats() - before == 2                                    # the rewriting and one answer
+    assert res["answer"] == "Answer taken from the sources [1]." and res["sources"][0]["cite"] == \
+        "SRS_TMS › 1.1 Deletion (section)" and res["sources"][0]["excerpt"].startswith("SRS-0004: The TMF")
+
+    res = idx.answer("Explain the alarms")                               # broad, no name: those of its hits
+    assert res["scope"] == "whole" and "hmi_manual.md" in res["documents"]
+    assert idx.answer("When does the HMI raise an alarm?", document="hmi_manual.md",
+                      scope="whole")["documents"] == ["hmi_manual.md"]
+    assert idx.answer("Explain the alarms", scope="passages")["scope"] == "passages"
+
+    # too long for one request: notes of each part, combined by a last request
+    small = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500})
+    before = fake_chats()
+    res = small.answer("Summarise everything spec_with_bookmarks.pdf says")
+    parts = res["requests"] - 2
+    assert res["documents"] == ["spec_with_bookmarks.pdf"] and parts > 2 and fake_chats() - before == parts + 2
+    assert res["answer"].startswith("Answer combined from the notes [1]") and len(res["sources"]) > 2
+    assert [s["n"] for s in res["sources"]] == sorted(s["n"] for s in res["sources"])
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

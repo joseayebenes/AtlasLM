@@ -75,6 +75,28 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
 pide responder solo con esas fuentes y citándolas como `[n]`.
 
+## Preguntas amplias
+
+Ocho pasajes no bastan para «resume los requisitos de SRS_TMS» o «explica cómo funciona el
+registro»: en las muestras, la primera pasaba al modelo 8 de los 40 requisitos del módulo, y
+la respuesta parecía completa sin serlo. Por eso, al reescribir la pregunta, el modelo dice
+también si es amplia (un resumen, una función o un capítulo enteros, todos los requisitos o
+valores de algo) y de qué documentos o módulos trata, de la lista de los indexados. Si es
+amplia, `atlas ask` lee esos documentos enteros. Si no nombra ninguno, lee los que más
+salen en su búsqueda: hasta tres, con al menos la mitad de resultados que el primero, y
+nunca unidades de código:
+
+- cada sección es una fuente: el texto de sus fragmentos sin el solape; en un módulo de
+  DOORS, sus requisitos y objetos de información en su orden;
+- si caben en `[search] scope_chars` (100 000 caracteres), una sola petición;
+- si no, por partes de ese tamaño, a la vez: de cada una, el modelo toma notas de todo lo
+  que importa a la pregunta, con sus citas, y una última petición las junta en la
+  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones.
+
+Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se leyó
+(`passages` o `whole`). `--whole` (o `whole` en `ask_docs`) lee enteros los documentos aunque
+la pregunta no parezca amplia, y `[search] scope = "passages"` no los lee nunca.
+
 Un proceso que vive mucho (el servidor MCP) ve lo que indexa otro: los vectores se vuelven
 a leer cuando cambia la base.
 
@@ -99,7 +121,8 @@ from atlas.config import load_config
 from atlas.index import Index
 idx = Index.from_config(load_config("atlas.dev.toml"))
 hits = idx.search("alarm latency", k=8, kinds=["requirement"])
-res = idx.answer("When does the HMI raise an alarm?")      # {"answer": ..., "sources": [...]}
+res = idx.answer("When does the HMI raise an alarm?")      # {"answer", "sources", "scope", ...}
+res = idx.answer("Summarise SRS_TMS", scope="whole")       # el módulo entero, por partes si no cabe
 idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lotes llenos
 ```
 
@@ -108,5 +131,6 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS, límite por documento), `tests/test_cli.py` (pasos de `atlas
+documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas amplias
+en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

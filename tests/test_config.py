@@ -56,7 +56,9 @@ def test_unknown_key_fails_with_context(toml):
 
 def test_search_settings(toml):
     cfg = load_config(toml('[search]\nresults = 12'))
-    assert cfg["search"]["results"] == 12 and cfg["search"]["per_document"] == 3       # the rest by default
+    assert cfg["search"]["results"] == 12 and cfg["search"]["scope"] == "auto"          # the rest by default
+    with pytest.raises(ConfigError, match="scope must be one of auto, passages, whole"):
+        load_config(toml('[search]\nscope = "all"'))
     with pytest.raises(ConfigError, match="'results' must be at least 1"):
         load_config(toml('[search]\nresults = 0'))
     # what search and ask take changes nothing of the index

@@ -17,8 +17,8 @@
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
                    [--k N] [--kind KIND] [--document NAME]
-    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations
-                   [--k N] [--kind KIND] [--document NAME]
+    atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
+                   [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -851,11 +851,11 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str}}
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
-    """The positional arguments and the --options of an action ({"k": 5, "kind": "requirement"})."""
+    """The positional arguments and the --options of an action ({"k": 5, "whole": True})."""
     allowed, positional, options = OPTIONS.get(action, {}), [], {}
     it = iter(args)
     for arg in it:
@@ -900,16 +900,19 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
     return 0
 
 
-def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "") -> int:
+def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
     from atlas.index import Index
     kinds = _kinds(kind)
     _context(cfg)
-    res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds)
+    res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
+                                        scope="whole" if whole else "")
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")
     for s in res["sources"]:
         print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+    if res["scope"] == "whole":
+        print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
     return 0
 
 

@@ -18,7 +18,10 @@ The control file is re-read on every request; keys:
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
 GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
-questions with sources ("Sources: ...") get an answer that cites [1].
+questions with sources ("Sources: ...") get an answer that cites their first source, and
+notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
+calls it broad if it says all, every, explain or summarise, and gives the listed documents
+it names.
 """
 import argparse, json, re, hashlib, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -76,9 +79,16 @@ class H(BaseHTTPRequestHandler):
         elif "Reply with: ok" in user:
             content = "ok"
         elif user.startswith("Sources:"):
-            content = "Answer taken from the sources [1]."
+            first = re.search(r"^\[(\d+)\]", user, re.M)
+            content = "Answer taken from the sources [%s]." % (first[1] if first else 1)
+        elif user.startswith("Notes:"):
+            content = "Answer combined from the notes " + "".join(dict.fromkeys(re.findall(r"\[\d+\]", user))) + "."
         elif "search queries" in (body["messages"][0]["content"] if body["messages"] else ""):
-            content = json.dumps({"queries": [user[:60]], "keywords": []})
+            question = user.split("Question: ")[-1]
+            listed = re.findall(r"^- (.+?): ", user, re.M) if user.startswith("Documents:") else []
+            content = json.dumps({"queries": [question[:60]], "keywords": [],
+                                  "broad": bool(re.search(r"\b(all|every|explain|summari[sz]e)\b", question, re.I)),
+                                  "documents": [n for n in listed if n.lower() in question.lower()]})
         else:
             content = json.dumps({"summary": "Overall.", "purpose": "p", "scope": "s", "main_topics": ["t"]})
         message, finish = {"role": "assistant", "content": content}, "length" if cut else "stop"

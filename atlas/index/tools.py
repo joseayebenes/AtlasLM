@@ -6,7 +6,8 @@
     get_section       the Markdown of a section
     get_requirement   a requirement by its ID: its official text (DOORS) and the documents
                       that state it
-    ask_docs          an answer written only from the documents, citing them
+    ask_docs          an answer written only from the documents, citing them; a broad
+                      question (or whole=True) reads its documents whole
 
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
@@ -173,12 +174,15 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         return out
 
-    def ask_docs(self, question: str, document: str = "") -> dict:
+    def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
-        passages. `document` limits it to one document."""
+        passages. `document` limits it to one document or DOORS module. A broad question (a
+        summary, a whole function, every requirement about a topic) reads its documents
+        whole instead of the best passages, in parts if they are long; `whole` = true makes
+        it read them whole always (`scope` in the answer says how it was read)."""
         try:
-            return self.index.answer(question, document=document)
+            return self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:
             return model_failed(e, self.cfg)
 

@@ -83,7 +83,9 @@ y cuesta la mitad (*The Complexity Trap*, 2025). En la tanda 4, las vueltas de u
 llevaban 55 000 tokens de entrada, casi todo lecturas viejas. Por defecto, 0: todo se queda.
 
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
-servidor lo dice (OpenRouter, `usage.cost`), su coste.
+servidor lo dice (OpenRouter, `usage.cost`), su coste. Cada llamada de un agente a una herramienta queda en el
+registro de uso del workspace (origen `agent`, con el nombre del agente; `[mcp] usage_log` y
+`atlas usage`).
 
 ```bash
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml

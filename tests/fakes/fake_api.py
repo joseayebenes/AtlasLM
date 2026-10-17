@@ -46,6 +46,7 @@ The control file is re-read on every request; keys:
   hang_keepalive: seconds          -> while it hangs, an SSE comment every so many seconds (what
                                       OpenRouter sends while the model works)
   bodies: "path"                   -> appends the body of every request received, one per line
+  cost: X                          -> every answer says it cost X (usage.cost, as OpenRouter)
 A chat request with "stream": true gets the answer in SSE chunks: the reasoning, the content and
 each tool call by its index (the id and the name first, then the arguments in pieces), then
 finish_reason, the usage in a last chunk without choices if stream_options.include_usage, and
@@ -152,7 +153,9 @@ class H(BaseHTTPRequestHandler):
             if any(k in t for t in inp for k in c.get("emb_fail_if", [])):
                 return self.send(400, {"error": {"message": "input rejected by gateway", "type": "invalid_request_error"}})
             used = sum(tokens(t, c) for t in inp)
-            return self.send(200, {"object": "list", "model": "e", "usage": {"prompt_tokens": used, "total_tokens": used},
+            return self.send(200, {"object": "list", "model": "e",
+                                   "usage": {"prompt_tokens": used, "total_tokens": used,
+                                             **({"cost": c["cost"]} if c.get("cost") else {})},
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         if c.get("chat_429_after") is not None and stats["chat"] >= c["chat_429_after"]:
             return self.reject(429, "rate limit exceeded", "rate_limit", c)
@@ -223,8 +226,9 @@ class H(BaseHTTPRequestHandler):
             message["content"] = answer[:max(0, body["max_tokens"] - spent) * c["usage_chars_per_token"]]
             finish = "length"
         prompt = tokens(json.dumps(body["messages"]), c)
-        completion = spent + tokens(message.get("content") or "", c) if c.get("usage_chars_per_token") else 1
-        usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+        completion = spent + tokens(message.get("content") or "", c) if c.get("usage_chars_per_token") else 1 + spent
+        usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion,
+                 "completion_tokens_details": {"reasoning_tokens": spent}, **({"cost": c["cost"]} if c.get("cost") else {})}
         if body.get("stream") and c.get("no_stream") != "ignore":
             return self.stream(message, finish, usage, body, c)
         self.send(200, {"id": "x", "object": "chat.completion", "created": 0, "model": "m",

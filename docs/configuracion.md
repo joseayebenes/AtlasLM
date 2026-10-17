@@ -58,8 +58,10 @@ de ella:
 |---|---|---|---|
 | `name` | texto | `"atlas"` | nombre del proyecto |
 | `workspace` | ruta | `"./workspace"` | carpeta de trabajo: `atlas.db`, salidas de documentos, grafo, informes. Relativa al fichero |
-| `log_level` | texto | `"INFO"` | `DEBUG`, `INFO`, `WARNING` o `ERROR`; el registro va por stderr |
+| `log_level` | texto | `"INFO"` | `DEBUG`, `INFO`, `WARNING` o `ERROR`: lo que sale por stderr, también los avisos del limitador de peticiones |
 | `shared_cache` | ruta | `""` | carpeta (normalmente de red, `//servidor/atlas/tms-cache`) con cachés exportadas por `atlas cache export` (`*.sqlite`): caché secundaria de solo lectura. Lo que el workspace no tiene se busca ahí (análisis de secciones y vectores) y se copia al workspace; atlas nunca escribe en ella. Si no se puede leer, se sigue sin ella con un aviso. Relativa al fichero; cambiarla no reprocesa nada. Ver [instalación](instalacion.md#6-varios-puestos-cachés-compartidas) |
+| `log_dir` | ruta | `"logs"` | carpeta del registro de cada ejecución, relativa al workspace: un fichero por día (`atlas-AAAA-MM-DD.log`) con todo lo de atlas a nivel `DEBUG` y los avisos de las librerías, con fecha, nivel, proceso y qué comando y paso estaban en marcha. `atlas run` y `atlas serve` escriben a la vez en el mismo fichero. `""` lo apaga. `atlas status` dice dónde está |
+| `log_keep_days` | entero | `14` | días que se guardan los ficheros del registro: los más viejos se borran al arrancar atlas; `0` = se guardan todos |
 
 ## [llm]
 
@@ -446,3 +448,4 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
 | `tools` | lista | `[]` | las herramientas del servidor; vacío = las del perfil (`profile`). `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
 | `profile` | texto | `editor` con `[sources.code]`; si no, `all` | qué herramientas de las fuentes configuradas ofrece el servidor cuando `tools` está vacío: `editor`, las que necesita el agente de un editor para cambiar código (buscar, requisitos, trazabilidad, contexto y lectura de código); `trace`, las de trazabilidad de DOORS y los documentos; `all`, todas. Ver [los perfiles](../atlas/mcp/README.md#qué-herramientas-ofrece) |
+| `usage_log` | texto | `"counts"` | registro de uso en la tabla `usage` de `atlas.db`: una fila por llamada a una herramienta del servidor o de un agente y por comando de la CLI, con su tiempo, si falló, el estado de la respuesta y las peticiones, tokens y coste. `counts`: sin el texto de los argumentos; `full`: con los argumentos, cortados a 200 caracteres; `off`: nada. `atlas usage` lo resume |

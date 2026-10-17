@@ -321,8 +321,11 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
     """Runs the sets of [agents.eval] sets and writes, for each, reports/eval-<set>.json
     (overwritten) and reports/eval-<set>-<version>-<date>.json (kept, for compare_reports):
     {"meta": see meta, "retrieval": the result of evaluate_retrieval, "answers": that of
-    evaluate_answers, "agents": that of evaluate}, each only if the set has cases of its kind."""
+    evaluate_answers, "agents": that of evaluate}, each only if the set has cases of its kind,
+    and "usage": what the set asked of the servers (requests, tokens, cost; see
+    atlas.llm.usage)."""
     from atlas import __version__
+    from atlas.llm import usage, usage_since
     ev = cfg["agents"].get("eval") or {}
     sets = ev.get("sets") or []
     if not sets:
@@ -335,6 +338,7 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
         cases = load_cases(path)
         started = datetime.now()
         res: dict = {"meta": meta(cfg, path, runs, started)}
+        before = usage()
         kinds = {c["kind"] for c in cases}
         if kinds & {"search", "ask"} and index is None:
             from atlas.index import Index
@@ -345,6 +349,7 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
             res["answers"] = evaluate_answers(cases, cfg, runs, index, on_result)
         if "agent" in kinds:
             res["agents"] = evaluate(cases, cfg, runs, context, client, on_result)
+        res["usage"] = usage_since(before)          # requests, tokens and cost of the whole set
         text = json.dumps(res, ensure_ascii=False, indent=1)
         reports = cfg.workspace / "reports"
         atomic_write(reports / f"eval-{path.stem}.json", text)

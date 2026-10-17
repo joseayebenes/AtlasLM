@@ -74,7 +74,8 @@ def unset_hint(cfg: "Config") -> str:
 
 # Schema: section -> {key: type | "any"}. "list" = list, "dict" = free nested table.
 SCHEMA: dict[str, dict[str, Any]] = {
-    "project": {"name": str, "workspace": str, "log_level": str, "shared_cache": str},
+    "project": {"name": str, "workspace": str, "log_level": str, "shared_cache": str, "log_dir": str,
+                "log_keep_days": int},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
             "stream": (bool, str), "network": dict},
@@ -97,7 +98,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "search": {"results": int, "per_document": int, "context_chars": int, "context_radius": int, "scope": str,
                "scope_chars": int, "synonyms": str, "max_parts": int, "scope_documents": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
-    "mcp": {"enabled": bool, "tools": list, "profile": str},
+    "mcp": {"enabled": bool, "tools": list, "profile": str, "usage_log": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
 }
 
@@ -124,7 +125,8 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
                "reference": list, "language_server": list, "language_server_project": str, "model": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
-    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "shared_cache": ""},
+    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "shared_cache": "", "log_dir": "logs",
+                "log_keep_days": 14},
     "pipeline": {"workers": 1, "step_workers": {}, "on_error": "continue", "max_attempts": 3,
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"], "max_minutes": 0, "max_requests": 0},
@@ -139,7 +141,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",
                "scope_chars": 100000, "synonyms": "", "max_parts": 12, "scope_documents": 3},
     "agents": {"model": "", "dirs": ["agents"]},
-    "mcp": {"enabled": True, "tools": [], "profile": ""},     # "": editor with [sources.code], else all
+    "mcp": {"enabled": True, "tools": [], "profile": "", "usage_log": "counts"},     # profile "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
 }
 
@@ -451,6 +453,10 @@ def load_config(path: str | Path) -> Config:
     if isinstance(stream, str) and stream.strip().lower() not in ("", "auto", "true", "false"):
         raise ConfigError("[llm] stream must be true, false or \"\" (streamed unless the server cannot)")
     _validate_graph(data.get("graph", {}))
+    if data.get("project", {}).get("log_keep_days", 14) < 0:
+        raise ConfigError("[project] log_keep_days must be 0 (keep every file) or more")
+    if data.get("mcp", {}).get("usage_log", "counts") not in ("counts", "full", "off"):
+        raise ConfigError("[mcp] usage_log must be one of counts, full, off")
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

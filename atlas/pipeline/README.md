@@ -120,7 +120,14 @@ Cada ejecución deja su perfil en el informe de `atlas run` y en la tabla `runs`
 - `unit_seconds` (total, mediana, máximo) y las tres más lentas (`slowest`);
 - `api`: lo que el paso pidió a las API, con los contadores de `atlas.llm.usage()`:
   peticiones de chat y de embeddings, rechazos por cupo, reintentos, segundos esperando
-  al limitador (`wait_seconds`) y al servidor (`api_seconds`), y kB enviados.
+  al limitador (`wait_seconds`) y al servidor (`api_seconds`), kB enviados, y los tokens y
+  el coste que dijeron los servidores (`prompt_tokens`, `completion_tokens`,
+  `embedding_tokens`, `cost`...).
+
+La fila de una ejecución se crea al empezar, y su id va en las líneas del registro de esa
+ejecución (`run 12: ...`); al acabar se guardan su informe y sus segundos. Una ejecución
+matada deja su fila sin segundos, y `Ledger.runs()` no la devuelve. `Runner(on_step=...)`
+recibe el nombre de cada paso antes de empezarlo (`atlas run` etiqueta con él el registro).
 
 `atlas status` muestra el de la última ejecución y un resumen de las anteriores:
 

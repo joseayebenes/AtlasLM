@@ -24,7 +24,7 @@ import time
 from typing import Any, Callable
 
 from atlas.llm.chat import StreamUnsupported, learned, streamed
-from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, reasoning_of
+from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, note_usage, reasoning_of
 
 __all__ = ["probe"]
 
@@ -97,7 +97,9 @@ def _agent(service: ServiceConfig, client: Any, out: Callable[[str], None]) -> t
 
     def ask(msgs: list[dict]) -> tuple[Any, float]:
         t0 = time.time()
-        return client.chat.completions.create(messages=msgs, **base), time.time() - t0
+        response = client.chat.completions.create(messages=msgs, **base)
+        note_usage(response)
+        return response, time.time() - t0
 
     try:
         first, seconds = ask(messages)

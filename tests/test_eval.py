@@ -160,7 +160,7 @@ def test_atlas_eval_with_only_retrieval_needs_no_agent(indexed, monkeypatch, cap
     assert "search, lexical: hit@1" in out and "graph: 10 of 10 right (100%)" in out and "agents:" not in out
     assert "    paraphrase (6): hybrid hit@3" in out and "    trace: 4 of 4" in out
     report = json.loads((indexed.workspace / "reports" / "eval-retrieval.json").read_text())
-    assert set(report) == {"meta", "retrieval"} and report["retrieval"]["graph"]["passed"] == 10
+    assert set(report) == {"meta", "retrieval", "usage"} and report["retrieval"]["graph"]["passed"] == 10
     from atlas import __version__
     assert report["meta"]["set"] == "retrieval" and report["meta"]["version"] == __version__
     kept = list((indexed.workspace / "reports").glob(f"eval-retrieval-{__version__}-*.json"))
@@ -180,7 +180,7 @@ def test_an_ask_case_with_the_fake_api_and_the_meta_of_the_report(indexed, tmp_p
     assert "FAIL cited #1" in out and "not in a cited source: answer" in out
     assert "answers: 1 of 2 right (50%)" in out and "answers whole: 1 of 1" in out
     report = json.loads((indexed.workspace / "reports" / "eval-answers.json").read_text())
-    assert set(report) == {"meta", "answers"} and report["answers"]["requests"] == 4
+    assert set(report) == {"meta", "answers", "usage"} and report["answers"]["requests"] == 4
     meta = report["meta"]
     assert (meta["model"], meta["embeddings_model"], meta["runs"], meta["provider"]) == ("fake", "embeddinggemma", 1, None)
     assert len(meta["yaml_sha256"]) == 16 and meta["set"] == "answers" and "reasoning_effort" in meta

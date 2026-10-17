@@ -16,7 +16,7 @@ import logging
 
 import numpy as np
 
-from atlas.llm.connection import ServiceConfig, create_client
+from atlas.llm.connection import ServiceConfig, create_client, note_usage
 
 __all__ = ["FAMILIES", "Embedder", "document_key", "family", "prefix_note", "prefixes"]
 
@@ -95,6 +95,7 @@ class Embedder:
         vecs = []
         for i in range(0, len(texts), self.batch):
             resp = self.client.embeddings.create(model=self.model, input=texts[i:i + self.batch])
+            note_usage(resp, "embeddings")
             vecs.extend(d.embedding for d in sorted(resp.data, key=lambda d: d.index))
         m = np.asarray(vecs, dtype=np.float32)
         norms = np.linalg.norm(m, axis=1, keepdims=True)

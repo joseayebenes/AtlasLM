@@ -209,18 +209,32 @@ class Ledger:
             "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','quarantined','running')"
             " ORDER BY step, unit")]
 
-    def save_run(self, report: "RunReport", version: str = "") -> None:
+    def start_run(self, started: str, version: str = "") -> int:
+        """The row of a run that starts (without seconds nor report until save_run): its id
+        goes in the lines of the log of the run."""
         with self.lock:
-            self.db.execute("INSERT INTO runs (started, seconds, version, report) VALUES (?,?,?,?)",
-                            (report.started, round(report.seconds, 2), version,
-                             json.dumps(report.as_dict(), ensure_ascii=False)))
+            cur = self.db.execute("INSERT INTO runs (started, version, report) VALUES (?,?,?)",
+                                  (started, version, "{}"))
+            self.db.commit()
+            return cur.lastrowid
+
+    def save_run(self, report: "RunReport", version: str = "", run_id: int | None = None) -> None:
+        """The report of a run: in its row of start_run, or in a new one."""
+        values = (report.started, round(report.seconds, 2), version, json.dumps(report.as_dict(), ensure_ascii=False))
+        with self.lock:
+            if run_id is None:
+                self.db.execute("INSERT INTO runs (started, seconds, version, report) VALUES (?,?,?,?)", values)
+            else:
+                self.db.execute("UPDATE runs SET started=?, seconds=?, version=?, report=? WHERE id=?",
+                                (*values, run_id))
             self.db.commit()
 
     def runs(self, limit: int = 10) -> list[dict]:
-        """The last runs, most recent first: started, seconds, version and report (with
-        the profile of each step)."""
+        """The last finished runs, most recent first: id, started, seconds, version and report
+        (with the profile of each step). One that is running, or was killed, is left out."""
         return [{**dict(r), "report": json.loads(r["report"])} for r in self._query(
-            "SELECT started, seconds, version, report FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
+            "SELECT id, started, seconds, version, report FROM runs WHERE seconds IS NOT NULL ORDER BY id DESC "
+            "LIMIT ?", (limit,))]
 
 
 class _WorkspaceLock:
@@ -304,11 +318,19 @@ SLOWEST = 3     # units listed in the profile of each step
 REQUEST_METERS = ("chat", "embeddings", "other")    # the meters that count requests, for max_requests
 
 
+class _RunLog(logging.LoggerAdapter):
+    """The lines of a run, with the id of its row of the runs table: "run 12: ..."."""
+
+    def process(self, msg, kwargs):
+        return (f"run {self.extra['run']}: {msg}" if self.extra.get("run") else msg), kwargs
+
+
 class Runner:
     """Runs the steps in dependency order, the units of a parallel step in `workers`
     threads (or the step's own `workers`). `meters` returns cumulative counters (requests
     to the APIs, seconds waiting...): the profile of each step keeps what grew during it.
-    `version` is saved with each run, to compare profiles between versions.
+    `version` is saved with each run, to compare profiles between versions. `on_step` is
+    called with the name of each step before it starts (atlas.cli labels the usage with it).
 
     `stopping` is set when the run is interrupted (Ctrl+C) with units running in other
     threads: the units not started yet are cancelled, and the long ones can watch it and
@@ -339,7 +361,7 @@ class Runner:
                  meters: Callable[[], dict[str, float]] | None = None, version: str = "",
                  stopping: threading.Event | None = None, dry_run: bool = False,
                  deadline: float | None = None, max_requests: int = 0,
-                 progress: Callable[[str], None] | None = None):
+                 progress: Callable[[str], None] | None = None, on_step: Callable[[str], None] | None = None):
         self.ledger, self.context = ledger, context
         self.steps = self._sort(steps)
         self.workers = max(1, workers)
@@ -353,6 +375,9 @@ class Runner:
         self.progress = progress or log.info
         self.budget_hit = ""            # why the budget stopped the run, once it has
         self._run_meter: dict[str, float] = {}
+        self.on_step = on_step
+        self.run_id: int | None = None
+        self.log = _RunLog(log, {"run": None})
 
     PROGRESS_SECONDS, PROGRESS_UNITS = 30.0, 25
 
@@ -391,25 +416,33 @@ class Runner:
             self.stopping.check = self._over_budget
         try:
             with self._lock():
+                self.run_id = self.ledger.start_run(rep.started, self.version)
+                self.log.extra["run"] = self.run_id
+                self.log.info("started, version %s, %d steps: %s", self.version or "?", len(self.steps),
+                              ", ".join(s.name for s in self.steps))
                 for step in self.steps:
                     if only and step.name not in set(only):
                         continue
                     if self._over_budget():
                         break
+                    if self.on_step:
+                        self.on_step(step.name)
                     try:
                         self._run_step(step, rep)
                     except FatalError as e:
                         rep.fatal = f"{step.name}: {e}"
-                        log.error("run stopped at %s: %s (the state is saved)", step.name, e)
+                        self.log.error("stopped at %s: %s (the state is saved)", step.name, e)
                         break
                     if self.budget_hit:
                         break
                 if self.budget_hit:
                     rep.stopped_by = "budget"
-                    log.warning("run stopped by the budget (%s) at %s; the state is saved", self.budget_hit,
-                                step.name)
+                    self.log.warning("stopped by the budget (%s) at %s; the state is saved", self.budget_hit,
+                                     step.name)
                 rep.seconds = time.perf_counter() - t0
-                self.ledger.save_run(rep, self.version)
+                self.ledger.save_run(rep, self.version, self.run_id)
+                self.log.info("finished in %.1f s: processed %s, errors %s, quarantined %s", rep.seconds,
+                              rep.processed or 0, rep.errors or 0, rep.quarantined or 0)
         finally:
             if isinstance(self.stopping, Stopping):
                 self.stopping.check = None
@@ -530,7 +563,7 @@ class Runner:
                 rep.pruned[step.name] = rep.pruned.get(step.name, 0) + 1
         prof.update(units=len(units), scan_seconds=time.perf_counter() - start)
 
-        log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
+        self.log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
                  len(pending), rep.skipped.get(step.name, 0))
         if not pending or self._over_budget():
             return
@@ -550,7 +583,7 @@ class Runner:
                     raise
                 if step.is_fatal(e):
                     raise FatalError(str(e)) from e
-                log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
+                self.log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
             prof["prepare_seconds"] = time.perf_counter() - t0
 
         fatal: list[Exception] = []
@@ -615,7 +648,7 @@ class Runner:
                     key = "quarantined" if status == "quarantined" else "errors"
                     getattr(rep, key)[step.name] = getattr(rep, key).get(step.name, 0) + 1
                     finished()
-                log.warning("%s %s: %s", step.name, u, e)
+                self.log.warning("%s %s: %s", step.name, u, e)
                 if self.on_error == "stop":
                     fatal.append(FatalError(f"on_error = stop after {u} failed: {e}"))
 

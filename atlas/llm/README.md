@@ -26,6 +26,9 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
   30 % y lo recupera poco a poco;
 - reintenta los 5xx y los fallos de conexión puntuales, pero no los de certificado.
 
+Los avisos de los rechazos y los reintentos son avisos del registro `atlas.llm`: salen por
+stderr según `[project] log_level` y quedan en el fichero del registro del workspace.
+
 `diagnose(e)` convierte los errores típicos de una red corporativa (certificado, proxy con
 autenticación, TLS mutuo, credenciales, URL sin `/v1`) y la falta de crédito (402) en una
 indicación concreta, con lo que diga el servidor (y, en OpenRouter, el proveedor), y `is_connection_error(e)` dice cuáles
@@ -134,7 +137,13 @@ juntos `[pipeline] workers` peticiones.
 `usage()` devuelve lo que ha pedido el proceso desde que empezó: peticiones por destino
 (`chat`, `embeddings`, `other`), rechazos por cupo (`rejected`), reintentos (`retried`),
 segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`), y kB
-enviados (`sent_kb`). Los perfiles de `atlas run` guardan lo que creció en cada paso.
+enviados (`sent_kb`). Además, lo que dice el `usage` de cada respuesta (`note_usage`, que
+llaman `JsonLlm`, `Embedder`, `AtlasLlm`, `check` y `probe`): tokens del prompt
+(`prompt_tokens`, de ellos `cached_tokens`), de la respuesta (`completion_tokens`, de ellos
+`reasoning_tokens`), de los textos de los embeddings (`embedding_tokens`) y `cost` cuando el
+servidor lo da (OpenRouter). `usage_since(antes)` da lo que creció. Los perfiles de `atlas
+run` guardan lo que creció en cada paso; `atlas ask`, `atlas agent` y `atlas eval` lo
+imprimen. `set_usage_label(comando, paso)` dice qué está haciendo el proceso.
 
 ## Como librería
 

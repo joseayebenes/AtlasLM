@@ -320,6 +320,31 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   pueden salir; las herramientas MCP dan su texto al editor), y la prueba que lo comprueba con
   los cuerpos de las peticiones que recibe el servidor falso (`bodies` en su fichero de
   control).
+- Tokens y coste de cada petición: `atlas.llm.note_usage` lee el `usage` de cada respuesta
+  (de `JsonLlm`, los embeddings, los agentes, `atlas check` y `atlas probe`) y lo suma a
+  `usage()`: `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cached_tokens`,
+  `embedding_tokens` y `cost` cuando el servidor lo da. Los perfiles de `atlas run` y
+  `atlas status` los enseñan por paso; `atlas ask`, `atlas agent` y `atlas eval` los imprimen,
+  y `atlas eval` los guarda en su informe. `set_usage_label` dice qué comando y qué paso
+  están en marcha. Sin precios configurables: el gateway no tiene precio público.
+- Registro de uso en el workspace: una fila por llamada a una herramienta de `atlas serve` o
+  de un agente y por comando de la CLI, en la tabla `usage` de `atlas.db` (varios procesos
+  escriben a la vez sin pisarse, también en Windows). Lleva la fecha, el origen (`mcp`, `cli`
+  o `agent`), los milisegundos, si falló, el estado de la respuesta de `atlas ask` y
+  `ask_docs` (con fuentes o sin ellas) y las peticiones, tokens y coste. `[mcp] usage_log`:
+  `counts` (por defecto, sin el texto de los argumentos), `full` (con ellos, cortados a 200
+  caracteres) u `off`. `atlas usage [--since 30d]` lo resume: llamadas por herramienta y
+  semana, mediana de milisegundos, errores, tokens y coste, respuestas con y sin fuente.
+- `atlas.plugins.instrumented`: el envoltorio de cada llamada que usan el servidor MCP, los
+  agentes (antes `recorded`, que sigue) y la CLI.
+- Registro de cada ejecución en el workspace: `[project] log_dir` (`logs` por defecto; `""`
+  lo apaga) con un fichero por día, `atlas-AAAA-MM-DD.log`, con todo lo de atlas a nivel
+  `DEBUG` y los avisos de las librerías, la fecha, el proceso y el comando y paso en marcha.
+  No se rota renombrando (en Windows, `atlas run` y `atlas serve` lo tienen abierto a la vez):
+  cada día empieza uno, y los de más de `[project] log_keep_days` días (14) se borran al
+  arrancar. Una línea al empezar y al acabar cada acción, con la versión y el fichero de
+  configuración; las líneas de `atlas run` llevan el id de su fila de la tabla `runs`.
+  `atlas status` dice dónde está. `atlas.logs.setup_logging` lo prepara.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -369,6 +394,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Los vectores de las consultas de búsqueda quedan en la caché de vectores del índice: la
   misma consulta otra vez no pide nada a los embeddings (antes, cada búsqueda híbrida la
   embebía; una pasada de `retrieval.yaml` eran 20 peticiones, y la segunda ya ninguna).
+- Los avisos del limitador de peticiones (rechazos por cupo, reintentos) son avisos del
+  registro `atlas.llm` en vez de `print`: `[project] log_level` los gobierna y quedan en el
+  fichero del registro.
+- La fila de una ejecución de `atlas run` en la tabla `runs` se crea al empezar; una
+  ejecución interrumpida deja su fila sin segundos y `atlas status` no la enseña.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

@@ -37,7 +37,7 @@ import threading
 import time
 from typing import Any
 
-from atlas.llm.connection import _TURN, ServiceConfig
+from atlas.llm.connection import _TURN, ServiceConfig, note_usage
 
 __all__ = ["StreamUnsupported", "TURN_RETRIES", "TurnTimeout", "assemble", "complete", "stream_setting", "streamed",
            "streaming"]
@@ -343,7 +343,9 @@ def complete(client: Any, cfg: ServiceConfig, kwargs: dict, cancel: threading.Ev
     the module); the answer is a chat completion either way. `cancel` cuts it at once."""
     for attempt in range(TURN_RETRIES + 1):
         try:
-            return _attempt(client, cfg, kwargs, cancel)
+            response = _attempt(client, cfg, kwargs, cancel)
+            note_usage(response)            # the tokens and the cost the server says (usage())
+            return response
         except TurnTimeout as e:
             if cancel is not None and cancel.is_set():
                 raise

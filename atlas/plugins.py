@@ -20,9 +20,11 @@ in the source configuration (e.g. languages = ["ada"] only uses the "ada" analyz
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from importlib.metadata import entry_points
@@ -239,6 +241,52 @@ def load_plugins(modules: Iterable[str] = (), use_entry_points: bool = True) -> 
         loaded.append(m)
     _LOADED = True
     return loaded
+
+
+PLAIN = (str, int, float, bool, list, dict, type(None))
+
+
+def instrumented(function: Callable[..., Any], sink: Callable[[dict], None], name: str | None = None,
+                 **fields: Any) -> Callable[..., Any]:
+    """`function` wrapped so that each call goes to `sink` as an event: {"name", "args" (its
+    arguments by name, only plain values: never a configuration or a context), "result",
+    "error" (when it raised; the exception goes on), "seconds", "usage" (what
+    atlas.llm.usage() grew during the call: requests, tokens, cost) and `fields`}. With
+    functools.wraps, so that ADK and the MCP server still read its signature and its
+    docstring. A sink that fails does not fail the call. The tools of the MCP server and of
+    the agents, and the commands of the CLI, go through it (see atlas.usage)."""
+    tool = name or function.__name__
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        signature = None
+
+    def arguments(args: tuple, kwargs: dict) -> dict:
+        try:
+            bound = signature.bind_partial(*args, **kwargs).arguments if signature else kwargs
+        except TypeError:
+            bound = kwargs
+        return {k: v for k, v in bound.items() if isinstance(v, PLAIN)}
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from atlas.llm.connection import usage, usage_since
+        before, t0 = usage(), time.perf_counter()
+        result, error = None, None
+        try:
+            result = function(*args, **kwargs)
+            return result
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"[:500]
+            raise
+        finally:
+            event = {"name": tool, "args": arguments(args, kwargs), "result": result, "error": error,
+                     "seconds": round(time.perf_counter() - t0, 3), "usage": usage_since(before), **fields}
+            try:
+                sink(event)
+            except Exception as e:                 # the log must never break the tool
+                log.warning("the call to %s was not logged: %s", tool, e)
+    return wrapper
 
 
 def describe() -> dict[str, list[str]]:

@@ -168,7 +168,7 @@ profile = "all"
     return cfg, ada, docs
 
 
-def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
+def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path, capsys):
     import anyio
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -248,6 +248,22 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
     anyio.run(client)
     log = errlog.read_text()
     assert "MCP server over" in log and "29 tools (profile all)" in log                     # logs go to stderr
+
+    # every call of the editor is in the usage log of the workspace, without its arguments
+    from atlas.cli import usage
+    from atlas.usage import summary
+    res = summary(cfg.workspace / "atlas.db")
+    mcp = {r["name"]: r for r in res["by_name"] if r["origin"] == "mcp"}
+    assert mcp["search"]["calls"] == 2 and mcp["get_section"]["calls"] == 2 and mcp["callers"]["calls"] == 2
+    assert mcp["read_file"]["errors"] == 1 and mcp["get_requirement"]["errors"] == 1   # outside the roots; SRS-004
+    assert mcp["ask_docs"]["requests"] >= 2 and mcp["ask_docs"]["completion_tokens"] > 0
+    assert mcp["search"]["embedding_tokens"] > 0 and res["answers"] == {"ask_docs": {"answered": 1}}
+    import sqlite3
+    assert sqlite3.connect(cfg.workspace / "atlas.db").execute(
+        "SELECT COUNT(*) FROM usage WHERE args IS NOT NULL").fetchone() == (0,)    # counts: no arguments
+    assert usage(cfg, since="7d") == 0
+    out = capsys.readouterr().out
+    assert "mcp    search" in out and "ask_docs" in out and "1 answered" in out and "requests" in out
 
 
 def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):

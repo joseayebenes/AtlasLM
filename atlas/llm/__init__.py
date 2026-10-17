@@ -11,7 +11,8 @@ from dataclasses import fields, replace
 
 from atlas.llm.connection import (  # noqa: F401
     Connection, NetConfig, ServiceConfig, check, check_service, create_client, describe, diagnose,
-    effective_proxy, is_connection_error, mask_credentials, rate_limiter_for, show, usage,
+    effective_proxy, is_connection_error, mask_credentials, note_usage, rate_limiter_for, set_usage_label, show, usage,
+    usage_label, usage_since,
 )
 from atlas.llm.structured import (  # noqa: F401
     JsonLlm, TextAnswer, TruncatedResponse, parse_json, repair_json, structured_output, validate,

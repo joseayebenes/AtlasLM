@@ -153,8 +153,12 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
     monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
+    from atlas.llm import usage, usage_since
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
+    before = usage()
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    grown = usage_since(before)                   # AtlasLlm counts its turns in usage() too
+    assert grown["prompt_tokens"] == 200 and grown["completion_tokens"] == 20 and grown["cost"] == 0.0002
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
                    "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}],
                    "tokens": {"prompt": 200, "completion": 20}, "cost": 0.0002}    # what each turn used
@@ -760,7 +764,7 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
         evaluate_sets(workspace)
     monkeypatch.setitem(workspace["agents"], "eval", {"sets": [str(cases_file)], "runs": 2})
     out = evaluate_sets(workspace, client=StubClient(["delete_track SSS-0005"] * 4))
-    assert set(out["set"]) == {"meta", "agents"} and out["set"]["agents"]["total"] == 4
+    assert set(out["set"]) == {"meta", "agents", "usage"} and out["set"]["agents"]["total"] == 4
     assert (workspace.workspace / "reports" / "eval-set.json").exists()
 
 

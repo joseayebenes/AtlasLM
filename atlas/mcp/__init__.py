@@ -25,6 +25,7 @@ and ask_atlas also ADK) are only offered when listed. So are the tools that writ
 write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
 edits) and run_test, which runs code.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
+Each call goes to the usage log of the workspace ([mcp] usage_log; see atlas.usage).
 
 Every tool has a title ("Trace code") and annotations: those that write or run code are
 destructive; the others are read-only, and those that do not ask the model are also
@@ -280,11 +281,16 @@ def create_server(cfg: Config, context: Any = None) -> Any:
     if context is None:
         plugins.load_plugins(cfg["plugins"]["modules"])
         context = SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
+    from atlas.usage import usage_sink
     names = tool_names(cfg)
     server = server_class("atlas", instructions=instructions(names, cfg, getattr(context, "store", None)))
+    usage_log = usage_sink(cfg, "mcp")          # each call, a row of the usage log ([mcp] usage_log)
     for name in names:
         tool = plugins.get("tool", name, cfg["plugins"]["disabled"])(context)
-        server.add_tool(tool.function(), name=name, title=name.replace("_", " ").capitalize(),
+        function = tool.function()
+        if usage_log is not None:
+            function = plugins.instrumented(function, usage_log, name=name)
+        server.add_tool(function, name=name, title=name.replace("_", " ").capitalize(),
                         description=tool.description or None, annotations=_annotations(ToolAnnotations, name, tool))
     log.info("MCP server over %s with %d tools (profile %s): %s", cfg.workspace, len(names),
              profile(cfg) if not cfg["mcp"]["tools"] else "[mcp] tools", ", ".join(names))

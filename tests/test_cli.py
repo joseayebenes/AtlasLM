@@ -147,6 +147,8 @@ patterns = ["*.md"]
 
     rep = go()
     assert rep["processed"] == {"docs.process": 2, "index.documents": 2}
+    assert rep["profile"]["index.documents"]["api"]["embedding_tokens"] > 0       # what the server said
+    assert rep["profile"]["docs.process"]["api"]["prompt_tokens"] > 0            # hmi_manual.md, with the model
     stats = fake_stats()
     rep = go()
     assert rep["processed"] == {} and rep["skipped"]["index.documents"] == 2
@@ -158,6 +160,11 @@ patterns = ["*.md"]
     assert ask(cfg, "When does the HMI raise an alarm?") == 0
     out = capsys.readouterr().out
     assert "[1]" in out and "Sources:" in out and "003-2-alarms.md" in out
+    assert "\nModel: 2 chat, 1 embeddings, " in out and " completion tokens, " in out      # rewriting and answer
+    from atlas.usage import summary
+    logged = summary(cfg.workspace / "atlas.db")
+    assert logged["answers"] == {"ask": {"answered": 1}}
+    assert next(r for r in logged["by_name"] if r["name"] == "ask")["requests"] == 3
     with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
         main(["search", "keep logs", str(path)])
     assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out
@@ -968,7 +975,8 @@ paths = ["{docs.as_posix()}"]
     after = fake_stats()
     assert (after["chat"], after["embeddings"]) == (before["chat"], before["embeddings"])
     assert digest() == before_share                            # nothing written in the shared folder
-    assert {r.getMessage().split(" left out")[0] for r in caplog.records} == \
+    warned = [r for r in caplog.records if r.name == "atlas.cache" and r.levelno >= logging.WARNING]
+    assert {r.getMessage().split(" left out")[0] for r in warned} == \
         {f"shared cache {share / 'broken.sqlite'}", f"shared cache {share / 'other.sqlite'}"}
     # what it read is now in the workspace: the same entries as in the first one
     names = lambda cfg: sorted(f.name for f in (cfg.workspace / "docs" / ".cache").glob("*.json"))

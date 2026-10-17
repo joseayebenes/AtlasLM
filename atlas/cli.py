@@ -40,6 +40,9 @@
                    [--compare]      and each case against the last report of another version of atlas
                    [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
                                     graph of the workspace, the same each time (instead of evaluating)
+    atlas usage    [atlas.toml] [--since 30d]   what the usage log of the workspace says: calls by tool
+                                    and week, milliseconds, errors, tokens and cost, answers with
+                                    and without sources
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas doctor   [atlas.toml]     what can fail on this machine, before a run: Python, extras, sources,
                                     the DOORS database, the compiler commands, variables, workspace and connection
@@ -87,9 +90,15 @@ if TYPE_CHECKING:
 log = logging.getLogger("atlas")
 
 
+def _logging(cfg: Config) -> None:
+    """The log of this action (atlas.logs.setup_logging): stderr and the file of the day."""
+    from atlas.llm import usage_label
+    from atlas.logs import setup_logging
+    setup_logging(cfg, usage_label()[0])
+
+
 def _context(cfg: Config) -> SimpleNamespace:
-    logging.basicConfig(level=cfg["project"]["log_level"], format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)     # one line per request otherwise
+    _logging(cfg)
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
     return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
@@ -917,12 +926,17 @@ def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 
                        ("max_requests", max_requests or pc["max_requests"])):
         if value < 0:
             raise ConfigError(f"[pipeline] {key} must be 0 (no limit) or more, not {value}")
+    from atlas.llm import set_usage_label
     from atlas.outbound import sent_totals
     ctx = _context(cfg)
     before = sent_totals(ctx.store.path)
-    rep = _runner(ctx, deadline=deadline(until, max_minutes or pc["max_minutes"]),
-                  max_requests=max_requests or pc["max_requests"],
-                  progress=lambda line: print(line, file=sys.stderr, flush=True)).run()
+    try:
+        rep = _runner(ctx, deadline=deadline(until, max_minutes or pc["max_minutes"]),
+                      max_requests=max_requests or pc["max_requests"],
+                      progress=lambda line: print(line, file=sys.stderr, flush=True),
+                      on_step=lambda step: set_usage_label("run", step)).run()
+    finally:
+        set_usage_label("run")                   # the steps are over
     sent: dict = {}                     # what this run sent to each model, by source
     for (model, source, kind), n in sent_totals(ctx.store.path).items():
         if n > before.get((model, source, kind), 0):
@@ -940,10 +954,25 @@ def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 
 
 
 def _api_text(api: dict) -> str:
-    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting' from the `api` of a profile."""
+    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting, 812000 prompt / 95000 completion
+    tokens, 40000 embedding tokens, $0.41' from the `api` of a profile (or a usage_since)."""
     parts = [f"{api[k]:g} {k}" for k in ("chat", "embeddings", "other", "rejected", "retried") if api.get(k)]
     if api.get("wait_seconds", 0) >= 0.1:
         parts.append(f"{api['wait_seconds']:.1f} s waiting")
+    tokens = _tokens_text(api)
+    return ", ".join(parts + ([tokens] if tokens else []))
+
+
+def _tokens_text(api: dict) -> str:
+    """'812000 prompt / 95000 completion tokens, 40000 embedding tokens, $0.41'."""
+    parts = []
+    if api.get("prompt_tokens") or api.get("completion_tokens"):
+        parts.append(f"{api.get('prompt_tokens', 0):g} prompt / {api.get('completion_tokens', 0):g} completion tokens"
+                     + (f" ({api['reasoning_tokens']:g} reasoning)" if api.get("reasoning_tokens") else ""))
+    if api.get("embedding_tokens"):
+        parts.append(f"{api['embedding_tokens']:g} embedding tokens")
+    if api.get("cost"):
+        parts.append(f"${api['cost']:.4f}")
     return ", ".join(parts)
 
 
@@ -990,7 +1019,9 @@ def status(cfg: Config, as_json: bool = False) -> int:
                      "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6),
                      "doors_exports": ctx.store.modules_info(), "sent": sent_summary(ctx.store.path)})
         return 0
+    from atlas.logs import log_file
     print(f"workspace: {cfg.workspace}")
+    print(f"log: {log_file(cfg) or 'off ([project] log_dir is empty)'}")
     print("data:", ctx.store.counts())
     exports = ctx.store.modules_info()
     if exports:
@@ -1227,6 +1258,7 @@ def comply(cfg: Config, target: str, as_json: bool = False) -> int:
     """Whether the code of each requirement does all it asks, judged by the agent
     compliance_checker: the verdicts on the screen and the report in <workspace>/reports."""
     from atlas.agents.comply import comply_all
+    _logging(cfg)
     res = comply_all(target, cfg)
     if as_json:
         return _json_result(res)
@@ -1330,6 +1362,7 @@ OPTIONS = {"init": {"--profile": str},
            "develop": {"--check": bool, "--resume": bool},
            "eval": {"--compare": bool, "--generate": str, "--n": int},
            "cache": {"--with-judgements": bool},
+           "usage": {"--since": str},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
                                                       "comply", "link", "coverage", "impact")}}
 DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when it is not the name of the option
@@ -1433,13 +1466,20 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
         section: str = "", dry_run: bool = False, attribute: str = "", module: str = "", chapter: str = "") -> int:
     from atlas.index import DocTools
     from atlas.index.search import citation_warnings, status_line
+    from atlas.llm import usage, usage_since
+    from atlas.usage import usage_sink
     kinds, where = _kinds(kind), _where(attribute, module, chapter)
     _context(cfg)
+    before = usage()
     tools = DocTools.from_config(cfg)
+    answer = tools.index.answer
+    usage_log = usage_sink(cfg, "cli")
+    if usage_log is not None and not dry_run:          # the row of atlas ask, with the status of its answer
+        answer = plugins.instrumented(answer, usage_log, name="ask")
     # with filters, only what they let through: no requirement routed from outside them
-    res = tools.index.answer(question, k=k, document=document, kinds=kinds, scope="whole" if whole else "",
-                             extra_sources=[] if where else tools.route(question), where=where, dry_run=dry_run,
-                             section=section)
+    res = answer(question=question, k=k, document=document, kinds=kinds, scope="whole" if whole else "",
+                 extra_sources=[] if where else tools.route(question), where=where, dry_run=dry_run, section=section)
+    used = _api_text(usage_since(before))
     if dry_run:
         print(_plan(res))
         return 0
@@ -1468,6 +1508,8 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
         print(f"  - {u['claim'][:300]}\n    not in {' '.join(f'[{n}]' for n in u['cited'])}: {', '.join(u['missing'])}")
     if res["scope"] == "whole":
         print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
+    if used:
+        print(f"\nModel: {used}")
     print(f"\n{status_line(res)}")
     return 1 if res["status"] == "not_found" else 0
 
@@ -1503,6 +1545,9 @@ def agent(cfg: Config, name: str, question: str) -> int:
         print("\nTools called:")
     for c in res["calls"]:
         print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    tokens = res.get("tokens") or {}
+    print(f"\nModel: {tokens.get('prompt', 0)} prompt / {tokens.get('completion', 0)} completion tokens"
+          + (f", ${res['cost']:.4f}" if "cost" in res else ""))
     return 1 if res["stopped"] else 0
 
 
@@ -1669,6 +1714,8 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0)
         for section in ("answers", "agents"):
             for tag, t in res.get(section, {}).get("tags", {}).items():
                 print(f"    {section} {tag}: {t['passed']} of {t['total']}")
+        if _api_text(res.get("usage", {})):
+            print(f"  model: {_api_text(res['usage'])}")
         if compare:
             old = previous_report(cfg, name, __version__)
             if old is None:
@@ -1681,9 +1728,47 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0)
     return 1 if regressions else 0
 
 
+def usage(cfg: Config, since: str = "30d") -> int:
+    """What the usage log of the workspace says of the last days (atlas.usage.summary)."""
+    from atlas.usage import parse_since, summary
+    _logging(cfg)
+    try:
+        days = parse_since(since)
+    except ValueError as e:
+        sys.exit(f"atlas usage: {e}")
+    res = summary(cfg.workspace / "atlas.db", days)
+    print(f"usage log of {cfg.workspace} since {res['since']}: {res['calls']} calls "
+          f"([mcp] usage_log = {cfg['mcp']['usage_log']})")
+    if not res["calls"]:
+        print("nothing logged in those days")
+        return 0
+    weeks = res["weeks"][-8:]
+    print(f"\n  {'origin':6s} {'tool or command':24s} " + " ".join(f"{w[-3:]:>5s}" for w in weeks)
+          + f" {'calls':>6s} {'errors':>6s} {'median ms':>9s}")
+    for r in res["by_name"]:
+        print(f"  {r['origin']:6s} {r['name'][:24]:24s} " + " ".join(f"{r['weeks'].get(w, 0):5d}" for w in weeks)
+              + f" {r['calls']:6d} {r['errors']:6d} {r['median_ms']:9d}")
+    used = [r for r in res["by_name"] if r["requests"]]
+    if used:
+        print("\nRequests to the model, tokens and cost:")
+        for r in used:
+            print(f"  {r['origin']:6s} {r['name'][:24]:24s} {r['requests']} requests"
+                  + (f", {_tokens_text(r)}" if _tokens_text(r) else ""))
+        total = res["total"]
+        if total["requests"]:
+            print(f"  {'total (cli and mcp)':31s} {total['requests']} requests"
+                  + (f", {_tokens_text(total)}" if _tokens_text(total) else ""))
+    if res["answers"]:
+        print("\nAnswers:")
+        for name, counts in res["answers"].items():
+            print(f"  {name:31s} " + ", ".join(f"{n} {status.replace('_', ' ')}" for status, n in sorted(counts.items())))
+    return 0
+
+
 def check(cfg: Config) -> int:
     from atlas.config import unset_hint
     from atlas.llm import check as check_connection, from_config
+    _logging(cfg)
     if cfg.unset:
         print(f"WARNING {unset_hint(cfg)}", file=sys.stderr)
     from atlas.index.embeddings import prefix_note
@@ -1704,12 +1789,14 @@ def probe(cfg: Config) -> int:
     """The chat model as an agent: a tool call, its result, the reasoning given back and streaming."""
     from atlas.llm import from_config
     from atlas.llm.probe import probe as probe_model
+    _logging(cfg)
     return probe_model(from_config(cfg).llm)
 
 
 def reference(cfg: Config) -> int:
     """The manuals and the library for search_reference: built, or brought up to date."""
     from atlas.code import BuildTools
+    _logging(cfg)
     tools = BuildTools.from_config(cfg)
     if not (tools.reference.patterns or tools.library.folders):
         print("nothing to index: [sources.code] reference (manuals) and library (specs)", file=sys.stderr)
@@ -1782,6 +1869,17 @@ def init(path: Path, profile: str = "ollama") -> int:
     return 0
 
 
+UNLOGGED = ("serve", "usage", "ask")     # serve: each tool call; ask: its answer (see ask)
+
+
+def _logged(action: str, function, cfg: Config):
+    """The action, with a row of the usage log of the workspace (origin "cli"): its time,
+    whether it raised, and the requests, tokens and cost of the whole command."""
+    from atlas.usage import usage_sink
+    usage_log = None if action in UNLOGGED else usage_sink(cfg, "cli")
+    return plugins.instrumented(function, usage_log, name=action) if usage_log is not None else function
+
+
 def main(argv: list[str] | None = None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
@@ -1792,19 +1890,33 @@ def main(argv: list[str] | None = None) -> None:
         print(f"atlas {__version__}")
         sys.exit(0)
     action, rest = argv[0], argv[1:]
+    from atlas.llm import set_usage_label
+    set_usage_label(action)
+    t0 = time.monotonic()
+    try:
+        _dispatch(action, rest)
+    finally:                                  # the last line of the action in its log
+        error = sys.exc_info()[1]
+        how = f"exit code {error.code}" if isinstance(error, SystemExit) else \
+            f"{type(error).__name__}: {error}" if error else "exit code 0"
+        log.debug("end of %s: %s, %.1f s", action, how, time.monotonic() - t0)
+
+
+def _dispatch(action: str, rest: list[str]) -> None:
     if action == "init":
         rest, options = _options(action, rest)
         sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
     actions = {"run": run, "estimate": estimate, "status": status, "sections": sections, "graph": graph,
                "plugins": list_plugins, "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor,
-               "probe": probe, "reference": reference, "serve": serve}
+               "probe": probe, "reference": reference, "serve": serve, "usage": usage}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")
         try:
-            sys.exit(agent(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1]))
+            cfg = load_config(rest[2] if len(rest) > 2 else "atlas.toml")
+            sys.exit(_logged("agent", agent, cfg)(cfg, rest[0], rest[1]))
         except ConfigError as e:
             sys.exit(f"configuration: {e}")
     if action == "cache":                       # cache export|import FILE [atlas.toml]
@@ -1826,8 +1938,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(f"usage: atlas {action} TEXT [atlas.toml]")
     try:
         if action in with_text:
-            sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0], **options))
-        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml"), **options))
+            cfg = load_config(rest[1] if len(rest) > 1 else "atlas.toml")
+            sys.exit(_logged(action, with_text[action], cfg)(cfg, rest[0], **options))
+        cfg = load_config(rest[0] if rest else "atlas.toml")
+        sys.exit(_logged(action, actions[action], cfg)(cfg, **options))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

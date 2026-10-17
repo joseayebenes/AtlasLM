@@ -1047,3 +1047,34 @@ model = "none"
     out = capsys.readouterr().out
     assert 'sent to the models (never: docs:client, model = "none"):' in out
     assert "  fake\n    docs:manuals" in out and "4 sections" in out and "1 answers" in out and "; last 20" in out
+
+
+def test_status_shows_the_pace_latency_and_concurrency_of_each_step():
+    """Little's law with what the profile keeps: the requests in flight are the seconds of the
+    server over those of the step, and rpm x latency / 60 of them fill the quota."""
+    from atlas.cli import pace_lines
+    step = {"seconds": 1860, "api": {"chat": 540, "chat_seconds": 540 * 21, "embeddings": 90,
+                                      "embeddings_seconds": 45.0, "api_seconds": 540 * 21 + 45.0}}
+    assert pace_lines(step, {"chat": 28, "embeddings": 28}) == [
+        "chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.1 in flight; 10 would fill the quota",
+        "embeddings: 90 in 31 min = 3/min of 28; latency 0.50 s; 0.0 in flight; 1 would fill the quota"]
+    assert pace_lines(step, {})[0] == "chat: 540 in 31 min = 17/min; latency 21 s; 6.1 in flight"
+    # a run of atlas 0.2 has only api_seconds, for all the endpoints: shared by requests
+    old = {"seconds": 60, "api": {"chat": 10, "embeddings": 10, "api_seconds": 40.0}}
+    assert pace_lines(old, {"chat": 20})[0] == "chat: 10 in 60 s = 10/min of 20; latency 2.0 s; 0.3 in flight; " \
+                                               "1 would fill the quota"
+    assert pace_lines({"seconds": 5, "api": {"other": 1}}, {"chat": 20}) == []
+
+
+def test_the_concurrency_of_the_model_is_not_the_workers_of_the_documents(toml):
+    import pytest
+    from atlas.config import ConfigError
+    from atlas.llm import JsonLlm, from_config
+    cfg = load_config(toml('[llm]\nconcurrency = 8\n[search]\npart_workers = 2\n'))
+    service = from_config(cfg).llm
+    assert service.concurrency == 8 and JsonLlm(service).concurrency == 8 and JsonLlm(service, 3).concurrency == 3
+    assert cfg["search"]["part_workers"] == 2 and load_config(toml())["search"]["part_workers"] == 4
+    with pytest.raises(ConfigError, match="concurrency"):
+        load_config(toml('[llm]\nconcurrency = -1\n'))
+    with pytest.raises(ConfigError, match="'part_workers' must be at least 1"):
+        load_config(toml('[search]\npart_workers = 0\n'))

@@ -73,6 +73,8 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["chat"] == 1 and grown["other"] == 0 and grown["retried"] == 0
     assert grown["rejected"] >= 2 and grown["embeddings"] == 1 + grown["rejected"]
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
+    assert grown["chat_seconds"] > 0 and grown["embeddings_seconds"] > 0 and grown["other_seconds"] == 0
+    assert grown["api_seconds"] == pytest.approx(grown["chat_seconds"] + grown["embeddings_seconds"])
     assert grown["prompt_tokens"] == 0         # a bare client: the tokens are counted by note_usage
 
 
@@ -311,3 +313,25 @@ def test_the_own_tls_context_is_not_strict_on_python_3_13():
     other = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
                                             "unable to get local issuer certificate")
     assert "corporate root CA" in diagnose(other)
+
+
+def test_check_asks_the_server_for_the_context_of_the_model(fake, capsys):
+    """OpenRouter publishes context_length in GET /models, vLLM max_model_len, and Ollama the
+    num_ctx of the model in /api/show, outside /v1: check proposes it or compares it."""
+    from dataclasses import replace
+    from atlas.llm import Connection, check
+    url, control = fake
+
+    def out(service, **faults):
+        control.write_text(json.dumps(faults))
+        assert check(Connection(llm=service, embeddings=_service(url))) == 0
+        return capsys.readouterr().out
+
+    assert "context: 200000 tokens (context_length of GET /models, as OpenRouter publishes it): set [llm] " \
+           "context_tokens = 200000" in out(_service(url), context_length=200000)
+    mine = replace(_service(url), context_tokens=16384)
+    assert "WARNING context: [llm] context_tokens = 16384, but the server says 32768 (max_model_len" in \
+        out(mine, max_model_len=32768)
+    assert "context: 16384 tokens, as [llm] context_tokens (num_ctx of the model in Ollama" in out(mine, num_ctx=16384)
+    assert "context: the server does not publish it; [llm] context_tokens = 16384" in out(mine)
+    assert "set [llm] context_tokens by hand" in out(_service(url))

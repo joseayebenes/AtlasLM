@@ -25,6 +25,9 @@ model = "gemma4:12b"
 api_key = "${ATLAS_API_KEY:-local}"    # en el gateway: export ATLAS_API_KEY=... (o setx en Windows)
 max_tokens = 8192
 reasoning_effort = "none"              # gemma4 razona por defecto y tarda minutos por sección
+# context_tokens = 16384              # el contexto del modelo; atlas check lo pide al servidor y lo propone
+# concurrency = 10                     # peticiones al modelo a la vez; 0 = las workers. atlas status dice cuántas
+#                                      # llenan el cupo (requests_per_minute × latencia / 60)
 # reasoning_field = "reasoning"        # agentes: el razonamiento vuelve al modelo en este campo; "" = no
 #                                      # (atlas probe dice si el servidor lo aprovecha)
 # stream = ""                          # "" = en trozos salvo que el servidor no pueda; true / false lo fuerzan

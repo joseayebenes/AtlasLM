@@ -79,6 +79,8 @@ con OpenAI.
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
 | `stream` | sí/no o `""` | `""` | cada petición de chat llega en trozos (SSE) y atlas los junta en la misma respuesta. `""`: con streaming hasta que el servidor demuestre que no puede (rechaza `stream`, contesta sin SSE o cierra un stream vacío); entonces se repite sin él y no se vuelve a intentar en ese proceso con ese servidor y modelo. `true` o `false` lo fuerzan (con `true`, un rechazo es un error). `atlas probe` dice «streaming: ok \| not supported» |
+| `context_tokens` | entero | `0` | el contexto del modelo en tokens (entrada y salida); 0 = desconocido. `atlas check` lo pide al servidor si lo publica (OpenRouter y vLLM en `/models`, Ollama el `num_ctx` del modelo) y lo propone o avisa si no coincide. Con él, `[search] scope_chars` y `context_chars` salen de él si no se dan, y cada vuelta de un agente que no cabe en `context_tokens − max_tokens` deja fuera resultados viejos de herramientas, con un aviso. Tiene que ser mayor que `max_tokens` |
+| `concurrency` | entero | `0` | peticiones al modelo en vuelo a la vez desde un mismo cliente: en `docs`, entre las secciones de todos los documentos que se procesan juntos. 0 = las `workers` del paso, como antes. Sirve para llenar el cupo sin abrir más documentos a la vez: `atlas status` dice cuántas lo llenarían |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
 ## [embeddings]
@@ -115,6 +117,13 @@ Red y límites, comunes al chat y a los embeddings (y retocables en `[llm.networ
 `[embeddings.network]`). Si los dos van al mismo servidor con la misma clave, comparten
 los límites.
 
+El cupo de un gateway es de la clave, no del proceso. Con `shared_limit` (por defecto), los
+procesos del puesto se reparten `requests_per_minute`: un rechazo que ve uno baja el ritmo de
+todos, y una pregunta del editor espera su turno en vez de llevarse los 429. El fichero de cada
+servidor se nombra por su máquina y su puerto, sin nada de la clave; dos claves distintas contra
+el mismo servidor comparten la ventana, que es lo prudente. Si el fichero no se puede bloquear,
+cada proceso vuelve a llevar su ritmo solo, y lo avisa; si está roto, se reescribe.
+
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `proxy` | URL | `HTTPS_PROXY` o `HTTP_PROXY` del entorno | proxy HTTP; con usuario, `"http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"` |
@@ -128,7 +137,8 @@ los límites.
 | `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30 |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |
-| `max_concurrent` | entero | `0` | peticiones simultáneas al servidor; 0 = sin límite |
+| `max_concurrent` | entero | `0` | peticiones simultáneas al servidor desde este proceso; 0 = sin límite |
+| `shared_limit` | sí/no | `true` | con `requests_per_minute` o `tokens_per_minute`, el límite es de todos los procesos del puesto que van al mismo servidor (`atlas serve`, un `atlas run` largo, `atlas develop`): comparten la ventana del último minuto, el ritmo adaptado y las pausas en `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows, `%LOCALAPPDATA%\atlas\limits`; otra carpeta con la variable `ATLAS_LIMITS_DIR`). `false`: cada proceso cree tener el cupo entero |
 | `max_retries` | entero | `6` | reintentos tras un 5xx o un fallo de conexión |
 | `max_backoff` | número | `60` | espera máxima entre reintentos sin `Retry-After` (s) |
 | `rate_limit_max_wait` | número | `900` | con 409 o 429, espera hasta este total por petición (s) antes de dar error |
@@ -139,7 +149,7 @@ los límites.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `steps` | lista | `["docs", "doors", "code", "graph", "index"]` | qué pasos ejecuta `atlas run`; el orden lo dan sus dependencias |
-| `workers` | entero | `1` | unidades a la vez en cada paso. En `docs`, además, peticiones al modelo a la vez entre todos los documentos |
+| `workers` | entero | `1` | unidades a la vez en cada paso. En `docs`, además, peticiones al modelo a la vez entre todos los documentos, salvo que `[llm] concurrency` diga otra cosa |
 | `step_workers` | tabla | `{}` | otro número para un paso: `{ docs = 8, code = 4, index = 2 }`. Solo `docs`, `code` e `index`; `doors` y `graph` van de uno en uno |
 | `on_error` | texto | `"continue"` | `continue`: una unidad que falla se anota y se sigue; `stop`: se para. Los errores fatales (conexión, credenciales, cupo agotado) siempre paran |
 | `max_attempts` | entero | `3` | intentos de una unidad antes de dejarla en cuarentena |
@@ -148,11 +158,21 @@ los límites.
 | `max_minutes` | entero | `0` | `atlas run` no empieza ninguna unidad más pasados estos minutos y sale con el código 3; la siguiente ejecución sigue. `0` = sin límite. `--max-minutes N` y `--until HH:MM` en la línea de comandos |
 | `max_requests` | entero | `0` | lo mismo tras tantas peticiones a las API (chat, embeddings y otras) en la ejecución. `0` = sin límite; `--max-requests N` |
 
-Con un gateway limitado por minuto, `workers` (o `step_workers.docs`) es lo que mantiene
-llena la cuota: con respuestas de 10 s y 28 peticiones por minuto hacen falta unas 5 a la
-vez. `atlas estimate` dice cuántas peticiones y cuánto tiempo queda antes de empezar, y
-`atlas status` muestra, por paso, el tiempo, las peticiones y cuánto se esperó al
-limitador. Programar la ingesta de noche: [instalación](instalacion.md#de-noche-con-un-límite).
+Con un gateway limitado por minuto, lo que mantiene lleno el cupo son las peticiones en
+vuelo: con respuestas de 21 s y 28 peticiones por minuto hacen falta 28 × 21 / 60 ≈ 10 a la
+vez (ley de Little). `atlas status` lo calcula, por paso, con lo medido en la última
+ejecución:
+
+```
+  docs.process   1860.00   0.40     42     42  spec.pdf (412.10 s); 540 chat, 3 rejected
+                 chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.1 in flight; 10 would fill the quota
+```
+
+Si las peticiones en vuelo se quedan por debajo de las que llenarían el cupo, sube `[llm]
+concurrency` (o `workers`); si hay rechazos, bájalo. `concurrency` separa las peticiones al
+modelo de los documentos que se abren a la vez (`workers`), que cuestan memoria.
+`atlas estimate` dice cuántas peticiones y cuánto tiempo queda antes de empezar. Programar la
+ingesta de noche: [instalación](instalacion.md#de-noche-con-un-límite).
 
 ## [plugins]
 
@@ -381,6 +401,7 @@ configuran aquí: van en cada búsqueda (ver [atlas.index](../atlas/index/README
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
 | `max_parts` | entero | `12` | partes de documentos enteros que se leen como mucho para una pregunta. Antes de pedir nada, `atlas ask` calcula el plan (documentos, secciones, caracteres, partes y peticiones; y minutos del cupo si hay `[network] requests_per_minute`); con más partes no lee nada y pide acotar la pregunta a un documento. `atlas ask --dry-run` imprime el plan sin preguntar al modelo |
 | `scope_documents` | entero | `3` | documentos que lee enteros, como mucho, una pregunta amplia que no nombra ninguno: los que más salen al buscarla en los resúmenes de los documentos y de sus secciones |
+| `part_workers` | entero | `4` | partes de documentos enteros que se leen a la vez |
 | `synonyms` | ruta | `""` | un fichero TOML de grupos de términos equivalentes del proyecto, relativo a este fichero (abajo) |
 
 `synonyms` apunta a un fichero como `examples/synonyms.toml`:
@@ -401,9 +422,13 @@ Las siglas de la pregunta (de 2 a 6 mayúsculas: «TMF») se buscan siempre entr
 definiciones del glosario, que entran con los IDs exactos.
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
-tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
+tokens. Con `[llm] context_tokens`, si `[search]` no los da, `scope_chars` es el 60 % de
+`context_tokens − max_tokens` a 4 caracteres por token, y `context_chars` el menor de 14 000 y
+ese mismo número: con 200 000 tokens y `max_tokens = 8192`, 460 000 caracteres por petición;
+con 16 384 tokens (Ollama), 19 660. Lo que diga `[search]` manda. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
 peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30 000. Las
-partes se leen de cuatro en cuatro; `[network] max_concurrent` lo limita. En un Mac de 24 GB
+partes se leen de `part_workers` en `part_workers`; `[llm] concurrency` y `[network]
+max_concurrent` lo limitan. En un Mac de 24 GB
 con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
 caracteres en partes de 5000 tardó 11 minutos.
 

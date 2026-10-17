@@ -345,6 +345,43 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   arrancar. Una línea al empezar y al acabar cada acción, con la versión y el fichero de
   configuración; las líneas de `atlas run` llevan el id de su fila de la tabla `runs`.
   `atlas status` dice dónde está. `atlas.logs.setup_logging` lo prepara.
+- El límite de peticiones es del puesto, no de cada proceso (`[network] shared_limit`, por
+  defecto con `requests_per_minute` o `tokens_per_minute`). `atlas serve`, un `atlas run` largo
+  y `atlas develop` creían tener cada uno las 28 peticiones por minuto del gateway. Ahora
+  comparten la ventana del último minuto, el ritmo adaptado y las pausas en
+  `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows, `%LOCALAPPDATA%\atlas\limits`;
+  `ATLAS_LIMITS_DIR` cambia la carpeta), bajo un bloqueo de fichero como el del workspace. El
+  fichero no lleva la clave ni un hash de ella; si no se puede bloquear, cada proceso vuelve a
+  ir por su cuenta, y si está roto se reescribe. Medido con el servidor falso (20 peticiones por
+  minuto de cupo, 1 s por respuesta), un `atlas run` de documentos con el modelo y el índice y,
+  a la vez, cuatro `atlas ask` seguidos, los dos con `requests_per_minute = 20`:
+  | | antes | con la ventana compartida |
+  |---|---|---|
+  | rechazos 429 en el servidor | 5 (1 del `run`, 4 de la cuarta pregunta) | 0 |
+  | `atlas run` | 277 s | 241 s |
+  | cada `atlas ask` | 10, 15, 14 y 47 s | 22, 27, 30 y 36 s |
+  Ninguna petición falló al final: los 429 se reintentan. Lo que cambia es que la pregunta que
+  llega con el lote en marcha espera su turno en vez de llevarse los rechazos, y que el lote no
+  pierde ritmo. El servidor falso tiene `rpm_limit` para probarlo.
+- `atlas status` dice, por paso y destino, cuánto se llenó el cupo y por qué:
+  «chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.1 in flight; 10 would fill the quota».
+  Las peticiones en vuelo de media son los segundos del servidor entre los del paso, y las que
+  llenarían el cupo, `requests_per_minute` × latencia / 60 (ley de Little). La guía pedía
+  adivinar `workers` con una latencia supuesta de 10 s, y con 20-30 s por sección el cupo se
+  llenaba a medias. Los contadores de uso separan los segundos por destino (`chat_seconds`,
+  `embeddings_seconds`, `other_seconds`); en las ejecuciones de la 0.2 se reparten los de
+  `api_seconds`.
+- `[llm] concurrency`: las peticiones al modelo en vuelo, separadas de los documentos que se
+  abren a la vez (`[pipeline] workers`). Por defecto, las `workers`, como antes.
+- `[search] part_workers`: las partes de documentos enteros que se leen a la vez (4, como antes).
+- `[llm] context_tokens`: el contexto del modelo (0 = desconocido, como antes). `atlas check` lo
+  pide al servidor cuando lo publica (OpenRouter y vLLM en `GET /models`, Ollama en `/api/show`)
+  y lo propone o avisa si no coincide. Con él, `[search] scope_chars` y `context_chars` salen del
+  contexto si no se dan (el 60 % de `context_tokens − max_tokens`, a 4 caracteres por token), y
+  un agente estima los tokens de cada vuelta y, si no cabe, deja fuera resultados viejos de
+  herramientas con un aviso: antes enviaba todo, sin recuento ni tope. Queda por hacer la
+  calibración de los caracteres por token con el `usage` del servidor: depende de guardar los
+  tokens de cada petición, que aún no está en `develop`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -543,6 +580,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - La caché de embeddings de `atlas.db` gana la columna `model`. Los vectores de un workspace de
   la 0.2.0 no la tienen: `atlas cache export` se la pone a los de los textos del índice; los
   demás (textos que ya no están en el índice) no se exportan. No se reprocesa nada.
+- Con `requests_per_minute` o `tokens_per_minute`, atlas escribe en `~/.atlas/limits` (o
+  `%LOCALAPPDATA%\atlas\limits`). Dos procesos contra el mismo gateway ya no suman sus límites:
+  si alguien subió `requests_per_minute` contando con eso, que lo baje al del gateway.
+  `shared_limit = false` vuelve a lo de antes.
 
 ## [0.2.0] — 2026-10-16
 

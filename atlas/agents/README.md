@@ -82,6 +82,13 @@ cortos (`ok`, `file`, `passed`...). JetBrains vio que esto acierta como resumir 
 y cuesta la mitad (*The Complexity Trap*, 2025). En la tanda 4, las vueltas de un arreglo
 llevaban 55 000 tokens de entrada, casi todo lecturas viejas. Por defecto, 0: todo se queda.
 
+Con `[llm] context_tokens`, además, cada vuelta tiene que caber en el contexto del modelo:
+antes de enviarla se estiman sus tokens (caracteres / 4, con las herramientas) y, si pasan de
+`context_tokens − max_tokens`, se dejan fuera resultados viejos de cinco en cinco, como con un
+`keep_tool_results` menor, hasta que quepa. El registro lo dice: «turn of 12 300 tokens over a
+context of 8000 (6000 for the input): 10 old tool results left out». Los cinco últimos se quedan
+siempre.
+
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
 servidor lo dice (OpenRouter, `usage.cost`), su coste. Cada llamada de un agente a una herramienta queda en el
 registro de uso del workspace (origen `agent`, con el nombre del agente; `[mcp] usage_log` y

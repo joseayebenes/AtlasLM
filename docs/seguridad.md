@@ -147,6 +147,12 @@ caracteres, y entonces las preguntas que se hacen al editor quedan en el workspa
 guarda la configuración ni el contexto de las herramientas. Es información local: no sale
 del puesto, y `atlas usage` solo la lee. Prueba: `test_the_usage_log_keeps_counts_or_cut_arguments`.
 
+Fuera del workspace, solo las ventanas del límite de peticiones compartidas entre procesos
+(`[network] shared_limit`): `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows,
+`%LOCALAPPDATA%\atlas\limits`), con las horas de los envíos del último minuto y el ritmo
+adaptado. El nombre y el contenido no llevan la clave ni un hash de ella
+(`test_the_file_has_no_key_and_is_rewritten_when_broken`).
+
 ## Secretos
 
 **Solo del entorno.** Un valor `${VARIABLE}` o `${VARIABLE:-valor}` se lee del entorno al

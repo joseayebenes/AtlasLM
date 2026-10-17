@@ -353,19 +353,21 @@ def docs_step(ctx) -> Step | None:
     from atlas.outbound import record_sent
     by_name = {d["name"]: (d, options) for d, options in sources}
     root = ctx.cfg.workspace / "docs"
-    model = from_config(ctx.cfg).llm.model
+    service = from_config(ctx.cfg).llm
+    model = service.model
     workers = step_workers(ctx, "docs")
     analyses = shared_cache(ctx.cfg)        # read-only: [project] shared_cache
+    concurrency = service.concurrency or workers     # requests to the model in flight, of all the documents
     shared: dict = {}
     lock = threading.Lock()             # documents are processed in parallel
     reserved: dict[str, str] = {}       # output folder -> unit, for the documents of this run
 
     def llm() -> JsonLlm:
         # only when some source uses it, and only once. It is shared by the documents
-        # processed at the same time: `workers` sections of all of them at once.
+        # processed at the same time: `concurrency` sections of all of them at once.
         with lock:
             if "llm" not in shared:
-                shared["llm"] = JsonLlm(from_config(ctx.cfg).llm, concurrency=workers)
+                shared["llm"] = JsonLlm(service, concurrency=concurrency)
         return shared["llm"]
 
     def units(ctx) -> list[str]:          # <source>:<file named from the folder of atlas.toml>
@@ -400,7 +402,7 @@ def docs_step(ctx) -> Step | None:
         d, options = by_name[name]
         out = out_dir(ctx, unit)
         data = process_document(ctx.cfg.resolve(f), out, options, llm=llm() if options.analysis == "llm" else None,
-                                cache_dir=docs_cache(ctx.cfg), workers=workers, disabled=ctx.disabled,
+                                cache_dir=docs_cache(ctx.cfg), workers=concurrency, disabled=ctx.disabled,
                                 stop=ctx.stopping, shared_cache=analyses)
         for kind, n in data["sent"].items():
             record_sent(ctx.store.path, model, {f"docs:{name}": n}, kind)
@@ -440,7 +442,7 @@ def docs_step(ctx) -> Step | None:
         return {**est, "sections": sections, "to_analyse": to_analyse, "overviews": overviews,
                 **({"unreadable": unreadable} if unreadable else {})}
 
-    # documents in parallel, and the sections of all of them `workers` at a time (llm()):
+    # `workers` documents in parallel, and the sections of all of them `concurrency` at a time (llm()):
     # the extraction of a PDF goes on while the model answers about the sections of others
     return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune,
                 estimate=estimate)
@@ -812,7 +814,7 @@ PARALLEL_STEPS = ("code", "docs", "index")      # the others process their units
 def step_workers(ctx, name: str) -> int:
     """Units of the step `name` processed at the same time: [pipeline.step_workers] or, if
     it does not say, [pipeline] workers. In docs they are also the sections that are
-    analysed at the same time."""
+    analysed at the same time, unless [llm] concurrency says otherwise."""
     per_step = ctx.cfg["pipeline"]["step_workers"]
     for key, n in per_step.items():
         if key not in STEPS:
@@ -976,8 +978,40 @@ def _tokens_text(api: dict) -> str:
     return ", ".join(parts)
 
 
-def print_profile(run: dict) -> None:
-    """The time profile of a run (Ledger.runs): one line per step."""
+def _span(seconds: float) -> str:
+    return f"{seconds:.1f} s" if seconds < 10 else f"{seconds:.0f} s" if seconds < 120 else f"{seconds / 60:.0f} min"
+
+
+def pace_lines(profile: dict, rpm: dict[str, int]) -> list[str]:
+    """What a step asked of each endpoint and how full it kept the quota, with Little's law:
+    'chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.0 in flight; 8 would fill the quota'.
+    The requests in flight on average are the seconds the server spent on them over the
+    seconds of the step; to fill `rpm` requests per minute of `latency` seconds each, about
+    rpm x latency / 60 have to be in flight. `rpm` by endpoint, from [network]."""
+    import math
+    api, seconds, out = profile.get("api") or {}, profile.get("seconds", 0), []
+    for endpoint in ("chat", "embeddings"):
+        n = api.get(endpoint, 0)
+        if not n or seconds <= 0:
+            continue
+        busy = api.get(f"{endpoint}_seconds")
+        if busy is None:                    # a run of atlas 0.2: the seconds of all the endpoints
+            total = sum(api.get(k, 0) for k in ("chat", "embeddings", "other"))
+            busy = api.get("api_seconds", 0) * n / total if total else 0
+        latency, limit = busy / n, rpm.get(endpoint, 0)
+        line = f"{endpoint}: {n:g} in {_span(seconds)} = {n * 60 / seconds:.0f}/min" + (f" of {limit}" if limit else "")
+        line += f"; latency {latency:.2f} s" if latency < 1 else f"; latency {latency:.1f} s" if latency < 10 \
+            else f"; latency {latency:.0f} s"
+        line += f"; {busy / seconds:.1f} in flight"
+        if limit:
+            line += f"; {max(1, math.ceil(limit * latency / 60))} would fill the quota"
+        out.append(line)
+    return out
+
+
+def print_profile(run: dict, rpm: dict[str, int] | None = None) -> None:
+    """The time profile of a run (Ledger.runs): one line per step and, under it, the pace of
+    the requests to each endpoint (pace_lines, with the limits `rpm` of [network])."""
     rep = run["report"]
     print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
           + (f", stopped: {rep['fatal']}" if rep.get("fatal") else "")
@@ -989,6 +1023,8 @@ def print_profile(run: dict) -> None:
         notes += [_api_text(p["api"])] if p.get("api") and _api_text(p["api"]) else []
         print(f"  {step:20s} {p['seconds']:8.2f} {p['scan_seconds']:6.2f} {p['units']:6d} {p['ran']:6d}  "
               + "; ".join(notes))
+        for line in pace_lines(p, rpm or {}):
+            print(f"  {'':20s} {line}")
 
 
 def print_sent(cfg: Config, db: Path) -> None:
@@ -1047,7 +1083,10 @@ def status(cfg: Config, as_json: bool = False) -> int:
     print_sent(cfg, ctx.store.path)
     runs = ledger.runs(6)
     if runs:
-        print_profile(runs[0])
+        from atlas.llm import from_config
+        conn = from_config(cfg)
+        print_profile(runs[0], {"chat": conn.llm.net.requests_per_minute,
+                                "embeddings": conn.embeddings.net.requests_per_minute})
     if len(runs) > 1:
         print("previous runs:")
         for r in runs[1:]:

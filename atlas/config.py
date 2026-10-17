@@ -78,13 +78,13 @@ SCHEMA: dict[str, dict[str, Any]] = {
                 "log_keep_days": int},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
-            "stream": (bool, str), "network": dict},
+            "stream": (bool, str), "concurrency": int, "context_tokens": int, "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "family": str,
                    "query_prefix": str, "document_prefix": str, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "idle_timeout": float, "turn_timeout": float,
                 "requests_per_minute": int,
-                "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int,
+                "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int, "shared_limit": bool,
                 "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
                 "retry_statuses": list},
     "pipeline": {"workers": int, "step_workers": dict, "on_error": str, "max_attempts": int,
@@ -96,7 +96,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
               "code_revision": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list, "fts_tokenizer": str},
     "search": {"results": int, "per_document": int, "context_chars": int, "context_radius": int, "scope": str,
-               "scope_chars": int, "synonyms": str, "max_parts": int, "scope_documents": int},
+               "scope_chars": int, "synonyms": str, "max_parts": int, "scope_documents": int,
+               "part_workers": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list, "profile": str, "usage_log": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -107,6 +108,14 @@ MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of 
 MATRIX_FORMATS = ("csv", "md", "json", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
 GRAPH_BUILD_KEYS = ("exports", "communities", "code_revision")     # the keys of [graph] that change the graph built
 EMBED_FAMILIES = ("embeddinggemma", "nomic", "e5", "none")   # [embeddings] family (atlas.index.embeddings)
+CHARS_PER_TOKEN = 4         # until a calibration with the usage of the server
+CONTEXT_SHARE = 0.6         # of the input that a request can take (the prompt and the question take the rest)
+
+
+def search_budget(context_tokens: int, max_tokens: int = 0) -> int:
+    """Characters of documents in one request to a model of `context_tokens`, leaving
+    `max_tokens` for the answer: CONTEXT_SHARE of the rest, at CHARS_PER_TOKEN."""
+    return max(1000, int(CONTEXT_SHARE * (context_tokens - max_tokens) * CHARS_PER_TOKEN))
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -139,7 +148,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "fts_tokenizer": "unicode61 remove_diacritics 2"},    # changing it rebuilds only index_fts
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",
-               "scope_chars": 100000, "synonyms": "", "max_parts": 12, "scope_documents": 3},
+               "scope_chars": 100000, "synonyms": "", "max_parts": 12, "scope_documents": 3,
+               "part_workers": 4},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": [], "profile": "", "usage_log": "counts"},     # profile "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
@@ -279,7 +289,8 @@ def _validate_search(search: dict, base: Path) -> None:
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
     for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("context_radius", 0),
-                       ("scope_chars", 1000), ("max_parts", 1), ("scope_documents", 1)):
+                       ("scope_chars", 1000), ("max_parts", 1), ("scope_documents", 1),
+                       ("part_workers", 1)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
     if search.get("synonyms"):
@@ -457,6 +468,13 @@ def load_config(path: str | Path) -> Config:
         raise ConfigError("[project] log_keep_days must be 0 (keep every file) or more")
     if data.get("mcp", {}).get("usage_log", "counts") not in ("counts", "full", "off"):
         raise ConfigError("[mcp] usage_log must be one of counts, full, off")
+    if data.get("llm", {}).get("concurrency", 0) < 0:
+        raise ConfigError("[llm] 'concurrency' must be 0 (no cap) or more")
+    llm = data.get("llm", {})
+    context, max_tokens = llm.get("context_tokens", 0), llm.get("max_tokens", 0)
+    if context < 0 or (context and context <= max_tokens):
+        raise ConfigError("[llm] 'context_tokens' must be 0 (unknown) or more than max_tokens")
+    given = set(data.get("search", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "
@@ -465,5 +483,11 @@ def load_config(path: str | Path) -> Config:
 
     for section, defaults in DEFAULTS.items():
         data[section] = {**defaults, **data.get(section, {})}
+    if context:                     # with the context of the model, what [search] does not say comes from it
+        budget = search_budget(context, max_tokens)
+        if "scope_chars" not in given:
+            data["search"]["scope_chars"] = budget
+        if "context_chars" not in given:
+            data["search"]["context_chars"] = max(1000, min(DEFAULTS["search"]["context_chars"], budget))
     data.setdefault("sources", {})
     return Config(path=path, data=data, unset=unset_variables(raw))

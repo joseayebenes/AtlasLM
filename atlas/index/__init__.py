@@ -208,7 +208,8 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, context_radius,
-    scope, scope_chars, synonyms: the path of a synonyms file, max_parts, scope_documents);
+    scope, scope_chars, synonyms: the path of a synonyms file, max_parts, scope_documents,
+    part_workers);
     what is not given takes its default. `fts_tokenizer` is that of [index]; `id_normalize`,
     that of [sources.doors.convention], for the IDs written in another way in a query.
     `shared`: a read-only cache of vectors to look up what the local one lacks
@@ -312,7 +313,7 @@ class Index:
                       extra_sources=extra_sources, synonyms=self.synonyms, id_normalize=self.id_normalize,
                       context_radius=s["context_radius"], where=where, max_parts=s["max_parts"],
                       scope_documents=s["scope_documents"], requests_per_minute=self.requests_per_minute,
-                      dry_run=dry_run, section=section, local=self.local_filter())
+                      dry_run=dry_run, section=section, local=self.local_filter(), part_workers=s["part_workers"])
 
     def meta_values(self) -> dict[str, list[str]]:
         """What `where` can take: each key of the meta of the records, with some values."""

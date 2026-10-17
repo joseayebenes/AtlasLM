@@ -82,7 +82,7 @@ CONTEXT_RADIUS = 1      # records on each side of a hit in its context (IndexSto
 SCOPE_CHARS = 100000    # largest part of whole documents read in one request
 SCOPE_DOCUMENTS = 3     # documents read whole when a broad question names none
 MAX_PARTS = 12          # most parts of whole documents read for one question
-PART_WORKERS = 4        # parts of whole documents read at the same time
+PART_WORKERS = 4        # parts of whole documents read at the same time ([search] part_workers)
 MAX_CHAPTERS = 50       # chapters listed to narrow a question that is too broad
 SUMMARY_KINDS = ["overview", "section_summary"]   # what chooses the documents of a broad question
 
@@ -600,7 +600,8 @@ def _chapters(sources: list[dict]) -> list[dict]:
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
                  max_chars: int = SCOPE_CHARS, max_parts: int = MAX_PARTS, requests_per_minute: int = 0,
                  extra_requests: int = 0, section: str = "", extra_sources: list[dict] = (),
-                 where: dict | None = None, local: Callable[[str], bool] | None = None) -> dict:
+                 where: dict | None = None, local: Callable[[str], bool] | None = None,
+                 part_workers: int = PART_WORKERS) -> dict:
     """The answer from whole documents ({doc, name}), or from a section of them, after
     `extra_sources`: one request if they fit in max_chars; if not, notes from each part and
     a last request that combines them. With more than max_parts parts, or a section that is
@@ -641,7 +642,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
         text = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}")
         requests, truncated = _requests(text), _truncated(text)
     else:
-        notes, failed, requests, truncated = _read_parts(llm, question, parts, names)
+        notes, failed, requests, truncated = _read_parts(llm, question, parts, names, part_workers)
         found = bool(notes)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
@@ -682,12 +683,12 @@ def _checked(text: str, sources: list[dict], passages: bool, found: bool = True)
     return out
 
 
-def _read_parts(llm: JsonLlm, question: str, parts: list[str],
-                names: list[str]) -> tuple[list[str], list[str], int, bool]:
-    """The notes of each part, PART_WORKERS at a time, without the empty ones, a note ("part
+def _read_parts(llm: JsonLlm, question: str, parts: list[str], names: list[str],
+                part_workers: int = PART_WORKERS) -> tuple[list[str], list[str], int, bool]:
+    """The notes of each part, `part_workers` at a time, without the empty ones, a note ("part
     2 of 4 failed: ...") for each part that failed, the requests they took and whether some
     note is cut by max_tokens; if all of them fail, the error."""
-    with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
+    with ThreadPoolExecutor(max(1, min(part_workers, len(parts)))) as pool:
         futures = [pool.submit(llm.ask_text, NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}")
                    for part in parts]
     notes: list[str] = []
@@ -813,7 +814,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
            extra_sources: list[dict] = (), synonyms: list[list[str]] = (), id_normalize: str = "upper",
            context_radius: int = CONTEXT_RADIUS, where: dict | None = None, max_parts: int = MAX_PARTS,
            scope_documents: int = SCOPE_DOCUMENTS, requests_per_minute: int = 0, dry_run: bool = False,
-           section: str = "", local: Callable[[str], bool] | None = None) -> dict:
+           section: str = "", local: Callable[[str], bool] | None = None, part_workers: int = PART_WORKERS) -> dict:
     """{"answer": text with [n] citations, "status": not_found | answered | partial | local_only
     (all that was found is of local-only sources, and nothing went to the model), "uncited": the
     sentences without a citation, "consulted": how many sources it was given (see
@@ -865,7 +866,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
         docs = _scope_documents(store, document, named, hits, scope_documents, local)
         if docs:
             return answer_whole(store, llm, question, docs, scope_chars, max_parts, requests_per_minute, requests,
-                                section, extra, where, local)
+                                section, extra, where, local, part_workers)
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
                   where=where, synonyms=synonyms, id_normalize=id_normalize)
     routed = {s["ref"].upper() for s in extra if s.get("ref")}

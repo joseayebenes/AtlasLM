@@ -47,12 +47,17 @@ The control file is re-read on every request; keys:
                                       OpenRouter sends while the model works)
   bodies: "path"                   -> appends the body of every request received, one per line
   cost: X                          -> every answer says it cost X (usage.cost, as OpenRouter)
+  context_length: N / max_model_len: N -> in GET /v1/models, the context of the model, as
+                                      OpenRouter / vLLM publish it
+  num_ctx: N                       -> POST /api/show answers as Ollama, with that num_ctx
+  rpm_limit: N                     -> 429 "rate limit" on chat and embeddings when N requests were
+                                      accepted in the last 60 s (a gateway with a quota per minute)
 A chat request with "stream": true gets the answer in SSE chunks: the reasoning, the content and
 each tool call by its index (the id and the name first, then the arguments in pieces), then
 finish_reason, the usage in a last chunk without choices if stream_options.include_usage, and
 [DONE].
 GET / returns counters (chat, embeddings, emb_texts, rejections, streams; open: the POST requests
-being answered now), and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
+being answered now; times: the epoch seconds of the last accepted requests), and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
@@ -62,9 +67,19 @@ import argparse, json, math, re, hashlib, select, socket, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _ap = argparse.ArgumentParser(); _ap.add_argument("--port", type=int, default=8770); _ap.add_argument("--control", default="faults.json")
 ARGS = _ap.parse_args()
-stats = {"chat": 0, "embeddings": 0, "emb_texts": 0, "streams": 0, "open": 0}
+stats = {"chat": 0, "embeddings": 0, "emb_texts": 0, "streams": 0, "open": 0, "times": []}
 lock = threading.Lock()
 once = {"statuses": None, "sent": 0}       # where chat_status_once goes
+quota = threading.Lock()
+def over_quota(c):
+    """rpm_limit: whether this request goes over the quota; if not, it is counted in it."""
+    with quota:
+        now = time.time()
+        if c.get("rpm_limit") is not None and sum(now - t < 60 for t in stats["times"]) >= c["rpm_limit"]:
+            stats["rejections"] = stats.get("rejections", 0) + 1
+            return True
+        stats["times"] = stats["times"][-499:] + [now]
+        return False
 def ctl():
     try: return json.load(open(ARGS.control))
     except Exception: return {}
@@ -87,7 +102,13 @@ class H(BaseHTTPRequestHandler):
         if c.get("ratelimit_headers"):
             headers.update({f"x-ratelimit-{k}": v for k, v in c["ratelimit_headers"].items()})
         return self.send(code, {"error": {"message": message, "type": kind}}, headers)
-    def do_GET(self): self.send(200, stats)
+    def do_GET(self):
+        if self.path.rstrip("/").endswith("/models"):
+            c = ctl()
+            extra = {k: c[k] for k in ("context_length", "max_model_len") if k in c}
+            return self.send(200, {"object": "list", "data": [{"id": "fake", "object": "model", **extra},
+                                                              {"id": "other", "object": "model", "context_length": 1}]})
+        self.send(200, stats)
     def do_POST(self):
         with lock: stats["open"] += 1
         try: self.answer()
@@ -141,9 +162,16 @@ class H(BaseHTTPRequestHandler):
         raw = self.rfile.read(int(self.headers["Content-Length"])); body = json.loads(raw); c = ctl()
         if c.get("bodies"):
             with open(c["bodies"], "ab") as f: f.write(raw.replace(b"\n", b" ") + b"\n")
+        if self.path.endswith("/api/show"):
+            if c.get("num_ctx") is None:
+                return self.send(404, {"error": "not found"})
+            return self.send(200, {"parameters": f"temperature 1\nnum_ctx {c['num_ctx']}",
+                                   "model_info": {"gemma3.context_length": 131072}})
         time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})
+        if over_quota(c):
+            return self.send(429, {"error": {"message": "rate limit exceeded", "type": "rate_limit"}})
         if self.path.endswith("/embeddings"):
             if c.get("emb_409_after") is not None and stats["embeddings"] >= c["emb_409_after"]:
                 return self.reject(409, "rate limit exceeded", "rate_limit", c)

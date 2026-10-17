@@ -233,3 +233,17 @@ model = "none"
                         ('[sources.doors]\nlocal_only = [3]', "list of module names")):
         with pytest.raises(ConfigError, match=error):
             alone(text)
+
+
+def test_the_context_of_the_model_sizes_what_search_reads(toml):
+    from atlas.config import search_budget
+    cfg = load_config(toml('[llm]\ncontext_tokens = 200000\nmax_tokens = 8192\n'))
+    assert cfg["search"]["scope_chars"] == search_budget(200000, 8192) == 460339
+    assert cfg["search"]["context_chars"] == 14000                       # passages: never more than before
+    small = load_config(toml('[llm]\ncontext_tokens = 4096\nmax_tokens = 1024\n'))
+    assert small["search"]["scope_chars"] == small["search"]["context_chars"] == 7372
+    given = load_config(toml('[llm]\ncontext_tokens = 4096\n[search]\nscope_chars = 50000\n'))
+    assert given["search"]["scope_chars"] == 50000 and given["search"]["context_chars"] == 9830
+    assert load_config(toml())["search"]["scope_chars"] == 100000          # unknown context: as before
+    with pytest.raises(ConfigError, match="context_tokens"):
+        load_config(toml('[llm]\ncontext_tokens = 1000\nmax_tokens = 8192\n'))

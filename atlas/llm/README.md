@@ -19,7 +19,12 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 - usa el proxy y los certificados de la configuración (`ca_cert = "system"`: el almacén del
   sistema);
 - respeta el límite de peticiones y de tokens por minuto, repartiendo las peticiones en el
-  tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave;
+  tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave y,
+  con `[network] shared_limit` (por defecto, si hay límite), todos los procesos del puesto:
+  `SharedWindow` guarda en `~/.atlas/limits/<servidor>-<puerto>.json` las horas de los envíos
+  del último minuto, el ritmo adaptado y las pausas, y cada envío se decide con el fichero
+  bloqueado (`flock` o `msvcrt.locking`, como el workspace). Sin poder bloquearlo, el proceso
+  lleva su ritmo solo; `max_concurrent` sigue siendo de cada proceso;
 - con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*`, cuyo `reset` puede venir en
   segundos o en milisegundos, o espera creciente) hasta
   `rate_limit_max_wait`, sin contarlo como reintento; si es adaptativo, baja el ritmo un
@@ -42,6 +47,13 @@ servidor: `structured output: json_schema | json_object | none` (una petición p
 más por cada escalón que rechace). Bajo los embeddings, imprime los prefijos de
 consulta y de documento efectivos, o un aviso si el nombre del modelo no dice su familia
 (`[embeddings] family`, ver [atlas.index](../index/README.md#embeddings)).
+
+razonando sin contestar. Pide también el contexto del modelo al servidor, si lo publica
+(`served_context`): `context_length` de `GET /models` en OpenRouter, `max_model_len` en vLLM y
+el `num_ctx` del modelo en el `/api/show` de Ollama, fuera de `/v1`. Si `[llm] context_tokens`
+es 0, propone el valor; si no coincide, avisa. Ollama sin `num_ctx` solo dice cuánto admite el
+modelo, no cuánto le da el servidor (`OLLAMA_CONTEXT_LENGTH`), y entonces solo lo cuenta.
+
 
 `atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
 (`[llm] reasoning_effort`, o `low` si está vacío o es `none`):
@@ -129,21 +141,25 @@ cortada después de repetir) y `requests` (1 o 2). `atlas ask` y `ask_docs` lo d
 respuesta lleva `truncated` y `atlas ask` avisa de que conviene subir `[llm] max_tokens`.
 
 `concurrency` limita cuántas peticiones de una misma instancia hay en vuelo a la vez, aunque
-la usen muchos hilos: así comparten las secciones de todos los documentos que se procesan
-juntos `[pipeline] workers` peticiones.
+la usen muchos hilos; sin darlo, es el de `[llm] concurrency`. Así comparten las secciones de
+todos los documentos que se procesan juntos `[llm] concurrency` peticiones (o, si es 0,
+`[pipeline] workers`).
 
 ## Contadores de uso
 
 `usage()` devuelve lo que ha pedido el proceso desde que empezó: peticiones por destino
 (`chat`, `embeddings`, `other`), rechazos por cupo (`rejected`), reintentos (`retried`),
-segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`), y kB
-enviados (`sent_kb`). Además, lo que dice el `usage` de cada respuesta (`note_usage`, que
+segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`, y por destino
+`chat_seconds`, `embeddings_seconds` y `other_seconds`), y kB enviados (`sent_kb`). Además, lo que dice el `usage` de cada respuesta (`note_usage`, que
 llaman `JsonLlm`, `Embedder`, `AtlasLlm`, `check` y `probe`): tokens del prompt
 (`prompt_tokens`, de ellos `cached_tokens`), de la respuesta (`completion_tokens`, de ellos
 `reasoning_tokens`), de los textos de los embeddings (`embedding_tokens`) y `cost` cuando el
 servidor lo da (OpenRouter). `usage_since(antes)` da lo que creció. Los perfiles de `atlas
 run` guardan lo que creció en cada paso; `atlas ask`, `atlas agent` y `atlas eval` lo
-imprimen. `set_usage_label(comando, paso)` dice qué está haciendo el proceso.
+imprimen. `set_usage_label(comando, paso)` dice qué está haciendo el proceso. `atlas status`
+saca de los perfiles, por paso y destino, el ritmo, la latencia media, las peticiones en vuelo
+de media (los segundos del servidor entre los del paso) y cuántas llenarían el cupo (rpm ×
+latencia / 60).
 
 ## Como librería
 
@@ -164,7 +180,7 @@ También funciona solo, con su propio `connection.toml`:
 
 ## Pruebas
 
-`tests/test_fake_api.py` (cliente, `check` con modelos que razonan y el escalón de salida
+`tests/test_rate_limit.py` (la ventana compartida, con dos procesos reales), `tests/test_fake_api.py` (cliente, `check` con modelos que razonan y el escalón de salida
 estructurada, contadores de uso, la espera por `Retry-After` y por las cabeceras
 `x-ratelimit-*` por HTTP, reintentos de los 5xx, un cupo que no se libera, `usage` del tamaño
 real, `atlas probe` contra un servidor que llama a herramientas, las respuestas en trozos SSE),

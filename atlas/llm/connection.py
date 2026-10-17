@@ -77,7 +77,8 @@ class NetConfig:
     requests_per_minute: int = 0
     tokens_per_minute: int = 0   # estimated as characters/4 of the request body
     adaptive: bool = True        # slow down only when the server rejects for rate limit
-    max_concurrent: int = 0
+    max_concurrent: int = 0      # in this process
+    shared_limit: bool = True    # with a limit: the window is shared with the other processes of the workstation
     max_retries: int = 6              # retries on 5xx or connection errors
     max_backoff: float = 60.0
     rate_limit_max_wait: float = 900.0  # max total wait per request on 409/429 (s)
@@ -96,6 +97,8 @@ class ServiceConfig:
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
     stream: str = ""             # LLM only: "" = stream unless the server cannot (atlas.llm.chat); true/false force it
+    concurrency: int = 0         # LLM only: requests of one JsonLlm in flight; 0 = no cap (in docs, the workers)
+    context_tokens: int = 0      # LLM only: the context of the model (input + output); 0 = unknown
     batch: int = 32              # embeddings only
     family: str = ""             # embeddings only: embeddinggemma | nomic | e5 | none; "" = from the model name
     query_prefix: str = ""       # embeddings only: literal prefixes, instead of those of the family
@@ -333,6 +336,102 @@ def _log(msg: str) -> None:
     _LOGGER.warning(msg)
 
 
+def limits_dir() -> Path:
+    r"""The folder of the windows that the limiter shares between the processes of the
+    workstation: ATLAS_LIMITS_DIR, or %LOCALAPPDATA%\atlas\limits on Windows, or
+    ~/.atlas/limits."""
+    if os.environ.get("ATLAS_LIMITS_DIR"):
+        return Path(os.environ["ATLAS_LIMITS_DIR"]).expanduser()
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "atlas" / "limits"
+    return Path.home() / ".atlas" / "limits"
+
+
+def limit_file(cfg: "ServiceConfig") -> Path:
+    """<limits_dir>/<host>-<port>.json: one window per destination. Neither the name nor the
+    content has anything of the key (docs/seguridad.md: no hash of a secret on disk)."""
+    u = urlparse(cfg.base_url)
+    host = re.sub(r"[^A-Za-z0-9._-]", "_", u.hostname or "server")
+    return limits_dir() / f"{host}-{u.port or (443 if u.scheme == 'https' else 80)}.json"
+
+
+class SharedWindow:
+    """The window of a destination shared by the processes of the workstation (atlas serve,
+    a long atlas run, atlas develop): a JSON file with the times of the sends of the last
+    minute and the adapted pace, read and written under the operating system's lock on a
+    file beside it (flock on POSIX, msvcrt.locking on Windows), as the workspace lock of
+    atlas.pipeline. The lock is only held while one send is decided, never during a request.
+
+    A broken file is written again from scratch; a window nobody touched for STALE seconds
+    starts afresh (a pace lowered yesterday does not hold today)."""
+
+    LOCK_WAIT = 2.0      # seconds trying to lock before pacing alone
+    STALE = 600.0
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.lock_path = self.path.with_suffix(".lock")
+        self._fd: int | None = None
+
+    def _try_lock(self, fd: int) -> bool:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def acquire(self) -> dict:
+        """Locks and returns the state ({} if there is none, it is broken or stale). Raises
+        OSError if the file cannot be made or locked within LOCK_WAIT seconds."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self.LOCK_WAIT
+        while not self._try_lock(fd):
+            if time.monotonic() > deadline:
+                os.close(fd)
+                raise OSError(f"{self.lock_path} stayed locked for {self.LOCK_WAIT:g} s")
+            time.sleep(0.01)
+        self._fd = fd
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or not isinstance(state.get("stamps", []), list):
+                raise ValueError("not a window")
+            [float(t) for t in state.get("stamps", [])]
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, TypeError):
+            _log(f"[limits] {self.path} was broken: it is rewritten")
+            return {}
+        if time.time() - float(state.get("updated", 0) or 0) > self.STALE:
+            return {}
+        return state
+
+    def release(self, state: dict | None) -> None:
+        """Writes `state` (None: nothing changed) and unlocks."""
+        fd, self._fd = self._fd, None
+        try:
+            if state is not None:
+                tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+                tmp.write_text(json.dumps({**state, "updated": time.time()}), encoding="utf-8")
+                os.replace(tmp, self.path)
+        finally:
+            if fd is not None:
+                if os.name == "nt":
+                    try:
+                        import msvcrt
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+                os.close(fd)             # on POSIX this releases the flock
+
+
 class RateLimiter:
     """Pacing shared by everything that goes to the same server with the same key.
 
@@ -343,9 +442,12 @@ class RateLimiter:
     - Adaptive: each rate-limit rejection lowers the pace by 30 %; after a minute without
       rejections it slowly recovers. If no rpm is configured, it discovers it.
     - Shared pause: after a rejection, or if the server says no requests are left, all
-      threads wait."""
+      threads wait.
+    - With `shared` (a SharedWindow), the window, the adapted pace and the pauses are those
+      of every process of the workstation that goes to the same destination; if the file
+      cannot be locked, this process paces on its own, in memory."""
 
-    def __init__(self, net: NetConfig, label: str):
+    def __init__(self, net: NetConfig, label: str, shared: "SharedWindow | None" = None):
         self.label = label
         self.rpm_conf = net.requests_per_minute
         self.rpm = float(net.requests_per_minute)
@@ -353,6 +455,8 @@ class RateLimiter:
         self.adaptive = net.adaptive
         self.sem = threading.BoundedSemaphore(net.max_concurrent) if net.max_concurrent > 0 else None
         self.lock = threading.Lock()
+        self.shared = shared
+        self.clock = time.time if shared else time.monotonic     # the shared window is in epoch seconds
         self.stamps: deque[float] = deque()
         self.tokens: deque[tuple[float, int]] = deque()
         self.last_send = 0.0
@@ -362,60 +466,105 @@ class RateLimiter:
         self.rejections = 0
         self.diagnosed = False
 
+    # -- the shared window (with self.lock held) ------------------------------------------
+    def _load(self) -> bool:
+        """Takes the state of the shared window; False if there is none (or it failed)."""
+        if self.shared is None:
+            return False
+        try:
+            st = self.shared.acquire()
+        except OSError as e:
+            _log(f"[API {self.label}] the window shared with other processes ({self.shared.path}) cannot be "
+                 f"used ({e}): this process paces on its own")
+            self.shared = None
+            return False
+        self.stamps = deque(sorted(float(t) for t in st.get("stamps", [])))
+        self.tokens = deque((float(t), int(n)) for t, n in st.get("tokens", []))
+        for name in ("last_send", "paused_until", "last_rejection", "last_increase"):
+            setattr(self, name, float(st.get(name, 0) or 0))
+        self.rejections = int(st.get("rejections", 0) or 0)
+        adapted = float(st.get("rpm", 0) or 0)
+        self.rpm = min(adapted, self.rpm_conf) if adapted and self.rpm_conf else (adapted or float(self.rpm_conf))
+        return True
+
+    def _save(self, changed: bool = True) -> None:
+        if self.shared is None:
+            return
+        self.shared.release({"stamps": list(self.stamps), "tokens": [list(t) for t in self.tokens],
+                             "rpm": self.rpm if self.rejections else 0, "rejections": self.rejections,
+                             "last_send": self.last_send, "paused_until": self.paused_until,
+                             "last_rejection": self.last_rejection, "last_increase": self.last_increase}
+                            if changed else None)
+
     def _purge(self, now: float) -> None:
         while self.stamps and now - self.stamps[0] >= WINDOW:
             self.stamps.popleft()
         while self.tokens and now - self.tokens[0][0] >= WINDOW:
             self.tokens.popleft()
 
-    def _recover(self, now: float) -> None:
+    def _recover(self, now: float) -> bool:
         """Raises the pace by +1 req/min every 30 s without rejections, up to the configured one."""
         if not self.adaptive or not self.rejections or not self.rpm:
-            return
+            return False
         if now - self.last_rejection < WINDOW or now - self.last_increase < WINDOW / 2:
-            return
+            return False
         if self.rpm_conf and self.rpm >= self.rpm_conf:
-            return
+            return False
         self.rpm = min(self.rpm + 1, self.rpm_conf or self.rpm + 1)
         self.last_increase = now
+        return True
 
     def wait(self, tokens: int = 0) -> None:
         while True:
             with self.lock:
-                now = time.monotonic()
-                self._purge(now)
-                self._recover(now)
-                delay = self.paused_until - now
-                if self.rpm:
-                    if len(self.stamps) >= int(self.rpm):
-                        delay = max(delay, WINDOW - (now - self.stamps[0]))
-                    delay = max(delay, self.last_send + WINDOW / self.rpm - now)
-                if self.tpm and self.tokens and sum(n for _, n in self.tokens) + tokens > self.tpm:
-                    delay = max(delay, WINDOW - (now - self.tokens[0][0]))
+                shared = self._load()
+                try:
+                    now = self.clock()
+                    self._purge(now)
+                    recovered = self._recover(now)
+                    delay = self.paused_until - now
+                    if self.rpm:
+                        if len(self.stamps) >= int(self.rpm):
+                            delay = max(delay, WINDOW - (now - self.stamps[0]))
+                        delay = max(delay, self.last_send + WINDOW / self.rpm - now)
+                    if self.tpm and self.tokens and sum(n for _, n in self.tokens) + tokens > self.tpm:
+                        delay = max(delay, WINDOW - (now - self.tokens[0][0]))
+                    if delay <= 0:
+                        self.stamps.append(now)
+                        if self.tpm:
+                            self.tokens.append((now, tokens))
+                        self.last_send = now
+                finally:
+                    if shared:
+                        self._save(changed=delay <= 0 or recovered)
                 if delay <= 0:
-                    self.stamps.append(now)
-                    if self.tpm:
-                        self.tokens.append((now, tokens))
-                    self.last_send = now
                     return
             time.sleep(min(delay, 2.0) + 0.01)
 
     def pause(self, seconds: float) -> None:
         with self.lock:
-            self.paused_until = max(self.paused_until, time.monotonic() + seconds)
+            shared = self._load()
+            self.paused_until = max(self.paused_until, self.clock() + seconds)
+            if shared:
+                self._save()
 
     def rejected(self) -> None:
         """The server rejected for rate limit: lower the pace (at most once every 10 s, so
-        that several threads rejected at the same time do not sink it)."""
+        that several threads, or processes, rejected at the same time do not sink it)."""
         with self.lock:
-            now = time.monotonic()
-            self.rejections += 1
-            if not self.adaptive or now - self.last_rejection < 10:
-                return
-            self._purge(now)
-            base = self.rpm or max(len(self.stamps), 2)
-            self.rpm = max(1.0, base * 0.7)
-            self.last_rejection = now
+            shared = self._load()
+            try:
+                now = self.clock()
+                self.rejections += 1
+                if not self.adaptive or now - self.last_rejection < 10:
+                    return
+                self._purge(now)
+                base = self.rpm or max(len(self.stamps), 2)
+                self.rpm = max(1.0, base * 0.7)
+                self.last_rejection = now
+            finally:
+                if shared:
+                    self._save()
         _log(f"[API {self.label}] rate-limit rejection: pace lowered to {self.rpm:.0f} req/min "
              f"(it recovers on its own once rejections stop)")
 
@@ -425,13 +574,18 @@ _LIMITERS_LOCK = threading.Lock()
 
 
 def rate_limiter_for(cfg: ServiceConfig) -> RateLimiter:
+    """The limiter of the destination of `cfg` in this process (one per server and key) and,
+    with [network] shared_limit and a limit, on the window that the processes of the
+    workstation share (SharedWindow)."""
     u = urlparse(cfg.base_url)
     key = (u.scheme, u.hostname, u.port, cfg.api_key)
     n = cfg.net
     with _LIMITERS_LOCK:
         lim = _LIMITERS.get(key)
         if lim is None:
-            lim = _LIMITERS[key] = RateLimiter(n, u.hostname or cfg.base_url)
+            shared = SharedWindow(limit_file(cfg)) if n.shared_limit and (
+                n.requests_per_minute > 0 or n.tokens_per_minute > 0) else None
+            lim = _LIMITERS[key] = RateLimiter(n, u.hostname or cfg.base_url, shared)
         else:                                    # if they differ, the most restrictive wins
             if n.requests_per_minute and (not lim.rpm_conf or n.requests_per_minute < lim.rpm_conf):
                 lim.rpm_conf = n.requests_per_minute
@@ -524,7 +678,8 @@ def _http_module():
 # What went to the APIs since the process started, through every client: the time
 # profiles of `atlas run` keep what each step added.
 _USAGE: dict[str, float] = {"chat": 0, "embeddings": 0, "other": 0, "rejected": 0, "retried": 0,
-                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0,
+                            "wait_seconds": 0.0, "api_seconds": 0.0, "chat_seconds": 0.0, "embeddings_seconds": 0.0,
+                            "other_seconds": 0.0, "sent_kb": 0.0,
                             "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0,
                             "embedding_tokens": 0, "cost": 0.0}
 _USAGE_LOCK = threading.Lock()
@@ -541,10 +696,11 @@ def usage() -> dict[str, float]:
     """Cumulative counters of the requests of this process to the APIs: requests sent by
     endpoint (`chat`, `embeddings`, `other`), rate-limit rejections (`rejected`), retries
     after 5xx or connection errors (`retried`), seconds waiting for the pace or a pause of
-    the limiter (`wait_seconds`) and for the server (`api_seconds`), kilobytes sent
-    (`sent_kb`), and what the servers said each answer used (see note_usage): tokens of the
-    chat prompts (`prompt_tokens`, of them `cached_tokens`), of its answers
-    (`completion_tokens`, of them `reasoning_tokens`), of the texts embedded
+    the limiter (`wait_seconds`) and for the server (`api_seconds`, and by endpoint
+    `chat_seconds`, `embeddings_seconds`, `other_seconds`: divided by the requests, the
+    latency), kilobytes sent (`sent_kb`), and what the servers said each answer used (see
+    note_usage): tokens of the chat prompts (`prompt_tokens`, of them `cached_tokens`), of
+    its answers (`completion_tokens`, of them `reasoning_tokens`), of the texts embedded
     (`embedding_tokens`), and `cost` when the server gives it (OpenRouter)."""
     with _USAGE_LOCK:
         return dict(_USAGE)
@@ -673,7 +829,8 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                             raise
                         resp = None
                     finally:
-                        _count(api_seconds=time.monotonic() - sent)
+                        took = time.monotonic() - sent
+                        _count(api_seconds=took, **{f"{endpoint}_seconds": took})
                 except BaseException:
                     release()
                     raise
@@ -825,6 +982,7 @@ def describe(cfg: ServiceConfig) -> str:
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
+            + (f"  context_tokens={cfg.context_tokens}" if cfg.context_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
             + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "")
             + (f"  stream={str(cfg.stream).lower()}" if str(cfg.stream).strip() not in ("", "auto") else "") + "\n"
@@ -837,7 +995,9 @@ def describe(cfg: ServiceConfig) -> str:
             + (f", ~{n.tokens_per_minute} tokens/min" if n.tokens_per_minute else "")
             + f", {n.max_concurrent or 'unlimited'} simultaneous; on 409/429 waits up to "
             f"{n.rate_limit_max_wait / 60:g} min, on 5xx {n.max_retries} retries"
-            + (", adaptive pace" if n.adaptive else ""))
+            + (", adaptive pace" if n.adaptive else "")
+            + (f"; shared with the other processes of this workstation ({limit_file(cfg)})"
+               if n.shared_limit and (n.requests_per_minute or n.tokens_per_minute) else ""))
 
 
 # Output budget of the check request. Reasoning models think before answering and that
@@ -887,6 +1047,53 @@ def _check_chat(response) -> tuple[bool, str]:
         return False, (f"the server answered, but the reply was cut at {CHECK_MAX_TOKENS} tokens "
                        "before any text")
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
+
+
+def served_context(cfg: ServiceConfig, client) -> tuple[int, str]:
+    """The context of the model of `cfg` in tokens, as its server publishes it, and where it
+    says so: GET /models with `context_length` (OpenRouter) or `max_model_len` (vLLM), or
+    Ollama's /api/show (outside /v1) with the `num_ctx` of the model. (0, why) when it says
+    nothing usable: Ollama without num_ctx only says what the model admits, not what the
+    server gives it (OLLAMA_CONTEXT_LENGTH)."""
+    try:
+        listed = client.get("/models", cast_to=object)
+    except Exception:
+        listed = None
+    for m in (listed.get("data") or []) if isinstance(listed, dict) else []:
+        if not isinstance(m, dict) or m.get("id") != cfg.model:
+            continue
+        for key, where in (("context_length", "context_length of GET /models, as OpenRouter publishes it"),
+                           ("max_model_len", "max_model_len of GET /models, as vLLM publishes it")):
+            if isinstance(m.get(key), int) and not isinstance(m[key], bool) and m[key] > 0:
+                return m[key], where
+    root = re.sub(r"/v1/?$", "", cfg.base_url.rstrip("/"))
+    try:
+        shown = client.with_options(base_url=root).post("/api/show", body={"model": cfg.model}, cast_to=object)
+    except Exception:
+        return 0, ""
+    if not isinstance(shown, dict):
+        return 0, ""
+    found = re.search(r"\bnum_ctx\s+(\d+)", str(shown.get("parameters") or ""))
+    if found:
+        return int(found[1]), "num_ctx of the model in Ollama (/api/show)"
+    admits = next((v for k, v in (shown.get("model_info") or {}).items() if k.endswith(".context_length")), 0)
+    return 0, (f"Ollama says the model admits {admits} tokens, but it gives it OLLAMA_CONTEXT_LENGTH (or the num_ctx "
+               "of a Modelfile): set [llm] context_tokens to that" if admits else "")
+
+
+def _check_context(cfg: ServiceConfig, client) -> str:
+    """The line of `check` about the context of the model: the one the server publishes,
+    proposed for [llm] context_tokens or compared with it."""
+    tokens, where = served_context(cfg, client)
+    mine = cfg.context_tokens
+    if not tokens:
+        return (f"  context: {where}" if where else "  context: the server does not publish it") + \
+            (f"; [llm] context_tokens = {mine}" if mine else "; set [llm] context_tokens by hand (0 = unknown)")
+    if not mine:
+        return f"  context: {tokens} tokens ({where}): set [llm] context_tokens = {tokens}"
+    if mine != tokens:
+        return f"  WARNING context: [llm] context_tokens = {mine}, but the server says {tokens} ({where})"
+    return f"  context: {tokens} tokens, as [llm] context_tokens ({where})"
 
 
 def _structured_output(cfg: ServiceConfig) -> str:
@@ -943,6 +1150,7 @@ def check(conn: Connection, notes: dict[str, list[str]] | None = None) -> int:
         failures += not res["ok"]
         if res["ok"] and name == "LLM":
             print(f"  structured output: {_structured_output(cfg)}")
+            print(_check_context(cfg, create_client(cfg)[0]))
         if res["ok"]:
             for line in (notes or {}).get(name, []):
                 print(f"  {line}")
@@ -983,7 +1191,8 @@ turn_timeout = 600              # a chat turn that takes longer in all is cut an
 requests_per_minute = 0         # 0 = unlimited; e.g. 28 if the server allows 30
 tokens_per_minute = 0           # 0 = unlimited; only if the server also limits by tokens
 adaptive = true                 # slows down on rejections and recovers afterwards
-max_concurrent = 0              # simultaneous requests; 0 = unlimited
+max_concurrent = 0              # simultaneous requests of this process; 0 = unlimited
+shared_limit = true             # with a limit, shared by every process of this workstation (~/.atlas/limits)
 max_retries = 6                 # retries on 5xx or connection errors
 rate_limit_max_wait = 900       # on 409/429 it waits (without failing) up to this total per request (s)
 max_backoff = 60                # max wait between retries when there is no Retry-After (s)
@@ -996,6 +1205,8 @@ api_key = "${OPENAI_API_KEY:-local}"
 temperature = 0.1
 max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
 reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
+context_tokens = 0              # the context of the model in tokens (input + output); 0 = unknown. `check` asks
+                                # the server (OpenRouter, vLLM, Ollama) and proposes it
 reasoning_field = "reasoning"   # agents: the reasoning of a turn with tool calls goes back to the model in this
                                 # field of the message (gemma 4 asks for it); "reasoning_content" for some
                                 # servers; "" = never

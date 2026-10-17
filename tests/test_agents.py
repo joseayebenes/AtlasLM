@@ -898,3 +898,54 @@ def test_local_only_sources_never_reach_the_model(workspace, monkeypatch):
     sent = json.dumps(writer.prompts)
     assert "tracks.delete_track" in sent and "Removes track I" not in sent
     assert "SSS-0005" in sent and "mission system shall provide" not in sent
+
+
+def _long_conversation(results: int = 12, size: int = 4000):
+    """An ADK request with `results` tool results of `size` characters each."""
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    contents = [types.Content(role="user", parts=[types.Part(text="Fix it.")])]
+    for i in range(results):
+        contents.append(types.Content(role="model", parts=[types.Part(function_call=types.FunctionCall(
+            id=f"c{i}", name="grep", args={"pattern": f"p{i}"}))]))
+        contents.append(types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(
+            id=f"c{i}", name="grep", response={"pattern": f"p{i}", "matches": "m" * size}))]))
+    return LlmRequest(contents=contents)
+
+
+def test_a_turn_over_the_context_leaves_out_old_tool_results(caplog):
+    """[llm] context_tokens: a turn that does not fit in context_tokens - max_tokens leaves
+    out old tool results, MASK_STEP at a time, until it fits, and says so."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from atlas.agents.model import estimate_tokens, to_messages
+    request = _long_conversation()
+    whole = to_messages(request)
+    assert 12_000 <= estimate_tokens(whole) <= 12_500                 # 12 results of 4000 characters
+    fitted = to_messages(request, budget_tokens=6000, context_tokens=8000)
+    notes = ["note" in m["content"] for m in fitted if m["role"] == "tool"]
+    assert estimate_tokens(fitted) <= 6000 and notes == [True] * 10 + [False] * 2
+    assert "turn of 12" in caplog.text and "over a context of 8000 (6000 for the input): 10 old tool results " \
+                                          "left out" in caplog.text
+    caplog.clear()
+    assert to_messages(request, budget_tokens=20_000) == whole and not caplog.text      # it fits: as it was
+    to_messages(request, budget_tokens=100, context_tokens=200)                    # it never fits: the last stay
+    assert "12 old tool results left out" not in caplog.text and "it still has" in caplog.text
+
+
+def test_atlas_llm_keeps_each_turn_within_context_tokens():
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    import asyncio
+    from atlas.agents.model import AtlasLlm
+    from atlas.llm import ServiceConfig
+
+    async def turn(service):
+        client = StubClient(["Done."])
+        llm = AtlasLlm.from_service(service, client)
+        async for _ in llm.generate_content_async(_long_conversation()):
+            pass
+        return [m for m in client.requests[0]["messages"] if m["role"] == "tool"]
+
+    unknown = asyncio.run(turn(ServiceConfig(model="m", max_tokens=2000)))
+    assert not any("note" in m["content"] for m in unknown)              # 0 = unknown: everything goes
+    small = asyncio.run(turn(ServiceConfig(model="m", max_tokens=2000, context_tokens=8000)))
+    assert sum("note" in m["content"] for m in small) == 10

@@ -32,6 +32,17 @@ def docs_samples(samples):
     return d
 
 
+@pytest.fixture(scope="session")
+def scanned_pdf(samples):
+    """examples/samples/scanned/scanned_page.pdf: one page that is only an image."""
+    from examples import make_samples
+    f = samples / "scanned" / "scanned_page.pdf"
+    if not f.exists():
+        pytest.importorskip("pymupdf")
+        make_samples.scanned()
+    return f
+
+
 @pytest.fixture
 def toml(tmp_path, samples):
     """Writes a test atlas.toml in a temporary directory."""

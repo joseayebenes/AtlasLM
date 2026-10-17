@@ -6,6 +6,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- PDF escaneados: `atlas sections`, `preview` y `process_document` cuentan las páginas con
+  imágenes y sin texto (`pages_without_text`). Si son más de la mitad, el documento no se
+  procesa y su unidad queda en error, reintentable, con «scanned PDF: N of M pages have no
+  text; nothing is sent to the model», visible en `atlas status`. Antes quedaba «ok» con 0
+  secciones útiles.
+- `[[sources.docs]] ocr_command` (`["ocrmypdf", "--skip-text", "{file}", "{out}"]`): los PDF
+  con páginas sin texto pasan por OCR sobre una copia, guardada en `<workspace>/docs/.ocr` por
+  el hash del PDF y de la orden.
+- `DocumentExtractor.read(path)`: el texto y lo que el extractor sabe del fichero (páginas,
+  páginas sin texto, metadatos del PDF). Un extractor de un plugin puede seguir implementando
+  solo `extract`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

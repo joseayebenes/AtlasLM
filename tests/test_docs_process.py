@@ -132,3 +132,52 @@ def test_a_damaged_cache_file_is_analysed_again(docs_samples, tmp_path, fake_llm
     data = process_document(md, tmp_path / "b", DocsOptions(), llm=service, cache_dir=cache)
     assert data["errors"] == 0 and fake_chats() - before == 1
     assert json.loads(damaged.read_text())["summary"] and not list(cache.glob("*.tmp"))
+
+
+FAKE_OCR = '''import sys
+import pymupdf
+doc = pymupdf.open()
+doc.new_page().insert_text((72, 90), "Req: SRS-0201 The TMF shall accept scanned input.")
+doc.save(sys.argv[2])
+'''
+
+
+def test_a_scanned_pdf_is_an_error_and_goes_through_ocr_command(scanned_pdf, docs_samples, tmp_path):
+    import sys
+    from atlas.docs.process import ScannedDocument
+    p = preview(scanned_pdf)
+    assert p["pages"] == 1 and p["pages_without_text"] == 1 and p["sections"] == []
+    assert p["scanned"] == "scanned PDF: 1 of 1 pages have no text; nothing is sent to the model"
+    with pytest.raises(ScannedDocument, match="1 of 1 pages have no text"):
+        process_document(scanned_pdf, tmp_path / "docs" / "scan", DocsOptions(analysis="regex"))
+    assert not (tmp_path / "docs" / "scan").exists()
+
+    # ocr_command runs on a copy, once per version of the PDF
+    script = tmp_path / "fake_ocr.py"
+    script.write_text(FAKE_OCR)
+    log = tmp_path / "calls.txt"
+    wrapper = tmp_path / "ocr.py"
+    wrapper.write_text(f"import runpy, sys\nopen({str(log)!r}, 'a').write(sys.argv[1] + '\\n')\n"
+                       f"runpy.run_path({str(script)!r}, run_name='__main__')\n")
+    opts = DocsOptions(analysis="regex", ocr_command=[sys.executable, str(wrapper), "{file}", "{out}"])
+    data = process_document(scanned_pdf, tmp_path / "docs" / "scan", opts)
+    assert [r["id"] for r in data["requirements"]] == ["SRS-0201"]
+    assert data["structure_info"]["ocr"].startswith(str(tmp_path / "docs" / ".ocr"))
+    assert log.read_text().count("\n") == 1 and str(scanned_pdf) not in log.read_text()
+    process_document(scanned_pdf, tmp_path / "docs" / "scan", opts)
+    assert log.read_text().count("\n") == 1                      # from the cache
+    assert preview(scanned_pdf, opts, ocr_dir=tmp_path / "docs" / ".ocr")["chars"] > 0
+    assert log.read_text().count("\n") == 1
+
+    # a PDF with text never goes through it, and a failing command is an error
+    process_document(docs_samples / "spec_with_bookmarks.pdf", tmp_path / "docs" / "spec", opts)
+    assert log.read_text().count("\n") == 1
+    bad = DocsOptions(analysis="regex", ocr_command=[sys.executable, "-c", "import sys; sys.exit(3)",
+                                                     "{file}", "{out}"])
+    with pytest.raises(RuntimeError, match="exit code 3"):
+        process_document(scanned_pdf, tmp_path / "x", bad)
+    missing = DocsOptions(ocr_command=["no-such-ocr-tool", "{file}", "{out}"])
+    with pytest.raises(RuntimeError, match="'no-such-ocr-tool' not found"):
+        preview(scanned_pdf, missing)
+    with pytest.raises(ValueError, match="ocr_command"):
+        DocsOptions(ocr_command=["ocrmypdf", "{file}"])

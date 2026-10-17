@@ -28,6 +28,13 @@ En `spec_without_bookmarks.pdf` de las muestras, con pdfminer salían 9 de las 2
 subsecciones, y los requisitos de las otras 18 quedaban en la sección anterior; con pymupdf
 salen todas. Con marcadores, los dos dan las mismas secciones y los mismos requisitos.
 
+Una página con imágenes y sin texto es un escaneo: `preview` y `process_document` cuentan
+esas páginas (`pages_without_text`, con pymupdf). Si son más de la mitad, `process_document`
+lanza `ScannedDocument` («scanned PDF: N of M pages have no text; nothing is sent to the
+model») antes de escribir nada, la unidad de `docs.process` queda en error y `atlas sections`
+lo avisa. Con `ocr_command` en la fuente, esos PDF se leen de una copia pasada por OCR que se
+guarda en `<workspace>/docs/.ocr` por el hash del PDF y de la orden.
+
 Para volver a pdfminer: `[plugins] disabled = ["extractor:pymupdf"]`. El extractor forma
 parte de la huella de `docs.process`, así que al cambiarlo los PDF se vuelven a procesar, y
 como su texto cambia, sus secciones vuelven al modelo. `atlas sections` dice qué extractor
@@ -50,6 +57,7 @@ procesarlos:
 | `heading_regex` | grupo 1 = número, grupo 2 = título | si los títulos tienen un formato que no se reconoce |
 | `max_chars`, `min_chars` | 12000, 300 | tamaño máximo de sección; las más cortas se unen a la anterior |
 | `lang` | `"Spanish"` | idioma de los resúmenes (vacío: el del documento) |
+| `ocr_command` | `["ocrmypdf", "--skip-text", "{file}", "{out}"]` | OCR de los PDF con páginas sin texto, sobre una copia |
 
 La referencia completa está en la [guía de configuración](../../docs/configuracion.md).
 
@@ -106,5 +114,6 @@ print(data["requirements"][0])
 ## Pruebas
 
 `tests/test_docs_structure.py`, `test_docs_analysis.py`, `test_docs_process.py` (caché,
-reintentos, división de secciones cortadas, Ctrl+C, caché dañada) y `test_docs_legacy.py`
+reintentos, división de secciones cortadas, Ctrl+C, caché dañada, PDF escaneados y
+`ocr_command`) y `test_docs_legacy.py`
 (mismo resultado que `pdf_struct.py`).

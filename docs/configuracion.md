@@ -145,10 +145,28 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `max_chars` | entero | `12000` | tamaño máximo de una sección (las mayores se dividen) |
 | `min_chars` | entero | `300` | las secciones más cortas se unen a la anterior |
 | `lang` | texto | `""` | idioma de los resúmenes (`"Spanish"`); vacío = el del documento |
+| `ocr_command` | lista | `[]` | orden que pasa por OCR los PDF con páginas sin texto: `["ocrmypdf", "--skip-text", "{file}", "{out}"]` |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
 modelo.
+
+### PDF escaneados
+
+Una página que solo es una imagen (un escaneo sin OCR) no tiene texto. Si son más de la
+mitad de las páginas de un PDF, el documento no se procesa: su unidad queda en error con
+«scanned PDF: N of M pages have no text; nothing is sent to the model», que se ve en
+`atlas status`, y `atlas sections` lo avisa. Se reintenta en cada `atlas run`, hasta la
+cuarentena de `[pipeline] max_attempts`. Con menos páginas así, el documento se procesa y el
+registro avisa de cuántas no tienen texto.
+
+Con `ocr_command`, un PDF con alguna página sin texto pasa antes por esa orden: `{file}` es
+una copia del PDF (el original no se toca) y `{out}` el PDF que debe escribir. El resultado
+se guarda en `<workspace>/docs/.ocr`, por el hash del PDF y de la orden, así que el OCR se
+hace una vez por versión del fichero; la orden forma parte de la huella de la fuente. Los
+PDF con texto en todas las páginas no pasan por ella. [OCRmyPDF](https://ocrmypdf.readthedocs.io)
+con `--skip-text` deja como están las páginas que ya tienen texto; necesita Tesseract y los
+idiomas del documento (`"-l", "spa+eng"`).
 
 ## [sources.doors]
 

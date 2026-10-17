@@ -5,6 +5,7 @@ documents, code or DOORS:
   samples/docs/spec_with_bookmarks.pdf      specification with a navigable outline (bookmarks)
   samples/docs/spec_without_bookmarks.pdf   the same one, without bookmarks and with split numbers
   samples/docs/hmi_manual.md                a Markdown file with requirements
+  samples/scanned/scanned_page.pdf          a page that is only an image (a scan without OCR)
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
@@ -76,6 +77,22 @@ def pdfs() -> None:
         "# HMI Manual\n\n1 General\n\nReq: SRS-0101 The HMI shall display tracks.\n\n"
         "2 Alarms\n\nReq: SRS-0102 The HMI shall raise an alarm when a track is lost. Alarm latency is TBD.\n\n"
         "3 Logging\n\nReq: SRS-0103 The HMI shall keep logs for 30 days.\n", encoding="utf-8")
+
+
+def scanned() -> None:
+    """A one-page PDF whose page is an image of text, as a scanner leaves it: no text to
+    extract. Outside samples/docs, so that the runs over the samples do not see it."""
+    import pymupdf
+    (ROOT / "scanned").mkdir(parents=True, exist_ok=True)
+    text = pymupdf.open()
+    page = text.new_page(width=595, height=842)
+    page.insert_text((72, 90), "Scanned Interface Specification", fontsize=16)
+    page.insert_text((72, 130), "Req: SRS-0201 The TMF shall accept scanned input.", fontsize=11)
+    pix = page.get_pixmap(dpi=100)
+    doc = pymupdf.open()
+    doc.new_page(width=595, height=842).insert_image(pymupdf.Rect(0, 0, 595, 842), pixmap=pix)
+    doc.save(ROOT / "scanned" / "scanned_page.pdf")
+    print("created", ROOT / "scanned" / "scanned_page.pdf")
 
 
 def ada() -> None:
@@ -221,5 +238,6 @@ if __name__ == "__main__":
     exchange()
     try:
         pdfs()
+        scanned()
     except ImportError:
         print("pymupdf not installed: PDFs not generated (pip install pymupdf)")

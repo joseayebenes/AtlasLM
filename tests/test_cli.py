@@ -439,3 +439,25 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_a_scanned_pdf_stays_in_error_in_run_status_and_sections(toml, scanned_pdf, capsys):
+    from atlas.cli import sections
+    cfg = load_config(toml(f'''
+[pipeline]
+steps = ["docs"]
+[[sources.docs]]
+name = "scans"
+paths = ["{scanned_pdf.parent.as_posix()}"]
+analysis = "regex"
+'''))
+    message = "scanned PDF: 1 of 1 pages have no text; nothing is sent to the model"
+    assert run(cfg) == 1
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["errors"] == {"docs.process": 1}
+    assert status(cfg) == 0
+    assert f"ScannedDocument: {message}" in capsys.readouterr().out
+    assert sections(cfg) == 0
+    assert f"! {message}" in capsys.readouterr().out
+    assert run(cfg) == 1                                        # retried on the next run
+    assert json.loads(capsys.readouterr().out)["errors"] == {"docs.process": 1}

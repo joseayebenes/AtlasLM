@@ -241,9 +241,11 @@ def docs_step(ctx) -> Step | None:
         out = out_dir(ctx, unit)
         data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
                                 cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
-                                stop=ctx.stopping)
+                                stop=ctx.stopping, ocr_dir=root / ".ocr")
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
-                   "errors": data["errors"], "structure": data["structure_info"]["source"]}
+                   "errors": data["errors"], "structure": data["structure_info"]["source"],
+                   **{k: data["structure_info"][k] for k in ("pages_without_text", "ocr")
+                      if data["structure_info"].get(k)}}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
         if data["errors"]:
             raise AnalysisIncomplete(f"{data['errors']} sections (or the overview) could not be analysed; "
@@ -630,9 +632,15 @@ def sections(cfg: Config) -> int:
     ctx = _context(cfg)
     for d, options in doc_sources(ctx):
         for f in doc_files(ctx, d):
-            p = preview(f, options, ctx.disabled)
+            p = preview(f, options, ctx.disabled, ocr_dir=cfg.workspace / "docs" / ".ocr")
             print(f"\n[{d['name']}] {f} — '{p['title']}': {p['chars']} chars, {len(p['sections'])} sections")
-            print(f"  extractor: {p['extractor']}; structure: {p['structure']}"
+            if p.get("scanned"):
+                print(f"  ! {p['scanned']}: `atlas run` leaves it in error; give the source an ocr_command "
+                      "or a PDF with text")
+            elif p.get("pages_without_text"):
+                print(f"  ! {p['pages_without_text']} of {p['pages']} pages have no text (scanned?)")
+            print(f"  extractor: {p['extractor']}" + (" (after ocr_command)" if p.get("ocr") else "")
+                  + f"; structure: {p['structure']}"
                   + (f"; {p['subdivided']} large sections subdivided by their headings" if p["subdivided"] else "")
                   + (f"; {p['removed_lines']} header/footer lines removed" if p["removed_lines"] else ""))
             for s in p["sections"]:

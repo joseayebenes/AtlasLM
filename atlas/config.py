@@ -97,7 +97,7 @@ SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask rea
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
-               "min_chars": int, "enabled": bool}
+               "min_chars": int, "ocr_command": list, "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,

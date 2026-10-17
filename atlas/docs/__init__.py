@@ -21,7 +21,7 @@ from atlas import plugins
 from atlas.plugins import DocumentExtractor, register
 
 __all__ = ["DocsOptions", "MarkitdownExtractor", "PymupdfExtractor", "TextExtractor", "extractor_for",
-           "preview", "process_document", "read_text"]
+           "preview", "process_document", "read_document", "read_text"]
 
 
 class PymupdfExtractor(DocumentExtractor):
@@ -34,13 +34,22 @@ class PymupdfExtractor(DocumentExtractor):
     priority = 10           # before markitdown; [plugins] disabled = ["extractor:pymupdf"] goes back to it
 
     def extract(self, path: Path) -> str:
+        return self.read(path)[0]
+
+    def read(self, path: Path) -> tuple[str, dict]:
         try:
             import pymupdf                  # optional dependency [docs]
         except ImportError:
             import fitz as pymupdf          # pymupdf before 1.24.3
+        texts, without_text = [], 0
         with pymupdf.open(str(path)) as doc:
-            return "\f".join("\n\n".join(b[4].strip() for b in page.get_text("blocks") if b[6] == 0 and b[4].strip())
-                             for page in doc)
+            for page in doc:
+                blocks = [b[4].strip() for b in page.get_text("blocks") if b[6] == 0 and b[4].strip()]
+                if not blocks and page.get_images():
+                    without_text += 1       # an image and no text: a scanned page
+                texts.append("\n\n".join(blocks))
+            metadata = {k: v for k, v in (doc.metadata or {}).items() if isinstance(v, str) and v.strip()}
+        return "\f".join(texts), {"pages": len(texts), "pages_without_text": without_text, "metadata": metadata}
 
 
 class MarkitdownExtractor(DocumentExtractor):
@@ -83,4 +92,9 @@ def read_text(path: str | Path, disabled: Iterable[str] = ()) -> str:
     return extractor_for(path, disabled).extract(Path(path))
 
 
-from atlas.docs.process import DocsOptions, preview, process_document  # noqa: E402  (needs read_text)
+def read_document(path: str | Path, disabled: Iterable[str] = ()) -> tuple[str, dict]:
+    """(text, what the extractor knows about the file: pages, pages_without_text, metadata)."""
+    return extractor_for(path, disabled).read(Path(path))
+
+
+from atlas.docs.process import DocsOptions, preview, process_document  # noqa: E402  (needs read_document)

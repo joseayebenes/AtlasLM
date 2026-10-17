@@ -64,6 +64,13 @@ Una búsqueda combina tres listas con Reciprocal Rank Fusion:
 - la similitud de los vectores;
 - BM25 sobre el mismo texto (FTS5 de SQLite).
 
+Un ID escrito de otra forma se busca como está en el índice: «srs0004», «SRS_0004», «SRS 0004»
+y «srs-4» dan lo mismo que «SRS-0004». `ids_in` toma los prefijos de los requisitos indexados
+(`IndexStore.id_prefixes`, «SRS» con su anchura de dígitos más común, 4), une el prefijo, un
+espacio, nada o un guion bajo y el número, rellena con ceros a esa anchura, aplica
+`[sources.doors.convention] id_normalize` y se queda solo con los IDs que existen; la consulta
+se busca entonces con el ID canónico en su lugar.
+
 ### Léxico
 
 BM25 busca cada palabra tal cual. Con el tokenizador de serie, «deleting» no encuentra

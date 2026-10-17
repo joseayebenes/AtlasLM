@@ -353,3 +353,28 @@ def test_synonyms_and_acronyms(docs, tmp_path, fake_embeddings):
     assert any("track is lost" in h["text"] for h in idx.search("alarma traza", k=3, dense=False))
     hit = idx.search("what does the TMF do", k=3, dense=False)[0]
     assert (hit["kind"], hit["ref"]) == ("definition", "TMF")
+
+
+def test_ids_written_in_another_way(docs, tmp_path, fake_embeddings):
+    """«srs0004», «SRS_0004» and «srs-4» find what «SRS-0004» finds."""
+    from atlas.index.search import ids_in
+    prefixes = {"SRS": 4, "SSS": 4}
+    assert ids_in("srs-4 and SSS 12, SRS_12345 or srs0004a, not XSRS-1 nor SRS-0004", prefixes) == \
+        [("srs-4", "SRS-0004"), ("SRS_12345", "SRS-12345"), ("srs0004", "SRS-0004"), ("SRS-0004", "SRS-0004"),
+         ("SSS 12", "SSS-0012")]
+    assert ids_in("srs-4", prefixes, normalize="none") == [("srs-4", "SRS-0004")]
+    assert ids_in("srs-4 or srs-9", prefixes, known=lambda ids: {"SRS-0004"}) == [("srs-4", "SRS-0004")]
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    assert idx.store.id_prefixes() == {"SRS": 4}
+    ids = lambda q, dense=True: [h["id"] for h in idx.search(q, dense=dense)]
+    exact = ids("SRS-0004")
+    assert idx.store.records(exact[:1])[0]["ref"] == "SRS-0004"
+    for variant in ("SRS0004", "srs0004", "SRS_0004", "srs-4", "SRS 0004", "srs 4"):
+        assert ids(variant) == exact and ids(variant, dense=False) == ids("SRS-0004", dense=False), variant
+    assert idx.search("srs-102", k=1)[0]["ref"] == "SRS-0102"                # one of a document
+    assert idx.search("srs 0004 or srs 45", k=1)[0]["ref"] == "SRS-0004"    # SRS-0045 is not indexed
+    idx.remove_document("doors:SRS_TMS")
+    assert idx.store.id_prefixes() == {"SRS": 4}                              # those of the manual

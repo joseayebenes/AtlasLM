@@ -16,6 +16,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   una consulta con uno de ellos hace una búsqueda léxica más con los demás, que entra en la
   fusión. Las siglas de la pregunta (de 2 a 6 mayúsculas) se buscan entre las definiciones del
   glosario, con los IDs exactos.
+- Un ID escrito de otra forma en una búsqueda se busca como está en el índice: «srs0004»,
+  «SRS_0004» y «srs-4» dan lo mismo que «SRS-0004» (antes no encontraban nada), con los prefijos
+  de los requisitos indexados y su anchura de dígitos, y solo si el ID existe.
 
 ## [0.2.0] — 2026-10-16
 

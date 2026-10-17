@@ -193,7 +193,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `id_pattern` | texto | `""` | expresión de un ID válido; se avisan los requisitos que no casan (los títulos y la información, no) |
-| `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
+| `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos, y a los IDs escritos de otra forma en una búsqueda («srs-4») |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
 | `inline_reference_type` | texto | `"references"` | tipo de esos enlaces |
 | `id_column`, `text_column`, `module_column`, `parent_column` | texto | `id`, `text`, `module`, `""` | columnas de `requirements_query`; `parent_column` da la jerarquía |

@@ -159,26 +159,30 @@ class Index:
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
     scope_chars, synonyms: the path of a synonyms file); what is not given takes its
-    default. `fts_tokenizer` is that of [index]."""
+    default. `fts_tokenizer` is that of [index]; `id_normalize`, that of
+    [sources.doors.convention], for the IDs written in another way in a query."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
-                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER):
+                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER, id_normalize: str = "upper"):
         from atlas.config import DEFAULTS, read_synonyms
         self.store = IndexStore(db, fts_tokenizer)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
         self.synonyms = read_synonyms(self.settings["synonyms"]) if self.settings["synonyms"] else []
+        self.id_normalize = id_normalize
 
     @classmethod
     def from_config(cls, cfg) -> "Index":
-        """The index of <workspace>/atlas.db with the [embeddings], [llm], [search] and
-        [index] fts_tokenizer of atlas.toml."""
+        """The index of <workspace>/atlas.db with the [embeddings], [llm], [search], [index]
+        fts_tokenizer and [sources.doors.convention] id_normalize of atlas.toml."""
         from atlas.llm import from_config
         conn = from_config(cfg)
+        convention = ((cfg.get("sources") or {}).get("doors") or {}).get("convention") or {}
         return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"),
-                   (cfg.get("index") or {}).get("fts_tokenizer") or DEFAULT_FTS_TOKENIZER)
+                   (cfg.get("index") or {}).get("fts_tokenizer") or DEFAULT_FTS_TOKENIZER,
+                   convention.get("id_normalize", "upper"))
 
     @property
     def llm(self) -> JsonLlm:
@@ -216,14 +220,16 @@ class Index:
         """k = 0 and per_document = None: those of the settings."""
         per = self.settings["per_document"] if per_document is None else per_document
         return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per, synonyms=self.synonyms)
+                      self.llm if rewrite else None, dense, per, synonyms=self.synonyms,
+                      id_normalize=self.id_normalize)
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "") -> dict:
         """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], self.synonyms)
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], self.synonyms,
+                      self.id_normalize)
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

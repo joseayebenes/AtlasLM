@@ -69,6 +69,7 @@ class IndexStore:
         self.fts = self._open_fts()
         self.lock = threading.RLock()     # one connection shared by the Runner's threads
         self._matrix: tuple[str, int, np.ndarray, np.ndarray] | None = None
+        self._prefixes: tuple[int, dict[str, int]] | None = None
 
     def _open_fts(self) -> bool:
         """Creates index_fts with the tokenizer asked for or, if it has another one, rebuilds
@@ -127,7 +128,7 @@ class IndexStore:
     def delete_document(self, doc: str) -> None:
         with self.lock, self.db:
             self._delete(doc)
-        self._matrix = None
+        self._matrix = self._prefixes = None
 
     def replace_document(self, doc: dict, records: list[dict], vectors: np.ndarray) -> None:
         """`doc`: doc (key), name, title, out_dir, overview, embed_model. All or nothing."""
@@ -147,7 +148,7 @@ class IndexStore:
                 if self.fts:
                     self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) VALUES (?, ?, ?)",
                                     (cur.lastrowid, r["embed_text"], r.get("ref", "")))
-        self._matrix = None
+        self._matrix = self._prefixes = None
 
     def documents(self) -> list[dict]:
         return [{**dict(r), "overview": json.loads(r["overview"] or "{}")} for r in self._query(
@@ -218,6 +219,31 @@ class IndexStore:
         except sqlite3.OperationalError:
             return []
         return [r[0] for r in rows if allowed is None or r[0] in allowed][:n]
+
+    def id_prefixes(self) -> dict[str, int]:
+        """The prefixes of the requirement IDs of the index ("SRS" of "SRS-0004"), each with
+        its most common number of digits; read again when the index changes."""
+        with self.lock:
+            version = self.db.execute("PRAGMA data_version").fetchone()[0]
+            if self._prefixes is None or self._prefixes[0] != version:
+                rows = self.db.execute(
+                    "SELECT UPPER(substr(ref, 1, instr(ref, '-') - 1)) AS prefix, length(ref) - instr(ref, '-') "
+                    "AS width, COUNT(*) AS n FROM index_records WHERE kind = 'requirement' AND instr(ref, '-') > 1 "
+                    "AND length(ref) > instr(ref, '-') AND substr(ref, instr(ref, '-') + 1) NOT GLOB '*[^0-9]*' "
+                    "GROUP BY prefix, width ORDER BY prefix, n DESC, width").fetchall()
+                widths: dict[str, int] = {}
+                for r in rows:
+                    widths.setdefault(r["prefix"], r["width"])
+                self._prefixes = (version, widths)
+            return self._prefixes[1]
+
+    def known_refs(self, refs: list[str]) -> set[str]:
+        """Those of `refs` that are the `ref` of some record, in capitals."""
+        wanted = sorted({r.upper() for r in refs})
+        if not wanted:
+            return set()
+        return {r[0] for r in self._query(f"SELECT DISTINCT UPPER(ref) FROM index_records WHERE UPPER(ref) IN "
+                                          f"({','.join('?' * len(wanted))})", wanted)}
 
     def definitions(self, terms: list[str], allowed: set[int] | None) -> list[int]:
         """The glossary definitions of some terms (any case)."""

@@ -340,6 +340,11 @@ steps = ["doors", "index"]
     assert go()["skipped"] == {"doors.requirements": 3, "index.requirements": 3}
     assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
     assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
+    outputs = []
+    for query in ("SRS-0004", "SRS0004", "srs-4"):                # an ID written in another way
+        assert search(cfg, query) == 0
+        outputs.append(capsys.readouterr().out)
+    assert outputs[0].startswith("\n[1] SRS_TMS (requirement)\n    SRS-0004:") and outputs[1:] == outputs[:1] * 2
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 

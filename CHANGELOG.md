@@ -20,6 +20,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   ejecuciones de agentes se pidieron, con la fecha del último envío; el informe de
   `atlas run` dice lo que envió esa ejecución (`sent`). Lo guarda una tabla nueva de
   `atlas.db` (`sent`), que cuenta desde la primera ejecución de esta versión.
+- `docs/seguridad.md`: qué garantizan las fuentes locales y qué no (sus identificadores
+  pueden salir; las herramientas MCP dan su texto al editor), y la prueba que lo comprueba con
+  los cuerpos de las peticiones que recibe el servidor falso (`bodies` en su fichero de
+  control).
 
 ## [0.2.0] — 2026-10-16
 

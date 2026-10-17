@@ -17,6 +17,7 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
+  bodies: "path"                   -> appends the body of every request received, one per line
 GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
@@ -43,7 +44,9 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self): self.send(200, stats)
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
+        raw = self.rfile.read(int(self.headers["Content-Length"])); body = json.loads(raw); c = ctl()
+        if c.get("bodies"):
+            with open(c["bodies"], "ab") as f: f.write(raw.replace(b"\n", b" ") + b"\n")
         import time; time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})

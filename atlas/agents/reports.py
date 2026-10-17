@@ -39,6 +39,8 @@ def _record(cfg: Config, agent, nodes: list[str], g) -> None:
     labels = set()
     for n in nodes:
         d = g.G.nodes.get(n, {})
+        if d.get("local_only"):             # only its identifier goes
+            continue
         if d.get("module"):
             labels.add(f"doors:{d['module']}")
         elif d.get("kind") == "section":

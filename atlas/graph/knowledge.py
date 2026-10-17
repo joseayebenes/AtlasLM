@@ -113,7 +113,8 @@ class KnowledgeGraph:
             elif kind == "document":
                 d["title"] = ""
             elif kind == "section":
-                d.update(name="", path=[], requirements=[{"id": r["id"], "text": ""} for r in d.get("requirements", [])])
+                d.update(name="", path=[], file="",            # its file name carries the title
+                         requirements=[{"id": r["id"], "text": ""} for r in d.get("requirements", [])])
             else:
                 for k in ("doc", "source"):
                     d.pop(k, None)

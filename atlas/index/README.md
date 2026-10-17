@@ -82,9 +82,13 @@ registro»: en las muestras, la primera pasaba al modelo 8 de los 40 requisitos 
 la respuesta parecía completa sin serlo. Por eso, al reescribir la pregunta, el modelo dice
 también si es amplia (un resumen, una función o un capítulo enteros, todos los requisitos o
 valores de algo) y de qué documentos o módulos trata, de la lista de los indexados. Si es
-amplia, `atlas ask` lee esos documentos enteros. Si no nombra ninguno, lee los que más
-salen en su búsqueda: hasta tres, con al menos la mitad de resultados que el primero, y
-nunca unidades de código:
+amplia, `atlas ask` lee esos documentos enteros. Si no nombra ninguno, busca la pregunta
+solo en los resúmenes de los documentos y de sus secciones (`overview` y `section_summary`),
+que dicen de qué trata un documento o un capítulo entero mejor que unos pocos pasajes, y lee
+los que más salen: hasta `[search] scope_documents` (3), con al menos la mitad de resultados
+que el primero, y nunca unidades de código. Un módulo de DOORS no tiene resúmenes: solo se
+lee entero si la pregunta lo nombra, con `--document`, o si ningún documento tiene
+resúmenes (entonces deciden los resultados de la búsqueda de la pregunta):
 
 - cada sección es una fuente: el texto de sus fragmentos sin el solape; en un módulo de
   DOORS, sus requisitos y objetos de información en su orden;

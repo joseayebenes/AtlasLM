@@ -47,6 +47,7 @@ SCOPE_DOCUMENTS = 3     # documents read whole when a broad question names none
 MAX_PARTS = 12          # most parts of whole documents read for one question
 PART_WORKERS = 4        # parts of whole documents read at the same time
 MAX_CHAPTERS = 50       # chapters listed to narrow a question that is too broad
+SUMMARY_KINDS = ["overview", "section_summary"]   # what chooses the documents of a broad question
 
 REWRITE_SYSTEM = """You turn a user question into search queries for a technical document \
 collection. Reply with JSON: {"queries": [...], "keywords": [...], "broad": true|false, "documents": [...]}.
@@ -455,11 +456,23 @@ def _named(question: str, docs: list[dict]) -> list[str]:
     return [d["name"] for d in docs if any(len(k) >= 4 and k in q for k in keys(d))]
 
 
+def _scope_hits(store: IndexStore, embedder: Embedder, question: str, k: int, kinds: list[str] | None,
+                per_document: int, rewritten: dict | None, dense: bool = True) -> list[dict]:
+    """The hits that choose the documents of a broad question that names none: those of the
+    summaries of the documents and of their sections, which say what a whole document or
+    chapter is about better than a few passages. If no document has summaries (DOORS
+    modules, documents analysed without the model), the hits of the question."""
+    hits = search(store, embedder, question, max(k, 8), kinds=SUMMARY_KINDS, rewritten=rewritten, dense=dense)
+    hits = [h for h in hits if not h["doc"].startswith(CODE_PREFIX)]
+    return hits or search(store, embedder, question, k, kinds=kinds, per_document=per_document,
+                          rewritten=rewritten, dense=dense)
+
+
 def _scope_documents(store: IndexStore, document: str, named: list[str], hits: list[dict],
                      most: int = SCOPE_DOCUMENTS) -> list[dict]:
     """The documents a broad question reads whole: `document`, else those it names, else
-    those with most of its hits, up to `most` and with at least half the hits of the first
-    (not code units: their elements already are whole)."""
+    those with most of its hits (see _scope_hits), up to `most` and with at least half the
+    hits of the first (not code units: their elements already are whole)."""
     docs = store.documents()
     if document:
         return [d for d in docs if document in (d["name"], d["doc"])] or \
@@ -485,12 +498,12 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
     section of the documents, and what is below it, whatever the scope.
     dry_run makes no request to any model (llm can be None): the plan of reading whole the
     documents the question would read, chosen without the model (`document`, the documents
-    whose name it says, or a lexical search), or None if there are none."""
+    whose name it says, or a lexical search in the summaries), or None if there are none."""
     candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX)]
     if dry_run:
         named = _named(question, candidates)
-        hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, dense=False)
+        hits = [] if document or named else _scope_hits(store, embedder, question, k, kinds, per_document, None,
+                                                        dense=False)
         docs = _scope_documents(store, document, named, hits, scope_documents)
         plan = _with_minutes(whole_plan(store, docs, scope_chars, int(rewrite), section)[2], requests_per_minute) \
             if docs else None
@@ -501,8 +514,8 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
     requests = 1 if rewrite else 0
     if scope == "whole" or section or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
-        hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, rewritten=rewritten)
+        hits = [] if document or named else _scope_hits(store, embedder, question, k, kinds, per_document,
+                                                        rewritten)
         docs = _scope_documents(store, document, named, hits, scope_documents)
         if docs:
             return answer_whole(store, llm, question, docs, scope_chars, max_parts, requests_per_minute, requests,

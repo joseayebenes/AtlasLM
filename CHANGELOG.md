@@ -22,6 +22,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   petición, aunque no cupiera. Las citas se conservan y se numeran 1, 2, 3… en el orden de las
   fuentes.
 
+### Cambiado
+- Una pregunta amplia que no nombra ningún documento elige los que lee buscando solo en los
+  resúmenes de los documentos y de sus secciones, no en los 8 pasajes de su búsqueda. Un
+  módulo de DOORS, que no tiene resúmenes, solo se lee entero si la pregunta lo nombra (o con
+  `--document`), salvo que ningún documento tenga resúmenes.
+
 ### Corregido
 - Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
   Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en

@@ -367,6 +367,26 @@ def test_the_last_request_of_the_notes_always_fits():
     assert _renumber("A [3][7], B [7, 3] and [12].", 9) == ("A [1][2], B [2, 1] and [12].", {3: 1, 7: 2})
 
 
+def test_the_summaries_choose_the_documents_of_a_broad_question(docs, tmp_path, fake_llm, fake_embeddings):
+    from atlas.index.search import SUMMARY_KINDS, _scope_hits
+    only_module = Index(tmp_path / "module.db", fake_embeddings, fake_llm[0])
+    only_module.add_module("SRS_TMS", MODULE)
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_documents": 1})
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE)
+    question = "Explain how tracks are deleted"
+    hits = _scope_hits(idx.store, idx.embedder, question, 8, None, 3, None)
+    assert hits and {h["kind"] for h in hits} <= set(SUMMARY_KINDS)    # not the passages of the module
+    res = idx.answer(question)
+    assert res["scope"] == "whole" and res["documents"] == ["spec_with_bookmarks.pdf"]    # scope_documents = 1
+    # without summaries, the hits of the question choose
+    assert {h["kind"] for h in _scope_hits(only_module.store, only_module.embedder, question, 8, None, 3, None)} \
+        == {"requirement", "chunk"}
+    assert only_module.answer(question)["documents"] == ["SRS_TMS"]
+    assert only_module.answer(question, dry_run=True)["documents"] == ["SRS_TMS"]
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

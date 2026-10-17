@@ -122,6 +122,9 @@ stuck_rounds = 2                         # rondas sin avanzar antes de dejar un 
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
+task_calls = 0                           # presupuesto de cada intento: llamadas (0 = sin límite)
+task_seconds = 0                         # ... segundos
+task_cost = 0.0                          # ... coste, el que dice el servidor del modelo
 
 [[tasks]]
 id = "ping-bye"
@@ -167,21 +170,52 @@ cambios que rompían lo que ya iba.
    arquitecto y el editor de Aider: el modelo no tiene que pensar el cambio y acertar con las
    herramientas en las mismas vueltas. Con el mismo modelo en los dos papeles, GPT-4o-mini
    pasó del 55,6 al 60,2 % en su banco de pruebas.
-6. Con `attempts` mayor que 1, cada encargo (y su reintento) va a esos intentos **a la vez**,
-   cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las raíces del
-   código, los scripts del proyecto y su propia carpeta de compilación), con sus arreglos de
-   compilación y sus vueltas de `advances`. De los que no rompen nada gana el que deja más
-   tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la carpeta
-   de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo que
-   tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
+6. Con `attempts` mayor que 1, cada encargo (y su reintento) y cada ronda van a esos intentos
+   **a la vez**, cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las
+   raíces del código, los scripts del proyecto y su propia carpeta de compilación), con sus
+   arreglos de compilación y sus vueltas de `advances`. De los que no rompen nada gana el que
+   deja más tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la
+   carpeta de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo
+   que tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
 7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
-   persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
+   persona, con su salida. El tiempo de las ejecuciones (`seconds`, sumado) y el de pared de la
+   tanda (`wall_seconds`: con los tests, y con los intentos a la vez contados una vez). Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
-   lecciones que añadir antes de la siguiente.
+   lecciones que añadir antes de la siguiente. Lo que cada encargo y cada ronda dejó en el
+   código es un **parche**, `develop-<plan>/<id>.patch` (`round-<n>.patch`), enlazado desde su
+   paso, y todos juntos en `develop-<plan>/all.patch`: para revisarlos y para llevarlos a otra
+   copia (`git apply`, o `patch -p1`).
+
+Una tanda **interrumpida** (Ctrl+C, o un fallo del propio atlas) deja los ficheros del paso en
+curso como estaban antes de él, y el paso queda `interrupted`; ningún encargo queda a medias.
+Ctrl+C mata también la prueba en marcha con lo que arrancó. `atlas develop PLAN atlas.toml
+--resume` sigue desde el informe: da por hechos los encargos terminados (uno conservado, o
+deshecho tras su reintento), repite los que tienen `error` o quedaron `interrupted`, y las
+rondas siguen por donde iban, con lo que ya se intentó en cada test. El estado es el que dicen
+los tests ahora, no el informe; los pasos anteriores se conservan, y el registro de llamadas
+sigue en el mismo fichero. Con `attempts` mayor que 1, Ctrl+C espera a que acaben las
+ejecuciones en marcha. Las tandas duran horas: antes, un corte obligaba a empezar de cero.
+
+Antes de la primera ejecución se comprueba el plan: que sus agentes existen y pueden hacer su
+parte (alguna herramienta que cambia el código; `check_code` si `[sources.code]` tiene
+compilador; `run_test` el `fix_agent`) y que los tests están protegidos. Antes, un agente que
+no existía dejaba cada encargo con un error y la tanda los recorría todos sin llamar al modelo.
+`atlas develop PLAN atlas.toml --check` hace además, sin modelo y sin cambiar nada, lo que
+haría la tanda al empezar: `check_code` sobre los ficheros de `check` y los tests una vez, y
+avisa de los encargos de más de 1200 caracteres (un modelo pequeño va mejor con encargos
+pequeños).
+
+Cada intento de un encargo (el encargo, su reintento o una ronda), con sus arreglos de
+compilación, sus vueltas de `advances` y sus reinicios, tiene un **presupuesto**: `task_calls`,
+`task_seconds` y `task_cost` (0 = sin límite). Al llegar a él no se lanza ninguna ejecución más
+de ese intento; lo hecho se conserva o se deshace como siempre, y el paso lo dice
+(`budget_exceeded`). En la tanda 4, un arreglo de compilación gastó 40 llamadas y 37 minutos
+sin arreglar nada. Una ejecución que falla por el servidor del modelo queda como `error`, no
+como encargo conservado, y el resumen final las cuenta.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos

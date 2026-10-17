@@ -22,7 +22,7 @@ check(2, getattr(calc, "mul", lambda a, b: None)(2, 3), 6)
 '''
 AGENT = """---
 name: NAME
-tools: [read_file, write_file, edit_file]
+tools: [read_file, write_file, edit_file, check_code, run_test]
 max_steps: 6
 ---
 You write the code of src.
@@ -58,6 +58,8 @@ class StubClient:
         if len(kwargs["messages"]) == 2:                    # the first turn of a run: system and task
             self.prompts.append(kwargs["messages"][1]["content"])
         turn = self.turns.pop(0)
+        if isinstance(turn, BaseException):                 # the model server fails, or Ctrl+C
+            raise turn
         if isinstance(turn, dict):
             calls = [SimpleNamespace(id=f"c{i}", type="function", function=SimpleNamespace(name=n, arguments=json.dumps(a)))
                      for i, (n, a) in enumerate(turn.items())]
@@ -66,6 +68,22 @@ class StubClient:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
         return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
                                usage=SimpleNamespace(prompt_tokens=50, completion_tokens=5, total_tokens=55, cost=0.001))
+
+
+def interrupted(run) -> None:
+    """`run` ends in the KeyboardInterrupt of the stub. The asyncio task it leaves behind says
+    so when it is collected (a real Ctrl+C, which asyncio turns into a cancellation, does not):
+    collected here, quietly."""
+    import gc
+    import logging
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    log = logging.getLogger("asyncio")
+    level, log.level = log.level, logging.CRITICAL + 1
+    try:
+        gc.collect()
+    finally:
+        log.setLevel(level)
 
 
 def write(content):
@@ -121,7 +139,7 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
     assert second["undone"] == ["src/calc.py"]
     assert second["broke"][0].startswith("tests/test_calc.py got to 2 and now got to 1: Step 1: expected 3")
     assert "does not compile" in retry["broke"][0]
-    assert report["final"] == {"tests_passed": 0, "tests": 1, "check_errors": [],
+    assert report["final"] == {"tests_passed": 0, "tests": 1, "check_errors": [], "errors": 0,
                                "failing": {"tests/test_calc.py": "Step 2: expected 6, received None"}}
     first_round, second_round = client.prompts[-2:]
     assert first_round.startswith("The test tests/test_calc.py fails. What it printed:\n\nStep 2: expected 6")
@@ -239,7 +257,7 @@ def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
     from atlas.config import ConfigError
     base, cfg = project
     (base / "agents" / "planner.md").write_text(AGENT.replace("NAME", "planner").replace(
-        "tools: [read_file, write_file, edit_file]", "tools: [read_file]"))
+        "tools: [read_file, write_file, edit_file, check_code, run_test]", "tools: [read_file]"))
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
     (base / "plan.toml").write_text(plan + 'planner = "planner"\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
     client = StubClient([{"read_file": {"path": "src/calc.py"}}, "Replace the body of add: return a + b."]
@@ -336,6 +354,90 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\n[[tasks]]\ntext = "x"\nadvance = ["test_calc.py"]\n')
     with pytest.raises(ConfigError, match="not \\['advance'\\]"):
         load_plan(base / "bad.toml")
+    (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\ntask_calls = -1\n')
+    with pytest.raises(ConfigError, match="task_calls is a number, 0 or more"):
+        load_plan(base / "bad.toml")
+
+
+def test_a_plan_is_checked_before_any_run(project):
+    """An agent that does not exist or cannot do its part, or tests that an agent could change:
+    a ConfigError at the start, and not a plan that goes through every task with an error."""
+    from atlas.agents.develop import Developer, load_plan
+    base, cfg = project
+    head = PLAN.split("[[tasks]]")[0]
+    for name, tools in (("reader", "read_file, check_code, run_test"), ("blind", "read_file, write_file, run_test"),
+                        ("untested", "read_file, write_file, check_code")):
+        (base / "agents" / f"{name}.md").write_text(AGENT.replace("NAME", name).replace(
+            "read_file, write_file, edit_file, check_code, run_test", tools))
+
+    def developer(plan: str):
+        (base / "bad.toml").write_text(plan)
+        return Developer(load_plan(base / "bad.toml"), cfg)
+
+    with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        developer(head.replace('agent = "implementer"', 'agent = "nobody"'))
+    with pytest.raises(ConfigError, match="agent reader has no tool that changes the code"):
+        developer(head.replace('agent = "implementer"', 'agent = "reader"'))
+    with pytest.raises(ConfigError, match="agent blind needs check_code among its tools"):
+        developer(head.replace('agent = "implementer"', 'agent = "blind"'))
+    with pytest.raises(ConfigError, match="fix_agent untested needs run_test among its tools: .* run the failing test"):
+        developer(head.replace('fix_agent = "fixer"', 'fix_agent = "untested"'))
+    developer(head.replace('agent = "implementer"', 'agent = "untested"'))      # the agent of the tasks needs no run_test
+    cfg["sources"]["code"]["protected"] = []
+    with pytest.raises(ConfigError, match="the test tests/test_calc.py is not protected"):
+        developer(head)
+
+
+def test_check_says_what_a_plan_starts_from_without_a_model(project, capsys):
+    from atlas.agents.develop import Developer, load_plan
+    from atlas.cli import main
+    base, cfg = project
+    (base / "src" / "broken.py").write_text("def f(:\n")
+    (base / "plan.toml").write_text(PLAN + '\n[[tasks]]\nid = "long"\ntext = "' + "x" * 1300 + '"\n')
+    found = Developer(load_plan(base / "plan.toml"), cfg).check()
+    assert (found["tasks"], found["tests_passed"]) == (3, 0)
+    assert found["tests"] == {"tests/test_calc.py": "Step 1: expected 3, received 0"}
+    assert list(found["check_errors"]) == ["src/broken.py"]
+    assert found["warnings"] == ["task long has 1300 characters, more than 1200: a small model does better with "
+                                 "smaller tasks"]
+    assert found["agents"] == {"agent": "implementer", "fix_agent": "fixer"}
+    with pytest.raises(SystemExit) as stop:
+        main(["develop", str(base / "plan.toml"), str(cfg.path), "--check"])
+    assert stop.value.code == 0
+    out = capsys.readouterr().out
+    assert "plan plan: 3 tasks, 1 tests; agent implementer, fix_agent fixer" in out
+    assert "check_code: 1 files with errors\n  src/broken.py: line" in out
+    assert "tests: 0 of 1 pass at the start\n  tests/test_calc.py: Step 1: expected 3, received 0" in out
+    assert "warning: task long has 1300 characters" in out
+    assert not (cfg.workspace / "reports" / "develop-plan.json").exists()          # nothing ran
+
+
+def test_a_budget_stops_the_runs_of_an_attempt(project):
+    """task_calls: once an attempt at a task has spent it, no build fix (nor restart, nor turn
+    of advances) starts; the task is undone or kept as always, and its step says why."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'task_calls = 2\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient(write("def add(a, b:\n    return a + b\n") + write(ADD))     # no turns for a build fix
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["outcome"]) for s in report["steps"]] == [("task", "undone"), ("task-retry", "kept")]
+    assert report["steps"][0]["budget_exceeded"] == "task_calls = 2, spent 2"
+    assert "budget_exceeded" not in report["steps"][1]                     # a new attempt, a new budget
+    assert (base / "src" / "calc.py").read_text() == ADD and not client.turns
+    assert "(budget spent: task_calls = 2, spent 2)" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+
+
+def test_a_run_that_fails_is_an_error_and_not_a_task_done(project):
+    from atlas.agents.develop import develop
+    base, cfg = project
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    report = develop(base / "plan.toml", cfg, client=StubClient([RuntimeError("the server is down")]))
+    (step,) = report["steps"]
+    assert step["outcome"] == "error" and "the server is down" in step["error"]
+    assert report["final"]["errors"] == 1
+    assert "1 agent runs failed with an error." in (cfg.workspace / "reports" / "develop-plan.md").read_text()
 
 
 def test_a_failure_in_a_line():
@@ -353,3 +455,86 @@ The exception went through, the most recent first:
     assert _last_lines(output) == ("AssertionError: Step 2: command 'PING', expected 'OK PONG', received 'the end of "
                                    "the connection' | raised CONSTRAINT_ERROR : controller.adb:103 length check failed")
     assert _last_lines("one\ntwo\nthree\n") == "two | three"
+
+
+def test_an_interrupted_run_leaves_the_files_as_they_were_and_resume_ends_it(project, tmp_path):
+    """Ctrl+C in the middle of a task puts its files back and leaves the step `interrupted`;
+    --resume does it again, not the task before it, and appends to the calls of the run. The
+    patch of each task applies to the code as it was before it."""
+    import shutil
+    import subprocess
+    from atlas.agents.develop import develop
+    base, cfg = project
+    original = (base / "src" / "calc.py").read_text()
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + '[[tasks]]\nid = "add"\ntext = "Implement add."\n\n'
+                                           '[[tasks]]\nid = "mul"\ntext = "Implement mul."\n')
+    client = StubClient(write(ADD) + [{"read_file": {"path": "src/calc.py"}},
+                                      {"write_file": {"path": "src/calc.py", "content": MUL + "# half done\n"}},
+                                      KeyboardInterrupt()])
+    interrupted(lambda: develop(base / "plan.toml", cfg, client=client))
+    assert (base / "src" / "calc.py").read_text() == ADD                    # as the first task left it
+    reports = cfg.workspace / "reports"
+    report = json.loads((reports / "develop-plan.json").read_text())
+    assert [(s["kind"], s["task"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "add", "kept"), ("task", "mul", "interrupted")]
+    assert report["steps"][1]["undone"] == ["src/calc.py"] and "error" not in report["steps"][1]
+
+    client = StubClient(write(MUL))
+    report = develop(base / "plan.toml", cfg, client=client, resume=True)
+    assert client.prompts == ["Implement mul."]                             # add is not done again
+    assert [(s["kind"], s["task"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "add", "kept"), ("task", "mul", "interrupted"), ("task", "mul", "kept")]
+    assert report["final"]["tests_passed"] == 1 and len(report["resumed"]) == 1
+    runs = [json.loads(l) for l in (reports / "develop-plan.calls.jsonl").read_text().splitlines()]
+    assert [(r["n"], r["task"]) for r in runs] == [(1, "add"), (3, "mul")]
+
+    assert [s.get("patch") for s in report["steps"]] == ["develop-plan/add.patch", None, "develop-plan/mul.patch"]
+    md = (reports / "develop-plan.md").read_text()
+    assert "kept ([patch](develop-plan/add.patch))" in md and "[develop-plan/all.patch](develop-plan/all.patch)" in md
+    if shutil.which("git"):                     # each patch applies to the code before its task, and all.patch to the first
+        for patches, expected in ((["add.patch"], ADD), (["add.patch", "mul.patch"], MUL), (["all.patch"], MUL)):
+            fresh = tmp_path / f"fresh-{len(patches)}-{patches[0]}"
+            (fresh / "src").mkdir(parents=True)
+            (fresh / "src" / "calc.py").write_text(original)
+            for patch in patches:
+                subprocess.run(["git", "apply", str(reports / "develop-plan" / patch)], cwd=fresh, check=True)
+            assert (fresh / "src" / "calc.py").read_text() == expected
+
+
+def test_resume_goes_on_with_the_rounds(project):
+    """A round interrupted is done again; those before it count, and so does what they tried."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 3"))
+    (base / "src" / "calc.py").write_text(ADD)
+    nothing = [{"read_file": {"path": "src/calc.py"}}, "No idea."]
+    interrupted(lambda: develop(base / "plan.toml", cfg, client=StubClient(nothing + [KeyboardInterrupt()])))
+    client = StubClient(nothing * 2)
+    report = develop(base / "plan.toml", cfg, client=client, resume=True)
+    assert [(s["kind"], s["outcome"], s.get("round")) for s in report["steps"]] == [
+        ("round", "no progress", 1), ("round", "interrupted", None), ("round", "no progress", 2)]
+    assert "- No idea. -> no progress" in client.prompts[0]                 # the round before the interruption
+    assert report["for_a_person"]["tests/test_calc.py"]["reason"] == "no progress in 2 rounds"
+    assert len(client.turns) == 2                       # no third round: the test went to a person
+
+
+def test_the_rounds_have_parallel_attempts_too(project):
+    """attempts = 2 in a round: the attempt that breaks the code is undone, the one that fixes
+    the test wins; the report has the wall time of the plan as well as that of the runs."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
+                                                                        '.resolve().parent.parent / "src")'))
+    (base / "src" / "calc.py").write_text(ADD)
+    plan = PLAN.split("[[tasks]]")[0].replace("build_fixes = 1", "build_fixes = 0").replace("fix_rounds = 4",
+                                                                                          "fix_rounds = 1")
+    (base / "plan.toml").write_text(plan + "attempts = 2\n")
+    report = develop(base / "plan.toml", cfg, client=ParallelClient([write("def add(a, b):\n    return 0\n"),
+                                                                     write(MUL)]))
+    assert sorted((s["kind"], s["outcome"]) for s in report["steps"]) == [("round", "fixed"), ("round", "undone")]
+    chosen = next(s for s in report["steps"] if s["outcome"] == "fixed")
+    assert chosen["round"] == 1 and chosen["chosen"].endswith("of 2") and chosen["patch"] == "develop-plan/round-1.patch"
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    totals = report["totals"]
+    assert totals["wall_seconds"] >= 0 and "min of wall time" in (cfg.workspace / "reports" / "develop-plan.md").read_text()

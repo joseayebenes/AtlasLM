@@ -9,7 +9,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
-| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
+| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `outline`, `read_subprogram`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
 | `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
@@ -54,6 +54,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 | `list_files` | ficheros por patrón glob (`*.adb` busca en todas las subcarpetas) |
 | `grep` | expresión regular, con fichero, línea y líneas de contexto |
 | `read_file` | un fragmento numerado |
+| `outline` | los subprogramas de un fichero (Ada y Python), con sus líneas, su firma y los requisitos de su comentario, y sus `with` o `import` |
+| `read_subprogram` | un subprograma, numerado, con su comentario de encima, buscado por su nombre |
 | `edit_file` | sustituye un texto y devuelve el diff |
 | `write_file` | crea un fichero o lo reescribe entero |
 | `replace_subprogram` | sustituye un subprograma entero, buscado por su nombre (Ada y Python) |
@@ -62,7 +64,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 Protecciones:
 - No tocan nada fuera de las raíces ni de lo excluido con `exclude`; tampoco con `..` ni
   con enlaces simbólicos.
-- Solo editan un fichero leído antes, y no si ha cambiado desde entonces.
+- Solo editan un fichero leído antes, y no si ha cambiado desde entonces. `read_subprogram`
+  cuenta como lectura; `outline`, solo para `replace_subprogram` y `add_subprogram`.
 - Si el texto a sustituir aparece varias veces, exigen precisar más o pedir `replace_all`.
 - Conservan la codificación, los finales de línea CRLF y los permisos, y escriben de forma
   atómica.
@@ -223,7 +226,13 @@ fichero. Las dos:
   con el mismo nombre (sobrecargas);
 - sangran el texto nuevo como el sitio donde va, y si empieza por comentarios, sustituyen
   también los de encima del subprograma (las etiquetas `Req:`);
-- piden la misma lectura previa que `edit_file` y conservan codificación y finales de línea.
+- piden una lectura previa, como `edit_file`, pero no del fichero entero: basta con `outline`
+  (qué subprogramas tiene, con sus líneas, su primera línea y los IDs de requisito de su
+  comentario, y sus `with` o `import`) o con `read_subprogram(path, name, line=0)`, que lee
+  solo ese subprograma con su comentario de encima, con la misma búsqueda por nombre (un cuerpo
+  antes que su declaración; varios con el mismo nombre, el que tiene `line`). `read_file` lee
+  hasta 300 líneas, y el contexto de un modelo pequeño es pequeño;
+- conservan codificación y finales de línea.
 
 Salen de la tanda 4 de `atlas develop` con `gemma-4-26b`: 80 de sus 151 `edit_file` fallaron,
 39 por un texto buscado de más de 30 líneas (quería sustituir bloques enteros) y 34 por no
@@ -284,6 +293,14 @@ tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
 [sources.code.test_commands]
 py = ["with_server", "python3", "{file}"]
 ```
+
+Cada comando tiene como mucho `command_timeout` segundos (120), o los de su clase:
+`check_timeout` (`check_code` y la sintaxis), `test_timeout` (cada comando de `run_test`) y
+`program_timeout` (`run_program`). Corre en su propio grupo de procesos y, si se le acaba el
+tiempo, se mata el grupo entero (SIGTERM, un segundo de gracia y SIGKILL; en Windows,
+`taskkill /T`): matar solo el comando dejaba vivo el servidor que había arrancado
+`with_server`. En `run_command`, `{exe}` es el ejecutable que exista, con o sin `.exe` (GNAT se
+lo añade en Windows).
 
 GNAT ve más errores cuando genera código: una cadena de longitud fija asignada a otra de
 distinta longitud es, al compilar con código, el aviso «Constraint_Error will be raised at run

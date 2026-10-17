@@ -23,7 +23,9 @@
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
-                                       is undone, and what it cannot fix goes to a person (a report)
+                   [--check] [--resume]  is undone, and what it cannot fix goes to a person (a report);
+                                       --check: the plan, check_code and the tests at the start, no model;
+                                       --resume: goes on from where an earlier run stopped (Ctrl+C)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
@@ -851,7 +853,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
+           "develop": {"--check": bool, "--resume": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -950,8 +953,29 @@ def agent(cfg: Config, name: str, question: str) -> int:
     return 1 if res["stopped"] else 0
 
 
-def develop(cfg: Config, plan: str) -> int:
-    """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py)."""
+def _develop_check(cfg: Config, plan: str) -> int:
+    """What a plan starts from, without a model: its agents and tests checked, check_code on
+    its files and its tests run once (Developer.check)."""
+    from atlas.agents.develop import Developer, load_plan
+    found = Developer(load_plan(plan), cfg).check()
+    print(f"plan {found['plan']}: {found['tasks']} tasks, {len(found['tests'])} tests; "
+          + ", ".join(f"{k} {v}" for k, v in found["agents"].items()))
+    print(f"check_code: {len(found['check_errors'])} files with errors" if found["check_errors"] else
+          "check_code: no errors")
+    for f, errors in found["check_errors"].items():
+        print(f"  {f}: {errors[0]}" + (f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""))
+    print(f"tests: {found['tests_passed']} of {len(found['tests'])} pass at the start")
+    for test, result in found["tests"].items():
+        print(f"  {test}: {result}")
+    for warning in found["warnings"]:
+        print(f"warning: {warning}")
+    print("nothing was changed and no model was asked")
+    return 0
+
+
+def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -> int:
+    """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py);
+    with `check`, only what the plan starts from; with `resume`, from where it stopped."""
     from atlas.agents.develop import develop as run_plan
 
     def show(s: dict) -> None:
@@ -962,16 +986,25 @@ def develop(cfg: Config, plan: str) -> int:
               f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
-              + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
+              + (f"\n      error: {s['error']}" if s.get("error") else "")
+              + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else ""), flush=True)
 
     _context(cfg)
     try:
-        report = run_plan(plan, cfg, on_step=show)
+        if check:
+            return _develop_check(cfg, plan)
+        report = run_plan(plan, cfg, on_step=show, resume=resume)
     except ImportError as e:            # without the [agents] extra
         sys.exit(str(e))
+    except KeyboardInterrupt:
+        print(f"\ninterrupted: the files of the step are as they were before it; `atlas develop {plan} "
+              f"{cfg.path.name} --resume` goes on from there")
+        return 130
     final, totals = report["final"], report["totals"]
     print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
-          f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
+          f"{totals['seconds'] // 60} min of runs, {totals.get('wall_seconds', 0) // 60} min in all"
+          + (f", ${totals['cost']}" if "cost" in totals else "")
+          + (f"; {final['errors']} runs failed with an error" if final.get("errors") else ""))
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")

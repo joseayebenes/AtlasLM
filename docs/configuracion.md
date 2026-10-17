@@ -212,7 +212,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `summaries` | texto | — | reservada: todavía sin efecto (resúmenes de subprogramas con el modelo) |
 | `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
 | `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
-| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza |
+| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza: en `run_command`, el que exista de `<build>/<nombre>` y `<build>/<nombre>.exe` (GNAT le añade `.exe` en Windows) |
 | `run_command` | lista | `["{exe}"]` | cómo se ejecuta lo que construyó `test_command`. Un envoltorio puede arrancar antes lo que la prueba necesita: `["with_server", "{exe}"]` |
 | `test_commands` | tabla | `{}` | pruebas que no se construyen, por extensión: el comando que las ejecuta tal cual, `{ py = ["python3", "{file}"] }` |
 | `program_command` | lista | `[]` | lo que ejecuta la herramienta `run_program`, con las líneas que le da el agente en su entrada estándar: el programa, o un cliente que se las pasa, `["with_server", "session"]`. Vacía: sin `run_program` |
@@ -225,7 +225,10 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `language_server_project` | texto | `""` | el proyecto GPR que lee el servidor, relativo a `atlas.toml`; vacío: atlas escribe uno con las carpetas de las raíces que tienen fuentes Ada |
 | `check_on_edit` | sí/no | `true` | cada cambio de las herramientas de ficheros devuelve en `check` lo que dice `check_code` del fichero (si hay compilador para su extensión): una vuelta menos, y el agente no puede decir que compila sin verlo |
 | `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a la carpeta desde la que se lanza atlas, como las raíces del código |
-| `command_timeout` | entero | `120` | segundos como mucho para compilar o ejecutar una prueba |
+| `command_timeout` | entero | `120` | segundos como mucho para cada comando: compilar, construir o ejecutar una prueba, ejecutar el programa. Al acabarse, se mata el comando con todo lo que arrancó (su grupo de procesos): un envoltorio como `with_server` ya no deja vivo el servidor |
+| `check_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para `check_code` y la comprobación de sintaxis |
+| `test_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para cada comando de `run_test` (construir la prueba y ejecutarla) |
+| `program_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para `run_program` |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
 
 ## [tests]

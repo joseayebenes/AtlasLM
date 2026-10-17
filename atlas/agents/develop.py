@@ -16,6 +16,9 @@ The plan is a TOML file:
     restarts = 1                             # fresh starts of a run that stopped (max_steps, stall_steps)
     attempts = 1                             # parallel attempts at each task, each in a copy: the tests choose
     planner = "planner"                      # optional: an agent that reads and says how to do each task
+    task_calls = 0                           # budget of an attempt at a task: tool calls (0: no limit)
+    task_seconds = 0                         # ... seconds
+    task_cost = 0.0                          # ... cost, as the model server reports it
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -49,27 +52,50 @@ again and again in the same way, and changes that broke what worked.
    task and round did, its time, tokens and cost, its edits (and how many failed) and its
    compilations (and how many had errors), the tests that pass and those that need a person,
    with their output, and the errors of the compiler of the whole plan, the most frequent
-   first, with whether a hint came with them ([sources.code] hints: one more after each run).
+   first, with whether a hint came with them ([sources.code] hints: one more after each run),
+   and the time of the runs and the wall time of the plan (`wall_seconds`: with the tests, and
+   with the parallel attempts counted once).
    develop-<plan>.calls.jsonl keeps the prompt, the tool calls with their results and the
-   answer of every run of an agent.
+   answer of every run of an agent. What each task and each round left in the code is a patch,
+   develop-<plan>/<id>.patch (round-<n>.patch), and all of them in develop-<plan>/all.patch, to
+   review them and to apply them elsewhere (git apply, patch -p1).
 
 With a planner, each task goes first to that agent (with tools to read, not to change): it
 writes how to do it, and the task goes to the agent with that plan. The architect and editor of
 Aider: the model does not have to think out the change and get the tools right in the same
 turns (with the same model in both roles, GPT-4o-mini went from 55.6 to 60.2 %).
 
-With attempts > 1, each task (and its retry) goes to that many runs at once, each in its own
-copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of the
-project, its own build folder), with its build fixes and the turns of `advances`. Of those that
-break nothing, the one with more tests passing, and further, wins, and its files are copied to
-the working folder. A small model gets one in N right more often than one right in a row
-(Agentless, S*); the request limit leaves room (a turn of gemma-4-26b takes ~30 s: 2 requests
-per minute of 28). The code roots must be inside the working folder.
+With attempts > 1, each task (and its retry) and each round go to that many runs at once, each
+in its own copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of
+the project, its own build folder), with its build fixes and the turns of `advances`. Of those
+that break nothing, the one with more tests passing, and further, wins, and its files are
+copied to the working folder. A small model gets one in N right more often than one right in a
+row (Agentless, S*); the request limit leaves room (a turn of gemma-4-26b takes ~30 s: 2
+requests per minute of 28). The code roots must be inside the working folder.
 
 A run that stops without finishing (max_steps, or stall_steps of the agent: that many tool
 calls without changing the code) starts again with a fresh conversation, at most `restarts`
 times: the same prompt, the diff of what it changed, which stays, and what check_code says
 now. A long conversation of failed edits does not get better with more turns.
+
+Each attempt at a task (the task, its retry, a round), with its build fixes, its turns of
+`advances` and its restarts, has a budget: task_calls, task_seconds and task_cost (0: no
+limit). When it is spent no more runs of it start; what it did is kept or undone as always, and
+its step says so (`budget_exceeded`). A build fix of gemma-4-26b spent its 40 calls and 37
+minutes without fixing anything.
+
+The plan is checked before any run: its agents exist and can do their part (a tool that
+changes the code; check_code when [sources.code] has a compiler; run_test for the fix agent),
+and its tests are protected. Developer.check() (`atlas develop PLAN --check`) also runs
+check_code and the tests once, without a model, and says which tasks are too long. A run that
+fails (the model server) is an `error` step, not a kept task.
+
+A run cut short (Ctrl+C, or an error of atlas itself) puts the files back as they were before
+its attempt, and its step is `interrupted`. `atlas develop PLAN --resume` (resume=True) goes
+on from the report: the tasks it finished are done (one kept, or undone after its retry), and
+those with an `error` or `interrupted` go again; the rounds go on from where they were. The
+state is what the tests say now, not what the report says. With attempts > 1, Ctrl+C waits for
+the runs in progress to end.
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
@@ -101,6 +127,7 @@ MAX_CHANGES = 3000         # characters of the diff of what a stopped run change
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
 WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
+MAX_TASK_CHARS = 1200      # a longer task gets a warning from check(): small models do better with small tasks
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -156,6 +183,9 @@ class Plan:
     restarts: int = 1
     attempts: int = 1
     planner: str = ""
+    task_calls: int = 0
+    task_seconds: int = 0
+    task_cost: float = 0.0
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -186,6 +216,10 @@ def load_plan(path: str | Path) -> Plan:
             re.compile(data["progress"])
         except re.error as e:
             raise ConfigError(f"plan {path}: progress is not a valid regular expression: {e}") from None
+    for key in ("task_calls", "task_seconds", "task_cost"):
+        value = data.get(key, 0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ConfigError(f"plan {path}: {key} is a number, 0 or more (0: no limit)")
     plan = Plan(name=path.stem, tasks=tasks, **data)
     plan.fix_agent = plan.fix_agent or plan.agent
     if not plan.tests:
@@ -227,6 +261,31 @@ class _Files:
         return sorted(changed)
 
 
+class _Budget:
+    """What one attempt at a task (or a round) has spent, against task_calls, task_seconds and
+    task_cost of the plan (0: no limit)."""
+
+    def __init__(self, plan: Plan):
+        self.plan, self.started = plan, time.time()
+        self.calls, self.cost, self.exceeded = 0, 0.0, ""
+
+    def spend(self, step: dict) -> None:
+        self.calls += step.get("calls", 0)
+        self.cost += step.get("cost", 0)
+
+    def spent(self) -> str:
+        """Why no more runs start ("task_calls = 40, spent 43"), or "" while there is budget
+        left; the first reason stays in `exceeded`."""
+        seconds = round(time.time() - self.started)
+        for key, used, limit in (("task_calls", self.calls, self.plan.task_calls),
+                                 ("task_seconds", seconds, self.plan.task_seconds),
+                                 ("task_cost", round(self.cost, 4), self.plan.task_cost)):
+            if limit and used >= limit:
+                self.exceeded = self.exceeded or f"{key} = {limit:g}, spent {used:g}"
+                return self.exceeded
+        return ""
+
+
 def _files(patterns: list[str], base: Path | None = None) -> list[str]:
     """The files of some patterns, from the working folder or from `base` (a copy of it), as
     paths relative to it."""
@@ -246,6 +305,7 @@ class _Workspace:
         self.code = CodeTools.from_config(dev.cfg, base=base)
         self.build = BuildTools.from_config(dev.cfg, self.code, base=base)
         self.files = _Files(self.code)
+        self.budget = _Budget(dev.plan)      # of the attempt that runs here now
 
     def context(self):
         """What the tools of an agent receive: their file and build tools on this folder."""
@@ -282,15 +342,34 @@ class Developer:
         self.main = _Workspace(self)
         self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
         self.tests = _files(plan.tests)
+        from atlas.agents.runtime import definition       # each agent exists, or a ConfigError now and not after a task
         if plan.planner:
-            from atlas.agents.runtime import definition
-            definition(plan.planner, cfg)                 # it exists, or a ConfigError now and not after a task
+            definition(plan.planner, cfg)
+        compiler = bool(self.build.check_command or self.build.check_commands)
+        for key, name, needs in (("agent", plan.agent, ["check_code"] * compiler),
+                                 ("fix_agent", plan.fix_agent, ["check_code"] * compiler + ["run_test"])):
+            tools = definition(name, cfg).tools
+            if not set(tools) & set(WRITES):
+                raise ConfigError(f"plan {plan.name}: {key} {name} has no tool that changes the code "
+                                  f"({', '.join(WRITES)})")
+            missing = [t for t in needs if t not in tools]
+            if missing:
+                raise ConfigError(f"plan {plan.name}: {key} {name} needs {' and '.join(missing)} among its tools: "
+                                  "the prompts of develop tell it to check every file it changes"
+                                  + (" and to run the failing test" if "run_test" in missing else ""))
         outside = [r for r in self.code.roots if Path.cwd().resolve() not in (r, *r.parents)]
         if plan.attempts > 1 and outside:
             raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder where atlas runs, "
                               f"to copy them (not {self.code._show(outside[0])})")
         if not self.tests:
             raise ConfigError(f"plan {plan.name}: no file matches its tests {plan.tests}")
+        for t in self.tests:
+            p, err = self.code._resolve(t)
+            if err:
+                raise ConfigError(f"plan {plan.name}: run_test cannot run the test {t}: {err['error']}")
+            if not self.code.protected_file(p):
+                raise ConfigError(f"plan {plan.name}: the test {t} is not protected ([sources.code] protected, "
+                                  "e.g. [\"tests/**\"]): an agent could change what judges its code")
         if plan.check and not (self.build.check_command or self.build.check_commands):
             raise ConfigError(f"plan {plan.name} checks {plan.check}, but [sources.code] has no check_command")
         unknown = [t for t in self.tests if Path(t).suffix.lstrip(".").lower() not in self.build.test_commands
@@ -313,6 +392,7 @@ class Developer:
         self.errors: dict[str, dict] = {}      # the errors of the compiler, by their message without names
         self._answers: dict[int, str] = {}     # the whole answer of each step (the report keeps its start)
         self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
+        self._started, self._wall_before = time.time(), 0     # the wall time of this run, and of earlier ones
 
     # --- what the code does --------------------------------------------------------------
     def _score(self, result: dict) -> float:
@@ -350,7 +430,7 @@ class Developer:
         before = ws.files.snapshot() if self.plan.restarts else {}
         step = self._run_once(agent, prompt, kind, task, ws)
         for _ in range(self.plan.restarts):
-            if not step.get("stopped") or step.get("error"):
+            if not step.get("stopped") or step.get("error") or ws.budget.spent():
                 break
             changes, check = self._changes(before, ws)
             step["outcome"] = "restarted"
@@ -398,6 +478,7 @@ class Developer:
         except Exception as e:                   # the model server failed: the task did not happen
             step.update({"calls": 0, "stopped": True, "error": f"{type(e).__name__}: {e}"[:MAX_ANSWER], "answer": ""})
         step["seconds"] = round(time.time() - t0)
+        ws.budget.spend(step)
         use, errors = tool_use(record)
         with self._lock:
             step["n"] = len(self.report["steps"]) + 1
@@ -421,7 +502,7 @@ class Developer:
         """`after`, or the state after the build fixes of what check finds that `before` had not."""
         new_errors = lambda state: set(state["check"]) - set(before["check"])
         for _ in range(self.plan.build_fixes):
-            if not new_errors(after):
+            if not new_errors(after) or (ws or self.main).budget.spent():
                 break
             errors = "\n".join(f"{f}:{e.get('line', '')}: {_message(e)}" for f, es in after["check"].items()
                                for e in es[:10])
@@ -441,12 +522,12 @@ class Developer:
                  ws: _Workspace | None = None) -> dict:
         """The turns that make the tests of `advances` get further (see the module): the state
         after them. A turn that breaks something is undone, and the turns end there."""
+        ws = ws or self.main
         for _ in range(self.plan.advance_fixes):
             stuck = self.not_advanced(advances, before, after)
-            if not stuck:
+            if not stuck or ws.budget.spent():
                 break
             result = after["tests"][stuck[0]]
-            ws = ws or self.main
             snapshot = ws.files.snapshot()
             fix = self.run(agent, self.plan.advance_prompt.format(
                 test=stuck[0], output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result)), "advance-fix",
@@ -466,22 +547,53 @@ class Developer:
                 advances: list[str] = (), ws: _Workspace | None = None) -> tuple[dict, dict, list]:
         """One change of the agent with its build fixes and the turns that make the tests of
         `advances` get further: (step, state after, what it broke). What breaks something is
-        undone, and the state is `before` again."""
+        undone, and the state is `before` again. No more runs start once its budget is spent
+        (task_calls, task_seconds, task_cost)."""
         ws = ws or self.main
-        snapshot = ws.files.snapshot()
-        step = self.run(agent, prompt, kind, task, ws)
-        after = self.compiled(agent, task, before, self.evaluate(ws), ws)
-        broken = self.broken(before, after)
-        if not broken and advances:
-            after = self.advanced(agent, task, list(advances), before, after, ws)
-            stuck = self.not_advanced(list(advances), before, after)
-            if stuck:
-                step["not_advanced"] = stuck
-        if broken:
-            step["undone"] = ws.files.restore(snapshot)
-            step["broke"] = broken
-            after = before
+        ws.budget = _Budget(self.plan)
+        snapshot, t0, since = ws.files.snapshot(), time.time(), len(self.report["steps"])
+        try:
+            step = self.run(agent, prompt, kind, task, ws)
+            after = self.compiled(agent, task, before, self.evaluate(ws), ws)
+            broken = self.broken(before, after)
+            if not broken and advances:
+                after = self.advanced(agent, task, list(advances), before, after, ws)
+                stuck = self.not_advanced(list(advances), before, after)
+                if stuck:
+                    step["not_advanced"] = stuck
+            if broken:
+                step["undone"] = ws.files.restore(snapshot)
+                step["broke"] = broken
+                after = before
+        except BaseException as e:               # Ctrl+C: nothing is left half done
+            self._interrupted(agent, kind, task, ws, snapshot, t0, since, e)
+            raise
+        if ws.budget.exceeded:
+            step["budget_exceeded"] = ws.budget.exceeded
         return step, after, broken
+
+    def _interrupted(self, agent: str, kind: str, task: str, ws: _Workspace, snapshot: dict, t0: float,
+                     since: int, e: BaseException, copies: bool = False) -> None:
+        """An attempt cut short: its files back as they were, and its steps `interrupted` (those
+        of its runs since step `since` that had no outcome yet, or a new one), for --resume to
+        do it again. `copies`: the runs were the parallel attempts, each in its copy."""
+        undone = ws.files.restore(snapshot)
+        why = {} if isinstance(e, KeyboardInterrupt) else {"error": f"{type(e).__name__}: {e}"[:MAX_ANSWER]}
+        with self._lock:
+            steps = [s for s in self.report["steps"][since:] if s["task"] == task and "outcome" not in s
+                     and (copies or s.get("attempt", 0) == ws.number)]
+            if not steps:
+                steps = [{"n": len(self.report["steps"]) + 1, "kind": kind, "task": task, "agent": agent,
+                          **({"attempt": ws.number} if ws.number else {}), "calls": 0,
+                          "seconds": round(time.time() - t0)}]
+                self.report["steps"].append(steps[0])
+            for s in steps:
+                s.update(outcome="interrupted", **why)
+            if undone:
+                steps[0]["undone"] = undone
+        self.save()
+        for s in steps:
+            self.on_step(s)
 
     def attempts(self, agent: str, prompt: str, kind: str, task: str, before: dict,
                  advances: list[str] = ()) -> tuple[dict, dict, list]:
@@ -491,6 +603,7 @@ class Developer:
         if self.plan.attempts <= 1:
             return self.attempt(agent, prompt, kind, task, before, advances)
         copies = [self._copy(n) for n in range(1, self.plan.attempts + 1)]
+        snapshot, t0, since = self.main.files.snapshot(), time.time(), len(self.report["steps"])
         try:
             with ThreadPoolExecutor(max_workers=len(copies)) as pool:
                 results = list(pool.map(lambda ws: self.attempt(agent, prompt, kind, task, before, advances, ws),
@@ -509,6 +622,9 @@ class Developer:
             step = results[best][0]
             step["chosen"] = f"{best + 1} of {len(copies)}"
             return step, after, self.broken(before, after)
+        except BaseException as e:               # Ctrl+C, here after the runs in progress end
+            self._interrupted(agent, kind, task, self.main, snapshot, t0, since, e, copies=True)
+            raise
         finally:
             for ws in copies:
                 shutil.rmtree(ws.base, ignore_errors=True)
@@ -548,25 +664,62 @@ class Developer:
         self.on_step(step)
 
     # --- the plan --------------------------------------------------------------------------
-    def tasks(self, state: dict) -> dict:
+    def check(self) -> dict:
+        """What the plan starts from, without a model and without changing anything: check_code
+        on the files of `check`, the tests run once, and the tasks too long for a small model.
+        The plan itself was checked when the Developer was made (see the module)."""
+        state = self.evaluate()
+        return {"plan": self.plan.name, "tasks": len(self.plan.tasks),
+                "agents": {k: v for k, v in (("agent", self.plan.agent), ("fix_agent", self.plan.fix_agent),
+                                             ("planner", self.plan.planner)) if v},
+                "tests_passed": self.passing(state),
+                "tests": {t: "passes" if r["passed"] else _last_lines(r["output"]) for t, r in state["tests"].items()},
+                "check_errors": {f: [f"line {e.get('line', '?')}: {_message(e)}" for e in errors[:3]]
+                                 for f, errors in state["check"].items()},
+                "warnings": [f"task {t['id']} has {len(t['text'])} characters, more than {MAX_TASK_CHARS}: a small "
+                             "model does better with smaller tasks" for t in self.plan.tasks
+                             if len(t["text"]) > MAX_TASK_CHARS]}
+
+    @staticmethod
+    def _outcome(step: dict, broken: list) -> str:
+        """Of a task: undone if it broke something; error if the run failed (the model server)
+        and nothing broke, which is not a task done; kept otherwise."""
+        return "undone" if broken else "error" if step.get("error") else "kept"
+
+    def tasks(self, state: dict, done: set[str] = frozenset()) -> dict:
+        """The tasks of the plan, but those of `done` (finished in an earlier run, --resume);
+        what each one leaves in the code goes to its patch."""
         for task in self.plan.tasks:
+            if task["id"] in done:
+                continue
+            before = self.main.files.snapshot()
             text = self.planned(task, state)
             step, state, broken = self.attempts(self.plan.agent, text, "task", task["id"], state,
                                                 task["advances"])
-            step["outcome"] = "undone" if broken else "kept"
-            self._done(step, state)
+            step["outcome"] = self._outcome(step, broken)
             if broken:
-                retry, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
+                self._done(step, state)
+                step, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
                     broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
-                retry["outcome"] = "undone" if broken else "kept"
-                self._done(retry, state)
+                step["outcome"] = self._outcome(step, broken)
+            self._patched(step, before, task["id"])
+            self._done(step, state)
         return state
+
+    def finished(self, task: str) -> bool:
+        """Whether the steps of the report say that a task was finished: kept, or undone after
+        its retry (it had both its chances). One with an error, interrupted or undone before its
+        retry is not."""
+        ends = [s for s in self.report["steps"] if s["task"] == task and s["kind"].startswith("task")]
+        return any(s.get("outcome") == "kept" and not s.get("error") for s in ends) or \
+            any(s.get("outcome") == "undone" and s["kind"].startswith("task-retry") for s in ends)
 
     def planned(self, task: dict, state: dict) -> str:
         """The text of a task for the agent: with the plan of the planner, if the plan has one
         and it answered."""
         if not self.plan.planner:
             return task["text"]
+        self.main.budget = _Budget(self.plan)
         step = self.run(self.plan.planner, task["text"], "plan", task["id"])
         step["outcome"] = "planned" if step.get("answer") else "no plan"
         self._done(step, state)
@@ -574,9 +727,28 @@ class Developer:
         return PLANNED.format(task=task["text"], plan=plan) if plan.strip() else task["text"]
 
     def rounds(self, state: dict) -> dict:
+        """The rounds (see the module), after those of an earlier run (--resume): the steps
+        that have their `round` number say how far they got."""
         stuck, attempts, escalated = {}, {}, self.report.setdefault("for_a_person", {})
         target, kept_turn = None, False
-        for _ in range(self.plan.fix_rounds):
+
+        def count(target: str, step: dict) -> bool:
+            """Whether the test keeps the turn; a test that does not get further is stuck once more."""
+            outcome = step["outcome"]
+            if outcome in ("fixed", "further"):
+                stuck[target] = 0
+            elif outcome != "error":                    # the model server failed: not a try of the agent
+                stuck[target] = stuck.get(target, 0) + 1
+                attempts.setdefault(target, []).append(
+                    f"{step.get('answer') or step.get('error') or '(no answer)'} -> {outcome}"
+                    + (f" ({'; '.join(step['broke'])[:300]})" if step.get("broke") else ""))
+            return outcome == "further"
+
+        earlier = [s for s in self.report["steps"] if "round" in s]
+        for s in earlier:
+            target = s["task"]
+            kept_turn = count(target, s)
+        for number in range(len(earlier) + 1, self.plan.fix_rounds + 1):
             failing = [t for t in self.tests if not state["tests"][t]["passed"] and t not in escalated]
             if not failing:
                 break
@@ -589,7 +761,8 @@ class Developer:
                 test=target, output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result),
                 attempts=("\nEarlier attempts on this test, which did not fix it:\n" +
                           "\n".join(f"- {a}" for a in tried[-3:])) if tried else "")
-            step, after, broken = self.attempt(self.plan.fix_agent, prompt, "round", target, state)
+            before = self.main.files.snapshot()
+            step, after, broken = self.attempts(self.plan.fix_agent, prompt, "round", target, state)
             before_score, after_score = result["score"], after["tests"][target]["score"]
             if broken:
                 outcome = "undone"
@@ -597,39 +770,92 @@ class Developer:
                 outcome = "fixed"
             elif after_score > before_score:
                 outcome = "further"
+            elif step.get("error"):
+                outcome = "error"
             else:
                 outcome = "no progress"
-            step["outcome"] = outcome
-            kept_turn = outcome == "further"
-            if outcome in ("fixed", "further"):
-                stuck[target] = 0
-            else:
-                stuck[target] = stuck.get(target, 0) + 1
-                attempts.setdefault(target, []).append(
-                    f"{step.get('answer') or step.get('error') or '(no answer)'} -> {outcome}"
-                    + (f" ({'; '.join(broken)[:300]})" if broken else ""))
-                if stuck[target] >= self.plan.stuck_rounds:
-                    escalated[target] = {"reason": f"no progress in {stuck[target]} rounds",
-                                         "output": after["tests"][target]["output"][-MAX_OUTPUT:],
-                                         "attempts": attempts[target]}
+            step.update(outcome=outcome, round=number)
+            kept_turn = count(target, step)
+            if outcome not in ("fixed", "further", "error") and stuck[target] >= self.plan.stuck_rounds:
+                escalated[target] = {"reason": f"no progress in {stuck[target]} rounds",
+                                     "output": after["tests"][target]["output"][-MAX_OUTPUT:],
+                                     "attempts": attempts[target]}
             state = after
+            self._patched(step, before, f"round-{number}")
             self._done(step, state)
         return state
 
-    def run_plan(self) -> dict:
-        Path(f"{self.path}.calls.jsonl").unlink(missing_ok=True)
+    def run_plan(self, resume: bool = False) -> dict:
+        """The tasks, then the rounds; with `resume`, from the report of an earlier run (see
+        the module). Returns the report."""
+        self._started = time.time()
+        done = self._resume() if resume else set()
+        if not resume:
+            Path(f"{self.path}.calls.jsonl").unlink(missing_ok=True)
+            shutil.rmtree(self.path, ignore_errors=True)               # the patches of an earlier run
         state = self.evaluate()
-        self.report["at_start"] = {"tests_passed": self.passing(state), "check_errors": sorted(state["check"])}
-        state = self.tasks(state)
+        self.report.setdefault("at_start", {"tests_passed": self.passing(state),
+                                            "check_errors": sorted(state["check"])})
+        state = self.tasks(state, done)
         self.report["after_tasks"] = {"tests_passed": self.passing(state)}
         state = self.rounds(state)
         self.report["final"] = {
             "tests_passed": self.passing(state), "tests": len(self.tests),
             "failing": {t: _last_lines(r["output"]) for t, r in state["tests"].items() if not r["passed"]},
-            "check_errors": sorted(state["check"])}
+            "check_errors": sorted(state["check"]),
+            "errors": sum(1 for s in self.report["steps"] if s.get("error"))}
         self.report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self.save()
         return self.report
+
+    def _resume(self) -> set[str]:
+        """The report of an earlier run, to go on from it: its steps, the errors of the compiler
+        and the tests for a person stay. The ids of the tasks it finished."""
+        path = self.path.with_suffix(".json")
+        if not path.exists():
+            return set()
+        try:
+            old = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            raise ConfigError(f"--resume: cannot read {path}: {e}") from None
+        self.errors = {_shape(e["message"]): e for e in old.pop("compiler_errors", [])}
+        self._wall_before = (old.get("totals") or {}).get("wall_seconds", 0)
+        for key in ("final", "finished", "totals"):
+            old.pop(key, None)
+        old["resumed"] = old.get("resumed", []) + [time.strftime("%Y-%m-%d %H:%M:%S")]
+        self.report = {**self.report, **old, "tests": self.tests}
+        return {t["id"] for t in self.plan.tasks if self.finished(t["id"])}
+
+    def _patched(self, step: dict, before: dict, name: str) -> None:
+        """What changed in the working folder since `before`, as a patch: <name>.patch in
+        <reports>/develop-<plan>/, and at the end of all.patch there; `patch` in the step is its
+        path from the reports folder. Nothing when nothing changed."""
+        now, parts = self.main.files.snapshot(), []
+        for p in sorted(set(before) | set(now)):
+            if before.get(p) == now.get(p):
+                continue
+            shown = self.code._show(p)
+            a, b = (f"a/{shown}" if p in before else "/dev/null"), (f"b/{shown}" if p in now else "/dev/null")
+            if b"\0" in before.get(p, b"") + now.get(p, b""):
+                parts.append(f"Binary files {a} and {b} differ\n")
+                continue
+            old, new = (_decoded(d).splitlines(keepends=True) for d in (before.get(p, b""), now.get(p, b"")))
+            parts += [line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+                      for line in difflib.unified_diff(old, new, a, b, n=3)]
+        if not parts:
+            return
+        used = {s.get("patch") for s in self.report["steps"]}
+        base = re.sub(r"[^\w.-]", "_", name)
+        file, k = f"{base}.patch", 1
+        while f"{self.path.name}/{file}" in used:
+            k += 1
+            file = f"{base}-{k}.patch"
+        self.path.mkdir(parents=True, exist_ok=True)
+        text = "".join(parts)
+        (self.path / file).write_text(text, encoding="utf-8")
+        with open(self.path / "all.patch", "a", encoding="utf-8") as all_patches:
+            all_patches.write(text)
+        step["patch"] = f"{self.path.name}/{file}"
 
     # --- the report ------------------------------------------------------------------------
     def save(self) -> None:
@@ -638,6 +864,7 @@ class Developer:
             total = lambda key, field: sum((s.get(key) or {}).get(field, 0) for s in steps)
             self.report["totals"] = {
                 "seconds": sum(s["seconds"] for s in steps), "calls": sum(s["calls"] for s in steps),
+                "wall_seconds": self._wall_before + round(time.time() - self._started),
                 "prompt_tokens": total("tokens", "prompt"), "completion_tokens": total("tokens", "completion"),
                 "edits": {"made": total("edits", "made"), "failed": total("edits", "failed")},
                 "compiles": {"ok": total("compiles", "ok"), "failed": total("compiles", "failed")},
@@ -681,6 +908,13 @@ def _cited(result: dict) -> str:
     return f"\nThe code it cites:\n{code}\n" if code else ""
 
 
+def _decoded(data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:              # old Ada sources
+        return data.decode("latin-1")
+
+
 def _message(error: dict) -> str:
     return str(error.get("message", error))
 
@@ -703,18 +937,31 @@ def markdown(report: dict) -> str:
                                               ", running") + ".", ""]
     if report.get("final"):
         f = report["final"]
-        out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**", ""]
+        out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**"
+                + (f" {f['errors']} agent runs failed with an error." if f.get("errors") else ""), ""]
     edits, compiles = t.get("edits", {}), t.get("compiles", {})
-    out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min, {t['calls']} tool calls, "
+    out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min of runs ({t.get('wall_seconds', 0) // 60} "
+            f"min of wall time, with the tests and the attempts at once), {t['calls']} tool calls, "
             f"{t['prompt_tokens'] + t['completion_tokens']} tokens" + (f", ${t['cost']}" if "cost" in t else "") + ".",
             f"Edits: {edits.get('made', 0)} made, {edits.get('failed', 0)} failed. Compilations: "
-            f"{compiles.get('ok', 0)} without errors, {compiles.get('failed', 0)} with errors.",
-            "", "| # | kind | task or test | agent | min | calls | edits (failed) | compilations (errors) | outcome | "
+            f"{compiles.get('ok', 0)} without errors, {compiles.get('failed', 0)} with errors."]
+    patches = [s["patch"] for s in report["steps"] if s.get("patch")]
+    if patches:
+        all_patches = patches[0].split("/")[0] + "/all.patch"
+        out += [f"What the tasks and rounds left in the code: a patch in each step, and all of them in "
+                f"[{all_patches}]({all_patches}) (`git apply`, or `patch -p1`)."]
+    if report.get("resumed"):
+        out += [f"Resumed {', '.join(report['resumed'])}."]
+    out += ["", "| # | kind | task or test | agent | min | calls | edits (failed) | compilations (errors) | outcome | "
                 "tests passing |", "|---|---|---|---|---|---|---|---|---|---|"]
     for s in report["steps"]:
         outcome = s.get("outcome", "")
         if s.get("error"):
             outcome = f"{outcome} (error: {s['error'][:80]})"
+        if s.get("budget_exceeded"):
+            outcome = f"{outcome} (budget spent: {s['budget_exceeded']})"
+        if s.get("patch"):
+            outcome = f"{outcome} ([patch]({s['patch']}))"
         e, c = s.get("edits") or {}, s.get("compiles") or {}
         stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
         kind = s["kind"] + (f" #{s['attempt']}" if s.get("attempt") else "")
@@ -748,7 +995,8 @@ def markdown(report: dict) -> str:
 
 
 def develop(plan_path: str | Path, cfg: Config, client: Any = None,
-            on_step: Callable[[dict], None] | None = None) -> dict:
-    """Runs a plan (see the module): its tasks, then the rounds that fix failing tests.
-    Returns the report, also written to <workspace>/reports/develop-<plan>.json and .md."""
-    return Developer(load_plan(plan_path), cfg, client, on_step).run_plan()
+            on_step: Callable[[dict], None] | None = None, resume: bool = False) -> dict:
+    """Runs a plan (see the module): its tasks, then the rounds that fix failing tests; with
+    `resume`, from where an earlier run of it stopped. Returns the report, also written to
+    <workspace>/reports/develop-<plan>.json and .md."""
+    return Developer(load_plan(plan_path), cfg, client, on_step).run_plan(resume)

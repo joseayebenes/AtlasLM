@@ -3,6 +3,8 @@
     list_files          files by glob pattern
     grep                regular expression search, with context lines
     read_file           a numbered fragment of a file
+    outline             the subprograms of a file, with their lines and requirements, and its imports
+    read_subprogram     one subprogram, numbered, with its comment (Ada, Python)
     edit_file           replaces an exact text (unique, or every occurrence)
     write_file          creates a file or rewrites it whole
     replace_subprogram  replaces a whole subprogram, found by its name (Ada, Python)
@@ -26,7 +28,10 @@ write off.
 replace_subprogram and add_subprogram need nothing copied from the file: the agent gives the
 whole subprogram, and the file says where it goes (symbols.py). gemma-4-26b tried to replace
 whole blocks with edit_file: 39 of its 151 edits in a run of atlas develop were refused for an
-old_text of more than 30 lines, and 34 more did not match the file.
+old_text of more than 30 lines, and 34 more did not match the file. They do not need the whole
+file read either: outline (what the file has) is enough for them, and read_subprogram (the
+one to change, which also counts as a read for edit_file); read_file reads at most 300 lines,
+and a small model's context is small.
 
 Every answer is a compact JSON-serialisable dict; a problem is an answer with `error`,
 never an exception, so that the agent can correct itself.
@@ -53,12 +58,14 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from atlas.code.common import extract_requirements, requirement_pattern
 from atlas.code.symbols import Span, comment_mark, insertion_line, language, new_subprograms, subprograms
 from atlas.plugins import register_methods
 
 __all__ = ["CodeTools", "TOOL_NAMES", "WRITE_TOOLS", "rebased"]
 
-TOOL_NAMES = ("list_files", "grep", "read_file", "edit_file", "write_file", "replace_subprogram", "add_subprogram")
+TOOL_NAMES = ("list_files", "grep", "read_file", "outline", "read_subprogram", "edit_file", "write_file",
+              "replace_subprogram", "add_subprogram")
 WRITE_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 
 MAX_LINES = 300            # lines of a read
@@ -67,6 +74,10 @@ MAX_MATCHES = 200          # matches of a search
 MAX_LINE_CHARS = 300       # characters of a line in a search result
 MAX_DIFF_CHARS = 4000      # characters of the diff of an edit
 MAX_SEARCH_BYTES = 2_000_000   # larger files are not searched
+MAX_IMPORTS = 50           # with clauses or imports of an outline
+# "with Ada.Text_IO;" (not "with function" of a generic formal), "import os", "from x import y"
+IMPORT = {"ada": re.compile(r"(?i)^\s*(?:limited\s+)?(?:private\s+)?with\s+(?!function\b|procedure\b|package\b)[\w.]"),
+          "python": re.compile(r"^(?:import|from)\s+\S")}
 
 
 def _sha(data: bytes) -> str:
@@ -83,13 +94,15 @@ def _decode(data: bytes) -> tuple[str, str]:
 
 class CodeTools:
     def __init__(self, roots: Iterable[str | Path], exclude: Iterable[str] = (), base: str | Path = ".",
-                 read_only: bool = False, protected: Iterable[str] = ()):
+                 read_only: bool = False, protected: Iterable[str] = (), requirements: re.Pattern | None = None):
         self.base = Path(base).resolve()
         self.roots = [(self.base / r).resolve() for r in roots]
         self.exclude = list(exclude)
         self.protected = list(protected)
         self.read_only = read_only
         self._seen: dict[Path, str] = {}    # file -> hash of its content when last read or written here
+        self._outlined: dict[Path, str] = {}   # the same, by outline: enough for the subprogram tools
+        self.requirements = requirements or requirement_pattern({})      # the tag of [sources.code], for outline
         self._lock = threading.Lock()
         # Set by BuildTools (see build.py): the syntax errors of a text as the content of a file
         # (None: nothing checks that language), and check_code of a file after a change
@@ -103,7 +116,7 @@ class CodeTools:
         sc = cfg["sources"].get("code") or {}
         roots = sc.get("roots", []) if base is None else [rebased(r, base) for r in sc.get("roots", [])]
         return cls(roots, sc.get("exclude", []), base=base or ".", read_only=read_only,
-                   protected=sc.get("protected", []))
+                   protected=sc.get("protected", []), requirements=requirement_pattern(sc))
 
     @classmethod
     def for_context(cls, context: Any) -> "CodeTools":
@@ -248,11 +261,80 @@ class CodeTools:
                 "truncated": end < len(lines) and (end - start + 1) >= MAX_LINES,
                 "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
 
+    def _source_file(self, path: str, tool: str) -> tuple[Path | None, bytes, str, dict | None]:
+        """(path, bytes, text with LF) of an Ada or Python file to read, or why it cannot be."""
+        p, err = self._resolve(path)
+        if not err and not p.is_file():
+            err = {"error": f"{path} does not exist"}
+        if not err and language(p.suffix) is None:
+            err = {"error": f"{path}: {tool} knows Ada and Python files; use read_file"}
+        if err:
+            return None, b"", "", err
+        data = p.read_bytes()
+        return p, data, _decode(data)[0].replace("\r\n", "\n"), None
+
+    def outline(self, path: str) -> dict:
+        """The subprograms of a file (Ada, Python), each with its kind (body or declaration),
+        its first and last lines, its qualified name, its first line (the signature) and the
+        requirement IDs of the comment above it; and the with clauses (imports) of the file.
+        To find the subprogram to change without reading the whole file: then read_subprogram.
+        After it, replace_subprogram and add_subprogram can change the file."""
+        p, data, text, err = self._source_file(path, "outline")
+        if err:
+            return err
+        lines, mark = text.split("\n"), comment_mark(p.suffix)
+        out = []
+        for s in subprograms(p.suffix, text) or []:
+            reqs = extract_requirements("\n".join(lines[_comment_start(lines, s.start, mark) - 1:s.start - 1]),
+                                        self.requirements)
+            out.append({"kind": s.kind, "start": s.start, "end": s.end, "name": s.qualified,
+                        "signature": _signature(lines, s), **({"requirements": reqs} if reqs else {})})
+        imports = [l.strip() for l in lines if IMPORT[language(p.suffix)].match(l)]
+        with self._lock:
+            self._outlined[p] = _sha(data)
+        return {"file": self._show(p), "total_lines": len(text.splitlines()), "imports": imports[:MAX_IMPORTS],
+                "subprograms": out}
+
+    def read_subprogram(self, path: str, name: str, line: int = 0) -> dict:
+        """One subprogram of a file (Ada, Python), numbered, with the comment lines above it.
+        `name` can be qualified (Controller.Execute); `line`, a line inside it, picks one when
+        several have that name (outline gives the lines). It counts as reading the file:
+        replace_subprogram, add_subprogram and edit_file can change it after this. The
+        numbers ("   12 | ") are not part of the file."""
+        p, data, text, err = self._source_file(path, "read_subprogram")
+        if err:
+            return err
+        spans = subprograms(p.suffix, text) or []
+        short, same = name.strip().split(".")[-1], _matcher(p.suffix)
+        named = [s for s in spans if same(s.name, short) and _qualified_match(s, name, same)]
+        found = sorted((s for s in named if s.start <= line <= s.end), key=lambda s: -s.start)[:1] if line else named
+        if len(found) > 1 and sum(s.kind == "body" for s in found) == 1:     # a body and its declaration
+            found = [s for s in found if s.kind == "body"]
+        where = lambda spans: ", ".join(f"{s.qualified} (lines {s.start}-{s.end})" for s in spans)
+        if not found and named:
+            return {"error": f"none of the subprograms named {short} in {path} has the line {line}: {where(named)}"}
+        if not found:
+            return _missing(path, short, "", [], spans)
+        if len(found) > 1:
+            return {"error": f"{len(found)} subprograms are named {short} in {path}: {where(found)}. Give `line`, a "
+                             "line inside the one to read"}
+        target, lines = found[0], text.split("\n")
+        start = _comment_start(lines, target.start, comment_mark(p.suffix), blank=False)
+        end = min(target.end, start + MAX_LINES - 1)
+        with self._lock:
+            self._seen[p] = _sha(data)
+        return {"file": self._show(p), "name": target.qualified, "kind": target.kind, "start": start, "end": end,
+                "total_lines": len(text.splitlines()), **({"truncated": True} if end < target.end else {}),
+                "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
+
     # --- editing --------------------------------------------------------------
-    def _check_seen(self, p: Path, path: str, data: bytes) -> dict | None:
-        seen = self._seen.get(p)
+    def _check_seen(self, p: Path, path: str, data: bytes, outlined: bool = False) -> dict | None:
+        """Why the file cannot be changed: not read, or changed since. `outlined`: outline
+        counts as a read (for the subprogram tools)."""
+        seen = self._seen.get(p) or (self._outlined.get(p) if outlined else None)
         if seen is None:
-            return {"error": f"read {path} with read_file before changing it"}
+            tools = "outline, read_subprogram or read_file" if outlined else "read_file"
+            return {"error": f"read {path} with {tools} before changing it"}
         if seen != _sha(data):
             return {"error": f"{path} changed since you read it: read it again"}
         return None
@@ -371,10 +453,10 @@ class CodeTools:
                 **({"notes": [LISTING_NOTE]} if unlisted else {}), **self._checked(p)}
 
     # --- whole subprograms ----------------------------------------------------
-    def _current(self, p: Path, path: str) -> tuple[str, str, bool] | dict:
+    def _current(self, p: Path, path: str, outlined: bool = False) -> tuple[str, str, bool] | dict:
         """(text with LF, encoding, CRLF?) of a file read before, or why it cannot be changed."""
         data = p.read_bytes()
-        err = self._check_seen(p, path, data)
+        err = self._check_seen(p, path, data, outlined)
         if err:
             return err
         raw, encoding = _decode(data)
@@ -412,7 +494,8 @@ class CodeTools:
         return p, None
 
     def replace_subprogram(self, path: str, name: str, new_text: str, line: int = 0) -> dict:
-        """Replaces a whole subprogram of a file read before. `new_text` is the complete new
+        """Replaces a whole subprogram of a file read before (outline or read_subprogram are
+        enough). `new_text` is the complete new
         subprogram, from `procedure Name` or `function Name` (`def name` in Python) to its end
         (`end Name;`), with its comment lines above when they change too. Better than
         edit_file for any change inside a subprogram: nothing has to be copied from the file.
@@ -430,7 +513,7 @@ class CodeTools:
             return {"error": f"new_text has {what} complete subprogram named {short}: give the whole subprogram, "
                              f"from its first line to its end ({'end ' + short + ';' if language(p.suffix) == 'ada' else 'the last line of its body'})"}
         with self._lock:
-            current = self._current(p, path)
+            current = self._current(p, path, outlined=True)
             if isinstance(current, dict):
                 return current
             text, encoding, crlf = current
@@ -463,7 +546,8 @@ class CodeTools:
                 **self._checked(p)}
 
     def add_subprogram(self, path: str, new_text: str, after: str = "", before: str = "") -> dict:
-        """Adds new subprograms to a file read before; `new_text` holds them complete. They go
+        """Adds new subprograms to a file read before (outline is enough); `new_text` holds them
+        complete. They go
         right after the subprogram named `after`, or right before the one named `before` (with
         its comment: in Ada a subprogram of a body must come before the one that calls it), or
         else at the end of the declarations of the package (before `private` in a spec, before
@@ -479,7 +563,7 @@ class CodeTools:
             return {"error": "new_text holds no complete subprogram: give each one whole, from its first line to its "
                              "end"}
         with self._lock:
-            current = self._current(p, path)
+            current = self._current(p, path, outlined=True)
             if isinstance(current, dict):
                 return current
             text, encoding, crlf = current
@@ -578,6 +662,28 @@ def _broken_syntax(path: str, text: str, errors: list[dict]) -> dict:
                        for i in range(max(1, line - 3), min(len(lines), line + 3) + 1)) if line else ""
     return {"error": f"the change was not made: it breaks the syntax of {path}, which had none. Correct the new "
                      "text and try again", "syntax_errors": errors[:5], **({"around": around} if around else {})}
+
+
+def _comment_start(lines: list[str], start: int, mark: str, blank: bool = True) -> int:
+    """The first line of the comment right above line `start` (1-based; `start` if there is
+    none). With `blank`, one blank line between the comment and the code is tolerated, as the
+    analyzers of the code do."""
+    above = start - 1                    # the number of the line above
+    if blank and above >= 2 and not lines[above - 1].strip() and lines[above - 2].strip().startswith(mark):
+        above -= 1
+    first = start
+    while above >= 1 and lines[above - 1].strip().startswith(mark):
+        first, above = above, above - 1
+    return first
+
+
+def _signature(lines: list[str], span: Span) -> str:
+    """The first line of a subprogram that says what it is: not a decorator, not `overriding`."""
+    for line in lines[span.start - 1:span.end]:
+        s = line.strip()
+        if s and not s.startswith("@") and s.lower() not in ("overriding", "not overriding"):
+            return s[:MAX_LINE_CHARS]
+    return lines[span.start - 1].strip()[:MAX_LINE_CHARS]
 
 
 def _indent(line: str) -> str:

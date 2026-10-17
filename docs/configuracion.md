@@ -49,6 +49,7 @@ de ella:
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
 | `[sources.doors] attributes` | el índice de los módulos de DOORS, sin volver a leerlos |
 | `[graph]` `exports` o `communities` | el grafo (`matrix_formats` y `csv_delimiter`, nada) |
+| `model` de una fuente | su análisis (si cambia a `regex`) y su parte del índice, que pasa a tener vectores o a no tenerlos |
 | una clave o una contraseña | nada |
 
 ## [project]
@@ -174,6 +175,7 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `max_chars` | entero | `12000` | tamaño máximo de una sección (las mayores se dividen) |
 | `min_chars` | entero | `300` | las secciones más cortas se unen a la anterior |
 | `lang` | texto | `""` | idioma de los resúmenes (`"Spanish"`); vacío = el del documento |
+| `model` | texto | `"full"` | `"none"`: ningún texto de estos documentos sale del puesto (ver [Fuentes locales](#fuentes-locales-model--none)). `analysis` pasa a `"regex"` si no se dice, y `"llm"` es un error |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
@@ -188,6 +190,8 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 |---|---|---|---|
 | `adapter` | texto | `"database"` | `exchange`: la base de intercambio (lo normal). `database`: otra base con consultas propias |
 | `modules` | lista | `[]` | qué módulos; vacío = todos |
+| `model` | texto | `"full"` | `"none"`: el texto de ningún módulo sale del puesto (ver [Fuentes locales](#fuentes-locales-model--none)) |
+| `local_only` | lista | `[]` | los módulos cuyo texto no sale del puesto, aunque `model` sea `"full"`: `["SRS_CLIENTE"]` |
 | `enabled` | sí/no | `true` | `false` la deja fuera |
 | `exchange` | tabla | — | `[sources.doors.exchange]` |
 | `database` | tabla | — | `[sources.doors.database]` |
@@ -280,7 +284,40 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | `check_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para `check_code` y la comprobación de sintaxis |
 | `test_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para cada comando de `run_test` (construir la prueba y ejecutarla) |
 | `program_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para `run_program` |
+| `model` | texto | `"full"` | `"none"`: nada del código sale del puesto (ver [Fuentes locales](#fuentes-locales-model--none)); los agentes con herramientas que leen o compilan el código no arrancan |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
+
+## Fuentes locales (`model = "none"`)
+
+Hay documentos (del cliente, con control de exportación) que no pueden ir ni al gateway.
+`model = "none"` en una `[[sources.docs]]`, en `[sources.doors]` (o los módulos de
+`local_only`) o en `[sources.code]` deja esa fuente en el grafo y en la búsqueda por IDs y
+palabras sin que ningún texto suyo vaya a un modelo:
+
+- **Análisis.** Los documentos se analizan con `regex` (o `none`); `analysis = "llm"` es un
+  error.
+- **Índice.** Sus registros se indexan sin vector: ninguna petición de embeddings. La
+  búsqueda los encuentra por sus IDs y sus palabras, no por su significado.
+- **Lo que llama al modelo** (`atlas ask`, `ask_docs`, `ask_atlas`, `atlas agent`,
+  `verify`, `comply`, `link`, `impact`, `coverage`) los deja fuera del prompt y los
+  devuelve aparte: en `atlas ask`, como fuentes `[local]`; en las herramientas, en
+  `local_only`. Un requisito de un módulo local, o cuyo código es local, no se juzga: su
+  veredicto es `local_only`.
+- **Lo que no sale del puesto** (`atlas search`, `trace`, y las herramientas MCP `search`,
+  `get_section`, `get_requirement`, `trace`, `read_source`, `build_context`) los da enteros.
+
+Sí pueden ir al modelo sus identificadores: IDs de requisito, nombres de código y de
+fichero. Qué garantiza y qué no, en [seguridad](seguridad.md).
+
+```toml
+[[sources.docs]]
+name = "cliente"
+paths = ["docs/cliente"]
+model = "none"               # analysis = "regex" por defecto
+
+[sources.doors]
+local_only = ["SRS_CLIENTE"]
+```
 
 ## [tests]
 

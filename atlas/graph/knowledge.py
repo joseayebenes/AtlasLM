@@ -119,6 +119,7 @@ class KnowledgeGraph:
         self._groups: list[set[str]] | None = None
         self._paths: dict[str, str] = {}                     # file -> its key (_path_key)
         self._in_file: dict[str, list[str]] | None = None    # key of a file -> the nodes in it
+        self.local_files: set[Path] = set()     # files of local-only code: not read (see for_model)
 
     @classmethod
     def open(cls, db: str | Path, root: str | Path = ".",
@@ -131,6 +132,41 @@ class KnowledgeGraph:
         """The graph of <workspace>/atlas.db; file paths from the folder of atlas.toml, as the
         code roots; the attributes of [sources.doors] attributes."""
         return cls.open(cfg.workspace / "atlas.db", cfg.home, attributes=display_attributes(cfg))
+
+    def for_model(self, local) -> "KnowledgeGraph":
+        """This graph as what is sent to a model may see it, given the local-only sources
+        (atlas.outbound.LocalOnly): their nodes keep their identifiers and links but lose their
+        text (requirement text and attributes, document and section titles, what the sections
+        state, code comments and source), carry `local_only`, and the source files of local
+        code cannot be read. Without local-only sources, this same graph."""
+        if not local:
+            return self
+        G = self.G.copy()
+        files: set[Path] = set()
+        for n, d in G.nodes(data=True):
+            if not local.node(self.G, n):
+                continue
+            d["local_only"] = True
+            kind = d.get("kind")
+            if kind in REQUIREMENT_KINDS:
+                for k in ("text", "attributes", "heading"):
+                    d.pop(k, None)
+            elif kind == "document":
+                d["title"] = ""
+            elif kind == "section":
+                d.update(name="", path=[], file="",            # its file name carries the title
+                         requirements=[{"id": r["id"], "text": ""} for r in d.get("requirements", [])])
+            else:
+                for k in ("doc", "source"):
+                    d.pop(k, None)
+                files.update(Path(f) for f in [d.get("file"), *d.get("files", [])] if f)
+        view = KnowledgeGraph(G, self.root, self.build_stats, self.convention, attributes=self.attributes)
+        view.local_files = {self._absolute(f) for f in files}
+        return view
+
+    def _absolute(self, file: str | Path) -> Path:
+        path = Path(file)
+        return (path if path.is_absolute() else self.root / path).resolve()
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
@@ -371,6 +407,8 @@ class KnowledgeGraph:
     def _section(self, s: str, requirement: str = "") -> dict:
         d = self.G.nodes[s]
         out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name")}
+        if d.get("local_only"):
+            out["local_only"] = True
         if requirement:
             text = next((x["text"] for x in d.get("requirements", []) if x["id"] == requirement), "")
             official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
@@ -404,6 +442,9 @@ class KnowledgeGraph:
             path = self.root / path
         if not path.exists():
             return {"error": f"file {path} not found; is the root ({self.root}) right?"}
+        if self.local_files and path.resolve() in self.local_files:
+            return {"error": f"{file} is local-only code ([sources.code] model = \"none\"): its source does not go "
+                             "to the model", "local_only": True}
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         start, end = max(1, start), min(len(lines), end)
         truncated = end - start + 1 > MAX_LINES
@@ -558,6 +599,9 @@ class KnowledgeGraph:
         if err:
             return err
         d = self.G.nodes[n]
+        if d.get("local_only"):
+            return {"error": f"{n} is local-only ({d.get('kind')}): its source does not go to the model",
+                    "local_only": True}
         if d.get("kind") in ("subprogram", "test") and len(d.get("bodies") or []) > 1:
             return self._bodies(n, d, context)
         if d.get("kind") == "subprogram" and d.get("start_line"):

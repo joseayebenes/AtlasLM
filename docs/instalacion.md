@@ -143,7 +143,7 @@ atlas doctor atlas.toml     # lo que puede fallar en este puesto, antes de proce
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
 atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
-atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
+atlas status atlas.toml     # qué hay, qué falló, qué se ha enviado a cada modelo y el perfil de tiempos
 ```
 
 `atlas doctor` solo lee: no crea el workspace ni toca las fuentes. Imprime una tabla con una

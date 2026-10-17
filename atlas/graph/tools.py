@@ -18,7 +18,9 @@ so as not to be confused with the document tools. Its `read_file` is not here: t
 atlas.code.CodeTools only reads inside the code roots.
 
 The graph is read from atlas.db and read again when `atlas run` rebuilds it: a long-lived
-process (atlas serve) always answers with the last build. They are registered as "tool"
+process (atlas serve) always answers with the last build. In the context of an agent
+(`for_model`), whose tool results go to the model, it is the graph without the text of the
+local-only sources (KnowledgeGraph.for_model). They are registered as "tool"
 plugins with these names, for [agents.*] tools and [mcp] tools.
 """
 from __future__ import annotations
@@ -42,26 +44,30 @@ NO_GRAPH = "there is no graph yet: run `atlas run` with \"graph\" in [pipeline] 
 
 
 class GraphTools:
-    def __init__(self, db: str | Path, root: str | Path = ".", attributes=DEFAULT_ATTRIBUTES):
+    def __init__(self, db: str | Path, root: str | Path = ".", attributes=DEFAULT_ATTRIBUTES, local: Any = None):
         self.store = GraphStore(db)
         self.root = root
         self.attributes = list(attributes)
+        self.local = local          # LocalOnly: the graph that a model may see
         self._graph: KnowledgeGraph | None = None
         self._builds: dict | None = None
         self._lock = threading.Lock()
 
     @classmethod
-    def from_config(cls, cfg) -> "GraphTools":
+    def from_config(cls, cfg, for_model: bool = False) -> "GraphTools":
         """Over the atlas.db of the workspace; file paths from the folder of atlas.toml, as
-        the code roots; the attributes of [sources.doors] attributes."""
-        return cls(cfg.workspace / "atlas.db", cfg.home, attributes=display_attributes(cfg))
+        the code roots; the attributes of [sources.doors] attributes. `for_model`: for an
+        agent, without the text of the local-only sources."""
+        from atlas.outbound import LocalOnly
+        return cls(cfg.workspace / "atlas.db", cfg.home, attributes=display_attributes(cfg),
+                   local=LocalOnly.from_config(cfg) if for_model else None)
 
     @classmethod
     def for_context(cls, context: Any) -> "GraphTools":
         """One instance per context, shared by every tool plugin."""
         tools = getattr(context, "_graph_tools", None)
         if tools is None:
-            tools = cls.from_config(context.cfg)
+            tools = cls.from_config(context.cfg, getattr(context, "for_model", False))
             context._graph_tools = tools
         return tools
 
@@ -70,7 +76,8 @@ class GraphTools:
         builds = self.store.builds()
         with self._lock:
             if builds != self._builds:
-                self._graph = KnowledgeGraph(self.store.load(), self.root, builds, attributes=self.attributes) if builds else None
+                self._graph = KnowledgeGraph(self.store.load(), self.root, builds,
+                                             attributes=self.attributes).for_model(self.local) if builds else None
                 self._builds = builds
             return self._graph
 

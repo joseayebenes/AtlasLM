@@ -109,9 +109,9 @@ EMBED_FAMILIES = ("embeddinggemma", "nomic", "e5", "none")   # [embeddings] fami
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
-               "min_chars": int, "enabled": bool}
+               "min_chars": int, "enabled": bool, "model": str}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
-                "modules": list, "attributes": list, "max_age_days": int}
+                "modules": list, "attributes": list, "max_age_days": int, "model": str, "local_only": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
                 "temperature": float, "top_p": float, "top_k": int,
                 "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
@@ -121,7 +121,7 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
                "test_timeout": int, "program_timeout": int, "run_command": list,
                "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
                "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
-               "reference": list, "language_server": list, "language_server_project": str}
+               "reference": list, "language_server": list, "language_server_project": str, "model": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "shared_cache": ""},
@@ -190,6 +190,29 @@ def _validate_tests(tests: dict) -> None:
                               f"({', '.join(languages) or 'none'})")
         if not all(isinstance(v, str) for v in step.values()):
             raise ConfigError(f"[{where}] the code of each language must be a string")
+
+
+def _validate_models(sources: dict) -> None:
+    """model = "full" | "none" in each source. With "none" the text of the source never goes
+    to a model: a [[sources.docs]] is analysed with regex (unless it says none) and an
+    analysis = "llm" is an error."""
+    from atlas.outbound import MODELS
+    wanted = [(f"sources.docs[{i}]", d) for i, d in enumerate(sources.get("docs", []))]
+    wanted += [(f"sources.{k}", sources[k]) for k in ("doors", "code") if k in sources]
+    for where, s in wanted:
+        if s.get("model", "full") not in MODELS:
+            raise ConfigError(f"[{where}] model must be one of {', '.join(MODELS)}, not '{s['model']}'")
+    for i, d in enumerate(sources.get("docs", [])):
+        if d.get("model") == "none":
+            if d.get("analysis") == "llm":
+                raise ConfigError(f"[sources.docs[{i}]] '{d['name']}': model = \"none\" keeps its text away from "
+                                  f"the model, so its analysis cannot be \"llm\": use \"regex\" or \"none\"")
+            d.setdefault("analysis", "regex")
+    local = (sources.get("doors") or {}).get("local_only", [])
+    if not all(isinstance(m, str) and m for m in local):
+        raise ConfigError("[sources.doors] local_only must be a list of module names")
+
+
 
 
 LINK_SEMANTICS = ("derives", "verifies", "ignore")   # [sources.doors.convention] link_semantics (atlas.graph)
@@ -415,6 +438,7 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError("[sources.doors] 'max_age_days' must be 0 (no warning) or more")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
+    _validate_models(sources)
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}), path.parent)
     _validate_index(data.get("index", {}))

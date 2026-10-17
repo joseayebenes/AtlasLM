@@ -104,7 +104,7 @@ atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml (--profile
 atlas run      atlas.dev.toml # procesamiento incremental y reanudable
 atlas run atlas.dev.toml --until 07:00   # o --max-minutes N, --max-requests N: para con el estado guardado (código 3)
 atlas estimate atlas.dev.toml # qué haría `atlas run`: unidades, peticiones y tiempo, sin hacerlo
-atlas status   atlas.dev.toml # libro de registro, datos, lo que queda y perfil de tiempos
+atlas status   atlas.dev.toml # libro de registro, datos, lo que queda, lo enviado a cada modelo y perfil de tiempos
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
 atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito, en Markdown: DOORS, documentos, código, pruebas

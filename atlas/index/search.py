@@ -46,6 +46,11 @@ sources; a question that has them is not rewritten, nor read whole unless scope=
 Before reading whole documents it makes a plan (documents, sections, characters, parts,
 requests) and refuses to read more than `max_parts` parts: a vague question about a module
 of thousands of requirements would take tens of requests of a quota shared by everyone.
+
+The documents of a local-only source (model = "none"; `local` says which) never go to the
+model: not their passages, not the documents read whole, not their titles in the list the
+rewriting sees. An answer gives them in `sources` with `local_only` true and no number, so
+that the person knows there is more and where.
 """
 from __future__ import annotations
 
@@ -63,11 +68,12 @@ from atlas.index.records import CODE_PREFIX, DOORS_PREFIX, asks_for
 from atlas.index.store import REF_PATTERN, IndexStore
 from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
+from atlas.outbound import record_sent, source_label
 
-__all__ = ["acronyms", "answer", "answer_status", "answer_whole", "build_context", "check_citations", "cite",
-           "citation_warnings", "diverse", "expand_synonyms", "filters", "grounded_status", "ids_in", "in_section",
-           "query_vectors", "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_plan",
-           "whole_sources"]
+__all__ = ["LOCAL_ONLY_ANSWER", "acronyms", "answer", "answer_status", "answer_whole", "build_context",
+           "check_citations", "cite", "citation_warnings", "diverse", "expand_synonyms", "filters", "grounded_status",
+           "ids_in", "in_section", "local_source", "query_vectors", "rewrite_question", "rrf", "search", "section_file",
+           "status_line", "whole_plan", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +122,9 @@ parts are read separately. Write notes with EVERYTHING in this part that is rele
 question: every fact, requirement identifier and value exactly as written, each with its source \
 number in brackets, e.g. [12]. Do not answer the question and add nothing that is not in the \
 sources. If nothing in this part is relevant, reply only: NOTHING"""
+
+LOCAL_ONLY_ANSWER = ("Only local-only sources are related to the question, and their text does not go to the model: "
+                     "read them in the sources marked local_only (search, get_section).")
 
 COMBINE_SYSTEM = """You answer a question from notes taken, part by part, over the whole \
 documents it is about.
@@ -540,6 +549,16 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
     return parts + ([current] if current else [])
 
 
+def local_source(r: dict) -> dict:
+    """A record (or a document, {doc, name}) that an answer left out because it is
+    local-only: where it is, without its text."""
+    if "doc_name" not in r:
+        return {"n": 0, "local_only": True, "cite": f"{r['name']} (whole document)", "doc": r["name"], "section": "",
+                "file": "", "kind": "document", "ref": ""}
+    return {"n": 0, "local_only": True, "cite": cite(r), "doc": r["doc_name"], "section": r["section_id"],
+            "file": section_file(r), "kind": r["kind"], "ref": r.get("ref", "")}
+
+
 def _with_minutes(plan: dict, requests_per_minute: int) -> dict:
     """The plan with the least minutes its requests take, if there is a limit per minute."""
     if requests_per_minute > 0:
@@ -581,7 +600,7 @@ def _chapters(sources: list[dict]) -> list[dict]:
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
                  max_chars: int = SCOPE_CHARS, max_parts: int = MAX_PARTS, requests_per_minute: int = 0,
                  extra_requests: int = 0, section: str = "", extra_sources: list[dict] = (),
-                 where: dict | None = None) -> dict:
+                 where: dict | None = None, local: Callable[[str], bool] | None = None) -> dict:
     """The answer from whole documents ({doc, name}), or from a section of them, after
     `extra_sources`: one request if they fit in max_chars; if not, notes from each part and
     a last request that combines them. With more than max_parts parts, or a section that is
@@ -590,7 +609,10 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     leaves a note ("part 2 of 4 failed: ...") at the end of the answer, the answer is
     written with the others and its status is partial. With `where`, only the records of
     the documents that match it (see IndexStore.allowed). The citations are numbered 1, 2,
-    3... in the order of the sources."""
+    3... in the order of the sources. The local-only documents (`local`) are not read: they
+    come back in `sources`, with `local_only`."""
+    held = [local_source(d) for d in docs if local and local(d["doc"])]
+    docs = [d for d in docs if not (local and local(d["doc"]))]
     allowed = store.allowed(where=where) if where else None
     sources, parts, plan = whole_plan(store, docs, max_chars, extra_requests, section, extra_sources, allowed)
     plan = _with_minutes(plan, requests_per_minute)
@@ -601,7 +623,8 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
                 f"{', '.join(names)}", "requests": extra_requests,
                 "chapters": _chapters([s for d in docs for s in whole_sources(store, d["doc"])])}
     if not sources:
-        return {**_checked(NOTHING_FOUND, [], False), **out, "requests": extra_requests}
+        return {**_checked(LOCAL_ONLY_ANSWER if held else NOTHING_FOUND, [], False), **out, "sources": held,
+                "requests": extra_requests, **({"status": "local_only"} if held else {})}
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), plan["sections"],
              plan["chars"], plan["parts"])
     if len(parts) > max_parts:
@@ -611,6 +634,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
                          f"{plan['requests']} requests to the model{minutes}, more than [search] "
                          f"max_parts = {max_parts}: narrow the question to a document or a section",
                 "requests": extra_requests, "chapters": _chapters(sources)}
+    record_sent(store.path, getattr(llm, "model", ""), {source_label(d["doc"]) for d in docs}, "answers")
     failed: list[str] = []
     found = True
     if len(parts) == 1:
@@ -628,6 +652,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     ordered = [sources[old - 1] for old in cited] + [s for i, s in enumerate(sources, 1) if i not in cited]
     res = {**_checked(text, ordered, False, found), **out, "requests": requests + extra_requests,
            **({"truncated": True} if truncated else {}), **({"failed_parts": failed} if failed else {})}
+    res["sources"] += held
     if failed:
         res["answer"] += "".join(f"\n\n({note})" for note in failed)
         res["status"] = "partial"
@@ -765,10 +790,11 @@ def _scope_hits(store: IndexStore, embedder: Embedder, question: str, k: int, ki
 
 
 def _scope_documents(store: IndexStore, document: str, named: list[str], hits: list[dict],
-                     most: int = SCOPE_DOCUMENTS) -> list[dict]:
+                     most: int = SCOPE_DOCUMENTS, local: Callable[[str], bool] | None = None) -> list[dict]:
     """The documents a broad question reads whole: `document`, else those it names, else
     those with most of its hits (see _scope_hits), up to `most` and with at least half the
-    hits of the first (not code units: their elements already are whole)."""
+    hits of the first (not code units: their elements already are whole; not local-only
+    documents, unless `document` names one)."""
     docs = store.documents()
     if document:
         return [d for d in docs if document in (d["name"], d["doc"])] or \
@@ -776,7 +802,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
     if named:
         return [d for d in docs if d["name"] in named and not d["doc"].startswith(CODE_PREFIX)]
     by_doc = {d["doc"]: d for d in docs}
-    ranked = Counter(h["doc"] for h in hits if not h["doc"].startswith(CODE_PREFIX)).most_common(most)
+    ranked = Counter(h["doc"] for h in hits
+                     if not h["doc"].startswith(CODE_PREFIX) and not (local and local(h["doc"]))).most_common(most)
     return [by_doc[doc] for doc, n in ranked if doc in by_doc and 2 * n >= ranked[0][1]]
 
 
@@ -786,8 +813,9 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
            extra_sources: list[dict] = (), synonyms: list[list[str]] = (), id_normalize: str = "upper",
            context_radius: int = CONTEXT_RADIUS, where: dict | None = None, max_parts: int = MAX_PARTS,
            scope_documents: int = SCOPE_DOCUMENTS, requests_per_minute: int = 0, dry_run: bool = False,
-           section: str = "") -> dict:
-    """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
+           section: str = "", local: Callable[[str], bool] | None = None) -> dict:
+    """{"answer": text with [n] citations, "status": not_found | answered | partial | local_only
+    (all that was found is of local-only sources, and nothing went to the model), "uncited": the
     sentences without a citation, "consulted": how many sources it was given (see
     answer_status), "sources": those it cites [{n, cite, doc, section, file,
     kind, ref, excerpt, context}], "unused": from passages, those it does not cite [{n, cite}],
@@ -806,17 +834,21 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
     documents, as in search.
     dry_run makes no request to any model (llm can be None): the plan of reading whole the
     documents the question would read, chosen without the model (`document`, the documents
-    whose name it says, or a lexical search in the summaries), or None if there are none."""
+    whose name it says, or a lexical search in the summaries), or None if there are none.
+    `local` says which documents (their keys) are local-only: what of them was found goes
+    in `sources` with `local_only` true, n = 0 and no excerpt, and nothing of them goes to
+    the model."""
+    local = local or (lambda doc: False)
     extra = list(extra_sources)
     if extra:
         rewrite, scope = False, "passages" if scope == "auto" else scope
-    candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX)]
+    candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX) and not local(d["doc"])]
     if dry_run:
         named = _named(question, candidates)
         hits = [] if document or named else _scope_hits(store, embedder, question, k, kinds, per_document, None,
                                                         dense=False, where=where, synonyms=synonyms,
                                                         id_normalize=id_normalize)
-        docs = _scope_documents(store, document, named, hits, scope_documents)
+        docs = [d for d in _scope_documents(store, document, named, hits, scope_documents, local) if not local(d["doc"])]
         allowed = store.allowed(where=where) if where else None
         plan = _with_minutes(whole_plan(store, docs, scope_chars, int(rewrite), section, extra, allowed)[2],
                              requests_per_minute) if docs else None
@@ -830,19 +862,25 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
         hits = [] if document or named else _scope_hits(store, embedder, question, k, kinds, per_document,
                                                         rewritten, where=where, synonyms=synonyms,
                                                         id_normalize=id_normalize)
-        docs = _scope_documents(store, document, named, hits, scope_documents)
+        docs = _scope_documents(store, document, named, hits, scope_documents, local)
         if docs:
             return answer_whole(store, llm, question, docs, scope_chars, max_parts, requests_per_minute, requests,
-                                section, extra, where)
+                                section, extra, where, local)
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
                   where=where, synonyms=synonyms, id_normalize=id_normalize)
     routed = {s["ref"].upper() for s in extra if s.get("ref")}
     hits = [h for h in hits if not (h["doc"].startswith(DOORS_PREFIX) and (h.get("ref") or "").upper() in routed)]
+    held = [local_source(h) for h in hits if local(h["doc"])]
+    hits = [h for h in hits if not local(h["doc"])]
     used = sum(len(s["context"]) for s in extra)
     sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4), context_radius)
     if not sources:
-        return {**_checked(NOTHING_FOUND, [], True), "scope": "passages", "documents": [], "requests": requests}
+        return {**_checked(LOCAL_ONLY_ANSWER if held else NOTHING_FOUND, [], True), "sources": held,
+                "scope": "passages", "documents": [], "requests": requests, **({"status": "local_only"} if held else {})}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
+    record_sent(store.path, getattr(llm, "model", ""), {source_label(s["doc"]) for s in sources}, "answers")
     text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
-    return {**_checked(str(text), sources, True), "scope": "passages", "documents": [],
-            "requests": requests + _requests(text), **({"truncated": True} if _truncated(text) else {})}
+    res = {**_checked(str(text), sources, True), "scope": "passages", "documents": [],
+           "requests": requests + _requests(text), **({"truncated": True} if _truncated(text) else {})}
+    res["sources"] += held
+    return res

@@ -3,8 +3,11 @@ same records, and the embeddings cache.
 
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
-    index_records     the records (see records.py) with their vector and their meta (JSON:
-                      what a search can be narrowed by, see allowed)
+    index_local       the keys of the local-only documents: their records have no vector,
+                      nothing of them went to a model
+    index_records     the records (see records.py) with their vector (NULL in a local-only
+                      document) and their meta (JSON: what a search can be narrowed by, see
+                      allowed)
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5), with the
                       tokenizer of [index] fts_tokenizer: when it changes, the table is
                       rebuilt from index_records on opening (seconds, nothing is embedded)
@@ -14,7 +17,8 @@ same records, and the embeddings cache.
                       one lacks is looked up there and copied here
 
 A document is replaced in a single transaction. Dense search only uses vectors of the
-current embeddings model, so changing the model never mixes vectors of two models.
+current embeddings model, so changing the model never mixes vectors of two models; the
+records without a vector are found by the IDs and BM25 only.
 """
 from __future__ import annotations
 
@@ -40,6 +44,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS index_documents (
     doc TEXT PRIMARY KEY, name TEXT, title TEXT, out_dir TEXT, overview TEXT,
     embed_model TEXT, indexed_at TEXT);
+CREATE TABLE IF NOT EXISTS index_local (doc TEXT PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS index_records (
     id INTEGER PRIMARY KEY, doc TEXT, kind TEXT, section_id TEXT, section_title TEXT, path TEXT,
     page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB,
@@ -197,27 +202,32 @@ class IndexStore:
                             (doc,))
         self.db.execute("DELETE FROM index_records WHERE doc = ?", (doc,))
         self.db.execute("DELETE FROM index_documents WHERE doc = ?", (doc,))
+        self.db.execute("DELETE FROM index_local WHERE doc = ?", (doc,))
 
     def delete_document(self, doc: str) -> None:
         with self.lock, self.db:
             self._delete(doc)
         self._matrix = self._prefixes = None
 
-    def replace_document(self, doc: dict, records: list[dict], vectors: np.ndarray) -> None:
-        """`doc`: doc (key), name, title, out_dir, overview, embed_model. All or nothing."""
+    def replace_document(self, doc: dict, records: list[dict], vectors: np.ndarray | None) -> None:
+        """`doc`: doc (key), name, title, out_dir, overview, embed_model and `local`. Without
+        `vectors` (None), the records are kept without one. All or nothing."""
         with self.lock, self.db:
             self._delete(doc["doc"])
             self.db.execute("INSERT INTO index_documents VALUES (?,?,?,?,?,?,?)",
                             (doc["doc"], doc["name"], doc["title"], doc.get("out_dir", ""),
                              json.dumps(doc.get("overview") or {}, ensure_ascii=False), doc["embed_model"],
                              datetime.now().isoformat(timespec="seconds")))
-            for r, v in zip(records, vectors):
+            if doc.get("local"):
+                self.db.execute("INSERT INTO index_local VALUES (?)", (doc["doc"],))
+            for r, v in zip(records, vectors if vectors is not None else [None] * len(records)):
                 cur = self.db.execute(
                     "INSERT INTO index_records (doc, kind, section_id, section_title, path, page_start, "
                     "page_end, ref, seq, text, embed_text, vector, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (doc["doc"], r["kind"], r.get("section_id", ""), r.get("section_title", ""),
                      r.get("path", ""), r.get("page_start", 0), r.get("page_end", 0), r.get("ref", ""),
-                     r.get("seq", 0), r["text"], r["embed_text"], v.astype(np.float32).tobytes(),
+                     r.get("seq", 0), r["text"], r["embed_text"],
+                     v.astype(np.float32).tobytes() if v is not None else None,
                      json.dumps(r.get("meta") or {}, ensure_ascii=False)))
                 if self.fts:
                     self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) VALUES (?, ?, ?)",
@@ -229,10 +239,15 @@ class IndexStore:
             "SELECT d.*, COUNT(r.id) AS records FROM index_documents d LEFT JOIN index_records r "
             "ON r.doc = d.doc GROUP BY d.doc ORDER BY d.name")]
 
+    def local_documents(self) -> set[str]:
+        """The keys of the documents indexed as local-only."""
+        return {r[0] for r in self._query("SELECT doc FROM index_local")}
+
     def counts(self) -> dict[str, int]:
         return {"documents": self._query("SELECT COUNT(*) FROM index_documents")[0][0],
                 "records": self._query("SELECT COUNT(*) FROM index_records")[0][0],
-                "cached_vectors": self._query("SELECT COUNT(*) FROM embed_cache")[0][0]}
+                "cached_vectors": self._query("SELECT COUNT(*) FROM embed_cache")[0][0],
+                "local_documents": self._query("SELECT COUNT(*) FROM index_local")[0][0]}
 
     # --- search -------------------------------------------------------------
     def _load_matrix(self, model: str) -> tuple[np.ndarray, np.ndarray]:
@@ -244,7 +259,8 @@ class IndexStore:
             version = self.db.execute("PRAGMA data_version").fetchone()[0]
             if self._matrix is None or self._matrix[:2] != (model, version):
                 rows = self.db.execute("SELECT r.id, r.vector FROM index_records r JOIN index_documents d "
-                                       "ON d.doc = r.doc WHERE d.embed_model = ? ORDER BY r.id", (model,)).fetchall()
+                                       "ON d.doc = r.doc WHERE d.embed_model = ? AND r.vector IS NOT NULL ORDER BY r.id",
+                                       (model,)).fetchall()
                 ids = np.array([r["id"] for r in rows], dtype=np.int64)
                 m = (np.vstack([np.frombuffer(r["vector"], dtype=np.float32) for r in rows])
                      if rows else np.zeros((0, 1), dtype=np.float32))

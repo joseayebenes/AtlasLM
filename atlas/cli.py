@@ -4,7 +4,8 @@
                    [--until HH:MM] [--max-minutes N] [--max-requests N]   (exit 3) and goes on next time
     atlas estimate [atlas.toml]     what `atlas run` would do now: units, requests to the APIs and time,
                    [--latency S]    with the seconds per request of the last run (or S)
-    atlas status   [atlas.toml]     state of the ledger and of the data, and what is left to do
+    atlas status   [atlas.toml]     state of the ledger and of the data, what is left to do and what went
+                                    to each model
     atlas sections [atlas.toml]     sections each document would have, without the model
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement in Markdown: DOORS, documents (with the
@@ -340,6 +341,7 @@ def docs_step(ctx) -> Step | None:
     from atlas.docs import extractor_for, pending_requests, process_document
     from atlas.docs.analysis import PROMPT_VERSION
     from atlas.llm import JsonLlm, from_config
+    from atlas.outbound import record_sent
     by_name = {d["name"]: (d, options) for d, options in sources}
     root = ctx.cfg.workspace / "docs"
     model = from_config(ctx.cfg).llm.model
@@ -391,6 +393,8 @@ def docs_step(ctx) -> Step | None:
         data = process_document(ctx.cfg.resolve(f), out, options, llm=llm() if options.analysis == "llm" else None,
                                 cache_dir=docs_cache(ctx.cfg), workers=workers, disabled=ctx.disabled,
                                 stop=ctx.stopping, shared_cache=analyses)
+        for kind, n in data["sent"].items():
+            record_sent(ctx.store.path, model, {f"docs:{name}": n}, kind)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"]}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
@@ -493,9 +497,11 @@ def index_step(ctx) -> Step:
     """One unit per processed document (docs.process): its structure.json is indexed. The
     texts of all the documents to index are embedded first, together, in full batches."""
     from atlas.index import Index, build_records
+    from atlas.outbound import LocalOnly, source_label
     options = index_options(ctx)
     workers = step_workers(ctx, "index")
     embed_model = embed_settings(ctx)
+    local = LocalOnly.from_config(ctx.cfg)
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
 
@@ -512,7 +518,8 @@ def index_step(ctx) -> Step:
         return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
 
     def fingerprint(ctx, unit: str) -> str:
-        return f"{sha256_file(structure(unit))}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
+        return (f"{sha256_file(structure(unit))}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
+                + ("|local" if local.index_doc(unit) else ""))
 
     def run(ctx, unit: str):
         d = ctx.store.document(unit)
@@ -520,23 +527,33 @@ def index_step(ctx) -> Step:
         if any(x["name"] == name and x["doc"] != unit for x in index().documents()):
             name = d["path"]
         res = index().add_document(json.loads(structure(unit).read_text(encoding="utf-8")), doc=unit,
-                                   name=name, out_dir=d["out_dir"], **options)
+                                   name=name, out_dir=d["out_dir"], local=local.index_doc(unit), **options)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def texts(units: list[str]) -> list[tuple[str, str]]:
+    def texts(units: list[str], labels: dict | None = None) -> list[tuple[str, str]]:
+        """What embedding the documents sends (not those of a local-only source); `labels`
+        gets the source of each text, for the record of what was sent."""
         out = []
         for unit in units:
+            if local.index_doc(unit):
+                continue
             data = json.loads(structure(unit).read_text(encoding="utf-8"))
-            out += [(r["embed_text"], data["title"]) for r in build_records(
+            new = [(r["embed_text"], data["title"]) for r in build_records(
                 data, options["chunk_chars"], options["chunk_overlap"], options["kinds"])]
+            if labels is not None:
+                labels.update((t, source_label(unit)) for t, _ in new)
+            out += new
         return out
 
+    def prepare(ctx, units: list[str]) -> None:
+        labels: dict[str, str] = {}
+        index().embed_missing(texts(units, labels), workers, sources=labels)
+
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, unit: index().remove_document(unit),
-                prepare=lambda ctx, units: index().embed_missing(texts(units), workers),
+                prune=lambda ctx, unit: index().remove_document(unit), prepare=prepare,
                 estimate=lambda ctx, units: embeddings_estimate(ctx, "index.documents", index(), texts(units), workers),
                 depends_on=["docs.process"])
 
@@ -546,6 +563,8 @@ def index_requirements_step(ctx) -> Step:
     as one more document ("doors:<module>"), so that search finds them too. Like
     index.documents, the texts of all the modules to index are embedded first, together."""
     from atlas.index import DOORS_PREFIX, Index, module_title, requirement_records
+    from atlas.outbound import LocalOnly
+    local = LocalOnly.from_config(ctx.cfg)
     kinds = index_options(ctx)["kinds"]
     attributes = doors_attributes(ctx.cfg)
     workers = step_workers(ctx, "index")
@@ -564,22 +583,29 @@ def index_requirements_step(ctx) -> Step:
 
     def fingerprint(ctx, module: str) -> str:
         rows = json.dumps(ctx.store.requirements(module, in_module_order=True), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{attributes}|{embed_model}|{INDEX_VERSION}"
+        return (f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{attributes}|{embed_model}|{INDEX_VERSION}"
+                + ("|local" if local.module(module) else ""))
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds, attributes)
+        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds, attributes,
+                                 local=local.module(module))
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def texts(modules: list[str]) -> list[tuple[str, str]]:
-        return [(r["embed_text"], module_title(m)) for m in modules
+        return [(r["embed_text"], module_title(m)) for m in modules if not local.module(m)
                 for r in requirement_records(m, ctx.store.requirements(m, in_module_order=True), kinds, attributes)]
+
+    def prepare(ctx, modules: list[str]) -> None:
+        sent = texts(modules)
+        index().embed_missing(sent, workers, sources={t: DOORS_PREFIX + m for m in modules if not local.module(m)
+                                                      for t, title in sent if title == module_title(m)})
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
-                prepare=lambda ctx, modules: index().embed_missing(texts(modules), workers),
+                prepare=prepare,
                 estimate=lambda ctx, modules: embeddings_estimate(ctx, "index.requirements", index(), texts(modules),
                                                                   workers),
                 depends_on=["doors.requirements"])
@@ -596,6 +622,7 @@ def index_code_step(ctx) -> Step | None:
         return None
     from atlas.graph.build import is_test_file
     from atlas.index import CODE_PREFIX, Index, code_records, code_title
+    local = sc.get("model") == "none"           # [sources.code] model: nothing of the code is embedded
     workers = step_workers(ctx, "index")
     embed_model = embed_settings(ctx)
     test_patterns = sc.get("test_patterns", [])
@@ -630,22 +657,24 @@ def index_code_step(ctx) -> Step | None:
         files = [[p, sha256_file(ctx.cfg.resolve(p["file"])) if ctx.cfg.resolve(p["file"]).exists() else ""]
                  for p in parts(unit)]
         return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{index_fingerprint(ctx)}|"
-                f"{embed_model}|{INDEX_VERSION}")
+                f"{embed_model}|{INDEX_VERSION}" + ("|local" if local else ""))
 
     def run(ctx, unit: str):
         tests = [p["file"] for p in parts(unit) if is_test_file(p["file"], test_patterns)]
-        res = index().add_code(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"])
+        res = index().add_code(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"],
+                               local=local)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def texts(pending: list[str]) -> list[tuple[str, str]]:
-        return [(r["embed_text"], code_title(unit)) for unit in pending for r in records(unit)]
+        return [] if local else [(r["embed_text"], code_title(unit)) for unit in pending for r in records(unit)]
 
     return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit),
-                prepare=lambda ctx, pending: index().embed_missing(texts(pending), workers),
+                prepare=lambda ctx, pending: index().embed_missing(texts(pending), workers,
+                                                                   sources={t: "code" for t, _ in texts(pending)}),
                 estimate=lambda ctx, pending: embeddings_estimate(ctx, "index.code", index(), texts(pending), workers),
                 depends_on=["code.parse"])
 
@@ -888,11 +917,17 @@ def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 
                        ("max_requests", max_requests or pc["max_requests"])):
         if value < 0:
             raise ConfigError(f"[pipeline] {key} must be 0 (no limit) or more, not {value}")
+    from atlas.outbound import sent_totals
     ctx = _context(cfg)
+    before = sent_totals(ctx.store.path)
     rep = _runner(ctx, deadline=deadline(until, max_minutes or pc["max_minutes"]),
                   max_requests=max_requests or pc["max_requests"],
                   progress=lambda line: print(line, file=sys.stderr, flush=True)).run()
-    print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
+    sent: dict = {}                     # what this run sent to each model, by source
+    for (model, source, kind), n in sent_totals(ctx.store.path).items():
+        if n > before.get((model, source, kind), 0):
+            sent.setdefault(model, {}).setdefault(source, {})[kind] = n - before.get((model, source, kind), 0)
+    print(json.dumps({**rep.as_dict(), "sent": sent}, ensure_ascii=False, indent=1))
     from atlas.doors import warn_stale_exports
     warn_stale_exports(cfg["sources"].get("doors"), ctx.store.modules_info())
     if rep.fatal:
@@ -927,16 +962,33 @@ def print_profile(run: dict) -> None:
               + "; ".join(notes))
 
 
+def print_sent(cfg: Config, db: Path) -> None:
+    """What has gone to each model, by source (the record of atlas.outbound), and the
+    sources that never go."""
+    from atlas.outbound import LocalOnly, sent_summary
+    rows = sent_summary(db)
+    local = LocalOnly.from_config(cfg).describe()
+    print("sent to the models" + (f" (never: {', '.join(local)}, model = \"none\")" if local else "") + ":"
+          + ("" if rows else " nothing recorded"))
+    for model in dict.fromkeys(r["model"] for r in rows):
+        print(f"  {model}")
+        for source in dict.fromkeys(r["source"] for r in rows if r["model"] == model):
+            mine = [r for r in rows if r["model"] == model and r["source"] == source]
+            print(f"    {source:28s} " + ", ".join(f"{r['count']} {r['kind']}" for r in mine)
+                  + f"; last {max(r['last'] for r in mine).replace('T', ' ')}")
+
+
 def status(cfg: Config, as_json: bool = False) -> int:
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
+    from atlas.outbound import sent_summary
     ctx = _context(cfg)
     ledger = Ledger(ctx.store.path)
     if as_json:
         _print_json({"workspace": str(cfg.workspace), "data": ctx.store.counts(),
                      "graph": GraphStore(ctx.store.path).counts(), "index": IndexStore(ctx.store.path).counts(),
                      "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6),
-                     "doors_exports": ctx.store.modules_info()})
+                     "doors_exports": ctx.store.modules_info(), "sent": sent_summary(ctx.store.path)})
         return 0
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
@@ -961,6 +1013,7 @@ def status(cfg: Config, as_json: bool = False) -> int:
             print("to do now: nothing, everything is up to date")
     except Exception as e:                          # e.g. the DOORS database is not reachable
         print(f"to do now: unknown ({e})")
+    print_sent(cfg, ctx.store.path)
     runs = ledger.runs(6)
     if runs:
         print_profile(runs[0])
@@ -1100,6 +1153,12 @@ def trace(cfg: Config, req_id: str, as_json: bool = False) -> int:
     return 0
 
 
+def _held(counts: dict) -> str:
+    """What a summary says of the requirements that were not sent to the model."""
+    n = counts.get("local_only", 0)
+    return f"; {n} not sent to the model: local-only sources (model = \"none\")" if n else ""
+
+
 def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
     """The traceability matrix of a module ("*": every requirement) in <workspace>/graph, in
     the formats of [graph] matrix_formats (atlas.graph.export), and its summary and gaps on
@@ -1153,7 +1212,8 @@ def verify(cfg: Config, target: str, as_json: bool = False) -> int:
         return 1
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['inconsistent']} inconsistent, {c['consistent']} consistent, "
-          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)")
+          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)"
+          + _held(c))
     for r in res["results"]:
         if r.get("verdict") == "inconsistent":
             print(f"\n{r['id']}: {r.get('summary', '')}")
@@ -1176,7 +1236,7 @@ def comply(cfg: Config, target: str, as_json: bool = False) -> int:
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['complies']} comply, {c['does_not_comply']} do not, "
           f"{c['cannot_tell']} cannot be decided by reading the code, {c['no_code']} without code "
-          f"({res['asked']} asked to the model, the rest from the cache)")
+          f"({res['asked']} asked to the model, the rest from the cache)" + _held(c))
     mark = {"met": "ok ", "not_met": "NO ", "partial": "1/2", "cannot_tell": " ? "}
     for r in res["results"]:
         if r.get("verdict") in ("does_not_comply", "cannot_tell"):
@@ -1205,7 +1265,7 @@ def link(cfg: Config, target: str, as_json: bool = False) -> int:
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['proposed']} with a proposal, {c['none']} without a convincing "
           f"candidate, {c['no_candidates']} without candidates ({res['asked']} asked to the model, the rest from "
-          f"the cache)")
+          f"the cache)" + _held(c))
     for r in res["results"]:
         for x in r.get("links", []):
             print(f"\n{r['id']} -> {x['code']} ({x['confidence']}): {x['reason']}\n  add `{x['tag']}` at {x['tag_at']}")
@@ -1397,7 +1457,10 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
     if res["sources"]:
         print("\nSources:")
     for s in res["sources"]:
-        print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+        mark = "local" if s.get("local_only") else s["n"]
+        print(f"  [{mark}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+    if any(s.get("local_only") for s in res["sources"]):
+        print("\n[local]: of a local-only source (model = \"none\"), found but not sent to the model")
     warnings = citation_warnings(res)
     if warnings:
         print("\n" + "\n".join(warnings))

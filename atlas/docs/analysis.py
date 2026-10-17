@@ -288,14 +288,17 @@ def is_cached(file: Path | None, shared=None) -> bool:
 
 
 def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
-             max_chars: int = 12000, cache: Path | None = None, shared=None) -> dict:
+             max_chars: int = 12000, cache: Path | None = None, shared=None, sent: list | None = None) -> dict:
     """Overview of the whole document from the section summaries. Hierarchical: if the
-    summaries do not fit in one request, they are summarised in groups first."""
+    summaries do not fit in one request, they are summarised in groups first. `sent`, a
+    list, gets an item when the model is asked (not from the cache)."""
     items = _overview_items(sections)
     file = overview_cache_file(cache, llm.model, sections, doc_title, lang)
     cached = _read_cache(file, shared)
     if cached is not None:
         return cached
+    if sent is not None and items:
+        sent.append(doc_title)
     result = _overview(llm, items, doc_title, lang, max_chars)
     if file:
         atomic_write(file, json.dumps(result, ensure_ascii=False, indent=1))

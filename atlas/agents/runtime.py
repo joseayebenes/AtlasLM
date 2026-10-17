@@ -11,6 +11,11 @@ one answer, and the same tool call repeated REPEATS times in a row is not run ag
 loop_guard). With stall_steps, a run that goes that many tool calls without changing the code
 or making a test pass ends there, `stalled` (see stall_guard): atlas develop starts it again
 with a fresh conversation.
+
+Every tool result goes to the model. With local-only sources (model = "none"), the tools of
+an agent get a context of their own (`for_model`, see model_context) in which the document
+and graph tools leave their text out; an agent with tools that read or compile the code is
+refused when the code is local-only.
 """
 from __future__ import annotations
 
@@ -29,7 +34,7 @@ from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
 __all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
-           "recorded", "run_agent", "stall_guard"]
+           "model_context", "recorded", "run_agent", "stall_guard"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
 CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
@@ -39,6 +44,23 @@ def context_for(cfg: Config) -> SimpleNamespace:
     """What the tool plugins receive (cfg, store), with the plugins of the configuration."""
     plugins.load_plugins(cfg["plugins"]["modules"])
     return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
+
+
+CODE_TOOLS = ("list_files", "grep", "read_file", "edit_file", "write_file", "replace_subprogram", "add_subprogram",
+              "check_code", "run_test", "run_program", "find_definition", "find_references", "describe_symbol",
+              "outline", "read_subprogram")      # they read the code as it is, outside the graph
+
+
+def model_context(context: Any, cfg: Config) -> Any:
+    """The context for the tools of an agent: the same one if every source may go to the
+    model; otherwise a copy marked `for_model`, without the document, graph and agent tools
+    of the original (an MCP server shares its context with ask_atlas), so that they are made
+    again without the text of the local-only sources."""
+    from atlas.outbound import LocalOnly
+    if not LocalOnly.from_config(cfg):
+        return context
+    shared = {k: v for k, v in vars(context).items() if k not in ("_doc_tools", "_graph_tools", "_agent_tools")}
+    return SimpleNamespace(**shared, for_model=True)
 
 
 def definition(name: str, cfg: Config) -> AgentDef:
@@ -65,6 +87,10 @@ def agent_tools(d: AgentDef, context: Any) -> list:
     off = [t for t in d.tools if f"tool:{t}" in disabled]
     if off:
         raise ConfigError(f"agent {d.name}: the tools {off} are disabled in [plugins] disabled")
+    code = [t for t in d.tools if t in CODE_TOOLS]
+    if code and (context.cfg["sources"].get("code") or {}).get("model") == "none":
+        raise ConfigError(f"agent {d.name}: its tools {code} send the code to the model, and [sources.code] "
+                          f"model = \"none\" keeps it in the workstation")
     return [plugins.get("tool", t, context.disabled)(context).function() for t in d.tools]
 
 
@@ -159,7 +185,7 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     from atlas.agents.model import AtlasLlm
     d = definition(name, cfg)
     text = d.instruction
-    tools = agent_tools(d, context or context_for(cfg))
+    tools = agent_tools(d, model_context(context or context_for(cfg), cfg))
     model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
                                   keep_tool_results=d.keep_tool_results)
     guarded = loop_guard(recorded(tools, record) if record is not None else tools)
@@ -214,6 +240,9 @@ def run_agent(name: str, question: str, cfg: Config, context: Any = None, client
               record: list | None = None) -> dict:
     """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
     with their results."""
+    from atlas.outbound import record_sent
     state: dict = {}
     agent = build_agent(name, cfg, context, client, record, state)
-    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps, state))
+    d = definition(name, cfg)
+    record_sent(cfg.workspace / "atlas.db", agent_service(d, cfg).model, {f"agent:{name}": 1}, "runs")
+    return asyncio.run(ask(agent, question, d.max_steps, state))

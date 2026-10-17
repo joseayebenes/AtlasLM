@@ -45,6 +45,7 @@ The control file is re-read on every request; keys:
   hang_requests: N                 -> only the first N streamed answers hang
   hang_keepalive: seconds          -> while it hangs, an SSE comment every so many seconds (what
                                       OpenRouter sends while the model works)
+  bodies: "path"                   -> appends the body of every request received, one per line
 A chat request with "stream": true gets the answer in SSE chunks: the reasoning, the content and
 each tool call by its index (the id and the name first, then the arguments in pieces), then
 finish_reason, the usage in a last chunk without choices if stream_options.include_usage, and
@@ -136,7 +137,9 @@ class H(BaseHTTPRequestHandler):
             if c.get("hang_keepalive") and time.time() - beat >= c["hang_keepalive"]:
                 self.wfile.write(b": OPENROUTER PROCESSING\n\n"); self.wfile.flush(); beat = time.time()
     def answer(self):
-        body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
+        raw = self.rfile.read(int(self.headers["Content-Length"])); body = json.loads(raw); c = ctl()
+        if c.get("bodies"):
+            with open(c["bodies"], "ab") as f: f.write(raw.replace(b"\n", b" ") + b"\n")
         time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})

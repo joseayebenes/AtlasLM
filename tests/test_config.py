@@ -196,3 +196,40 @@ def test_the_synonyms_file_is_checked(tmp_path):
     toml.write_text('[index]\nfts_tokenizer = " "\n', encoding="utf-8")
     with pytest.raises(ConfigError, match="fts_tokenizer"):
         load_config(toml)
+
+
+def test_the_model_of_each_source(toml, tmp_path):
+    """model = "none" keeps the text of a source away from every model: its documents are
+    analysed with regex, and asking for the model is an error."""
+    from atlas.outbound import LocalOnly
+    cfg = load_config(toml('''
+[[sources.docs]]
+name = "client"
+paths = ["x"]
+model = "none"
+[[sources.docs]]
+name = "ours"
+paths = ["y"]
+[sources.code]
+model = "none"
+'''))
+    assert cfg["sources"]["docs"][0]["analysis"] == "regex" and "analysis" not in cfg["sources"]["docs"][1]
+    local = LocalOnly.from_config(cfg)
+    assert local.source("client") and not local.source("ours") and local.code and not local.module("SRS_TMS")
+    assert local.index_doc("client:x/a.pdf") and local.index_doc("code:tracks") and not local.index_doc("ours:y/b.md")
+    assert local.describe() == ["docs:client", "code"] and not LocalOnly()
+
+    def alone(text: str):                   # the fixture has its own [sources.doors]
+        (tmp_path / "alone.toml").write_text(text, encoding="utf-8")
+        return load_config(tmp_path / "alone.toml")
+
+    doors = LocalOnly.from_config(alone('[sources.doors]\nlocal_only = ["SSS_MISSION"]'))
+    assert doors.index_doc("doors:SSS_MISSION") and not doors.index_doc("doors:SRS_TMS")
+    assert LocalOnly.from_config(alone('[sources.doors]\nmodel = "none"')).module("SRS_TMS")
+    for text, error in (('[[sources.docs]]\nname = "a"\npaths = ["x"]\nmodel = "none"\nanalysis = "llm"',
+                         'cannot be "llm"'),
+                        ('[sources.code]\nmodel = "local"', "model must be one of full, none"),
+                        ('[sources.doors]\nlocal_only = "SRS_TMS"', "must be a list"),
+                        ('[sources.doors]\nlocal_only = [3]', "list of module names")):
+        with pytest.raises(ConfigError, match=error):
+            alone(text)

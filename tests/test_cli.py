@@ -397,7 +397,7 @@ communities = true
     assert set(res["builds"]) == {"code", "doors", "docs"} and res["gaps"]["requirements_without_code"]["count"] > 0
     res = as_json("status")
     assert res["data"]["requirements"] > 0 and res["graph"]["nodes"] > 0 and res["runs"][0]["report"]["processed"] == {}
-    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs", "doors_exports"}
+    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs", "doors_exports", "sent"}
     res = as_json("sections")
     assert [(d["source"], Path(d["file"]).name) for d in res["documents"]] == [("manuals", "hmi_manual.md")]
 
@@ -986,3 +986,56 @@ paths = ["{docs.as_posix()}"]
     assert fake_stats()["chat"] > after["chat"]
     assert [r.getMessage() for r in caplog.records if "not accessible" in r.getMessage()] == \
         [f"shared cache {tmp_path / 'unplugged'} is not accessible (not a folder): going on without it"]
+
+
+def test_what_was_sent_to_each_model(toml, docs_samples, tmp_path, fake, capsys):
+    """atlas run reports what it sent to each model, by source, and atlas status keeps the
+    count and the date of the last one; a local-only source is never in it."""
+    import shutil
+    import pytest
+    from atlas.cli import ask, status
+    from atlas.outbound import sent_summary
+    pytest.importorskip("markitdown")
+    url, _ = fake
+    docs, client = tmp_path / "docs", tmp_path / "client"
+    docs.mkdir()
+    client.mkdir()
+    shutil.copy(docs_samples / "hmi_manual.md", docs)
+    (client / "annex.md").write_text("# Annex\n\n1 Beacon\n\nReq: SRS-0977 The beacon shall blink.\n")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "docs", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+[[sources.docs]]
+name = "client"
+paths = ["{client.as_posix()}"]
+model = "none"
+'''))
+
+    def go() -> dict:
+        assert run(cfg) == 0
+        return json.loads(capsys.readouterr().out)["sent"]
+
+    sent = go()
+    assert sent["fake"] == {"docs:manuals": {"sections": 4, "overviews": 1}}
+    texts = sent["embeddinggemma"]
+    assert texts["docs:manuals"]["texts"] > 5 and texts["doors:SRS_TMS"]["texts"] > 5 and "docs:client" not in texts
+    assert go() == {}                                                  # nothing changed: nothing sent
+    assert ask(cfg, "When does the HMI raise an alarm?") == 0
+    capsys.readouterr()
+    rows = {(r["model"], r["source"], r["kind"]): r for r in sent_summary(cfg.workspace / "atlas.db")}
+    assert rows[("fake", "docs:manuals", "answers")]["count"] == 1 and not [k for k in rows if k[1] == "docs:client"]
+    assert status(cfg) == 0
+    out = capsys.readouterr().out
+    assert 'sent to the models (never: docs:client, model = "none"):' in out
+    assert "  fake\n    docs:manuals" in out and "4 sections" in out and "1 answers" in out and "; last 20" in out

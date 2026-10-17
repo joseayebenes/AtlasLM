@@ -303,6 +303,23 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   solo lectura. Lo que el workspace no tiene se busca ahí y se copia al workspace; `atlas run`
   nunca escribe en ella. Si no se puede leer, se sigue sin ella con un aviso. Nunca se
   comparte un `atlas.db`.
+- Fuentes locales: `model = "none"` en una `[[sources.docs]]`, en `[sources.doors]` (o los
+  módulos de `local_only`) y en `[sources.code]`. Ningún texto de esa fuente va a un modelo:
+  sus documentos se analizan con `regex`, sus registros se indexan sin vectores (los
+  encuentran las búsquedas por IDs y por palabras), y `ask`, `ask_docs`, `ask_atlas`,
+  `atlas agent`, `verify`, `comply`, `link`, `impact` y `coverage` los dejan fuera del
+  prompt y dicen qué dejaron (`local_only`). `search`, `trace` y las herramientas MCP que no
+  llaman al modelo los siguen dando enteros. Un agente con herramientas que leen el código
+  no arranca si el código es local.
+- Registro de lo enviado: `atlas status` dice, por modelo y por fuente, cuántas secciones se
+  analizaron, cuántos textos se embebieron y cuántas respuestas, juicios, informes y
+  ejecuciones de agentes se pidieron, con la fecha del último envío; el informe de
+  `atlas run` dice lo que envió esa ejecución (`sent`). Lo guarda una tabla nueva de
+  `atlas.db` (`sent`), que cuenta desde la primera ejecución de esta versión.
+- `docs/seguridad.md`: qué garantizan las fuentes locales y qué no (sus identificadores
+  pueden salir; las herramientas MCP dan su texto al editor), y la prueba que lo comprueba con
+  los cuerpos de las peticiones que recibe el servidor falso (`bodies` en su fichero de
+  control).
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,

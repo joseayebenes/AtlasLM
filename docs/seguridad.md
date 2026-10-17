@@ -15,7 +15,7 @@ ejecución completa (DOORS, código, documentos, grafo e índice), una búsqueda
 citada, un `trace` y una pregunta a un agente ADK, todas las conexiones van a la API
 configurada.
 
-Qué se envía al modelo:
+Qué se envía al modelo (de todas las fuentes salvo las de `model = "none"`, ver más abajo):
 - el texto de cada sección de los documentos con `analysis = "llm"`, y los resúmenes de
   sección para el resumen del documento;
 - los textos que se indexan, para los embeddings: fragmentos de los documentos, resúmenes,
@@ -24,6 +24,10 @@ Qué se envía al modelo:
   documentos o módulos de los que trata, enteros;
 - en los agentes (`atlas agent`, `verify`, `impact`, `coverage`, `eval`, `ask_atlas`), la
   pregunta y lo que devuelven sus herramientas: requisitos, código fuente, documentos.
+
+También van los identificadores (IDs de requisito, nombres de código y de fichero) y, en la
+reescritura de una pregunta de `atlas ask`, los nombres y títulos de los documentos
+indexados.
 
 Por eso el modelo tiene que ser el gateway corporativo o uno local. atlas no lo decide: va
 a donde diga `base_url`. La excepción es `atlas.openrouter.toml`, que manda a OpenRouter, un
@@ -40,13 +44,72 @@ Otras piezas que podrían conectarse y no lo hacen:
 - **pymupdf** y **markitdown** solo reciben rutas de ficheros locales; el detector de tipos
   de markitdown (magika) lleva el modelo dentro del paquete.
 
+## Fuentes que no salen del puesto (`model = "none"`)
+
+Hay documentos (del cliente, con control de exportación) que tampoco pueden ir al gateway,
+porque lo que retiene depende de su política y no de atlas. `model = "none"` en una
+`[[sources.docs]]`, en `[sources.doors]` (o en los módulos de `local_only`) o en
+`[sources.code]` lo impide (ver [configuración](configuracion.md#fuentes-locales-model--none)).
+
+Qué garantiza:
+- **Ningún texto de esa fuente va a ningún modelo**: ni al de chat ni al de embeddings. Sus
+  documentos se analizan con `regex` (`analysis = "llm"` es un error) y sus registros se
+  indexan sin vector. Las respuestas, los agentes, `verify`, `comply`, `link`, `impact` y
+  `coverage` dejan fuera su texto (el de los requisitos, los títulos, lo que dicen las
+  secciones, los comentarios y el código fuente) y dicen qué dejaron (`local_only`). Un
+  agente con herramientas que leen el código no arranca si el código es local.
+- **Sigue en el grafo y en la búsqueda** por IDs y palabras: `atlas search`, `atlas trace` y
+  las herramientas MCP que no llaman al modelo lo dan entero.
+
+Qué no garantiza:
+- **Sus identificadores sí pueden salir**: el ID de un requisito, el nombre de un documento
+  o de un elemento de código, para decir que hay algo y dónde. Si un ID o un nombre de
+  fichero ya es información protegida, esa fuente no debería estar en atlas.
+- **Las herramientas MCP dan el texto al editor**, que es local. Lo que el editor haga
+  después con él (mandarlo a su propio modelo) no depende de atlas: el modelo del editor
+  tiene que ser también uno permitido para esos documentos.
+- **Lo que ya se envió** antes de poner `model = "none"` no vuelve: los análisis de la caché
+  de `docs/.cache` y los vectores de `embed_cache` se quedan en el workspace, y el gateway
+  ya los recibió.
+- **La pregunta la escribe la persona**: si copia en ella texto de un documento local, va
+  al modelo como cualquier pregunta.
+
+La prueba `test_local_only_sources_send_nothing` de `tests/test_security.py` lo comprueba
+con los ganchos de auditoría y con los cuerpos de las peticiones, que guarda el servidor
+falso. Con un documento, un módulo de DOORS y el código en `model = "none"`, una ejecución
+completa, una búsqueda, tres respuestas, una verificación, un juicio de cumplimiento, los
+informes de impacto y cobertura y una pregunta a un agente no envían ninguna petición cuyo
+cuerpo tenga su texto. Con la fuente en `"full"`, la misma prueba lo encuentra.
+
+## Registro de lo enviado
+
+`atlas status` responde a «qué ha ido al gateway». Por modelo y por fuente dice cuántas
+secciones analizó el modelo, cuántos textos se embebieron y cuántas respuestas, juicios,
+informes y ejecuciones de agentes se pidieron, con la fecha del último envío. También dice
+qué fuentes no salen nunca. El informe de `atlas run` dice lo que envió esa ejecución
+(`sent`). Lo guarda la tabla `sent` de `atlas.db`, que cuenta desde la primera ejecución de
+una versión que la tiene; lo que vino de una caché no cuenta, porque no se envió.
+
+```text
+sent to the models (never: docs:cliente, model = "none"):
+  embeddinggemma
+    docs:manuales                5310 texts; last 2026-10-17 10:14:02
+    doors:SRS_TMS                812 texts; last 2026-10-17 10:14:05
+  gemma-4-26b
+    docs:manuales                3 answers, 6 overviews, 412 sections; last 2026-10-17 10:12:40
+```
+
+No cuenta las preguntas de la persona ni los nombres y títulos que ve la reescritura. Una
+ejecución de un agente cuenta una vez, como `agent:<nombre>`: lo que le devuelven sus
+herramientas no se desglosa por fuente.
+
 ## Qué se guarda
 
 Todo en el workspace del proyecto (`[project] workspace`):
 
 | Dónde | Qué |
 |---|---|
-| `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro y perfiles de las ejecuciones |
+| `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro, perfiles de las ejecuciones y registro de lo enviado a cada modelo |
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
 | `reports/` | verificaciones, propuestas de enlaces, juicios de cumplimiento, informes y evaluaciones |
@@ -141,7 +204,8 @@ En el código no hay `eval`, `exec`, `pickle` ni procesos lanzados con shell.
 ## Riesgos que quedan
 
 - **Lo que retiene el gateway.** atlas le envía documentos y código; qué guarda y cuánto
-  tiempo depende de la política del gateway, no de atlas.
+  tiempo depende de la política del gateway, no de atlas. Lo que no pueda ir, con
+  `model = "none"`; `atlas status` dice qué ha ido.
 - **Instrucciones dentro de los datos.** Un documento, un requisito o un comentario de
   código puede contener texto dirigido al modelo. Los agentes de serie no pueden escribir
   nada y su salida es para una persona; las herramientas que escriben hay que pedirlas

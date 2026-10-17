@@ -46,6 +46,8 @@ def _signature(g: KnowledgeGraph, n: str) -> str:
     """The first lines of a subprogram up to `is` or `;`, or the declaration of a type or
     variable."""
     d = g.G.nodes[n]
+    if d.get("local_only"):                 # local-only code (KnowledgeGraph.for_model)
+        return ""
     if d.get("source"):
         return d["source"].strip().splitlines()[0][:200]
     if d.get("kind") in ("subprogram", "test") and d.get("start_line"):

@@ -4,7 +4,9 @@ go through the same proxy, TLS, request limit and retries as the rest of atlas.
 ADK speaks in google.genai types (Content, Part, FunctionCall, FunctionDeclaration); the
 servers atlas talks to (Ollama, vLLM, LM Studio, a gateway) speak the OpenAI chat API. This
 module translates one into the other: the conversation with its tool calls and results, and
-the tools with their JSON schema. One request per model turn, without streaming.
+the tools with their JSON schema. One request per model turn, streamed if the server allows it
+([llm] stream, atlas.llm.chat): the chunks are put together into one answer, so ADK sees no
+difference.
 
 A reasoning model can spend the whole max_tokens thinking and answer nothing (finish_reason
 "length", no text, no tool call); ADK would take that empty turn as the final answer and end
@@ -45,6 +47,7 @@ from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
 from atlas.llm import ServiceConfig, create_client
+from atlas.llm.chat import complete
 from atlas.llm.connection import reasoning_of
 from atlas.llm.structured import repair_json
 
@@ -126,7 +129,7 @@ class AtlasLlm(BaseLlm):
 
             def work() -> None:
                 try:
-                    result = (True, self.client.chat.completions.create(**kwargs))
+                    result = (True, complete(self.client, self.service, kwargs))
                 except BaseException as e:            # to the agent, as if it were raised here
                     result = (False, e)
                 try:

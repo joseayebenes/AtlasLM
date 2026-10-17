@@ -15,6 +15,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `json_schema` (`no_structured_output: "json_schema"`). Con ellos se prueban por HTTP la
   espera por `Retry-After`, los escalones de salida estructurada, `finish_reason` y `atlas
   probe`.
+- El servidor falso contesta también en streaming SSE (razonamiento, texto y llamadas a
+  herramientas por índice, `finish_reason` y `usage`), lento (`slow_between_chunks`), colgado a
+  mitad (`hang_after_chunks`, con `hang_keepalive` para los comentarios que manda OpenRouter) o
+  sin streaming (`no_stream`), y `GET /` cuenta las peticiones abiertas.
+- `[llm] stream`: las peticiones de chat de `JsonLlm` y de los agentes llegan en trozos y se
+  juntan en la misma respuesta (texto, razonamiento, llamadas a herramientas, `finish_reason`
+  y `usage`). Por defecto (`""`) se intenta hasta que el servidor demuestra que no puede
+  (rechaza `stream`, contesta sin SSE o con un stream vacío); entonces se sigue sin él el resto
+  del proceso. `true` y `false` lo fuerzan. `atlas probe` lo prueba con una cuarta petición y
+  dice `streaming: ok | not supported`.
 
 ### Cambiado
 - La salida estructurada va por escalones: `json_schema`, `json_object` y ninguno. Antes, un

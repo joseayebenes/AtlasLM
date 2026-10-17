@@ -68,6 +68,7 @@ con OpenAI.
 | `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
+| `stream` | sí/no o `""` | `""` | cada petición de chat llega en trozos (SSE) y atlas los junta en la misma respuesta. `""`: con streaming hasta que el servidor demuestre que no puede (rechaza `stream`, contesta sin SSE o cierra un stream vacío); entonces se repite sin él y no se vuelve a intentar en ese proceso con ese servidor y modelo. `true` o `false` lo fuerzan (con `true`, un rechazo es un error). `atlas probe` dice «streaming: ok \| not supported» |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
 ## [embeddings]

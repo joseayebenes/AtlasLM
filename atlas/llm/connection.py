@@ -91,6 +91,7 @@ class ServiceConfig:
     extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
+    stream: str = ""             # LLM only: "" = stream unless the server cannot (atlas.llm.chat); true/false force it
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -709,7 +710,8 @@ def describe(cfg: ServiceConfig) -> str:
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
-            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "") + "\n"
+            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "")
+            + (f"  stream={str(cfg.stream).lower()}" if str(cfg.stream).strip() not in ("", "auto") else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
             + (f" | client cert {n.client_cert}" if n.client_cert else "")
             + f" | timeout {n.timeout:g}s"
@@ -859,6 +861,7 @@ reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama r
 reasoning_field = "reasoning"   # agents: the reasoning of a turn with tool calls goes back to the model in this
                                 # field of the message (gemma 4 asks for it); "reasoning_content" for some
                                 # servers; "" = never
+stream = ""                     # "" = streamed unless the server cannot (atlas probe says it); true / false force it
 
 # [llm.extra_body]              # fields added as is to every chat request, for options of the server
 # provider = { order = ["deepinfra"], allow_fallbacks = false }   # OpenRouter: always the same provider

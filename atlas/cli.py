@@ -26,8 +26,9 @@
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
-    atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
-                                    whether the server uses the reasoning that the agents give back
+    atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result,
+                                    whether the server uses the reasoning that the agents give back, and
+                                    whether it streams
     atlas reference [atlas.toml]    indexes the manuals of [sources.code] reference and the declarations of
                                     its library for search_reference (also done on the first search)
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
@@ -1031,7 +1032,7 @@ def check(cfg: Config) -> int:
 
 
 def probe(cfg: Config) -> int:
-    """The chat model as an agent: a tool call, its result and the reasoning given back."""
+    """The chat model as an agent: a tool call, its result, the reasoning given back and streaming."""
     from atlas.llm import from_config
     from atlas.llm.probe import probe as probe_model
     return probe_model(from_config(cfg).llm)

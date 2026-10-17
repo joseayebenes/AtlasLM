@@ -167,3 +167,56 @@ def test_ask_text_asks_again_when_the_answer_is_cut(fake_llm, fake_chats):
     assert (text, text.truncated) == ("ok", False)
     text = JsonLlm(replace(service, max_tokens=20)).ask_text("system", "Reply with: ok")
     assert (text, text.truncated) == ("", True)
+
+
+def test_answers_come_streamed_and_put_together(fake_llm, fake_stats):
+    service, control = fake_llm
+    control.write_text(json.dumps({"reasoning_tokens": 10, "usage_chars_per_token": 4, "chunk_chars": 3}))
+    llm = JsonLlm(service)
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"] == [{"id": "SRS-0001", "text": "The TMF shall work."}]
+    text = llm.ask_text("system", "Sources:\n\n[1] Some text.\n\nQuestion: what?")
+    assert (text, text.truncated) == ("Answer taken from the sources [1].", False)
+    stats = fake_stats()
+    assert stats["streams"] == stats["chat"] == 2 and stats["last_chat"]["stream_options"] == {"include_usage": True}
+
+    from atlas.llm.chat import complete
+    kwargs = {"model": "fake", "messages": [{"role": "user", "content": "Reply with: ok"}]}
+    response = complete(llm.client, service, kwargs)                  # the reasoning and the usage come too
+    assert response.choices[0].message.content == "ok" and response.choices[0].finish_reason == "stop"
+    assert response.choices[0].message.model_extra["reasoning"] == "The user wants a short answer. "
+    assert response.usage.completion_tokens == 11
+
+
+def test_a_server_that_cannot_stream_is_asked_without_it_for_the_rest_of_the_process(fake_llm, fake_stats, caplog):
+    from dataclasses import replace
+    service, control = fake_llm
+    control.write_text(json.dumps({"no_stream": True}))               # it rejects stream: 400 that names it
+    assert JsonLlm(service).ask_text("system", "Reply with: ok") == "ok"
+    assert fake_stats()["chat"] == 2 and "does not stream" in caplog.text      # the rejected one and again
+    assert JsonLlm(service).ask_text("system", "Reply with: ok") == "ok"   # another instance: straight away
+    assert "stream" not in fake_stats()["last_chat"] and fake_stats()["chat"] == 3
+
+    ignores = replace(service, model="ignores")                      # it ignores stream: that answer is taken
+    control.write_text(json.dumps({"no_stream": "ignore"}))
+    assert JsonLlm(ignores).ask_text("system", "Reply with: ok") == "ok"
+    assert fake_stats()["chat"] == 4 and fake_stats()["streams"] == 0
+    assert JsonLlm(ignores).ask_text("system", "Reply with: ok") == "ok" and "stream" not in fake_stats()["last_chat"]
+
+
+def test_stream_true_or_false_forces_it(fake_llm, fake_stats, tmp_path):
+    from dataclasses import replace
+    from atlas.config import ConfigError, load_config
+    service, control = fake_llm
+    JsonLlm(replace(service, stream="false")).ask_text("system", "Reply with: ok")
+    assert fake_stats()["streams"] == 0 and "stream" not in fake_stats()["last_chat"]
+    control.write_text(json.dumps({"no_stream": True}))
+    with pytest.raises(RuntimeError, match="stream = true, but the server does not stream"):
+        JsonLlm(replace(service, stream=True)).ask_text("system", "Reply with: ok")
+    (tmp_path / "atlas.toml").write_text('[llm]\nstream = "sometimes"\n')
+    with pytest.raises(ConfigError, match="stream must be true, false"):
+        load_config(tmp_path / "atlas.toml")
+    (tmp_path / "atlas.toml").write_text('[llm]\nstream = false\n')
+    from atlas.llm import from_config
+    from atlas.llm.chat import streaming
+    assert streaming(from_config(load_config(tmp_path / "atlas.toml")).llm) is False

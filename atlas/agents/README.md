@@ -59,7 +59,10 @@ recibe un error que le pide hacer otra cosa. `gemma-4-26b` llegó a escribir 17 
 el mismo fichero tras un error de compilación que no entendía, hasta agotar `max_steps`; y
 `write_file` avisa cuando el contenido no cambia. Un modelo que razona puede gastar todo
 `max_tokens` pensando y no contestar nada; ADK tomaría esa vuelta vacía como la respuesta
-final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces.
+final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces. Cada
+vuelta va con streaming si el servidor lo admite (`[llm] stream`, ver `atlas/llm`): los trozos
+se juntan antes de que ADK vea la respuesta, así que las llamadas a herramientas son las
+mismas.
 
 El razonamiento de cada vuelta vuelve al modelo en las siguientes, en el mensaje del asistente
 que lleva las llamadas a herramientas (`[llm] reasoning_field`, `"reasoning"` por defecto; `""`

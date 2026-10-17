@@ -16,6 +16,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `trace`, en cada fila de `matrix` (y una columna en el CSV y el Markdown de `atlas
   matrix`) y en `impact`; `with_procedures` en el resumen de la matriz;
   `without_test_procedure` en sus huecos y `requirements_without_test_procedure` en `gaps`.
+- Consultas de una revisión de asignación, sin herramientas nuevas: `gaps` tiene
+  `requirements_without_derivation`, los requisitos sin ningún enlace de derivación hacia
+  otro módulo, con su recuento por módulo (`by_module`), y `linked_to_modules_not_read`, los
+  IDs que DOORS enlaza en módulos que no se han leído, con quién los enlaza y con qué tipo.
+  `[sources.doors.convention] top_modules` deja fuera los módulos de sistema; los de
+  procedimientos de prueba quedan fuera siempre. `atlas graph` imprime los dos recuentos.
+- `ancestors` en `trace`: la cadena de requisitos de los que deriva en otros módulos, hasta
+  el de sistema (5 niveles), cada salto con su tipo, su nivel, desde qué requisito se llega
+  y el texto corto.
 - Las muestras tienen un módulo de procedimientos de prueba, `STP_TMS`, con dos enlaces
   `verifies` a SRS_TMS, y `atlas.test.toml`, `atlas.dev.toml` y `atlas.openrouter.toml` lo
   leen.
@@ -33,8 +42,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `STP_TMS`; las pruebas no lo necesitan.
 - La forma de `matrix` cambia: cada fila tiene `procedures`, el resumen `with_procedures` y
   los huecos `without_test_procedure`; el CSV de `atlas matrix` gana la columna
-  `procedures` antes de `documents`. `trace` tiene `procedures`, y `verified_by` ya no
-  incluye los procedimientos de DOORS. `gaps` tiene `requirements_without_test_procedure`.
+  `procedures` antes de `documents`. `trace` tiene `procedures` y `ancestors`, y
+  `verified_by` ya no incluye los procedimientos de DOORS. `gaps` tiene
+  `requirements_without_test_procedure`, `requirements_without_derivation` y
+  `linked_to_modules_not_read`. Pon los módulos de sistema en `top_modules`, o
+  `requirements_without_derivation` los listará enteros.
 - Si el proyecto usa en DOORS tipos de enlace que no son derivación ni verificación
   (`traces`, `relates_to`...), ponlos en `link_semantics.ignore`, o da la lista de
   `derives`. El siguiente `atlas run` reconstruye la parte de DOORS del grafo.

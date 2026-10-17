@@ -59,6 +59,7 @@ id_normalize = "upper"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
 inline_reference_type = "references"
 link_semantics = { derives = ["satisfies", "refines", "derives_from"], verifies = ["verifies"], ignore = ["references"] }
+top_modules = ["SSS_MISSION"]               # los requisitos de sistema: no derivan de nada
 
 [sources.code]
 roots = ["examples/samples/ada"]

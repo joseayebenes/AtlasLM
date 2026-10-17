@@ -297,6 +297,7 @@ communities = true
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
+    assert "requirements without derivation" in out and "    0  linked to modules not read" in out
     assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
     assert trace(cfg, "SRS-9999") == 1
     capsys.readouterr()

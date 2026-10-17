@@ -140,7 +140,8 @@ class GraphTools:
         """Everything about a requirement ID: its DOORS text and attributes, parent,
         children and links; the document sections that state it (with the values that
         differ from DOORS); the code that implements it; the tests of the code that verify or
-        cover it (verified_by); the test procedures of DOORS that verify it (procedures)."""
+        cover it (verified_by); the test procedures of DOORS that verify it (procedures);
+        the requirements it derives from, up to the system level (ancestors)."""
         return self._ask(lambda g: g.trace(req_id, limit))
 
     def trace_code(self, name: str, limit: int = MAX_LIST) -> dict:
@@ -155,9 +156,10 @@ class GraphTools:
         return self._ask(lambda g: g.matrix(module, limit, offset))
 
     def gaps(self, module: str = "", limit: int = MAX_LIST) -> dict:
-        """What traceability lacks: requirements without code, tests or test procedure,
-        subprograms that cite no requirement, IDs of the code or the documents that are not
-        in DOORS, and values (deadlines, limits) that differ between DOORS and the documents."""
+        """What traceability lacks: requirements without code, tests, test procedure or a
+        link to the module above, subprograms that cite no requirement, IDs of the code or
+        the documents that are not in DOORS, IDs linked in DOORS modules that were not read,
+        and values (deadlines, limits) that differ between DOORS and the documents."""
         return self._ask(lambda g: g.gaps(module, limit))
 
     def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:

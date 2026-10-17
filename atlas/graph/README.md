@@ -59,11 +59,11 @@ Sin modelo:
 
 | Consulta | Devuelve |
 |---|---|
-| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; el código que lo implementa; las pruebas del código que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código), en `verified_by`; los procedimientos de prueba de DOORS que lo verifican, en `procedures` |
+| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; los requisitos de los que deriva en otros módulos, hasta el de sistema (`ancestors`, 5 niveles, con el tipo de cada salto); el código que lo implementa; las pruebas del código que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código), en `verified_by`; los procedimientos de prueba de DOORS que lo verifican, en `procedures` |
 | `trace_code(nombre)` | requisitos, llamadores, llamados, pruebas y secciones de un elemento de código; de una prueba, el código que ejercita y los requisitos que cubre |
 | `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas, procedimientos de prueba y secciones afectados, incluidos los requisitos de los que esos derivan en DOORS; de un requisito: los que derivan de él, su código, pruebas, procedimientos y secciones |
 | `matrix(módulo)` | requisito → código → pruebas → procedimientos de prueba → documentos, con resumen y huecos |
-| `gaps(módulo)` | requisitos sin código, sin pruebas o sin procedimiento de prueba; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
+| `gaps(módulo)` | requisitos sin código, sin pruebas o sin procedimiento de prueba; requisitos sin enlace de derivación hacia otro módulo, por módulo; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; IDs que DOORS enlaza en módulos que no se han leído, con quién los enlaza y con qué tipo; cifras distintas entre DOORS y los documentos |
 | `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
 | `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
 
@@ -85,6 +85,22 @@ Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta
 implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Lo
 mismo con las pruebas y los procedimientos de prueba. Los enlaces dentro de un mismo módulo
 (refinamientos) no cuentan como derivación.
+
+**Revisión de la asignación.** `gaps` lista en `requirements_without_derivation` los
+requisitos que no tienen ningún enlace de un tipo de `derives` a un requisito de otro
+módulo (un SRS que no satisface ningún SSS), con su recuento por módulo en `by_module`.
+Deja fuera los módulos de `[sources.doors.convention] top_modules` (los de sistema, que no
+derivan de nada) y los de procedimientos de prueba (aquellos cuyos enlaces a otros módulos
+son todos de un tipo de `verifies`). `linked_to_modules_not_read` lista los destinos de
+enlaces a módulos que no se han leído (`[sources.doors] modules` los deja fuera), con
+`linked_by`: el ID que los enlaza y el tipo. `trace` da en `ancestors` la cadena hacia
+arriba: cada salto con su `id`, `type`, `level`, el requisito desde el que se llega
+(`via`) y el texto corto. Con las muestras, `atlas trace SRS-0004`:
+
+```
+"ancestors": [{"id": "SSS-0005", "type": "satisfies", "level": 1, "via": "SRS-0004",
+               "module": "SSS_MISSION", "text": "The mission system shall provide capability 5."}]
+```
 
 Las pruebas son dos cosas distintas: las **pruebas del código** (`tests`, `covering_tests`;
 subprogramas de los ficheros de `[sources.code] test_patterns`) y los **procedimientos de

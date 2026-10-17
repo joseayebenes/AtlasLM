@@ -46,15 +46,16 @@ def graph_convention(convention: dict | None = None) -> dict:
     link_semantics, the types of link that derive a requirement from another (satisfies,
     refines...; empty: every type that is neither in verifies nor in ignore), those of a
     test procedure that verifies a requirement, and those that are only references (by
-    default "references" and the inline_reference_type). Idempotent: it takes its own
-    result."""
+    default "references" and the inline_reference_type); and top_modules, the modules that
+    derive from nothing (the system requirements), left out of
+    requirements_without_derivation. Idempotent: it takes its own result."""
     conv = convention or {}
     given = conv.get("link_semantics") or {}
     inline = conv.get("inline_reference_type") or "references"
     semantics = {"derives": list(given.get("derives") or []),
                  "verifies": list(given.get("verifies", ["verifies"])),
                  "ignore": list(given.get("ignore", sorted({"references", inline})))}
-    return {"link_semantics": semantics}
+    return {"link_semantics": semantics, "top_modules": list(conv.get("top_modules") or [])}
 
 
 def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict],

@@ -75,6 +75,9 @@ def test_link_semantics(toml):
         load_config(toml(conv + '{ derives = ["verifies"], verifies = ["verifies"] }'))
     with pytest.raises(ConfigError, match="must be a list"):
         load_config(toml(conv + '{ derives = "satisfies" }'))
+    assert load_config(toml('top_modules = ["SSS"]'))["sources"]["doors"]["convention"]["top_modules"] == ["SSS"]
+    with pytest.raises(ConfigError, match="top_modules must be a list"):
+        load_config(toml('top_modules = "SSS"'))
 
 
 def test_wrong_type(toml):

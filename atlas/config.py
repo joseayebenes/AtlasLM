@@ -197,6 +197,9 @@ def _validate_convention(convention: dict) -> None:
             if t in seen:
                 raise ConfigError(f"[{where}] link_semantics: '{t}' is in {seen[t]} and in {key}")
             seen[t] = key
+    top = convention.get("top_modules", [])
+    if not isinstance(top, list) or not all(isinstance(m, str) for m in top):
+        raise ConfigError(f"[{where}] top_modules must be a list of modules")
 
 
 def _validate_search(search: dict) -> None:

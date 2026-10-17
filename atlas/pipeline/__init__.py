@@ -78,14 +78,13 @@ def sha256_text(*parts: Any) -> str:
 
 def atomic_write(path: str | Path, content: str | bytes) -> None:
     """Atomic write: temporary file + rename. The temporary file is the thread's own, so
-    two threads can write the same file at the same time (the last one wins)."""
+    two threads can write the same file at the same time (the last one wins). A text is
+    written as UTF-8 with its line breaks as they are (\n on Windows too): a workspace
+    copied between systems has the same bytes, and nothing is reprocessed."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
-    if isinstance(content, str):
-        tmp.write_text(content, encoding="utf-8")
-    else:
-        tmp.write_bytes(content)
+    tmp.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
     os.replace(tmp, path)
 
 

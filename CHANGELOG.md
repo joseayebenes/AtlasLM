@@ -20,6 +20,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Los avisos del limitador (rechazos por límite, reintentos) van al logger `atlas.llm` en vez
   de escribirse en stderr: los gobierna `[project] log_level`.
 
+### Corregido
+- En Windows, con la salida en una consola `cp1252` o redirigida a un fichero, un texto con
+  `→` o `≤` (un requisito, un título) terminaba la acción con `UnicodeEncodeError`: la línea
+  de comandos escribe siempre en UTF-8. Para los scripts que no pasan por ella, la guía de
+  instalación añade `setx PYTHONUTF8 1`.
+- Los Markdown y el `structure.json` de cada documento, y lo que se escribe con
+  `atomic_write`, llevan `\n` también en Windows (antes `\r\n`): un workspace copiado entre
+  sistemas tiene los mismos bytes.
+
 ### Quitado
 - El modo independiente de `atlas.llm.connection` (`python -m atlas.llm.connection init |
   show | check`, con su propio `connection.toml`): nadie lo usaba y `legacy/conexion.py` lo

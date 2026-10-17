@@ -113,6 +113,7 @@ dice `api_key = "${ATLAS_API_KEY:-local}"`.
 
 ```powershell
 setx ATLAS_API_KEY "la-clave"            # Windows: abre otra terminal después
+setx PYTHONUTF8 1                        # UTF-8 también en lo que no pasa por atlas (scripts de tools/)
 ```
 
 ```bash

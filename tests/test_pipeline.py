@@ -1,5 +1,5 @@
 import pytest
-from atlas.pipeline import FatalError, Ledger, Runner, Step
+from atlas.pipeline import FatalError, Ledger, Runner, Step, atomic_write
 
 
 def _step(name, units, fingerprints, run, **kw):
@@ -253,3 +253,14 @@ def test_prepare_gets_the_pending_units_and_is_only_a_head_start(tmp_path):
     behaviour["raise"] = FatalError("no connection")
     rep = Runner(ledger, [step]).run()
     assert rep.fatal == "p: no connection" and done[-1] == "b" and ledger.get("p", "c")["fingerprint"] == "1"
+
+
+def test_what_atlas_writes_has_no_carriage_returns(tmp_path, docs_samples):
+    """On Windows, text written without newline="\\n" gets \\r\\n: the same workspace would
+    have other bytes on each system."""
+    atomic_write(tmp_path / "a.md", "line → one\nline two\n")
+    assert (tmp_path / "a.md").read_bytes() == "line → one\nline two\n".encode("utf-8")
+    from atlas.docs import DocsOptions, process_document
+    process_document(docs_samples / "hmi_manual.md", tmp_path / "hmi", DocsOptions(analysis="none"))
+    written = [p for p in (tmp_path / "hmi").rglob("*") if p.is_file()]
+    assert len(written) > 6 and [p.name for p in written if b"\r" in p.read_bytes()] == []

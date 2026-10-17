@@ -34,7 +34,11 @@ módulo).
 - Los avisos van por `logging`, con loggers bajo `atlas` (`atlas.llm` para los rechazos
   por límite y los reintentos); los gobierna `[project] log_level` en la línea de comandos
   y la configuración de `logging` del programa que use la librería. Solo las acciones de la
-  línea de comandos escriben en la salida.
+  línea de comandos escriben en la salida, y siempre en UTF-8 (también en una consola de
+  Windows o con la salida redirigida a un fichero).
+- Los Markdown y JSON de cada documento, y todo lo que se escribe con `atomic_write`, son
+  UTF-8 con saltos de línea `\n` en cualquier sistema: un workspace copiado de un sistema a
+  otro no se reprocesa.
 
 ## Uso
 

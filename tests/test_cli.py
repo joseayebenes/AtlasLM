@@ -439,3 +439,18 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_the_output_is_utf_8_in_a_cp1252_console(tmp_path):
+    """A Windows console or redirected output is cp1252: without reconfiguring the output,
+    printing "→" ends the action with UnicodeEncodeError."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    target = tmp_path / "plan → 2.toml"
+    res = subprocess.run([sys.executable, "-m", "atlas.cli", "init", str(target)], capture_output=True,
+                         cwd=Path(__file__).resolve().parents[1], timeout=120,
+                         env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"})
+    assert res.returncode == 0, res.stderr.decode("utf-8", "replace")
+    assert "plan → 2.toml" in res.stdout.decode("utf-8") and target.exists()

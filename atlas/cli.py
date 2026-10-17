@@ -47,6 +47,7 @@ from types import SimpleNamespace
 
 from atlas import plugins
 from atlas.config import Config, ConfigError, load_config
+from atlas.db import schema_version
 from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
 from atlas.store import Store
 
@@ -596,7 +597,10 @@ def print_profile(run: dict) -> None:
 def status(cfg: Config) -> int:
     ctx = _context(cfg)
     ledger = Ledger(ctx.store.path)
+    runs = ledger.runs(6)
     print(f"workspace: {cfg.workspace}")
+    print(f"schema: version {schema_version(ctx.store.db)}; "
+          + (f"last run with atlas {runs[0]['version'] or '?'}" if runs else "no runs yet"))
     print("data:", ctx.store.counts())
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
@@ -608,7 +612,6 @@ def status(cfg: Config) -> int:
         print(f"  {p['status']:11s} {p['step']:20s} {p['unit'][:60]}  {p['error'] or ''}")
     if len(pending) > 30:
         print(f"  … and {len(pending) - 30} more")
-    runs = ledger.runs(6)
     if runs:
         print_profile(runs[0])
     if len(runs) > 1:

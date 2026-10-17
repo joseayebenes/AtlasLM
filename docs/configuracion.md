@@ -22,10 +22,13 @@ Ejemplos completos en el repositorio:
 - **Secretos.** Las claves y contraseñas se leen siempre del entorno: atlas rechaza un
   `api_key` escrito tal cual para un servidor que no es local, y una contraseña en la URL
   del proxy o en el DSN de ODBC. Ver [seguridad](seguridad.md).
-- **Rutas.** Son relativas a la carpeta del fichero las de `[project] workspace`,
-  `[agents] dirs` y `[agents.eval] sets`. Las de las fuentes (`paths`, `roots`, `path`)
-  son relativas a la carpeta desde la que se lanza atlas, por eso el editor arranca
-  `atlas serve` en la carpeta del proyecto.
+- **Rutas.** Todas las rutas relativas lo son a la carpeta del fichero, se lance atlas
+  desde donde se lance: `workspace`, las de las fuentes (`paths`, `roots`, `path`),
+  `tool_path`, `library`, `reference`, `hints`, `language_server_project`, `[agents] dirs`,
+  `[agents.eval] sets`, `[tests.languages]` y las de los planes de `atlas develop`. Una
+  absoluta se usa tal cual y `~` es la carpeta del usuario. El motor nombra cada fichero de
+  las fuentes por su ruta relativa a esa carpeta (absoluta si está fuera de ella): es lo que
+  sale en los informes y en las herramientas de ficheros.
 
 ### Qué se reprocesa al cambiar algo
 
@@ -224,7 +227,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `language_server` | lista | `[]` | el servidor de lenguaje de las herramientas `find_definition`, `find_references` y `describe_symbol`, con comodines en el programa: el Ada Language Server de la extensión de VS Code, `["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]` |
 | `language_server_project` | texto | `""` | el proyecto GPR que lee el servidor, relativo a `atlas.toml`; vacío: atlas escribe uno con las carpetas de las raíces que tienen fuentes Ada |
 | `check_on_edit` | sí/no | `true` | cada cambio de las herramientas de ficheros devuelve en `check` lo que dice `check_code` del fichero (si hay compilador para su extensión): una vuelta menos, y el agente no puede decir que compila sin verlo |
-| `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a la carpeta desde la que se lanza atlas, como las raíces del código |
+| `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a `atlas.toml`, como las raíces del código |
 | `command_timeout` | entero | `120` | segundos como mucho para compilar o ejecutar una prueba |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
 

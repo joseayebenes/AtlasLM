@@ -101,6 +101,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from atlas.agents.hints import shape as _shape, write_hints_draft
 from atlas.config import Config, ConfigError
 
 __all__ = ["Plan", "develop", "load_plan"]
@@ -700,8 +701,22 @@ class Developer:
             "failing": {t: _last_lines(r["output"]) for t, r in state["tests"].items() if not r["passed"]},
             "check_errors": sorted(state["check"])}
         self.report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.hints_to_write()
         self.save()
         return self.report
+
+    def hints_to_write(self) -> None:
+        """The drafts of hints of the errors without one (atlas/agents/hints.py), in
+        reports/hints-<plan>.toml and, short, in the report: never used as they are."""
+        calls = Path(f"{self.path}.calls.jsonl")
+        if not calls.is_file():
+            return
+        path, drafts = write_hints_draft(calls)
+        if drafts:
+            self.report["hints_to_write"] = {
+                "file": path.name, "errors": [{"count": d["count"], "message": d["message"], "match": d["match"],
+                                               **({"fixed_in_run": d["fix"]["run"]} if d["fix"] else {})}
+                                              for d in drafts]}
 
     # --- the report ------------------------------------------------------------------------
     def save(self) -> None:
@@ -740,11 +755,6 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             errors += c.get("errors", [])
     return {"edits": {"made": edits["made"], "failed": edits["failed"]},
             "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
-
-
-def _shape(message: str) -> str:
-    """A message of the compiler without its names and numbers: the same error in other places."""
-    return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
 
 
 def _verdict(answer: str) -> list[dict] | None:
@@ -840,6 +850,13 @@ def markdown(report: dict) -> str:
                 "can get one in a file of [sources.code] hints.", "", "| times | message | hint |", "|---|---|---|"]
         out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {'yes' if e['hint'] else '**no**'} |"
                 for e in errors[:SHOWN_ERRORS]]
+    drafts = report.get("hints_to_write") or {}
+    if drafts.get("errors"):
+        out += ["", "## Hints to write", "", f"The errors that came without a hint, as drafts in {drafts['file']}: "
+                "write the hints worth having there and copy them to a file of [sources.code] hints.", "",
+                "| times | message | fixed in run |", "|---|---|---|"]
+        out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {e.get('fixed_in_run', '')} |"
+                for e in drafts["errors"][:SHOWN_ERRORS]]
     return "\n".join(out) + "\n"
 
 

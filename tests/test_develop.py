@@ -159,6 +159,10 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
     assert report["totals"]["edits"]["failed"] >= 1 and report["compiler_errors"][0]["count"] >= 1
     md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
     assert "## Compiler errors" in md and "| edits (failed) |" in md and "Edits: " in md
+    # the syntax error had no hint: a draft of one (its run wrote nothing after it)
+    assert "## Hints to write" in md and "hints-plan.toml" in md
+    draft = (cfg.workspace / "reports" / "hints-plan.toml").read_text()
+    assert "\n[[hint]]\nmatch = " in draft and 'hint = ""' in draft and "# no write in the same run" in draft
 
 
 def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project, caplog):
@@ -366,6 +370,62 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\n[[tasks]]\ntext = "x"\nadvance = ["test_calc.py"]\n')
     with pytest.raises(ConfigError, match="not \\['advance'\\]"):
         load_plan(base / "bad.toml")
+
+
+CALLS = [
+    {"n": 1, "kind": "task", "task": "T01", "prompt": "x", "answer": "", "calls": [
+        {"name": "write_file", "args": {"path": "src/a.adb", "content": "..."},
+         "result": {"file": "src/a.adb", "created": True, "check": {"ok": False, "errors": [
+             {"line": 3, "message": '"Foo" is undefined', "hint": "Foo is not declared"},
+             {"line": 5, "message": 'unexpected token "bar" at 12', "details": ["did you mean Bar"]}]}}},
+        {"name": "edit_file", "args": {"path": "src/a.adb"},
+         "result": {"error": "the change was not made: it breaks the syntax of src/a.adb",
+                    "syntax_errors": [{"line": 2, "message": 'missing ";"'}]}},
+        {"name": "edit_file", "args": {"path": "src/a.adb"},
+         "result": {"file": "src/a.adb", "replacements": 1, "diff": "-   bar\n+   Bar;",
+                    "check": {"ok": False, "errors": [{"line": 3, "message": '"Foo" is undefined', "hint": "x"}]}}},
+        {"name": "check_code", "args": {"path": "src/b.adb"},
+         "result": {"file": "src/b.adb", "ok": False, "errors": [
+             {"file": "b.adb", "line": 7, "message": 'unexpected token "baz" at 40'}]}}]},
+    {"n": 2, "kind": "round", "task": "tests/t.py", "prompt": "y", "answer": "", "calls": [
+        {"name": "check_code", "args": {"path": "src/b.adb"},
+         "result": {"file": "src/b.adb", "ok": False, "errors": [
+             {"file": "b.adb", "line": 9, "message": 'unexpected token "qux" at 3'}]}}]}]
+
+
+def test_drafts_of_hints_from_the_calls(project, capsys):
+    """The errors without a hint of a calls log, by shape, the most frequent first, each with the
+    write that got rid of it; a TOML of [[hint]] with empty hints, for a person to write."""
+    import re
+    import tomllib
+    from atlas import cli
+    from atlas.agents.hints import draft_hints, hint_match, write_hints_draft
+    from atlas.code.build import load_hints
+    base, cfg = project
+    calls = cfg.workspace / "reports" / "develop-server.calls.jsonl"
+    calls.parent.mkdir(parents=True)
+    calls.write_text("\n".join(json.dumps(r) for r in CALLS) + "\n")
+    drafts = draft_hints(calls)
+    assert [(d["shape"], d["count"]) for d in drafts] == [('unexpected token "X" at N', 3), ('missing "X"', 1)]
+    token, syntax = drafts
+    assert token["match"] == 'unexpected token "(?P<name>[^"]+)" at \\d+'
+    assert all(re.search(token["match"], m) for m in ('unexpected token "bar" at 12', 'unexpected token "q" at 3'))
+    assert token["fix"] == {"diff": "-   bar\n+   Bar;", "call": "edit_file", "file": "src/a.adb", "run": 1}
+    assert token["details"] == ["did you mean Bar"] and token["runs"] == [1, 2]
+    assert token["files"] == ["src/a.adb", "src/b.adb"]
+    assert syntax["fix"]["run"] == 1                      # the syntax error: the next write that was made
+    assert hint_match('"A" and "B" at line 4') == '"(?P<name>[^"]+)" and "(?P<name2>[^"]+)" at line \\d+'
+    path, _ = write_hints_draft(calls)
+    assert path.name == "hints-server.toml"
+    text = path.read_text()
+    assert "# 3 times, in src/a.adb, src/b.adb (runs 1, 2)" in text and "#   +   Bar;" in text
+    assert [h["hint"] for h in tomllib.loads(text)["hint"]] == ["", ""]
+    assert len(load_hints([path])) == 2                  # a hints file as it is, which says nothing yet
+    assert cli.hints(cfg, "tasks/server.toml") == 0
+    out = capsys.readouterr().out
+    assert "2 errors without a hint; drafts in" in out and "fixed in run 1" in out
+    with pytest.raises(SystemExit, match="no calls of atlas develop for other"):
+        cli.hints(cfg, "other")
 
 
 def test_a_failure_in_a_line():

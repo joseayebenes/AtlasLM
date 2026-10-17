@@ -17,6 +17,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `tools.py` | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 | `develop.py` | `atlas develop`: un agente escribe el código encargo a encargo y los tests lo juzgan; lo que rompe algo se deshace |
+| `hints.py` | `draft_hints` y `write_hints_draft`: borradores de pistas para los errores del compilador sin pista de una tanda, con el arreglo de cada uno (`atlas hints`) |
 
 ## Agentes en ficheros Markdown
 
@@ -190,7 +191,36 @@ cambios que rompían lo que ya iba.
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
-   lecciones que añadir antes de la siguiente.
+   lecciones que añadir antes de la siguiente, y van como borradores en
+   `reports/hints-<plan>.toml` (ver «Borradores de pistas»).
+
+### Borradores de pistas
+
+Escribir una pista era leer el `.calls.jsonl`: las dos de la prueba corta del 2026-10-15
+fueron un commit a mano. `atlas hints PLAN [atlas.toml]` (y el final de cada `atlas develop`,
+en la sección «Hints to write» del informe) lee las llamadas de la última tanda del plan y
+agrupa por forma (el mensaje sin sus nombres ni sus números) los errores sin pista: los del
+`check` de cada cambio, los de la sintaxis de un cambio rechazado y los de `check_code`. Para
+cada forma busca en la misma ejecución la primera escritura posterior al mismo fichero cuyo
+`check` ya no lo trae (en un error de sintaxis, la primera que se hizo), y guarda su diff.
+Escribe `reports/hints-<plan>.toml`, un `[[hint]]` por forma, las más frecuentes primero:
+
+```toml
+# 3 times, in src/server.adb (runs 4, 7)
+# message: "Get_Line" not declared in "Text_IO"
+# how the agent got past it (run 4, edit_file of src/server.adb):
+#   -      Line := Text_IO.Get_Line (Socket);
+#   +      Line := Ada.Text_IO.Get_Line;
+[[hint]]
+match = '"(?P<name>[^"]+)" not declared in "(?P<name2>[^"]+)"'
+hint = ""
+```
+
+El `match` sale del mensaje: cada nombre entre comillas, un grupo con nombre; cada número,
+`\d+`; el resto, tal cual. Nunca se usa solo: una persona lo revisa, escribe la pista
+(`{name}` va al texto), borra las que no merecen una y las copia a un fichero de
+`[sources.code] hints`. En la librería, `draft_hints(calls_path)` devuelve lo mismo como una
+lista.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
@@ -420,7 +450,8 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
-que se deshacen, arreglos de compilación, rondas y lo que se deja a una persona).
+que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona, el revisor y los
+borradores de pistas de un `.calls.jsonl` de pega).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
 agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.

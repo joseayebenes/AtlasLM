@@ -24,6 +24,8 @@
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
                                        is undone, and what it cannot fix goes to a person (a report)
+    atlas hints    PLAN [atlas.toml]   drafts of hints for the errors of the compiler that came without one in
+                                       the last atlas develop of the plan, with how the agent fixed each one
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
@@ -978,6 +980,21 @@ def develop(cfg: Config, plan: str) -> int:
     return 0 if final["tests_passed"] == final["tests"] else 1
 
 
+def hints(cfg: Config, plan: str) -> int:
+    """Drafts of hints from the calls of the last atlas develop of a plan (atlas/agents/hints.py)."""
+    from atlas.agents.hints import write_hints_draft
+    calls = cfg.workspace / "reports" / f"develop-{Path(plan).stem}.calls.jsonl"
+    if not calls.is_file():
+        sys.exit(f"no calls of atlas develop for {Path(plan).stem}: {calls} does not exist")
+    path, drafts = write_hints_draft(calls)
+    for d in drafts:
+        fixed = f", fixed in run {d['fix']['run']}" if d["fix"] else ""
+        print(f"{d['count']:4d}  {d['message'][:100]}{fixed}")
+    print(f"\n{len(drafts)} errors without a hint; drafts in {path}: write the hints there and copy them to a "
+          "file of [sources.code] hints" if drafts else "every error of the compiler came with a hint")
+    return 0
+
+
 def evaluate(cfg: Config) -> int:
     from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
 
@@ -1087,7 +1104,7 @@ def main(argv: list[str] | None = None) -> None:
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
+                 "tests": tests, "develop": develop, "hints": hints, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

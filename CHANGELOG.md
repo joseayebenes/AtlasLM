@@ -16,6 +16,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `reviewer` y `review_fixes` en el plan de `atlas develop`, apagado por defecto: tras un encargo
   que compila y no rompe nada, un agente de solo lectura lee el encargo y el diff y contesta en
   JSON; sus problemas vuelven al agente una vez. Ejemplo en `examples/agents/reviewer.md`.
+- `atlas hints PLAN` y `draft_hints` (`atlas/agents/hints.py`): borradores de pistas para los
+  errores del compilador que salieron sin pista en la última tanda de `atlas develop`, agrupados
+  por forma, con el `match` derivado del mensaje, la `hint` vacía y, como comentario, el diff de
+  la primera escritura de la misma ejecución tras la que el error ya no estaba. Van en
+  `reports/hints-<plan>.toml` y en la sección «Hints to write» del informe; nunca se usan solos.
 
 ## [0.2.0] — 2026-10-16
 

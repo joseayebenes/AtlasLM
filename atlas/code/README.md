@@ -135,7 +135,10 @@ hint = "Controller declares Session and Execute; the commands are Do_* procedure
 La regla del `String` ya estaba en las instrucciones del agente y el error salió igual 16
 veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
 errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
-lista de lecciones que crece tras cada tanda.
+lista de lecciones que crece tras cada tanda. `atlas hints PLAN` (y el final de cada tanda)
+deja un borrador de cada una en `reports/hints-<plan>.toml`, con el `match` hecho y el diff con
+el que el agente salió del error, para escribir la pista y copiarla aquí (ver
+[atlas.agents](../agents/README.md)).
 
 ### Reglas para el código nuevo
 

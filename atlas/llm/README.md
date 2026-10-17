@@ -18,7 +18,12 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 - usa el proxy y los certificados de la configuración (`ca_cert = "system"`: el almacén del
   sistema);
 - respeta el límite de peticiones y de tokens por minuto, repartiendo las peticiones en el
-  tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave;
+  tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave y,
+  con `[network] shared_limit` (por defecto, si hay límite), todos los procesos del puesto:
+  `SharedWindow` guarda en `~/.atlas/limits/<servidor>-<puerto>.json` las horas de los envíos
+  del último minuto, el ritmo adaptado y las pausas, y cada envío se decide con el fichero
+  bloqueado (`flock` o `msvcrt.locking`, como el workspace). Sin poder bloquearlo, el proceso
+  lleva su ritmo solo; `max_concurrent` sigue siendo de cada proceso;
 - con un 409 o un 429 espera (`Retry-After`, `x-ratelimit-*`, cuyo `reset` puede venir en
   segundos o en milisegundos, o espera creciente) hasta
   `rate_limit_max_wait`, sin contarlo como reintento; si es adaptativo, baja el ritmo un
@@ -92,6 +97,6 @@ También funciona solo, con su propio `connection.toml`:
 
 ## Pruebas
 
-`tests/test_fake_api.py` (cliente, `check` con modelos que razonan, contadores de uso),
+`tests/test_rate_limit.py` (la ventana compartida, con dos procesos reales), `tests/test_fake_api.py` (cliente, `check` con modelos que razonan, contadores de uso),
 `tests/test_llm_structured.py` (reparación de JSON, servidores sin salida estructurada,
 razonamiento, límite de concurrencia) y `tests/test_config.py` (secretos y enmascarado).

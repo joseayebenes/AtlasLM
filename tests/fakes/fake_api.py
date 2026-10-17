@@ -14,20 +14,33 @@ The control file is re-read on every request; keys:
   no_structured_output: true       -> 501 to chat requests with response_format (Ollama does
                                       this with some models)
   slow: seconds                    -> delay per request
+  rpm_limit: N                     -> 429 "rate limit" on chat and embeddings when N requests were
+                                      accepted in the last 60 s (a gateway with a quota per minute)
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
-GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
+GET / returns counters, the options of the last chat request (without its messages) and the
+times (epoch seconds) of the last accepted requests. Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
 it names.
 """
-import argparse, json, re, hashlib, os
+import argparse, json, re, hashlib, os, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _ap = argparse.ArgumentParser(); _ap.add_argument("--port", type=int, default=8770); _ap.add_argument("--control", default="faults.json")
 ARGS = _ap.parse_args()
-stats = {"chat": 0, "embeddings": 0, "emb_texts": 0}
+stats = {"chat": 0, "embeddings": 0, "emb_texts": 0, "times": []}
+quota = threading.Lock()
+def over_quota(c):
+    """rpm_limit: whether this request goes over the quota; if not, it is counted in it."""
+    with quota:
+        now = time.time()
+        if c.get("rpm_limit") is not None and sum(now - t < 60 for t in stats["times"]) >= c["rpm_limit"]:
+            stats["rejections"] = stats.get("rejections", 0) + 1
+            return True
+        stats["times"] = stats["times"][-499:] + [now]
+        return False
 def ctl():
     try: return json.load(open(ARGS.control))
     except Exception: return {}
@@ -44,9 +57,11 @@ class H(BaseHTTPRequestHandler):
     def do_GET(self): self.send(200, stats)
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
-        import time; time.sleep(c.get("slow", 0))
+        time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})
+        if over_quota(c):
+            return self.send(429, {"error": {"message": "rate limit exceeded", "type": "rate_limit"}})
         if self.path.endswith("/embeddings"):
             if c.get("emb_409_after") is not None and stats["embeddings"] >= c["emb_409_after"]:
                 stats["rejections"] = stats.get("rejections", 0) + 1

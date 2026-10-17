@@ -1,3 +1,4 @@
+import os
 import socket
 import subprocess
 import sys
@@ -9,6 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _limits_dir(tmp_path_factory):
+    """The windows that the limiter shares between processes (atlas.llm.connection.limits_dir)
+    go to a temporary folder, never to ~/.atlas of whoever runs the tests."""
+    os.environ["ATLAS_LIMITS_DIR"] = str(tmp_path_factory.mktemp("limits"))
 
 
 @pytest.fixture(scope="session")

@@ -6,6 +6,34 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- El límite de peticiones es del puesto, no de cada proceso (`[network] shared_limit`, por
+  defecto con `requests_per_minute` o `tokens_per_minute`). `atlas serve`, un `atlas run` largo
+  y `atlas develop` creían tener cada uno las 28 peticiones por minuto del gateway. Ahora
+  comparten la ventana del último minuto, el ritmo adaptado y las pausas en
+  `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows, `%LOCALAPPDATA%\atlas\limits`;
+  `ATLAS_LIMITS_DIR` cambia la carpeta), bajo un bloqueo de fichero como el del workspace. El
+  fichero no lleva la clave ni un hash de ella; si no se puede bloquear, cada proceso vuelve a
+  ir por su cuenta, y si está roto se reescribe. Medido con el servidor falso (20 peticiones por
+  minuto de cupo, 1 s por respuesta), un `atlas run` de documentos con el modelo y el índice y,
+  a la vez, cuatro `atlas ask` seguidos, los dos con `requests_per_minute = 20`:
+
+  | | antes | con la ventana compartida |
+  |---|---|---|
+  | rechazos 429 en el servidor | 5 (1 del `run`, 4 de la cuarta pregunta) | 0 |
+  | `atlas run` | 277 s | 241 s |
+  | cada `atlas ask` | 10, 15, 14 y 47 s | 22, 27, 30 y 36 s |
+
+  Ninguna petición falló al final: los 429 se reintentan. Lo que cambia es que la pregunta que
+  llega con el lote en marcha espera su turno en vez de llevarse los rechazos, y que el lote no
+  pierde ritmo. El servidor falso tiene `rpm_limit` para probarlo.
+
+### Al actualizar
+- Con `requests_per_minute` o `tokens_per_minute`, atlas escribe en `~/.atlas/limits` (o
+  `%LOCALAPPDATA%\atlas\limits`). Dos procesos contra el mismo gateway ya no suman sus límites:
+  si alguien subió `requests_per_minute` contando con eso, que lo baje al del gateway.
+  `shared_limit = false` vuelve a lo de antes.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -78,7 +78,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
-                "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int,
+                "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int, "shared_limit": bool,
                 "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
                 "retry_statuses": list},
     "pipeline": {"workers": int, "step_workers": dict, "on_error": str, "max_attempts": int,

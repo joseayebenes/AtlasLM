@@ -58,6 +58,12 @@ portátil, el cifrado de disco del sistema (BitLocker, FileVault).
 El libro de registro guarda los errores de cada unidad (500 caracteres como mucho). Son
 mensajes de las librerías: no llevan claves.
 
+Fuera del workspace, solo las ventanas del límite de peticiones compartidas entre procesos
+(`[network] shared_limit`): `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows,
+`%LOCALAPPDATA%\atlas\limits`), con las horas de los envíos del último minuto y el ritmo
+adaptado. El nombre y el contenido no llevan la clave ni un hash de ella
+(`test_the_file_has_no_key_and_is_rewritten_when_broken`).
+
 ## Secretos
 
 **Solo del entorno.** Un valor `${VARIABLE}` o `${VARIABLE:-valor}` se lee del entorno al

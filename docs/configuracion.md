@@ -88,6 +88,13 @@ Red y límites, comunes al chat y a los embeddings (y retocables en `[llm.networ
 `[embeddings.network]`). Si los dos van al mismo servidor con la misma clave, comparten
 los límites.
 
+El cupo de un gateway es de la clave, no del proceso. Con `shared_limit` (por defecto), los
+procesos del puesto se reparten `requests_per_minute`: un rechazo que ve uno baja el ritmo de
+todos, y una pregunta del editor espera su turno en vez de llevarse los 429. El fichero de cada
+servidor se nombra por su máquina y su puerto, sin nada de la clave; dos claves distintas contra
+el mismo servidor comparten la ventana, que es lo prudente. Si el fichero no se puede bloquear,
+cada proceso vuelve a llevar su ritmo solo, y lo avisa; si está roto, se reescribe.
+
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `proxy` | URL | `HTTPS_PROXY` o `HTTP_PROXY` del entorno | proxy HTTP; con usuario, `"http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"` |
@@ -99,7 +106,8 @@ los límites.
 | `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30 |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |
-| `max_concurrent` | entero | `0` | peticiones simultáneas al servidor; 0 = sin límite |
+| `max_concurrent` | entero | `0` | peticiones simultáneas al servidor desde este proceso; 0 = sin límite |
+| `shared_limit` | sí/no | `true` | con `requests_per_minute` o `tokens_per_minute`, el límite es de todos los procesos del puesto que van al mismo servidor (`atlas serve`, un `atlas run` largo, `atlas develop`): comparten la ventana del último minuto, el ritmo adaptado y las pausas en `~/.atlas/limits/<servidor>-<puerto>.json` (en Windows, `%LOCALAPPDATA%\atlas\limits`; otra carpeta con la variable `ATLAS_LIMITS_DIR`). `false`: cada proceso cree tener el cupo entero |
 | `max_retries` | entero | `6` | reintentos tras un 5xx o un fallo de conexión |
 | `max_backoff` | número | `60` | espera máxima entre reintentos sin `Retry-After` (s) |
 | `rate_limit_max_wait` | número | `900` | con 409 o 429, espera hasta este total por petición (s) antes de dar error |

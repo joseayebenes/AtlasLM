@@ -67,7 +67,7 @@ def _stream(service: ServiceConfig, first: tuple, out: Callable[[str], None]) ->
     calls = response.choices[0].message.tool_calls or []
     again = next((c for c in calls if c.function.name == "word_length"), None)
     same = again is not None and _args(again.function.arguments) == _args(call.function.arguments)
-    out(f"streaming: ok ({seconds}, " + (f"the same call word_length({again.function.arguments}))" if same
+    out(f"streaming: ok ({seconds}, " + (f"the same call word_length({again.function.arguments}))" if same and again
                                          else "but the chunks did not make up the same tool call: "
                                          f"{[c.function.name for c in calls] or 'none'})"))
 

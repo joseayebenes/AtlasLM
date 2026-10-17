@@ -134,7 +134,8 @@ class _Watch:
 
 def _timed_out(e: BaseException) -> bool:
     """A read or connect timeout of the HTTP client, as it is or wrapped by the OpenAI client."""
-    x, n = e, 0
+    x: BaseException | None = e
+    n = 0
     while x is not None and n < 10:
         if "Timeout" in type(x).__name__:
             return True
@@ -188,7 +189,9 @@ def _field(obj: Any, name: str) -> Any:
 def assemble(chunks) -> Any:
     """The chat completion that the chunks of a stream make up (see the module). Raises
     StreamUnsupported if the stream brought no choice at all."""
-    content, reasoning, calls = [], {}, {}
+    content: list = []
+    reasoning: dict = {}
+    calls: dict = {}
     head: dict = {}
     finish, usage, seen = None, None, False
     for chunk in chunks:
@@ -271,7 +274,7 @@ def streamed(client: Any, kwargs: dict, watch: _Watch | None = None) -> Any:
         if "text/event-stream" not in kind:                # a server that ignored stream
             from openai.types.chat import ChatCompletion
             raise StreamUnsupported(f"it answered {kind or 'something'} instead of an SSE stream",
-                                    ChatCompletion.construct(**json.loads(response.read())))
+                                    ChatCompletion.construct(**json.loads(response.read() if response is not None else b"{}")))
         return assemble(_ticking(stream, watch))
     finally:
         close = getattr(stream, "close", None)

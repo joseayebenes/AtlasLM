@@ -84,9 +84,12 @@ def test_the_texts_of_several_documents_go_in_full_batches(docs, tmp_path, fake,
     distinct = len(set(texts))
     alone = sum(math.ceil(len({r["embed_text"] for r in build_records(d)}) / 16) for d in docs.values())
     before = fake_stats()
+    dry = idx.embed_missing(texts, dry_run=True)                # only counts
+    assert dry["batches"] == math.ceil(distinct / 16) and dry["embedded"] == 0 and fake_stats() == before
     res = idx.embed_missing(texts, workers=3)
     grown = {k: fake_stats()[k] - before[k] for k in ("embeddings", "emb_texts")}
-    assert res == {"texts": distinct, "cached": 0, "embedded": distinct, "failed_batches": []}
+    assert res == {"texts": distinct, "cached": 0, "batches": math.ceil(distinct / 16), "embedded": distinct,
+                   "failed_batches": []}
     assert grown == {"embeddings": math.ceil(distinct / 16), "emb_texts": distinct}
     assert grown["embeddings"] < alone                       # fewer requests than document by document
     before = fake_stats()

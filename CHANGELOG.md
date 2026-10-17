@@ -6,6 +6,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas estimate [atlas.toml] [--latency S]`: lo que haría `atlas run` ahora, sin hacerlo.
+  Por paso, las unidades pendientes, las peticiones a las API (en `docs.process`, las
+  secciones que no están en la caché más un resumen por documento; en el índice, los lotes
+  de los textos sin vector) y el tiempo: máx(peticiones / `requests_per_minute`, peticiones ×
+  latencia / a la vez), con la latencia del último perfil del paso o `--latency`. La misma
+  línea sale al empezar cada paso de `atlas run` y en `atlas status`. En el proyecto grande da
+  540 peticiones de chat y 237 de embeddings, como las medidas. En la librería,
+  `Runner(dry_run=True)` y `Step.estimate`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

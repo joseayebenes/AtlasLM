@@ -242,3 +242,37 @@ def test_prepare_gets_the_pending_units_and_is_only_a_head_start(tmp_path):
     behaviour["raise"] = FatalError("no connection")
     rep = Runner(ledger, [step]).run()
     assert rep.fatal == "p: no connection" and done[-1] == "b" and ledger.get("p", "c")["fingerprint"] == "1"
+
+
+def test_dry_run_finds_the_pending_units_and_their_estimate_without_touching_anything(tmp_path):
+    done, asked = [], []
+    fingerprints = {"a": "1", "b": "1", "c": "1"}
+
+    def estimate(ctx, units):
+        asked.append(units)
+        return {"requests": {"chat": 2 * len(units)}, "text": f"{2 * len(units)} chat requests"}
+
+    first = _step("p", ["a", "b", "c"], fingerprints, lambda ctx, u: done.append(u), estimate=estimate)
+    second = _step("q", ["x"], {"x": "1"}, lambda ctx, u: done.append(u), depends_on=["p"])
+    ledger = Ledger(tmp_path / "db")
+    Runner(ledger, [first]).run(only=["p"])
+    fingerprints["b"] = "2"
+    rows = {u: dict(r) for u, r in ledger.units("p").items()}
+    with Runner(ledger, [first])._lock():              # another process runs: a dry run only looks
+        rep = Runner(ledger, [first, second], dry_run=True).run()
+    assert rep.pending == {"p": 1, "q": 1} and rep.skipped == {"p": 2} and rep.processed == {}
+    assert asked[-1] == ["b"] and rep.estimate["p"]["requests"] == {"chat": 2}
+    assert rep.estimate["q"] == {"after": ["p"]}         # q will have what p leaves to it
+    assert done == ["a", "b", "c"] and {u: dict(r) for u, r in ledger.units("p").items()} == rows
+    assert ledger.get("q", "x") is None and len(ledger.runs()) == 1   # no run saved
+
+    rep = Runner(ledger, [first, second]).run()          # a real run asks too, and keeps it
+    assert rep.pending == {"p": 1, "q": 1} and rep.estimate == {"p": {"requests": {"chat": 2},
+                                                                     "text": "2 chat requests"}}
+    assert rep.profile["p"]["estimate_seconds"] >= 0
+
+    def broken(ctx, units):
+        raise ValueError("cannot count")
+    fingerprints["c"] = "2"
+    rep = Runner(ledger, [_step("p", ["a", "b", "c"], fingerprints, lambda ctx, u: None, estimate=broken)]).run()
+    assert rep.processed == {"p": 1} and rep.estimate == {}             # without an estimate, it goes on

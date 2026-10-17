@@ -21,9 +21,11 @@ APIs, seconds waiting for the rate limit...).
         run=lambda ctx, u: analyze(u),             # idempotent; writes atomically
         prune=lambda ctx, u: delete_results(u),    # optional: what to do with a vanished unit
         prepare=lambda ctx, units: warm_cache(units),  # optional: once, with the units to process
+        estimate=lambda ctx, units: {"requests": {"chat": len(units)}},  # optional: what they will cost
         depends_on=["docs.sections"],
     )
     Runner(ledger=Ledger(workspace / "atlas.db"), steps=[step], context=ctx).run()
+    Runner(ledger=Ledger(workspace / "atlas.db"), steps=[step], context=ctx, dry_run=True).run().pending
     Ledger(workspace / "atlas.db").runs()           # the last runs, with their profiles
 """
 
@@ -71,6 +73,16 @@ def sha256_text(*parts: Any) -> str:
     return hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
 
 
+def clock(seconds: float) -> str:
+    """'under 1 min', '35 min', '2 h 10 min'."""
+    m = round(seconds / 60)
+    if m < 1:
+        return "under 1 min"
+    if m < 90:
+        return f"{m} min"
+    return f"{m // 60} h {m % 60} min"
+
+
 def atomic_write(path: str | Path, content: str | bytes) -> None:
     """Atomic write: temporary file + rename. The temporary file is the thread's own, so
     two threads can write the same file at the same time (the last one wins)."""
@@ -99,6 +111,12 @@ class Step:
     # they all need (e.g. their embeddings in full batches). It is only a head start: if
     # it fails, each unit does its own work (a fatal error does stop the run).
     prepare: Callable[[Any, list[str]], None] | None = None
+    # Called with the units about to be processed, to say what they will cost before doing
+    # anything: {"requests": {"chat": 540}, "seconds": [low, high], "text": "540 chat
+    # requests, about 19-22 min at 28/min"}, every key optional. The Runner logs `text`
+    # when the step starts and keeps the whole dict in the report (`estimate`); the
+    # progress lines use `requests` and `seconds`. If it fails, the step goes on without.
+    estimate: Callable[[Any, list[str]], dict] | None = None
 
 
 class Ledger:
@@ -253,6 +271,8 @@ class RunReport:
     errors: dict[str, int] = field(default_factory=dict)
     quarantined: dict[str, int] = field(default_factory=dict)
     pruned: dict[str, int] = field(default_factory=dict)
+    pending: dict[str, int] = field(default_factory=dict)       # units to process, by step
+    estimate: dict[str, dict] = field(default_factory=dict)     # by step: what Step.estimate said
     fatal: str | None = None
     seconds: float = 0.0
     started: str = ""
@@ -273,13 +293,20 @@ class Runner:
 
     `stopping` is set when the run is interrupted (Ctrl+C) with units running in other
     threads: the units not started yet are cancelled, and the long ones can watch it and
-    raise Interrupted so as not to hold the end of the run."""
+    raise Interrupted so as not to hold the end of the run.
+
+    `dry_run=True` only looks: it finds the units and fingerprints of each step as a run
+    would and asks each step's `estimate` what its pending units will cost, without the
+    workspace lock (it can look while another process runs), without running or pruning
+    anything and without saving the run. The report says `pending` and `estimate` by step;
+    a step whose dependencies have pending units (`after` in its estimate) will have more
+    to do once they are done, which a dry run cannot see."""
 
     def __init__(self, ledger: Ledger, steps: list[Step], context: Any = None, workers: int = 1,
                  on_error: str = "continue", max_attempts: int = 3, retry_quarantined: bool = False,
                  prune_missing: bool = True, lock_path: str | Path | None = None,
                  meters: Callable[[], dict[str, float]] | None = None, version: str = "",
-                 stopping: threading.Event | None = None):
+                 stopping: threading.Event | None = None, dry_run: bool = False):
         self.ledger, self.context = ledger, context
         self.steps = self._sort(steps)
         self.workers = max(1, workers)
@@ -288,6 +315,7 @@ class Runner:
         self.lock_path = Path(lock_path) if lock_path else ledger.path.with_suffix(".lock")
         self.meters, self.version = meters, version
         self.stopping = stopping or threading.Event()
+        self.dry_run = dry_run
 
     @staticmethod
     def _sort(steps: list[Step]) -> list[Step]:
@@ -312,6 +340,12 @@ class Runner:
 
     def run(self, only: Iterable[str] | None = None) -> RunReport:
         rep, t0 = RunReport(started=datetime.now().isoformat(timespec="seconds")), time.perf_counter()
+        if self.dry_run:
+            for step in self.steps:
+                if not only or step.name in set(only):
+                    self._look(step, rep)
+            rep.seconds = time.perf_counter() - t0
+            return rep
         self.stopping.clear()
         with self._lock():
             for step in self.steps:
@@ -364,8 +398,8 @@ class Runner:
                 prof["api"] = grown
             rep.profile[step.name] = prof
 
-    def _process(self, step: Step, rep: RunReport, prof: dict, durations: list[tuple[str, float]],
-                 workers: int, start: float) -> None:
+    def _scan(self, step: Step, rep: RunReport) -> tuple[list[str], dict, list[tuple[str, str]]]:
+        """The units of a step, their ledger rows and the (unit, fingerprint) to process."""
         units = list(step.units(self.context))
         previous = self.ledger.units(step.name)
         pending: list[tuple[str, str]] = []
@@ -379,6 +413,37 @@ class Runner:
                 rep.quarantined[step.name] = rep.quarantined.get(step.name, 0) + 1
                 continue
             pending.append((u, fp))
+        rep.pending[step.name] = len(pending)
+        return units, previous, pending
+
+    def _estimate(self, step: Step, rep: RunReport, pending: list[str]) -> dict:
+        """What Step.estimate says of the pending units, in the report; {} without it, with
+        nothing pending or if it fails. `after`: the dependencies with units still to
+        process in a dry run (their results are not there yet)."""
+        est: dict = {}
+        if step.estimate and pending:
+            try:
+                est = dict(step.estimate(self.context, pending) or {})
+            except Exception as e:
+                log.warning("%s: no estimate: %s", step.name, e)
+        if self.dry_run:
+            after = [d for d in step.depends_on if rep.pending.get(d)]
+            if after:
+                est["after"] = after
+        if est:
+            rep.estimate[step.name] = est
+        return est
+
+    def _look(self, step: Step, rep: RunReport) -> None:
+        """A dry run of a step: its pending units and their estimate, nothing else."""
+        _, _, pending = self._scan(step, rep)
+        est = self._estimate(step, rep, [u for u, _ in pending])
+        log.debug("%s: %d to process, %d up to date%s", step.name, len(pending), rep.skipped.get(step.name, 0),
+                 f"; {est['text']}" if est.get("text") else "")
+
+    def _process(self, step: Step, rep: RunReport, prof: dict, durations: list[tuple[str, float]],
+                 workers: int, start: float) -> None:
+        units, previous, pending = self._scan(step, rep)
 
         # Vanished units: stale and, if requested, pruned
         current = set(units)
@@ -397,6 +462,12 @@ class Runner:
                  len(pending), rep.skipped.get(step.name, 0))
         if not pending:
             return
+        t0 = time.perf_counter()
+        est = self._estimate(step, rep, [u for u, _ in pending])
+        if est:
+            prof["estimate_seconds"] = round(time.perf_counter() - t0, 3)
+        if est.get("text"):
+            log.info("%s: %s", step.name, est["text"])
         if step.prepare:
             t0 = time.perf_counter()
             try:

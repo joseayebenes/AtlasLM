@@ -3,7 +3,7 @@
     structure.py   sections without a model: bookmarks, headings or fixed size
     analysis.py    section analysis: llm | regex | none; verification and consolidation
     writer.py      Markdown and structure.json
-    process.py     a whole document: DocsOptions, process_document, preview
+    process.py     a whole document: DocsOptions, process_document, preview, pending_requests
 
 Text extractors are plugins chosen by file extension: "pymupdf" (PDF), "markitdown" (Office,
 HTML, and PDF when pymupdf is disabled) and "text" (Markdown and plain text).
@@ -21,7 +21,7 @@ from atlas import plugins
 from atlas.plugins import DocumentExtractor, register
 
 __all__ = ["DocsOptions", "MarkitdownExtractor", "PymupdfExtractor", "TextExtractor", "extractor_for",
-           "preview", "process_document", "read_text"]
+           "pending_requests", "preview", "process_document", "read_text"]
 
 
 class PymupdfExtractor(DocumentExtractor):
@@ -83,4 +83,4 @@ def read_text(path: str | Path, disabled: Iterable[str] = ()) -> str:
     return extractor_for(path, disabled).extract(Path(path))
 
 
-from atlas.docs.process import DocsOptions, preview, process_document  # noqa: E402  (needs read_text)
+from atlas.docs.process import DocsOptions, pending_requests, preview, process_document  # noqa: E402  (needs read_text)

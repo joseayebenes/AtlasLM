@@ -203,7 +203,7 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
         raise ConfigError("[agents.eval] sets lists no evaluation set (YAML files of cases)")
     out = {}
     for s in sets:
-        path = Path(s) if Path(s).is_absolute() else cfg.path.parent / s
+        path = cfg.resolve(s)
         cases = load_cases(path)
         res = {}
         if any(c["kind"] != "agent" for c in cases):

@@ -24,6 +24,9 @@ The plan is a TOML file:
     text = "Create the package Controller of SRS-0191 ..."
     advances = ["tests/python/test_stp_0101.py"]   # optional: the tests it makes get further
 
+The paths of the plan (check, tests, advances) are relative to the folder of atlas.toml, like
+those of [sources.code], wherever atlas runs from.
+
 What it does comes from what went wrong when gemma-4-26b and devstral wrote a server with no
 one to help them: code that compiled and did not work, tests changed to pass, failures tried
 again and again in the same way, and changes that broke what worked.
@@ -59,7 +62,7 @@ Aider: the model does not have to think out the change and get the tools right i
 turns (with the same model in both roles, GPT-4o-mini went from 55.6 to 60.2 %).
 
 With attempts > 1, each task (and its retry) goes to that many runs at once, each in its own
-copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of the
+copy of the working folder, the folder of atlas.toml (<workspace>/attempts/<n>: the code roots, the scripts of the
 project, its own build folder), with its build fixes and the turns of `advances`. Of those that
 break nothing, the one with more tests passing, and further, wins, and its files are copied to
 the working folder. A small model gets one in N right more often than one right in a row
@@ -227,11 +230,9 @@ class _Files:
         return sorted(changed)
 
 
-def _files(patterns: list[str], base: Path | None = None) -> list[str]:
-    """The files of some patterns, from the working folder or from `base` (a copy of it), as
+def _files(patterns: list[str], base: Path) -> list[str]:
+    """The files of some patterns, from `base` (the working folder, or a copy of it), as
     paths relative to it."""
-    if base is None:
-        return sorted({f for pattern in patterns for f in glob.glob(pattern, recursive=True) if Path(f).is_file()})
     return sorted({Path(f).relative_to(base).as_posix() for pattern in patterns
                    for f in glob.glob(str(base / pattern), recursive=True) if Path(f).is_file()})
 
@@ -261,7 +262,7 @@ class _Workspace:
     def evaluate(self) -> dict:
         """{"check": {file: [errors]} of the files with errors, "tests": {test: {passed, score, output, code_at}}}"""
         check = {}
-        for f in _files(self.dev.plan.check, self.base):
+        for f in _files(self.dev.plan.check, self.code.base):
             res = self.build.check_code(f)
             if not res.get("ok"):
                 check[f] = res.get("errors") or [{"message": res.get("error") or res.get("output", "")[-300:]}]
@@ -281,13 +282,13 @@ class Developer:
         self.on_step = on_step or (lambda step: None)
         self.main = _Workspace(self)
         self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
-        self.tests = _files(plan.tests)
+        self.tests = _files(plan.tests, self.code.base)
         if plan.planner:
             from atlas.agents.runtime import definition
             definition(plan.planner, cfg)                 # it exists, or a ConfigError now and not after a task
-        outside = [r for r in self.code.roots if Path.cwd().resolve() not in (r, *r.parents)]
+        outside = [r for r in self.code.roots if self.code.base not in (r, *r.parents)]
         if plan.attempts > 1 and outside:
-            raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder where atlas runs, "
+            raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder of {cfg.path.name}, "
                               f"to copy them (not {self.code._show(outside[0])})")
         if not self.tests:
             raise ConfigError(f"plan {plan.name}: no file matches its tests {plan.tests}")

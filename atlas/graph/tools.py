@@ -51,9 +51,9 @@ class GraphTools:
 
     @classmethod
     def from_config(cls, cfg) -> "GraphTools":
-        """Over the atlas.db of the workspace; file paths from the current directory, as the
-        code roots of atlas.toml."""
-        return cls(cfg.workspace / "atlas.db")
+        """Over the atlas.db of the workspace; file paths from the folder of atlas.toml, as
+        the code roots."""
+        return cls(cfg.workspace / "atlas.db", cfg.home)
 
     @classmethod
     def for_context(cls, context: Any) -> "GraphTools":

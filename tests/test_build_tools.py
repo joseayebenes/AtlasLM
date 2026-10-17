@@ -116,7 +116,7 @@ def test_a_test_runs_through_a_wrapper_and_python_tests_just_run(project, tmp_pa
     scripts.mkdir()
     (scripts / "with_server").write_text(f"#!{sys.executable}\n" + WRAPPER)
     (scripts / "with_server").chmod(0o755)
-    monkeypatch.chdir(tmp_path)                 # a relative tool_path is relative to where atlas runs
+    monkeypatch.chdir(ada)                      # a relative tool_path is relative to atlas.toml, not to here
     tools = make(tool_path=["scripts"], extra='''
 run_command = ["with_server", "{exe}"]
 [sources.code.test_commands]

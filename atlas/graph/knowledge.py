@@ -87,9 +87,9 @@ class KnowledgeGraph:
 
     @classmethod
     def from_config(cls, cfg) -> "KnowledgeGraph":
-        """The graph of <workspace>/atlas.db; file paths from the current directory, as the
-        code roots of atlas.toml."""
-        return cls.open(cfg.workspace / "atlas.db")
+        """The graph of <workspace>/atlas.db; file paths from the folder of atlas.toml, as the
+        code roots."""
+        return cls.open(cfg.workspace / "atlas.db", cfg.home)
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:

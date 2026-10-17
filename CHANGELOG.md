@@ -6,6 +6,23 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas develop` deja el parche de cada encargo conservado en
+  `<workspace>/reports/develop-<plan>/<id>.patch` (unificado, rutas relativas con `a/` y `b/`,
+  para `git apply` o `patch -p1`), el de cada ronda que cambió el código en `round-<n>.patch`
+  y todos juntos en `all.patch`; `answers.md` tiene la respuesta entera de cada ejecución, y el
+  informe enlaza cada paso con su parche y su respuesta.
+- `propose = true` en el plan de `atlas develop`: los agentes trabajan sobre una copia de la
+  carpeta de trabajo (`<workspace>/attempts/0`, que se queda hasta el siguiente `develop`) y
+  la carpeta de trabajo no se toca; el resultado son los parches. `max_copy_mb` (500) limita
+  lo que copian `propose` y `attempts`.
+
+### Cambiado
+- Las copias de `attempts` llevan también la carpeta de compilación, y `atlas develop` rechaza
+  al empezar, con `propose` o `attempts`, una carpeta de trabajo de más de `max_copy_mb` o un
+  test que la nombra por su ruta absoluta (probaría el código de la carpeta de trabajo, no el
+  de la copia).
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

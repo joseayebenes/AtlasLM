@@ -106,6 +106,7 @@ atlas link SRS_TMS atlas.dev.toml      # código que puede implementar los requi
 atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace todo lo que pide, obligación a obligación
 atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
+                                             # (con propose = true en el plan, en una copia: deja parches)
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento

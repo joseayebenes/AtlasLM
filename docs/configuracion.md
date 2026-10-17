@@ -313,3 +313,30 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
 | `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
+
+## El plan de `atlas develop`
+
+No va en `atlas.toml`: es un TOML aparte, el que se le pasa a `atlas develop PLAN atlas.toml`
+(ver [atlas/agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests)). Una clave
+desconocida es un error. Las rutas y patrones son relativos a la carpeta desde la que se lanza
+atlas, como las de `[sources.code]`.
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `agent` | texto | `"implementer"` | el agente de los encargos |
+| `fix_agent` | texto | el de `agent` | el que arregla un test que falla, en las rondas |
+| `check` | lista | `[]` | patrones de ficheros sobre los que se lanza `check_code` tras cada encargo |
+| `tests` | lista | obligatoria | patrones de los tests de aceptación, que se ejecutan con `run_test` en este orden |
+| `progress` | texto | `""` | expresión regular de hasta dónde llegó un test que falla (el último número que encuentra) |
+| `build_fixes` | entero | `2` | vueltas para arreglar lo que dice `check_code` tras un encargo |
+| `advance_fixes` | entero | `2` | vueltas para que avancen los tests de `advances` de un encargo |
+| `fix_rounds` | entero | `12` | rondas para arreglar tests, tras los encargos |
+| `stuck_rounds` | entero | `2` | rondas sin avanzar antes de dejar un test a una persona |
+| `restarts` | entero | `1` | veces que una ejecución parada (`max_steps`, `stall_steps`) vuelve a empezar, con una conversación nueva |
+| `attempts` | entero | `1` | intentos de cada encargo a la vez, cada uno en una copia de la carpeta de trabajo; gana el que más tests deja pasando |
+| `planner` | texto | `""` | un agente que solo lee y dice cómo hacer cada encargo antes de dárselo a `agent` |
+| `propose` | sí/no | `false` | `true`: los agentes trabajan sobre una copia (`<workspace>/attempts/0`, que se queda hasta el siguiente `develop`) y la carpeta de trabajo no se toca; el resultado son los parches de `<workspace>/reports/develop-<plan>/` |
+| `max_copy_mb` | entero | `500` | lo más que puede ocupar la carpeta de trabajo (sin `.git` ni el workspace, con la carpeta de compilación) para copiarla con `propose` o `attempts` |
+| `fix_prompt` | texto | el de serie | el encargo de una ronda: `{test}`, `{output}`, `{code}` y `{attempts}` |
+| `advance_prompt` | texto | el de serie | el de una vuelta de `advances`: `{test}`, `{output}` y `{code}` |
+| `[[tasks]]` | tablas | `[]` | los encargos: `text` (obligatorio), `id` (por defecto `T01`, `T02`...) y `advances` (los tests que hace avanzar: rutas, nombres o patrones de `tests`) |

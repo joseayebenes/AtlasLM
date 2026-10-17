@@ -974,6 +974,9 @@ def develop(cfg: Config, plan: str) -> int:
           f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")
+    if report.get("proposal"):
+        print(f"a proposal: the working folder is unchanged; the patches in {report['proposal']['patches']}, the "
+              f"code in {report['proposal']['copy']}")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
     return 0 if final["tests_passed"] == final["tests"] else 1
 

@@ -215,8 +215,7 @@ def test_parallel_attempts_each_in_a_copy_and_the_tests_choose(project):
     gets further wins, and its files come to the working folder."""
     from atlas.agents.develop import develop
     base, cfg = project
-    (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
-                                                                        '.resolve().parent.parent / "src")'))
+    (base / "tests" / "test_calc.py").write_text(RELATIVE)
     plan = PLAN.split("[[tasks]]")[0].replace("build_fixes = 1", "build_fixes = 0").replace("fix_rounds = 4",
                                                                                           "fix_rounds = 0")
     (base / "plan.toml").write_text(plan + 'attempts = 3\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
@@ -231,6 +230,89 @@ def test_parallel_attempts_each_in_a_copy_and_the_tests_choose(project):
     assert report["final"]["tests_passed"] == 1
     assert not (cfg.workspace / "attempts" / "1").exists()                  # the copies go away
     assert "| task #" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+
+
+RELATIVE = TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__).resolve().parent.parent / "src")')
+
+
+def _apply(patch_file, folder):
+    """Applies a patch of develop in `folder`, as a person would: git apply, or patch -p1."""
+    import shutil
+    import subprocess
+    if shutil.which("git"):
+        command = ["git", "apply", str(patch_file)]
+    elif shutil.which("patch"):
+        command = ["patch", "-p1", "-i", str(patch_file)]
+    else:
+        pytest.skip("neither git nor patch")
+    subprocess.run(command, cwd=folder, check=True, capture_output=True)
+
+
+def test_a_proposal_leaves_the_working_folder_as_it_was_and_gives_patches(project):
+    """propose = true: the agents work on a copy; the patches of the tasks are the result, and
+    they apply on the working folder, where the tests then pass."""
+    import shutil
+    import subprocess
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(RELATIVE)
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'propose = true\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n'
+                                    '\n[[tasks]]\nid = "mul"\ntext = "Implement mul, with a helper."\n')
+    pristine = base.parent / "pristine"
+    shutil.copytree(base / "src", pristine / "src")
+    shutil.copytree(base / "tests", pristine / "tests")
+    before = {p: p.read_bytes() for p in base.rglob("*") if p.is_file() and "ws" not in p.parts}
+    client = StubClient(write(ADD) + [{"write_file": {"path": "src/helper.py", "content": "FACTOR = 1"}}]
+                        + write(MUL)[:-1] + ["Done: mul and its helper."])
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["task"], s["outcome"]) for s in report["steps"]] == [("add", "kept"), ("mul", "kept")]
+    assert report["final"]["tests_passed"] == 1                             # in the copy
+    after = {p: p.read_bytes() for p in base.rglob("*") if p.is_file() and "ws" not in p.parts}
+    assert after == before                                                  # the working folder, untouched
+    copy = cfg.workspace / "attempts" / "0"
+    assert report["proposal"]["copy"] == str(copy) and (copy / "src" / "calc.py").read_text() == MUL  # it stays
+
+    patches = cfg.workspace / "reports" / "develop-plan"
+    assert [s["patch"] for s in report["steps"]] == ["develop-plan/add.patch", "develop-plan/mul.patch"]
+    add = (patches / "add.patch").read_text()
+    assert add.startswith("--- a/src/calc.py\n+++ b/src/calc.py\n@@ ") and "-    return 0\n+    return a + b\n" in add
+    mul = (patches / "mul.patch").read_text()
+    assert "--- /dev/null\n+++ b/src/helper.py\n" in mul and "\\ No newline at end of file" in mul
+    assert "test_calc" not in mul                                           # the tests are protected: not in it
+    for name in ("add", "mul"):
+        _apply(patches / f"{name}.patch", base)
+    assert (base / "src" / "calc.py").read_text() == MUL and (base / "src" / "helper.py").read_text() == "FACTOR = 1"
+    run = lambda folder: subprocess.run([sys.executable, "tests/test_calc.py"], cwd=folder, capture_output=True)
+    assert run(base).returncode == 0
+    _apply(patches / "all.patch", pristine)                                 # every change at once
+    assert run(pristine).returncode == 0 and (pristine / "src" / "calc.py").read_text() == MUL
+
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "A proposal: the working folder was not changed" in md
+    assert "[patch](develop-plan/add.patch) [answer](develop-plan/answers.md#step-1)" in md
+    answers = (patches / "answers.md").read_text()
+    assert '<a id="step-2"></a>' in answers and "Done: mul and its helper." in answers
+
+    # the next develop starts again from the working folder, with the patches applied, in a new copy
+    report = develop(base / "plan.toml", cfg, client=StubClient(["Nothing to do."] * 2))
+    assert [(s["outcome"], s.get("patch")) for s in report["steps"]] == [("kept", None)] * 2
+    assert report["at_start"]["tests_passed"] == 1 and (copy / "src" / "helper.py").exists()
+    assert not (patches / "add.patch").exists() and not (patches / "all.patch").exists()
+
+
+def test_a_working_folder_that_cannot_be_copied(project):
+    from atlas.agents.develop import Developer, load_plan
+    base, cfg = project
+    plan = PLAN.split("[[tasks]]")[0]
+    (base / "plan.toml").write_text(plan + "propose = true\n")
+    with pytest.raises(ConfigError, match="names it by its absolute path"):  # the test runs the code of the folder
+        Developer(load_plan(base / "plan.toml"), cfg)
+    (base / "tests" / "test_calc.py").write_text(RELATIVE)
+    Developer(load_plan(base / "plan.toml"), cfg)
+    (base / "plan.toml").write_text(plan + "attempts = 2\nmax_copy_mb = 0\n")
+    with pytest.raises(ConfigError, match="attempts copies the working folder, and it has more than 0 MB"):
+        Developer(load_plan(base / "plan.toml"), cfg)
 
 
 def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):

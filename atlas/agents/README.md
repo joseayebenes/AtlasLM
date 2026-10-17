@@ -120,6 +120,8 @@ stuck_rounds = 2                         # rondas sin avanzar antes de dejar un 
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
+propose = false                          # true: los agentes trabajan en una copia; el resultado, los parches
+max_copy_mb = 500                        # lo más que copian propose y attempts de la carpeta de trabajo
 
 [[tasks]]
 id = "ping-bye"
@@ -174,6 +176,10 @@ cambios que rompían lo que ya iba.
    tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
+   La copia lleva también la carpeta de compilación (`<workspace>/build`), donde se ejecutan los
+   tests. Una carpeta de trabajo de más de `max_copy_mb` (sin `.git` ni el workspace) o un test
+   que la nombra por su ruta absoluta se rechazan al empezar: el test probaría el código de la
+   carpeta de trabajo, no el de la copia.
 7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
@@ -184,6 +190,25 @@ cambios que rompían lo que ya iba.
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
 (`[sources.code] protected`), para que el agente no pueda cambiarlos.
+
+### Parches y modo propuesta
+
+Cada encargo conservado deja su **parche** en `<workspace>/reports/develop-<plan>/<id>.patch`:
+diff unificado con 3 líneas de contexto y las rutas de la carpeta de trabajo tras `a/` y `b/`,
+para `git apply` o `patch -p1` en ella. Una ronda que cambió el código deja `round-<n>.patch`,
+y `all.patch` lleva todos los cambios de la tanda. Con `attempts`, el parche es el del intento
+ganador. `answers.md` guarda la respuesta entera de cada ejecución del agente, y la tabla del
+informe enlaza cada paso con su parche y su respuesta. Los tests protegidos no salen en los
+parches, ni los ficheros binarios.
+
+Con `propose = true` en el plan, la carpeta de trabajo **no se toca**: los agentes trabajan
+sobre una copia (`<workspace>/attempts/0`, como la de `attempts`), los tests se ejecutan en
+ella y el resultado son los parches. La persona revisa y aplica los que quiera, igual que
+`atlas link` propone la etiqueta y no la escribe. La copia se queda hasta el siguiente
+`atlas develop`, para mirarla o ejecutar sus tests; cada tanda empieza de la carpeta de
+trabajo tal como esté entonces (con los parches que se hayan aplicado). En un proyecto
+grande, copiar la carpeta de trabajo puede no caber (`max_copy_mb`): sin `propose`, los
+parches dan casi lo mismo, y el código queda en la carpeta de trabajo.
 
 Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
 `atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y

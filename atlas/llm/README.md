@@ -72,6 +72,23 @@ escalones de `response_format`. `true` y `false` lo fuerzan; forzado, un rechazo
 El historial del gateway (501 sin esquema, plantillas que cerraban el turno) aconseja mirar
 qué dice `atlas probe` antes de fijarlo.
 
+Cada vuelta tiene dos tiempos, en `[llm.network]`: `idle_timeout` (120 s sin recibir un trozo,
+una vez empezada la respuesta) y `turn_timeout` (600 s en total, contados desde que sale la
+petición, sin la espera del cupo; también el tiempo de lectura de httpx). La espera hasta el
+primer trozo solo la acota `turn_timeout`: un Ollama compartido mandó el primero a los 458 s,
+por la cola, y el resto en 3 s; cortarla solo la mandaría al final de la cola.
+Un hilo vigila cada petición y, cuando vence uno de los dos, apaga el socket de la respuesta:
+la conexión se corta de verdad, el servidor ve irse al cliente y el hueco de `max_concurrent`
+queda libre (el transporte lo ocupa hasta que se cierra la respuesta, no solo hasta las
+cabeceras). Los comentarios SSE con que OpenRouter mantiene viva la conexión no engañan al
+vigilante: solo cuentan los trozos. La vuelta se pregunta otra vez, hasta `TURN_RETRIES` (2)
+veces, y luego sale `TurnTimeout` (un `TimeoutError`, que `atlas run` trata como fallo de
+conexión). Sin streaming solo vale `turn_timeout`, que es también el tiempo de lectura; la
+respuesta se pide de forma que el vigilante la tenga en cuanto llegan las cabeceras. Antes,
+el `timeout` de httpx, entre dos lecturas, era lo único: una petición de `gemma-4-26b` se
+quedó colgada una hora. `[network] timeout` queda para conectar y para lo que no es una vuelta
+de chat (embeddings).
+
 `[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
 agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no
 tiene, como `provider` en OpenRouter o `chat_template_kwargs` en vLLM.
@@ -143,7 +160,8 @@ real, `atlas probe` contra un servidor que llama a herramientas, las respuestas 
 `tests/test_llm_structured.py` (reparación y validación de JSON, la corrección que cita el
 error, los escalones `json_schema → json_object → none` compartidos entre instancias,
 `finish_reason` en `ask_text`, razonamiento, límite de concurrencia, respuestas con streaming y
-servidores que lo rechazan o lo ignoran), `tests/test_probe.py` (las cuatro peticiones de
+servidores que lo rechazan o lo ignoran, una vuelta colgada que cuesta `idle_timeout` y no deja
+nada abierto en el servidor ni el hueco de `max_concurrent` ocupado), `tests/test_probe.py` (las cuatro peticiones de
 `atlas probe` con un cliente de pega) y `tests/test_config.py` (secretos y
 enmascarado).
 
@@ -153,6 +171,6 @@ cada petición, inyecta los fallos: `chat_429_after`, `chat_status_once: [500, 5
 args}`, `usage_chars_per_token` (con él, una respuesta más larga que `max_tokens` sale cortada
 con `finish_reason` `length`), `no_structured_output` (`true`, o `"json_schema"` para aceptar
 `json_object`) y, para el streaming, `no_stream` (`true` lo rechaza, `"ignore"` contesta sin
-SSE), `chunk_chars`, `slow_between_chunks`, `hang_after_chunks` y `hang_keepalive`, además de
+SSE), `chunk_chars`, `slow_between_chunks`, `hang_after_chunks`, `hang_requests` y `hang_keepalive`, además de
 los de antes. `GET /` cuenta también las respuestas en trozos (`streams`) y las peticiones que
 se están contestando (`open`). La lista completa está al principio del fichero.

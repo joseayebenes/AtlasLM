@@ -39,6 +39,7 @@ The control file is re-read on every request; keys:
   hang_after_chunks: N             -> a streamed answer stops after N chunks and the connection
                                       stays open, without sending anything, until the client closes
                                       it (or hang_seconds, 120 by default)
+  hang_requests: N                 -> only the first N streamed answers hang
   hang_keepalive: seconds          -> while it hangs, an SSE comment every so many seconds (what
                                       OpenRouter sends while the model works)
 A chat request with "stream": true gets the answer in SSE chunks: the reasoning, the content and
@@ -99,7 +100,9 @@ class H(BaseHTTPRequestHandler):
         self.wfile.flush()
     def stream(self, message, finish, usage, body, c):
         """The answer in SSE chunks (see the module)."""
-        stats["streams"] += 1
+        stats["streams"] += 1; hangs = c.get("hang_after_chunks")
+        if c.get("hang_requests") is not None and stats["streams"] > c["hang_requests"]:
+            hangs = None
         self.send_response(200); self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache"); self.end_headers()
         size = c.get("chunk_chars") or 8
@@ -118,7 +121,7 @@ class H(BaseHTTPRequestHandler):
         if (body.get("stream_options") or {}).get("include_usage"):
             chunks.append({**head, "choices": [], "usage": usage})
         for n, obj in enumerate(chunks + [b"[DONE]"]):
-            if c.get("hang_after_chunks") is not None and n >= c["hang_after_chunks"]:
+            if hangs is not None and n >= hangs:
                 return self.hang(c)
             time.sleep(c.get("slow_between_chunks", 0))
             self.chunk(obj)

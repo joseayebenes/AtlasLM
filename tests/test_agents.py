@@ -355,31 +355,57 @@ def test_atlas_llm_streams_against_the_fake_server(fake_llm, fake_stats):
     assert streamed[2].prompt_token_count == whole[2].prompt_token_count > 1
 
 
-def test_a_turn_that_hangs_is_asked_again(workspace, monkeypatch, caplog):
-    """The timeout of the HTTP client is between two reads: a server that keeps the connection
-    alive never reaches it. A turn has [llm.network] timeout seconds in all."""
+def _until(condition, seconds=3.0):
     import time
-    from atlas.agents.runtime import run_agent
-    monkeypatch.chdir(workspace.path.parent)
-    monkeypatch.setitem(workspace.data, "llm", {"network": {"timeout": 0.5}})
+    end = time.time() + seconds
+    while not condition() and time.time() < end:
+        time.sleep(0.05)
+    return condition()
 
-    class Hangs(StubClient):
-        def create(self, **kwargs):
-            if len(self.requests) < self.hangs:
-                self.requests.append(kwargs)
-                time.sleep(5)                            # a request that does not end
-            return super().create(**kwargs)
 
-    client = Hangs(["SRS-0004 is implemented by tracks.delete_track."])
-    client.hangs = 1
+def test_a_turn_that_hangs_is_cut_and_asked_again(fake_llm, fake_stats, caplog):
+    """The timeout of the HTTP client is between two reads: a server that keeps the connection
+    alive never reaches it. A streamed turn without a chunk for idle_timeout seconds is cut (the
+    connection too: the server sees it go) and asked again."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    import time
+    from dataclasses import replace
+    service, control = fake_llm
+    service = replace(service, net=replace(service.net, idle_timeout=1, turn_timeout=20))
+    tool = {"tool_call": {"name": "word_length", "args": {"word": "atlas"}}}
+    control.write_text(json.dumps({**tool, "hang_after_chunks": 3, "hang_requests": 1}))
     t0 = time.time()
-    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
-    assert res["answer"].startswith("SRS-0004 is implemented") and time.time() - t0 < 3
-    assert len(client.requests) == 2 and "did not answer in 0.5 s" in caplog.text
-    client = Hangs([])
-    client.hangs = 3                                     # every time: an error, and the agent ends
-    with pytest.raises(TimeoutError, match="did not answer in 0.5 s, 3 times"):
-        run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert _ask_model(service)[0] == [("word_length", {"word": "atlas"})]
+    assert time.time() - t0 < 6 and fake_stats()["streams"] == 2
+    assert "did not answer (nothing came for 1 s ([llm.network] idle_timeout)): asking again" in caplog.text
+    assert _until(lambda: fake_stats()["open"] == 0)            # the hung request is not left in the server
+
+    # every time, and the server sends SSE comments meanwhile (OpenRouter): only chunks count
+    control.write_text(json.dumps({**tool, "hang_after_chunks": 3, "hang_keepalive": 0.1}))
+    t0 = time.time()
+    with pytest.raises(TimeoutError, match=r"did not answer: nothing came for 1 s .*, 3 times"):
+        _ask_model(service)
+    assert time.time() - t0 < 10 and fake_stats()["streams"] == 5
+    assert _until(lambda: fake_stats()["open"] == 0)
+
+
+def test_a_turn_has_turn_timeout_seconds_in_all(fake_llm, fake_stats):
+    """Chunks that keep coming do not make a turn endless; without streaming, turn_timeout is
+    also the read timeout."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    import time
+    from dataclasses import replace
+    service, control = fake_llm
+    service = replace(service, net=replace(service.net, idle_timeout=10, turn_timeout=1))
+    control.write_text(json.dumps({"tool_call": {"name": "word_length", "args": {"word": "atlas"}},
+                                   "chunk_chars": 1, "slow_between_chunks": 0.2}))
+    t0 = time.time()
+    with pytest.raises(TimeoutError, match=r"took more than 1 s in all \(\[llm.network\] turn_timeout\), 3 times"):
+        _ask_model(service)
+    assert time.time() - t0 < 10 and _until(lambda: fake_stats()["open"] == 0)
+    control.write_text(json.dumps({"slow": 3}))
+    with pytest.raises(TimeoutError, match=r"nothing came for 1 s \(\[llm.network\] turn_timeout\), 3 times"):
+        _ask_model(replace(service, stream="false"))
 
 
 def test_genai_schemas_become_json_schemas():

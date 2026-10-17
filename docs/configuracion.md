@@ -96,7 +96,9 @@ los límites.
 | `ca_cert` | ruta | `SSL_CERT_FILE` del entorno | PEM o carpeta con la CA corporativa, o `"system"` para el almacén del sistema |
 | `client_cert`, `client_key` | ruta | `""` | certificado y clave de cliente (TLS mutuo); la contraseña de la clave, en `RAG_CLIENT_KEY_PASSWORD` |
 | `insecure` | sí/no | `false` | `true` no verifica TLS: solo para diagnosticar |
-| `timeout` | número | `600` | segundos por petición |
+| `timeout` | número | `600` | segundos para conectar y, en lo que no es una vuelta de chat (embeddings), entre dos lecturas |
+| `idle_timeout` | número | `120` | vuelta de chat con streaming: segundos sin recibir un trozo, una vez empezada la respuesta, antes de cortarla (la conexión también) y preguntar otra vez, hasta dos veces. Los comentarios con que algunos servidores mantienen viva la conexión (OpenRouter) no cuentan. La espera hasta el primer trozo (la cola del servidor, la lectura del prompt) la acota `turn_timeout`; 0 = sin límite |
+| `turn_timeout` | número | `600` | vuelta de chat: segundos en total desde que sale la petición (sin contar la espera del cupo) antes de cortarla y preguntar otra vez, hasta dos veces; es también el tiempo entre dos lecturas. 0 = sin límite |
 | `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30 |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |

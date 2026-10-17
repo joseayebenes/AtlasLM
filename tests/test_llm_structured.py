@@ -220,3 +220,51 @@ def test_stream_true_or_false_forces_it(fake_llm, fake_stats, tmp_path):
     from atlas.llm import from_config
     from atlas.llm.chat import streaming
     assert streaming(from_config(load_config(tmp_path / "atlas.toml")).llm) is False
+
+
+def _until(condition, seconds=3.0):
+    import time
+    end = time.time() + seconds
+    while not condition() and time.time() < end:
+        time.sleep(0.05)
+    return condition()
+
+
+def test_json_llm_has_the_same_limits_per_turn(fake_llm, fake_stats, caplog):
+    """A hung answer costs idle_timeout, is asked again, and leaves nothing open in the server
+    nor holds the slot of max_concurrent."""
+    import time
+    from dataclasses import replace
+    from atlas.llm import rate_limiter_for
+    service, control = fake_llm
+    service = replace(service, net=replace(service.net, idle_timeout=1, turn_timeout=20, max_concurrent=1))
+    llm = JsonLlm(service)
+    llm.ask_text("system", "Reply with: ok")                        # the first one imports what it needs
+    control.write_text(json.dumps({"hang_after_chunks": 2, "hang_requests": 2}))
+    t0 = time.time()
+    assert llm.ask_text("system", "Reply with: ok") == "ok"
+    assert time.time() - t0 < 4 and fake_stats()["streams"] == 3 and "nothing came for 1 s" in caplog.text
+
+    control.write_text(json.dumps({"hang_after_chunks": 2}))
+    with pytest.raises(TimeoutError, match="did not answer: nothing came for 1 s .*, 3 times"):
+        JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert fake_stats()["streams"] == 6 and _until(lambda: fake_stats()["open"] == 0)
+    assert rate_limiter_for(service).sem._value == 1                # the slot is free again
+
+
+def test_a_streamed_answer_holds_its_slot_until_its_last_chunk(fake_llm, fake_stats):
+    import threading
+    import time
+    from dataclasses import replace
+    from atlas.llm import rate_limiter_for
+    service, control = fake_llm
+    service = replace(service, model="one-at-a-time", net=replace(service.net, max_concurrent=1))
+    control.write_text(json.dumps({"slow_between_chunks": 0.2}))
+    sem = rate_limiter_for(service).sem
+    thread = threading.Thread(target=JsonLlm(service).ask_text, args=("system", "Reply with: ok"))
+    thread.start()
+    assert _until(lambda: fake_stats()["open"] == 1)
+    time.sleep(0.3)                                                   # headers sent, chunks still coming
+    assert sem._value == 0
+    thread.join(5)
+    assert sem._value == 1

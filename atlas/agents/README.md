@@ -62,7 +62,10 @@ el mismo fichero tras un error de compilación que no entendía, hasta agotar `m
 final, así que se pregunta otra vez con el doble de `max_tokens`, como mucho dos veces. Cada
 vuelta va con streaming si el servidor lo admite (`[llm] stream`, ver `atlas/llm`): los trozos
 se juntan antes de que ADK vea la respuesta, así que las llamadas a herramientas son las
-mismas.
+mismas. Una vuelta sin un trozo en `[llm.network] idle_timeout` (120 s) o que pasa de
+`turn_timeout` (600 s) en total se corta, conexión incluida, y se pregunta otra vez, como mucho
+dos veces; si el agente se cancela, su petición se corta en el acto. Antes la vuelta colgada
+se abandonaba en un hilo y seguía viva en el gateway.
 
 El razonamiento de cada vuelta vuelve al modelo en las siguientes, en el mensaje del asistente
 que lleva las llamadas a herramientas (`[llm] reasoning_field`, `"reasoning"` por defecto; `""`
@@ -205,7 +208,7 @@ protegidos, `run_program`, `code_at` y el registro del servidor con la traza de 
   ningún test. Lo arregló la segunda ronda, cuando el registro del servidor ya escribía también
   las excepciones tratadas.
 - **Las vueltas de gemma son lentas**: de 20 s a 10 min. Tres no contestaron en 600 s y se
-  preguntaron otra vez (ver `[llm.network] timeout`).
+  preguntaron otra vez (hoy, `[llm.network] idle_timeout` y `turn_timeout`).
 - **Con `advances`** en 11 de los 18 encargos y la traza de excepciones desde el principio
   (tanda 4, otra vez desde `src` vacío): los 5 tests pasaron al acabar los encargos, **sin
   ninguna ronda**, en 28 ejecuciones, 4 h 52 min de agente y 0,72 $. El encargo de los

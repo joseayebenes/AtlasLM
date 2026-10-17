@@ -15,17 +15,34 @@ closes a stream that brought nothing. Then the request goes again without stream
 streaming stays off for the rest of the process, for every request to the same `base_url` and
 model (like the response_format tiers of JsonLlm). `true` and `false` force it; forced on, a
 rejection is an error. `atlas probe` says whether the server streams.
+
+A turn has two limits, in [llm.network]: `idle_timeout`, seconds without a chunk once the
+answer has begun, and `turn_timeout`, seconds in all from when the request goes out (the wait
+for the limiter does not count), which is also the read timeout of the HTTP client. The wait
+for the first chunk is left to turn_timeout: a busy server queues the request without a byte
+(Ollama, shared by several processes, sent its first chunk after 458 s and the rest in 3 s),
+and cutting it there would only send it to the back of the queue. A thread watches each
+request and, when one of them expires, shuts the socket of the response down: the connection
+is cut for real, the server sees it go and the slot of max_concurrent is free again. A server
+that keeps the connection alive with SSE comments while the model works (OpenRouter) does not
+fool it: only chunks count. The turn is then asked again, TURN_RETRIES times. Without
+streaming, only turn_timeout applies.
 """
 from __future__ import annotations
 
 import json
 import logging
+import socket
 import threading
+import time
 from typing import Any
 
-from atlas.llm.connection import ServiceConfig
+from atlas.llm.connection import _TURN, ServiceConfig
 
-__all__ = ["StreamUnsupported", "assemble", "complete", "stream_setting", "streamed", "streaming"]
+__all__ = ["StreamUnsupported", "TURN_RETRIES", "TurnTimeout", "assemble", "complete", "stream_setting", "streamed",
+           "streaming"]
+
+TURN_RETRIES = 2      # times a turn cut by idle_timeout or turn_timeout is asked again
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +59,87 @@ class StreamUnsupported(Exception):
     def __init__(self, msg: str, response: Any = None):
         super().__init__(msg)
         self.response = response
+
+
+class TurnTimeout(TimeoutError):
+    """A chat turn cut by [llm.network] idle_timeout or turn_timeout, or cancelled."""
+
+
+def _cut(response: Any) -> None:
+    """Shuts the socket of a response down, so that the thread that reads it stops at once and
+    the server sees the client go (closing it from another thread would not wake the read)."""
+    stream = (getattr(response, "extensions", None) or {}).get("network_stream")
+    sock = stream.get_extra_info("socket") if stream is not None else None
+    if sock is not None:
+        try:
+            socket.socket.shutdown(sock, socket.SHUT_RDWR)       # also an SSLSocket, without unwrapping it
+        except OSError:
+            pass
+
+
+class _Watch:
+    """Watches one request of a turn from another thread (see the module): cuts it when nothing
+    comes for `idle` seconds, when it takes more than `total` seconds or when `cancel` is set."""
+
+    def __init__(self, idle: float, total: float, cancel: threading.Event | None):
+        self.idle, self.total, self.cancel = idle, total, cancel
+        self.lock = threading.Lock()
+        self.start = self.last = time.monotonic()
+        self.begun = False                                 # a chunk came: from then on, idle counts
+        self.response, self.why = None, ""
+        self.stopped = threading.Event()
+        limits = [x for x in (idle, total) if x]
+        if limits or cancel is not None:
+            self.step = max(0.01, min([0.5, *(x / 10 for x in limits)]))
+            threading.Thread(target=self._run, daemon=True, name="atlas-llm-watch").start()
+
+    def sent(self) -> None:
+        """The transport sent the request: the clock starts (again, if it is a retry)."""
+        with self.lock:
+            self.start = self.last = time.monotonic()
+
+    def tick(self) -> None:
+        self.last, self.begun = time.monotonic(), True
+
+    def attach(self, response: Any) -> None:
+        with self.lock:
+            self.response = response
+            late = bool(self.why)
+        if late:
+            _cut(response)
+
+    def stop(self) -> None:
+        self.stopped.set()
+
+    def _expired(self) -> str:
+        now = time.monotonic()
+        if self.cancel is not None and self.cancel.is_set():
+            return "the turn was cancelled"
+        if self.total and now - self.start > self.total:
+            return f"it took more than {self.total:g} s in all ([llm.network] turn_timeout)"
+        if self.idle and self.begun and now - self.last > self.idle:
+            return f"nothing came for {self.idle:g} s ([llm.network] idle_timeout)"
+        return ""
+
+    def _run(self) -> None:
+        while not self.stopped.wait(self.step):
+            why = self._expired()
+            if why:
+                with self.lock:
+                    self.why, response = why, self.response
+                if response is not None:
+                    _cut(response)
+                return
+
+
+def _timed_out(e: BaseException) -> bool:
+    """A read or connect timeout of the HTTP client, as it is or wrapped by the OpenAI client."""
+    x, n = e, 0
+    while x is not None and n < 10:
+        if "Timeout" in type(x).__name__:
+            return True
+        x, n = x.__cause__ or x.__context__, n + 1
+    return False
 
 
 def stream_setting(cfg: ServiceConfig) -> bool | None:
@@ -90,7 +188,6 @@ def _field(obj: Any, name: str) -> Any:
 def assemble(chunks) -> Any:
     """The chat completion that the chunks of a stream make up (see the module). Raises
     StreamUnsupported if the stream brought no choice at all."""
-    from openai.types.chat import ChatCompletion
     content, reasoning, calls = [], {}, {}
     head: dict = {}
     finish, usage, seen = None, None, False
@@ -120,12 +217,14 @@ def assemble(chunks) -> Any:
                 if getattr(call, "id", None):
                     slot["id"] = call.id
                 function = getattr(call, "function", None)
-                if function is not None and getattr(function, "name", None):
+                if function is not None and getattr(function, "name", None) \
+                        and function.name != "".join(slot["name"]):     # some servers repeat it in every chunk
                     slot["name"].append(function.name)
                 if function is not None and getattr(function, "arguments", None):
                     slot["arguments"].append(function.arguments)
     if not seen:
         raise StreamUnsupported("the stream ended without any answer")
+    from openai.types.chat import ChatCompletion           # after the chunks: its first import takes a while
     message: dict = {"role": "assistant", "content": "".join(content) if content or not calls else None}
     message.update({name: "".join(parts) for name, parts in reasoning.items()})
     if calls:
@@ -141,7 +240,18 @@ def assemble(chunks) -> Any:
     return ChatCompletion.construct(**data)
 
 
-def streamed(client: Any, kwargs: dict) -> Any:
+def _ticking(stream, watch: _Watch | None):
+    """The chunks of a stream, telling the watch of each one; once the last has come, there is
+    nothing more to wait for."""
+    for chunk in stream:
+        if watch is not None:
+            watch.tick()
+        yield chunk
+    if watch is not None:
+        watch.stop()
+
+
+def streamed(client: Any, kwargs: dict, watch: _Watch | None = None) -> Any:
     """The request with stream on, put together (see the module), whatever [llm] stream says.
     StreamUnsupported if the server rejected stream, ignored it (with the answer it gave) or
     sent an empty stream."""
@@ -154,30 +264,86 @@ def streamed(client: Any, kwargs: dict) -> Any:
     if getattr(stream, "choices", None) is not None:      # a client that ignored stream
         raise StreamUnsupported("it answered without streaming", stream)
     response = getattr(stream, "response", None)
+    if watch is not None and response is not None:
+        watch.attach(response)
     kind = response.headers.get("content-type", "") if response is not None else "text/event-stream"
     try:
         if "text/event-stream" not in kind:                # a server that ignored stream
             from openai.types.chat import ChatCompletion
             raise StreamUnsupported(f"it answered {kind or 'something'} instead of an SSE stream",
                                     ChatCompletion.construct(**json.loads(response.read())))
-        return assemble(stream)
+        return assemble(_ticking(stream, watch))
     finally:
         close = getattr(stream, "close", None)
         if close:
             close()
 
 
-def complete(client: Any, cfg: ServiceConfig, kwargs: dict) -> Any:
-    """One chat request with the `kwargs` of the OpenAI client, streamed if the server of cfg
-    allows it (see the module); the answer is a chat completion either way."""
-    if not streaming(cfg):
+def _whole(client: Any, kwargs: dict, watch: _Watch) -> Any:
+    """The request without streaming. The OpenAI client gives the response once its headers
+    arrive, so that the watch can cut a server that sends blanks while the model works."""
+    early = getattr(client.chat.completions, "with_streaming_response", None)
+    if early is None:                                      # a client of the tests
         return client.chat.completions.create(**kwargs)
+    with early.create(**kwargs) as response:
+        watch.attach(response.http_response)
+        return response.parse()
+
+
+def _turn(client: Any, cfg: ServiceConfig, kwargs: dict, stream: bool, cancel: threading.Event | None) -> Any:
+    """One request of a turn, watched (see the module); TurnTimeout if it was cut."""
+    from openai import Timeout
+    net = cfg.net
+    read, key = net.turn_timeout or net.timeout, "turn_timeout" if net.turn_timeout else "timeout"
+    kwargs = {**kwargs, "timeout": Timeout(net.timeout or None, read=read or None)}
+    watch = _Watch(net.idle_timeout if stream else 0, net.turn_timeout, cancel)
+    _TURN.watch = watch
     try:
-        response = streamed(client, kwargs)
-    except StreamUnsupported as e:
-        if stream_setting(cfg) and e.response is None:
-            raise RuntimeError(f"[llm] stream = true, but the server does not stream: {e}") from e
-        learned(cfg, False, str(e))
-        return e.response if e.response is not None else client.chat.completions.create(**kwargs)
-    learned(cfg, True)
+        response = streamed(client, kwargs, watch) if stream else _whole(client, kwargs, watch)
+    except StreamUnsupported:
+        if watch.why:                                      # it was cut: the stream was not empty by itself
+            raise TurnTimeout(watch.why) from None
+        raise
+    except Exception as e:
+        if watch.why:
+            raise TurnTimeout(watch.why) from e
+        if _timed_out(e):
+            raise TurnTimeout(f"nothing came for {read:g} s ([llm.network] {key})") from e
+        raise
+    finally:
+        watch.stop()
+        _TURN.watch = None
+    if watch.why:                                          # cut where the end of the body looks normal
+        raise TurnTimeout(watch.why)
     return response
+
+
+def _attempt(client: Any, cfg: ServiceConfig, kwargs: dict, cancel: threading.Event | None) -> Any:
+    if streaming(cfg):
+        try:
+            response = _turn(client, cfg, kwargs, True, cancel)
+        except StreamUnsupported as e:
+            if stream_setting(cfg) and e.response is None:
+                raise RuntimeError(f"[llm] stream = true, but the server does not stream: {e}") from e
+            learned(cfg, False, str(e))
+            if e.response is not None:
+                return e.response
+        else:
+            learned(cfg, True)
+            return response
+    return _turn(client, cfg, kwargs, False, cancel)
+
+
+def complete(client: Any, cfg: ServiceConfig, kwargs: dict, cancel: threading.Event | None = None) -> Any:
+    """One chat turn with the `kwargs` of the OpenAI client, streamed if the server of cfg
+    allows it, cut by idle_timeout or turn_timeout and then asked again TURN_RETRIES times (see
+    the module); the answer is a chat completion either way. `cancel` cuts it at once."""
+    for attempt in range(TURN_RETRIES + 1):
+        try:
+            return _attempt(client, cfg, kwargs, cancel)
+        except TurnTimeout as e:
+            if cancel is not None and cancel.is_set():
+                raise
+            if attempt == TURN_RETRIES:
+                raise TurnTimeout(f"the model {cfg.model} did not answer: {e}, {TURN_RETRIES + 1} times") from None
+            log.warning("the model %s did not answer (%s): asking again", cfg.model, e)

@@ -67,7 +67,9 @@ class NetConfig:
     no_proxy: str = field(default_factory=lambda: _env(
         "RAG_NO_PROXY", "NO_PROXY", "no_proxy", default="localhost,127.0.0.1,::1"))
     insecure: bool = False
-    timeout: float = 600.0
+    timeout: float = 600.0       # connecting, and between two reads of a request that is not a chat turn
+    idle_timeout: float = 120.0  # chat turn: seconds without a chunk (streamed) before it is cut; 0 = no limit
+    turn_timeout: float = 600.0  # chat turn: seconds in all before it is cut and asked again; 0 = no limit
     # API limits (0 = unlimited). If the LLM and embeddings go to the same server with
     # the same key, they share the counter.
     requests_per_minute: int = 0
@@ -525,6 +527,17 @@ def usage() -> dict[str, float]:
         return dict(_USAGE)
 
 
+# The chat turn (atlas.llm.chat) that the request of this thread belongs to: the transport tells
+# it when the request goes out, so that its time does not count the wait for the limiter
+_TURN = threading.local()
+
+
+def _sent() -> None:
+    watch = getattr(_TURN, "watch", None)
+    if watch is not None:
+        watch.sent()
+
+
 def _endpoint(request) -> str:
     path = request.url.path.rstrip("/")
     return "chat" if path.endswith("/chat/completions") else "embeddings" if path.endswith("/embeddings") \
@@ -534,6 +547,35 @@ def _endpoint(request) -> str:
 def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
     """HTTP transport that honours the limit and retries 409/429/5xx with growing waits,
     using Retry-After and the x-ratelimit-* headers if the server sends them."""
+
+    class Held(hx.SyncByteStream):
+        """The body of a response that holds its slot of max_concurrent until it is closed: a
+        streamed answer is in flight until its last chunk, not just until its headers."""
+
+        def __init__(self, stream, release):
+            self.stream, self.release = stream, release
+
+        def __iter__(self):
+            yield from self.stream
+
+        def close(self):
+            try:
+                self.stream.close()
+            finally:
+                self.release()
+
+    def slot():
+        """The release of a slot of max_concurrent, once whatever happens."""
+        if not lim.sem:
+            return lambda: None
+        lim.sem.acquire()
+        released = threading.Event()
+
+        def release():
+            if not released.is_set():
+                released.set()
+                lim.sem.release()
+        return release
 
     class RateLimitedTransport(hx.BaseTransport):
         def handle_request(self, request):
@@ -549,12 +591,12 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
             connection_failures = 0
             while True:
                 queued = time.monotonic()
-                if lim.sem:
-                    lim.sem.acquire()
+                release = slot()
                 try:
                     lim.wait(tokens)
                     sent = time.monotonic()
                     _count(**{endpoint: 1}, wait_seconds=sent - queued, sent_kb=size / 1024)
+                    _sent()
                     try:
                         resp = inner.handle_request(request)
                     except hx.ConnectError as e:
@@ -566,9 +608,13 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                         resp = None
                     finally:
                         _count(api_seconds=time.monotonic() - sent)
-                finally:
-                    if lim.sem:
-                        lim.sem.release()
+                except BaseException:
+                    release()
+                    raise
+                if resp is None:
+                    release()
+                else:
+                    resp.stream = Held(resp.stream, release)
 
                 is_limit = resp is not None and resp.status_code in RATE_STATUSES
                 if is_limit:
@@ -649,7 +695,7 @@ def create_client(cfg: ServiceConfig):
 
 def is_connection_error(e: BaseException) -> bool:
     """Errors after which it makes no sense to go on with the next request."""
-    return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "RateLimitError",
+    return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "TurnTimeout", "RateLimitError",
                                 "ConflictError", "AuthenticationError", "PermissionDeniedError") \
         or getattr(e, "status_code", None) == 402          # no credit left
 
@@ -715,6 +761,8 @@ def describe(cfg: ServiceConfig) -> str:
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
             + (f" | client cert {n.client_cert}" if n.client_cert else "")
             + f" | timeout {n.timeout:g}s"
+            + (f"; a chat turn: {n.idle_timeout:g}s idle, {n.turn_timeout:g}s in all"
+               if n.idle_timeout or n.turn_timeout else "")
             + f"\n  limits: {n.requests_per_minute or 'unlimited'} req/min"
             + (f", ~{n.tokens_per_minute} tokens/min" if n.tokens_per_minute else "")
             + f", {n.max_concurrent or 'unlimited'} simultaneous; on 409/429 waits up to "
@@ -838,7 +886,9 @@ client_cert = ""                # only if the server requires mutual TLS
 client_key = ""                 # key password: RAG_CLIENT_KEY_PASSWORD variable
 no_proxy = "localhost,127.0.0.1,::1"
 insecure = false                # true ONLY to diagnose certificate problems
-timeout = 600
+timeout = 600                   # connecting, and between two reads of what is not a chat turn (s)
+idle_timeout = 120              # a chat turn without a chunk for this long is cut and asked again (s)
+turn_timeout = 600              # a chat turn that takes longer in all is cut and asked again (s)
 
 # API limits. If the LLM and embeddings go to the same server with the same key, they
 # share the counter. Leave some margin below the real limit.

@@ -89,7 +89,8 @@ class Link:
 class RequirementsAdapter(ABC):
     """Reads requirements and links from a source. `snapshot()` returns something whose
     hash changes when the source changes (e.g. export date or table hash), so the engine
-    knows whether to read it again."""
+    knows whether to read it again. `exported_at()` says when the module was exported from
+    its source, if the source says it: atlas shows it next to everything that comes from it."""
     name: str = ""
 
     def __init__(self, config: dict):
@@ -106,6 +107,15 @@ class RequirementsAdapter(ABC):
 
     @abstractmethod
     def links(self, module: str) -> Iterable[Link]: ...
+
+    def exported_at(self, module: str) -> str:
+        """When the module was exported from its source (ISO 8601); "" if it does not say."""
+        return ""
+
+    def module_info(self, module: str) -> dict:
+        """{"exported_at", "source"}: when and from where the module was exported ("" if
+        the source does not say)."""
+        return {"exported_at": self.exported_at(module), "source": ""}
 
 
 class DocumentExtractor(ABC):

@@ -550,7 +550,7 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert ev["official"]["module"] == "SRS_TMS" and ev["linked"] == [
         {"id": "SSS-0002", "type": "satisfies", "text": "The mission system shall provide capability 2."}]
     assert ev["passages"][0]["source"] == "spec_with_bookmarks.pdf › 1.1 Function group 1.1"
-    assert "within 301 ms" in ev["passages"][0]["text"] and ev["values_differ"][0]["document"] == ["0", "1.1.1", "301"]
+    assert "within 301 ms" in ev["passages"][0]["text"] and ev["values_differ"][0]["document"] == ["0", "301 ms"]
 
     judge = StubJudge({"verdict": "inconsistent", "summary": "The deadlines differ.", "issues": [
         {"type": "value", "official": "within 499 ms", "document": "within 301 ms",
@@ -564,6 +564,12 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert "Official text (DOORS): The TMF shall process track event 1 within" in prompt
     assert "[1] spec_with_bookmarks.pdf › 1.1 Function group 1.1\nThe TMF shall process track event 0" in prompt
     assert "Linked: satisfies SSS-0002: The mission system shall provide capability 2." in prompt
+    assert "- spec_with_bookmarks.pdf › 1.1 Function group 1.1: DOORS 1, 499 ms; document 0, 301 ms" in prompt
+    from atlas.agents.verify import _prompt                       # a unit apart goes to the model too
+    unit = _prompt({"id": "X-1", "official": {"text": "within 300 ms"}, "linked": [], "passages": [],
+                    "values_differ": [{"source": "a.pdf › 1", "doors": ["300 ms"], "document": ["0.3 s"],
+                                       "kind": "unit_only"}]})
+    assert "- a.pdf › 1: DOORS 300 ms; document 0.3 s (other units: compare them)" in unit
     assert verify("SRS-0001", documented, llm=judge, graph=g) == res and len(judge.prompts) == 1    # the cache
 
     # a whole module; what no document states is not asked

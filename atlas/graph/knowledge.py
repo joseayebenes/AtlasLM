@@ -13,9 +13,10 @@ A requirement, by its ID in any case; a module, document or section, by its iden
 
 Code: find_symbol -> node -> callers / callees / impact -> read_source.
 Traceability, without the model:
-    trace(req)          text and attributes in DOORS, parent, children and links; the chain
-                        of requirements it derives from; the sections that state it (and the
-                        values that differ); code; tests; the test procedures that verify it
+    trace(req)          text and attributes in DOORS (and the date of its export), parent,
+                        children and links; the chain of requirements it derives from; the
+                        sections that state it (and the values that differ); code; tests;
+                        the test procedures that verify it
     trace_code(name)    requirements, callers, callees, tests and sections of an element
     impact(name)        what a change of a code element or of a requirement affects
     matrix(module)      requirement -> code -> tests -> procedures -> documents, and its gaps
@@ -48,6 +49,7 @@ import networkx as nx
 from atlas.graph.build import CODE_KINDS, find_communities
 from atlas.graph.sources import graph_convention
 from atlas.graph.store import GraphStore, to_mermaid
+from atlas.graph.values import values_differ
 
 __all__ = ["KnowledgeGraph"]
 
@@ -57,8 +59,8 @@ MAX_LINES = 300      # cap of the lines of a source read
 REQUIREMENT_KINDS = ("requirement", "heading", "information")
 DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v affects u
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
-ID_LIKE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+\b")     # SRS-0001: not a value
-NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+DEFAULT_ATTRIBUTES = ("status", "verification")    # [sources.doors] attributes: what is shown and filtered by
+NODE_FIELDS = ("heading", "outline", "level")      # attributes of the exchange database kept in the node
 
 
 def _natural(text: str) -> list:
@@ -66,21 +68,24 @@ def _natural(text: str) -> list:
     return [(0, int(x)) if x.isdigit() else (1, x) for x in re.split(r"(\d+)", text or "")]
 
 
-def _values(text: str) -> set[str]:
-    """The numbers of a requirement text (deadlines, limits...), without its IDs."""
-    return {n.replace(",", ".") for n in NUMBER.findall(ID_LIKE.sub(" ", text or ""))}
+def display_attributes(cfg) -> list[str]:
+    """[sources.doors] attributes: the DOORS attributes atlas shows (the columns of the
+    matrix, list_requirements) and filters by, as the filler names them."""
+    return list((cfg["sources"].get("doors") or {}).get("attributes", DEFAULT_ATTRIBUTES))
 
 
 class KnowledgeGraph:
     def __init__(self, G: nx.DiGraph, root: str | Path = ".", stats: dict | None = None,
-                 convention: dict | None = None):
+                 convention: dict | None = None, attributes: list[str] | tuple[str, ...] = DEFAULT_ATTRIBUTES):
         """`convention`: link_semantics and top_modules ([sources.doors.convention]); by
-        default, those of the build of DOORS (in `stats`)."""
+        default, those of the build of DOORS (in `stats`). `attributes`: the DOORS attributes
+        of the matrix rows ([sources.doors] attributes, any case)."""
         self.G = G
         self.root = Path(root)          # the relative file paths of the graph start here
         self.build_stats = stats or {}
         self.convention = graph_convention(convention if convention is not None
                                            else self.build_stats.get("doors"))
+        self.attributes = list(attributes)
         self._lower = {n.lower(): n for n in G.nodes}
         self._by_name: dict[str, list[str]] = defaultdict(list)
         for n, d in G.nodes(data=True):
@@ -115,15 +120,16 @@ class KnowledgeGraph:
         self._in_file: dict[str, list[str]] | None = None    # key of a file -> the nodes in it
 
     @classmethod
-    def open(cls, db: str | Path, root: str | Path = ".") -> "KnowledgeGraph":
+    def open(cls, db: str | Path, root: str | Path = ".",
+             attributes: list[str] | tuple[str, ...] = DEFAULT_ATTRIBUTES) -> "KnowledgeGraph":
         store = GraphStore(db)
-        return cls(store.load(), root, store.builds())
+        return cls(store.load(), root, store.builds(), attributes=attributes)
 
     @classmethod
     def from_config(cls, cfg) -> "KnowledgeGraph":
         """The graph of <workspace>/atlas.db; file paths from the folder of atlas.toml, as the
-        code roots."""
-        return cls.open(cfg.workspace / "atlas.db", cfg.home)
+        code roots; the attributes of [sources.doors] attributes."""
+        return cls.open(cfg.workspace / "atlas.db", cfg.home, attributes=display_attributes(cfg))
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
@@ -367,9 +373,9 @@ class KnowledgeGraph:
             official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
             if text:
                 out["text"] = text
-            if text and official and _values(text) != _values(official):
-                out["values_differ"] = {"doors": sorted(_values(official) - _values(text), key=_natural),
-                                        "document": sorted(_values(text) - _values(official), key=_natural)}
+            differ = values_differ(official, text) if text and official else None
+            if differ and differ["kind"] == "value":         # a unit or a format apart is not a gap
+                out["values_differ"] = differ
         return out
 
     def _documents(self, r: str) -> list[dict]:
@@ -402,6 +408,18 @@ class KnowledgeGraph:
             end = start + MAX_LINES - 1
         return {"file": str(path), "start": start, "end": end, "truncated": truncated,
                 "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
+
+    def exports(self) -> dict[str, dict]:
+        """module -> {"exported_at", "source"}: when and from where each DOORS module of the
+        graph was exported ("" if its source does not say)."""
+        return {d["name"]: {"exported_at": d.get("exported_at", ""), "source": d.get("source", "")}
+                for _, d in self.G.nodes(data=True) if d.get("kind") == "module"}
+
+    def exported_at(self, r: str) -> str:
+        """When the DOORS module of a requirement was exported; "" if unknown."""
+        module = self.G.nodes[r].get("module") if r in self.G else None
+        node = f"module:{module}"
+        return self.G.nodes[node].get("exported_at", "") if module and node in self.G else ""
 
     # --- queries --------------------------------------------------------------
     def stats(self) -> dict:
@@ -576,14 +594,14 @@ class KnowledgeGraph:
 
     def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:
         """Requirements of the graph (optionally those whose ID starts with `prefix`, or
-        those of a DOORS module), with how many code elements, tests and sections each one
-        has."""
+        those of a DOORS module), with their attributes of [sources.doors] attributes and how
+        many code elements, tests and sections each one has."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
         reqs = [r for r in reqs if r.upper().startswith(prefix.upper())]
         items = [{"id": r, **({"module": self.G.nodes[r]["module"]} if self.G.nodes[r].get("module") else {}),
-                  "code": len(self._code_of(r)), "tests": len(self._tests_for(r)),
+                  **self.shown_attributes(r), "code": len(self._code_of(r)), "tests": len(self._tests_for(r)),
                   "documents": len(self._linked(r, {"declares"}, incoming=True))} for r in reqs[:limit]]
         return {"count": len(reqs), "items": items, "truncated": len(reqs) > limit}
 
@@ -598,9 +616,10 @@ class KnowledgeGraph:
         children and links; the requirements it derives from in other modules, up to the
         system requirement (`ancestors`: up to 5 levels, with the type of each link); the
         document sections that state it, with their text and the values (deadlines,
-        limits) that differ from DOORS; the code that implements it; the
-        tests of the code that verify it (citing it, "tag") or cover it (calling that code,
-        "calls"); and the test procedures of DOORS that verify it (a link of a verifies type)."""
+        limits) that differ from DOORS (kind "value" of atlas.graph.values.values_differ: not
+        a unit or a format apart); the code that implements it; the tests of the code that
+        verify it (citing it, "tag") or cover it (calling that code, "calls"); and the test
+        procedures of DOORS that verify it (a link of a verifies type)."""
         r, err = self._requirement(req_id)
         if err:
             return err
@@ -609,6 +628,8 @@ class KnowledgeGraph:
         if self.doors:
             out["in_doors"] = bool(d.get("module"))
         out.update({k: d[k] for k in ("module", "text", "attributes", "outline") if d.get(k)})
+        if self.exported_at(r):
+            out["exported_at"] = self.exported_at(r)
         parents = [p for p in self._tree.predecessors(r)] if r in self._tree else []
         links = lambda edges, end: sorted(({"id": e[end], "type": e[2]["kind"]} for e in edges),
                                           key=lambda x: (_natural(x["id"]), x["type"]))
@@ -678,7 +699,7 @@ class KnowledgeGraph:
         no_code, no_tests = self._without_code(reqs), self._without_tests(reqs)
         no_procedure = self._without_procedure(reqs)
         gap = lambda ids: {"count": len(ids), "items": ids[:200], "truncated": len(ids) > 200}
-        return {"module": module or "(all)",
+        return {"module": module or "(all)", "meta": self._matrix_meta(module, reqs),
                 "summary": {"requirements": len(rows), "with_code": len(rows) - len(no_code),
                             "with_tests": len(rows) - len(no_tests),
                             "with_procedures": len(rows) - len(no_procedure),
@@ -687,12 +708,40 @@ class KnowledgeGraph:
                 "gaps": {"without_code": gap(no_code), "without_tests": gap(no_tests),
                          "without_test_procedure": gap(no_procedure)}}
 
+    def _matrix_meta(self, module: str, reqs: list[str]) -> dict:
+        """Where a matrix comes from: the DOORS export of its modules (with no module, the
+        oldest one is `exported_at`), the version of atlas, when each part of the graph was
+        built and, if the build recorded it ([graph] code_revision), the git revision of the
+        code."""
+        exports = self.exports()
+        modules = {m: exports[m] for m in sorted({self.G.nodes[r].get("module") for r in reqs} - {None, ""})
+                   if m in exports}
+        dates = [x["exported_at"] for x in modules.values() if x["exported_at"]]
+        one = modules.get(module, {})
+        from atlas import __version__
+        meta = {"module": module or "(all)",
+                "exported_at": one.get("exported_at", "") if module else min(dates, default=""),
+                "source": one.get("source", ""), "modules": modules, "atlas_version": __version__,
+                "built_at": {o: b.get("built_at", "") for o, b in sorted(self.build_stats.items())},
+                "attributes": self.attributes}
+        revision = (self.build_stats.get("code") or {}).get("code_revision")
+        if revision:
+            meta["code_revision"] = revision
+        return meta
+
+    def shown_attributes(self, r: str) -> dict:
+        """The attributes of `attributes` that the requirement has (not empty), by the name
+        they have in `attributes`; the names are compared in any case."""
+        d = self.G.nodes[r]
+        values = {k.lower(): v for k, v in (d.get("attributes") or {}).items()}
+        values.update({k: d[k] for k in NODE_FIELDS if d.get(k) not in (None, "") and k not in values})
+        return {name: str(values[name.lower()]) for name in self.attributes
+                if values.get(name.lower()) not in (None, "")}
+
     def _row(self, r: str) -> dict:
         d = self.G.nodes[r]
-        attributes = {k.lower(): v for k, v in (d.get("attributes") or {}).items()}
         tests = self._tests_for(r)
-        return {"id": r, "text": (d.get("text") or "")[:120],
-                **{k: str(attributes[k]) for k in ("status", "verification") if attributes.get(k)},
+        return {"id": r, "text": (d.get("text") or "")[:120], **self.shown_attributes(r),
                 "derived": self._derived(r), "code": self._code_of(r),
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],

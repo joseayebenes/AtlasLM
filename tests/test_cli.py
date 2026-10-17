@@ -241,6 +241,20 @@ languages = ["ada"]
     out = capsys.readouterr().out
     assert "6 subprograms" not in out and "5 subprograms" in out and "ada.text_io.put_line" in out
     assert status(cfg) == 0 and "graph: {'nodes': 21" in capsys.readouterr().out
+    assert "code_revision" not in KnowledgeGraph.from_config(cfg).build_stats["code"]
+
+    # [graph] code_revision: the git revision of the code, in the build and in the matrix
+    import subprocess
+    if shutil.which("git"):
+        git = lambda *a: subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *a], cwd=ada,
+                                        check=True, capture_output=True, text=True).stdout.strip()
+        git("init", "-q"), git("add", "-A"), git("commit", "-q", "-m", "code")
+        revised = load_config(toml(extra + '[graph]\ncode_revision = true\n'))
+        assert run(revised) == 0
+        capsys.readouterr()
+        g = KnowledgeGraph.from_config(revised)
+        assert g.build_stats["code"]["code_revision"] == git("rev-parse", "HEAD")
+        assert g.matrix()["meta"]["code_revision"] == git("rev-parse", "HEAD")
 
     # without code, the graph goes too
     shutil.rmtree(ada / "src")
@@ -303,6 +317,7 @@ communities = true
     assert graph(cfg) == 0
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
+    assert "DOORS export: export date unknown" in out and "  SRS_TMS: ?" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
     assert "requirements without derivation" in out and "    0  linked to modules not read" in out
     assert trace(cfg, "srs-0004") == 0                  # Markdown, without a model
@@ -318,11 +333,21 @@ communities = true
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
     raw = written.read_bytes()                          # for Excel in Spanish: a BOM and ";"
     assert raw.startswith(b"\xef\xbb\xbf") and raw[3:].decode().splitlines()[0] == \
-        "id;text;status;verification;derived;code;tests;covering_tests;procedures;documents"
+        "id;text;status;verification;derived;code;tests;covering_tests;procedures;documents;exported_at"
     import csv
     rows = {r["id"]: r for r in csv.DictReader(written.open(encoding="utf-8-sig", newline=""), delimiter=";")}
     assert rows["SRS-0004"]["code"] == "tracks.delete_track" and rows["SRS-0004"]["tests"] == "test_tracks.test_tracks"
     assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+    md = written.with_suffix(".md").read_text()
+    assert "- DOORS SRS_TMS: export date unknown" in md                  # the database adapter
+    assert "- atlas " in md and "graph built: code " in md
+    saved = json.loads(written.with_suffix(".json").read_text())
+    assert saved["meta"]["module"] == "SRS_TMS" and len(saved["rows"]) == 40 and saved["summary"]["requirements"] == 40
+    shown = load_config(toml(extra))
+    shown["sources"]["doors"]["attributes"] = ["Verification"]      # what [sources.doors] attributes shows
+    assert matrix(shown, "SRS_TMS") == 0
+    capsys.readouterr()
+    assert written.read_text(encoding="utf-8-sig").splitlines()[0].startswith("id;text;Verification;derived;")
     assert go(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')))["skipped"]["graph.build"] == 3
     assert matrix(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')), "SRS_TMS") == 0
     assert "id,text," in written.read_text(encoding="utf-8-sig") and "matrix-SRS_TMS.md" not in capsys.readouterr().out
@@ -348,7 +373,7 @@ communities = true
     assert set(res["builds"]) == {"code", "doors", "docs"} and res["gaps"]["requirements_without_code"]["count"] > 0
     res = as_json("status")
     assert res["data"]["requirements"] > 0 and res["graph"]["nodes"] > 0 and res["runs"][0]["report"]["processed"] == {}
-    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs"}
+    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs", "doors_exports"}
     res = as_json("sections")
     assert [(d["source"], Path(d["file"]).name) for d in res["documents"]] == [("manuals", "hmi_manual.md")]
 

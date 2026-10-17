@@ -160,6 +160,26 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Las muestras tienen un módulo de procedimientos de prueba, `STP_TMS`, con dos enlaces
   `verifies` a SRS_TMS, y `atlas.test.toml`, `atlas.dev.toml` y `atlas.openrouter.toml` lo
   leen.
+- La fecha de la exportación de DOORS, visible: `RequirementsAdapter.exported_at(módulo)` y
+  `module_info(módulo)` (el adaptador `exchange` las lee de `exchange_modules`; `database`
+  no las sabe). El paso `doors.requirements` las guarda en la tabla `modules` de `atlas.db`,
+  y las enseñan `atlas status` (`DOORS: 3 modules, exported 2026-10-14, 9 days ago`),
+  `atlas graph`, el nodo `module:X` del grafo, la cabecera del Markdown y una columna del CSV
+  de `atlas matrix`, `meta` de `matrix`, y un campo `exported_at` en `trace`,
+  `get_requirement` y `build_context`. Antes nada decía de qué exportación salía la matriz
+  de una revisión.
+- `[sources.doors] max_age_days`: `atlas run` y `atlas serve` avisan de los módulos
+  exportados hace más de esos días (0, por defecto: sin aviso). Cambiarla no vuelve a leer
+  nada. `tools/doors_export/README.md` dice quién exporta y cada cuánto.
+- `[sources.doors] attributes` tiene efecto: son los atributos de DOORS que atlas enseña y
+  por los que filtra. Van a las filas de `matrix`, a `list_requirements` y a las columnas del
+  CSV y del Markdown de `atlas matrix`; no distinguen mayúsculas y por defecto son `status` y
+  `verification`, así que sin tocar la configuración nada cambia. No es una lista blanca de
+  importación (eso lo hacen `attribute_columns` y el `mapping.toml` del exportador).
+- `matrix` devuelve `meta`: el módulo, la exportación de DOORS, la versión de atlas, la fecha
+  de construcción de cada parte del grafo y, con `[graph] code_revision = true` y git, la
+  revisión del código (`git rev-parse HEAD` al construir el grafo del código). `atlas matrix`
+  la escribe en la cabecera del Markdown y en un `matrix-<módulo>.json`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -180,6 +200,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas trace ID` imprime en Markdown todo lo del requisito (`build_context`, sin modelo y sin
   el extra `[agents]`): texto y atributos de DOORS, enlaces, las secciones que lo declaran con
   las cifras que difieren de DOORS, el código, las pruebas, los llamadores y el código fuente.
+- La comparación de cifras entre DOORS y los documentos (`atlas/graph/values.py`): cantidades
+  con su unidad canónica (ms, s, min, h, m, km, Hz, kHz, %, B, KB, MB), separador de miles
+  solo con tres cifras detrás, comparación numérica, números escritos con letras, y fuera las
+  referencias («section 3.2», «Table 3»...), las fechas y las versiones. `values_differ`
+  dice además qué clase de diferencia es: `value`, `unit_only` (300 ms frente a 0,3 s: no se
+  convierte) o `format_only` («1,000» y «1000»). `gaps` y `trace` solo listan `value`; el
+  verificador recibe también `unit_only`. Antes, 6 de 7 casos reales daban un veredicto
+  erróneo.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -234,6 +262,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   través de los derivados y las subidas de `impact`) solo sigue los tipos de `derives`.
 - Las referencias (`references`) entre módulos ya no cuentan como derivación.
 
+### Quitado
+- `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.
+
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
   `callees`, `matrix`, `gaps`, `ask_docs` y las demás. `[mcp] profile = "all"` vuelve a las
@@ -277,6 +308,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Si el proyecto usa en DOORS tipos de enlace que no son derivación ni verificación
   (`traces`, `relates_to`...), ponlos en `link_semantics.ignore`, o da la lista de
   `derives`. El siguiente `atlas run` reconstruye la parte de DOORS del grafo.
+- `[sources.code] summaries` ya no existe: una configuración que la tenga deja de cargar
+  (`unknown key: 'summaries'`). Basta con borrar la línea.
+- El CSV de `atlas matrix` tiene una columna más al final, `exported_at`.
+- `values_differ` (en `trace`, `gaps` y la evidencia de `atlas verify`) pasa de
+  `{"doors", "document"}` con números sueltos (`"320"`) a `{"doors", "document", "kind"}` con
+  las cantidades como las escribe cada texto (`"320 ms"`). Quien lea esos campos debe mirar
+  `kind`. Como cambia el prompt, `atlas verify` vuelve a preguntar una vez por los requisitos
+  con cifras distintas.
+- Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
+  lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
+  hay peticiones al modelo ni a los embeddings.
 
 ## [0.2.0] — 2026-10-16
 

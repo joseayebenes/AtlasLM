@@ -55,6 +55,13 @@ def test_unknown_key_fails_with_context(toml):
     assert "[pipeline]" in str(e.value) and "workerz" in str(e.value)
 
 
+def test_keys_without_effect_are_gone_and_attributes_are_names(toml):
+    with pytest.raises(ConfigError, match="unknown key: 'summaries'"):       # [sources.code] summaries, before 0.3
+        load_config(toml('[sources.code]\nroots = []\nsummaries = "none"'))
+    from atlas.graph.knowledge import display_attributes
+    assert display_attributes(load_config(toml())) == ["status", "verification"]
+
+
 def test_search_settings(toml):
     cfg = load_config(toml('[search]\nresults = 12'))
     assert cfg["search"]["results"] == 12 and cfg["search"]["scope"] == "auto"          # the rest by default
@@ -68,7 +75,7 @@ def test_search_settings(toml):
 
 def test_matrix_settings(toml):
     cfg = load_config(toml('[graph]\ncommunities = true'))
-    assert cfg["graph"]["matrix_formats"] == ["csv", "md"] and cfg["graph"]["csv_delimiter"] == ";"
+    assert cfg["graph"]["matrix_formats"] == ["csv", "md", "json"] and cfg["graph"]["csv_delimiter"] == ";"
     with pytest.raises(ConfigError, match="unknown matrix_formats \\['docx'\\]"):
         load_config(toml('[graph]\nmatrix_formats = ["csv", "docx"]'))
     with pytest.raises(ConfigError, match="csv_delimiter must be one character"):

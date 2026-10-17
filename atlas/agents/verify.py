@@ -6,7 +6,7 @@ Two steps:
 1. Without a model, the evidence: the official text and attributes, the requirements it is
    linked to, the passages of the documents that state it or talk about it (the sections of
    the graph and, if there is an index, what it finds for the ID and the text) and the
-   values that differ (the comparison of the graph).
+   values that differ, in value or in unit (atlas.graph.values).
 2. With the model, the judgement: the agent requirement_verifier (its Markdown file gives
    the instructions, the model and the reasoning) answers a JSON with a verdict, the issues
    with the words of each text and their source, and a summary.
@@ -51,7 +51,9 @@ MAX_PASSAGE_CHARS = 1500
 
 def evidence(req_id: str, graph, index=None) -> dict:
     """What the model gets to judge a requirement, without a model: {"id", "official",
-    "linked", "passages": [{"source", "text"}], "values_differ"} or {"error"}."""
+    "linked", "passages": [{"source", "text"}], "values_differ"} or {"error"}. values_differ:
+    the sections whose quantities differ from DOORS in value or in unit ({"source", "doors",
+    "document", "kind"}, atlas.graph.values)."""
     t = graph.trace(req_id)
     if "error" in t:
         return t
@@ -77,8 +79,12 @@ def evidence(req_id: str, graph, index=None) -> dict:
                 add(cite(h), h["text"])
     for x in t["documents"]:                  # the sections of the graph, if the index had nothing
         add(f"{x['document']} › {x['title']}", x.get("text", ""))
-    differ = [{"source": f"{x['document']} › {x['title']}", **x["values_differ"]}
-              for x in t["documents"] if "values_differ" in x]
+    from atlas.graph.values import values_differ
+    differ = []                               # values and units apart: a format apart says nothing
+    for x in t["documents"]:
+        d = values_differ(t.get("text", ""), x.get("text", "")) if t.get("in_doors", True) else None
+        if d and d["kind"] != "format_only":
+            differ.append({"source": f"{x['document']} › {x['title']}", **d})
     return {"id": t["id"], "in_doors": t.get("in_doors", True),
             "official": {k: t[k] for k in ("module", "text", "attributes", "parent") if t.get(k)},
             "linked": linked, "passages": passages, "values_differ": differ}
@@ -98,7 +104,7 @@ def _prompt(ev: dict) -> str:
     if ev["values_differ"]:
         lines.append("\nValues found only in one of the texts (a comparison without a model):")
         lines += [f"- {d['source']}: DOORS {', '.join(d['doors']) or '-'}; document {', '.join(d['document']) or '-'}"
-                  for d in ev["values_differ"]]
+                  + (" (other units: compare them)" if d["kind"] == "unit_only" else "") for d in ev["values_differ"]]
     return "\n".join(lines)
 
 

@@ -198,6 +198,12 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert [d["source"] for d in tools.list_documents()["documents"]] == ["DOORS", "document"]
     assert "DOORS module" in tools.get_section("SRS_TMS", "1")["error"]
     assert "not found" in tools.get_requirement("SRS-0004")["error"]  # its DOORS record is not a document
+    from atlas.plugins import Requirement
+    store = Store(tmp_path)                                           # what the doors step leaves
+    store.replace_module("SRS_TMS", [Requirement(id="SRS-0004", text=MODULE[2]["text"], module="SRS_TMS")], [],
+                         {"SRS-0004": "h"})
+    store.put_module_info("SRS_TMS", "2026-10-14T08:00:00+00:00", "/Project/SRS", "2026-10-17T09:00:00")
+    assert tools.get_requirement("SRS-0004")["official"]["exported_at"] == "2026-10-14T08:00:00+00:00"
     assert {h["document"] for h in tools.search("track", k=20, document="SRS_TMS")["results"]} == {"SRS_TMS"}
     idx.remove_document("doors:SRS_TMS")
     assert [d["name"] for d in idx.documents()] == ["hmi_manual.md"]

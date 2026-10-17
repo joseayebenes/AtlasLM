@@ -48,6 +48,7 @@ Use as a library:
     from atlas.doors import ExchangeAdapter, diff_requirements
     ad = ExchangeAdapter(cfg["sources"]["doors"])
     reqs = list(ad.requirements("SRS_TMS"))
+    ad.module_info("SRS_TMS")      # {"exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS"}
 """
 
 from __future__ import annotations
@@ -58,6 +59,7 @@ import logging
 import re
 import sqlite3
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -82,6 +84,63 @@ def normalize_id(raw: str, mode: str = "upper") -> str:
 def hash_requirement(r: Requirement) -> str:
     base = f"{r.id}|{r.text}|{r.module}|{r.parent or ''}|{sorted(r.attributes.items())}"
     return hashlib.sha256(base.encode("utf-8")).hexdigest()[:16]
+
+
+def export_age(exported_at: str, now: datetime | None = None) -> int | None:
+    """Whole days since an export date (ISO 8601, with or without time zone); None if
+    there is no date or it cannot be read."""
+    if not exported_at:
+        return None
+    try:
+        when = datetime.fromisoformat(exported_at)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0, ((now or datetime.now(timezone.utc)) - when).days)
+
+
+def stale_exports(modules: dict[str, dict], max_age_days: int, now: datetime | None = None) -> list[dict]:
+    """The modules ({module: {"exported_at", ...}}, as Store.modules_info) whose export is
+    older than `max_age_days` (0: none): [{"module", "exported_at", "days"}]."""
+    if max_age_days <= 0:
+        return []
+    out = []
+    for module, info in sorted(modules.items()):
+        days = export_age(info.get("exported_at", ""), now)
+        if days is not None and days > max_age_days:
+            out.append({"module": module, "exported_at": info["exported_at"], "days": days})
+    return out
+
+
+def warn_stale_exports(doors_config: dict | None, modules: dict[str, dict]) -> list[dict]:
+    """A warning in the log for each module (Store.modules_info) exported more than
+    [sources.doors] max_age_days ago; returns them."""
+    sd = doors_config or {}
+    old = stale_exports(modules, sd.get("max_age_days", 0)) if sd.get("enabled", True) else []
+    for m in old:
+        log.warning("DOORS module %s was exported %s, %d days ago ([sources.doors] max_age_days = %d): "
+                    "the requirements may be out of date", m["module"], m["exported_at"][:10], m["days"],
+                    sd["max_age_days"])
+    return old
+
+
+def days_ago(days: int | None) -> str:
+    """"today", "1 day ago", "9 days ago"; "" without a number."""
+    return "" if days is None else "today" if days == 0 else "1 day ago" if days == 1 else f"{days} days ago"
+
+
+def describe_exports(modules: dict[str, dict], now: datetime | None = None) -> str:
+    """"3 modules, exported 2026-10-14, 9 days ago" (the oldest export, if they differ)."""
+    n = f"{len(modules)} module{'s' if len(modules) != 1 else ''}"
+    dates = sorted({(info.get("exported_at") or "")[:10] for info in modules.values()} - {""})
+    if not dates:
+        return f"{n}, export date unknown"
+    oldest = min(info["exported_at"] for info in modules.values() if info.get("exported_at"))
+    days = export_age(oldest, now)
+    when = dates[0] if len(dates) == 1 else f"{dates[0]} to {dates[-1]}"
+    ago = days_ago(days)
+    return f"{n}, exported {when}" + (f", the oldest {ago}" if len(dates) > 1 else f", {ago}" if ago else "")
 
 
 def diff_requirements(previous: dict[str, str], current: Iterable[Requirement]) -> dict[str, list]:
@@ -243,6 +302,16 @@ class ExchangeAdapter(RequirementsAdapter):
     def snapshot(self, module: str) -> str:
         row = self._db().execute("SELECT snapshot FROM exchange_modules WHERE module = ?", (module,)).fetchone()
         return row[0] if row else ""
+
+    def exported_at(self, module: str) -> str:
+        """When the filler wrote the module (exchange_modules.filled_at)."""
+        return self.module_info(module)["exported_at"]
+
+    def module_info(self, module: str) -> dict:
+        row = self._db().execute("SELECT filled_at, source FROM exchange_modules WHERE module = ?",
+                                 (module,)).fetchone()
+        return {"exported_at": row["filled_at"] or "", "source": row["source"] or ""} if row else \
+            {"exported_at": "", "source": ""}
 
     def requirements(self, module: str) -> Iterable[Requirement]:
         norm = lambda x: normalize_id(x, self.conv["id_normalize"])

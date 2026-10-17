@@ -98,8 +98,8 @@ def _sections(items: list[dict]) -> str:
         line = f"- {x['document']} § {x['title']}"
         if x.get("text"):
             line += f": {x['text']}"
-        if x.get("values_differ"):
-            v = x["values_differ"]
+        v = x.get("values_differ")
+        if v and v.get("kind") == "value":          # trace only gives these
             line += f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
         out.append(line)
     return "\n".join(out)
@@ -124,6 +124,8 @@ def _requirement_blocks(g: KnowledgeGraph, r: str) -> list[tuple[str, str]]:
     t = g.trace(r)
     head = [f"**{r}**" + (f" ({t['module']})" if t.get("module") else " (not in DOORS)")
             + (f": {t['text']}" if t.get("text") else "")]
+    if t.get("exported_at"):
+        head.append(f"DOORS export: {t['exported_at'][:10]}")
     attrs = {k: v for k, v in (t.get("attributes") or {}).items() if v not in ("", None)}
     if attrs:
         head.append("Attributes: " + ", ".join(f"{k} = {v}" for k, v in attrs.items()))
@@ -314,5 +316,8 @@ def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000, ind
             truncated = True
             continue
         text += block
-    return {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
-            "truncated": truncated, "omitted": omitted}
+    out = {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
+           "truncated": truncated, "omitted": omitted}
+    if kind in REQUIREMENT_KINDS and g.exported_at(n):
+        out["exported_at"] = g.exported_at(n)
+    return out

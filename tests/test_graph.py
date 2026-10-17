@@ -180,6 +180,7 @@ LINKS = [
     {"source": "SRS-0003", "target": "SRS-0002", "type": "references"},       # inside the module: no derivation
     {"source": "SRS-0004", "target": "SSS-0005", "type": "references"},       # the same pair again
 ]
+EXPORTS = {"SRS": {"exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS"}}   # SSS: not said
 SPEC = {"title": "Spec", "sections": [
     {"id": "001", "title": "1 Tracks", "path": ["1 Tracks"], "file": "sections/001-1-tracks.md", "page_start": 1,
      "page_end": 1, "body": "Req: SRS-0004 The TMF shall delete a track within 300 ms. Tracks.Delete_Track does "
@@ -199,7 +200,7 @@ def unified(samples, tmp_path):
     units = _units(sorted((samples / "ada").rglob("*.ad?")))
     store = GraphStore(tmp_path / "atlas.db")
     code = build_code_graph(units, test_patterns=["**/tests/**"])
-    doors = build_doors_graph(DOORS, LINKS)
+    doors = build_doors_graph(DOORS, LINKS, modules=EXPORTS)
     docs = build_docs_graph([{"name": "spec.pdf", "path": "docs/spec.pdf", "source": "normas",
                               "out_dir": str(tmp_path / "spec_pdf"), "structure": SPEC}], code_names(units))
     for origin, (G, stats) in (("code", code), ("doors", doors), ("docs", docs)):
@@ -238,6 +239,9 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     assert (stats["docs"]["sections"], stats["docs"]["requirements"], stats["docs"]["mentions"]) == (2, 2, 3)
     assert G.nodes["SSS-0900"]["kind"] == "heading" and ("SSS-0900", "SSS-0005") in _edges(G, "contains")
     assert ("module:SRS", "SRS-0004") in _edges(G, "contains") and G.nodes["SRS-0004"]["outline"] == "2"
+    assert (G.nodes["module:SRS"]["exported_at"], G.nodes["module:SRS"]["source"]) == ("2026-10-14T08:00:00+00:00",
+                                                                                      "/Project/SRS")
+    assert g.exports() == {"SRS": EXPORTS["SRS"], "SSS": {"exported_at": "", "source": ""}}
     assert "heading" not in G.nodes["SSS-0005"] and G.nodes["SSS-0005"]["attributes"] == {"status": "Approved"}
     assert _edges(G, "mentions") == {("doc:spec.pdf#001", "tracks.delete_track"),
                                      ("doc:spec.pdf#001", "tracks.hour_range"), ("doc:spec.pdf#002", "logger.log")}
@@ -262,10 +266,15 @@ def test_trace_and_trace_code(unified):
     _, g, _ = unified
     t = g.trace("srs-0004")
     assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
+    assert t["exported_at"] == "2026-10-14T08:00:00+00:00" and "exported_at" not in g.trace("SSS-0005")
+    from atlas.agents.context import build_context
+    context = build_context(g, "SRS-0004")
+    assert context["exported_at"] == t["exported_at"] and "DOORS export: 2026-10-14" in context["markdown"]
+    assert "exported_at" not in build_context(g, "tracks.delete_track")
     assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
     assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
                                "text": "The TMF shall delete a track within 300 ms.",
-                               "values_differ": {"doors": ["320"], "document": ["300"]}}]
+                               "values_differ": {"doors": ["320 ms"], "document": ["300 ms"], "kind": "value"}}]
     assert [i["id"] for i in t["implemented_by"]["items"]] == ["tracks.delete_track"]
     assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
     assert g.trace("SRS-0003")["parent"] == "SRS-0002" and g.trace("SRS-0002")["children"] == ["SRS-0003"]
@@ -346,12 +355,26 @@ def test_matrix_and_gaps(unified):
                             "documents": ["spec.pdf §1 Tracks"]}
     assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_procedures": 0,
                             "with_documents": 1}
+    assert {k: m["meta"][k] for k in ("module", "exported_at", "source", "modules")} == {
+        "module": "SRS", "exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS",
+        "modules": {"SRS": EXPORTS["SRS"]}}
+    assert m["meta"]["atlas_version"] and set(m["meta"]["built_at"]) == {"code", "doors", "docs"}
+    assert m["meta"]["attributes"] == ["status", "verification"] and "code_revision" not in m["meta"]
+    assert g.matrix()["meta"]["exported_at"] == "2026-10-14T08:00:00+00:00"       # all: the oldest date known
+    assert g.matrix()["meta"]["modules"]["SSS"] == {"exported_at": "", "source": ""}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
     m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
     assert [(r["id"], r["derived"], r["code"]) for r in m["rows"]] == [("SSS-0005", ["SRS-0004"], []),
                                                                       ("SSS-0006", ["SRS-0002"], [])]
     assert m["summary"]["with_code"] == 2 and m["gaps"]["without_tests"]["items"] == ["SSS-0006"]
     assert g.matrix("NOPE")["modules"] == ["SRS", "SSS"]
+    shown = KnowledgeGraph(g.G, attributes=["VERIFICATION", "outline", "Criticality"])   # [sources.doors] attributes
+    row = shown.matrix("SRS")["rows"][3]
+    assert (row["VERIFICATION"], row["outline"]) == ("Test", "2") and "Criticality" not in row and "verification" not in row
+    assert shown.list_requirements(module="SRS")["items"][3] == {"id": "SRS-0004", "module": "SRS", "VERIFICATION": "Test",
+                                                                 "outline": "2", "code": 1, "tests": 1, "documents": 1}
+    assert "status" not in KnowledgeGraph(g.G, attributes=[]).matrix("SSS")["rows"][0]
+    assert g.list_requirements(module="SSS")["items"][0]["status"] == "Approved"
     page = g.matrix("SRS", limit=2, offset=2)
     assert [r["id"] for r in page["rows"]] == ["SRS-0003", "SRS-0004"] and not page["truncated"]
 
@@ -361,8 +384,8 @@ def test_matrix_and_gaps(unified):
     assert gaps["code_without_requirement"]["items"] == ["logger.next_id"]
     assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
     assert gaps["stated_in_documents_not_in_doors"]["items"] == [{"id": "SRS-0103", "documents": ["spec.pdf §2 Logs"]}]
-    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320"],
-                                               "document": ["300"]}]
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320 ms"],
+                                               "document": ["300 ms"], "kind": "value"}]
     assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
     assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
     assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
@@ -512,3 +535,48 @@ def test_neighbors_and_communities(unified, tmp_path):
     c = g.communities()
     assert c["count"] == len(set(groups.values())) and sum(x["size"] for x in c["items"]) == len(groups)
     assert c["items"][0]["size"] >= c["items"][-1]["size"]
+
+
+# --- the values of a requirement against those of a document ------------------------------
+
+VALUE_CASES = [   # (DOORS, document, kind of values_differ or None)
+    ("within 320 ms", "within 300 ms", "value"),                          # the one the old comparison got right
+    ("within 300 ms", "within 0.3 s", "unit_only"),                       # the same time: never converted
+    ("up to 1,000 tracks", "up to 1000 tracks", "format_only"),           # a thousands separator
+    ("within 300 ms (see section 3.2)", "within 300 ms", None),           # a reference is not a value
+    ("the rates of Table 3: 5 Hz", "5 Hz", None),
+    ("every 1.5 s", "every 1.50 s", "format_only"),                       # compared as numbers
+    ("two retries", "2 retries", "format_only"),                          # a number word
+    ("logs are kept 30 days", "logs are kept 60 days", "value"),          # no unit on either side
+    ("1,5 s", "1.5 seconds", "format_only"),                              # decimal comma, unit written out
+    ("0,125 s", "0.125 s", "format_only"),                                # 0,125 is not 125
+    ("1,000.5 m", "1000.5 m", "format_only"),
+    ("since 2026-10-14 (v2)", "since 2026-09-01 (v3)", None),             # dates and versions
+    ("SRS-0001: 95 %", "SRS-0002: 95%", None),                            # IDs; the same writing
+    ("group 1.1.1, 5 Hz", "5 Hz", None),                                  # the number of a section
+    ("anexo B.2 y figura 4: 10 km", "10 km", None),
+    ("within 300", "within 300 ms", "unit_only"),                         # a unit in only one text
+    ("1 kHz", "1000 Hz", "unit_only"),
+    ("within 300 ms", "within 300 ms for 500 tracks", None),              # the document says more
+    ("5-10 s", "5-12 s", "value"),
+    ("within 300 ms", "within 300 ms", None),
+]
+
+
+@pytest.mark.parametrize("official,document,kind", VALUE_CASES)
+def test_values_that_differ(official, document, kind):
+    from atlas.graph.values import values_differ
+    differ = values_differ(official, document)
+    assert (differ or {}).get("kind") == kind, differ
+
+
+def test_quantities():
+    from atlas.graph.values import quantities, values_differ
+    assert quantities("within 300 ms, up to 1,000 tracks and two retries") == [(300.0, "ms"), (1000.0, ""), (2.0, "")]
+    assert quantities("1.000.000 B, 2 MB, 3 M, 4 b, 50 %, 7 hercios") == [(1e6, "B"), (2.0, "MB"), (3.0, ""), (4.0, ""),
+                                                                         (50.0, "%"), (7.0, "Hz")]
+    assert quantities("see section 3.2, Table 4, p. 7, § 5.1, on 14/10/2026, release v1.3") == []
+    assert values_differ("within 320 ms", "within 300 ms for 500 tracks") == {
+        "doors": ["320 ms"], "document": ["300 ms", "500"], "kind": "value"}
+    assert values_differ("up to 1,000 tracks", "up to 1000 tracks") == {"doors": ["1,000"], "document": ["1000"],
+                                                                       "kind": "format_only"}

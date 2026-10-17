@@ -1,7 +1,8 @@
 """The requirements and documents parts of the graph, next to the code graph of build.py.
 
 build_doors_graph (origin "doors"): the requirements of every module read by atlas.doors.
-  Nodes: module ("module:SRS_TMS"), requirement (its ID; text, module, parent and the
+  Nodes: module ("module:SRS_TMS"; with exported_at and source, when and from where it was
+  exported), requirement (its ID; text, module, parent and the
   attributes), heading and information (the DOORS objects that are not requirements).
   Edges: contains (module -> its top-level objects, parent -> child) and one edge per link,
   source -> target, with the type of the link as kind (satisfies, refines, references...).
@@ -58,10 +59,12 @@ def graph_convention(convention: dict | None = None) -> dict:
     return {"link_semantics": semantics, "top_modules": list(conv.get("top_modules") or [])}
 
 
-def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict],
-                      convention: dict | None = None) -> tuple[nx.DiGraph, dict]:
-    """(graph, statistics) from the rows of Store.requirements() and Store.links(); the
+def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict], convention: dict | None = None,
+                      modules: dict[str, dict] | None = None) -> tuple[nx.DiGraph, dict]:
+    """(graph, statistics) from the rows of Store.requirements() and Store.links(), and
+    `modules` (Store.modules_info()): when and from where each module was exported; the
     statistics carry graph_convention(convention)."""
+    modules = modules or {}
     G = nx.DiGraph()
     reqs = list(requirements)
     for r in reqs:
@@ -72,7 +75,9 @@ def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict],
                    text=r["text"] or "", parent=r.get("parent") or "", raw_id=r.get("raw_id") or "",
                    attributes=attributes, **extra)
     for module in sorted({r["module"] for r in reqs}):
-        G.add_node(f"module:{module}", kind="module", name=module)
+        info = modules.get(module, {})
+        G.add_node(f"module:{module}", kind="module", name=module, exported_at=info.get("exported_at", ""),
+                   source=info.get("source", ""))
     for r in reqs:
         parent = r.get("parent")
         inside = parent and parent in G and G.nodes[parent].get("module") == r["module"]

@@ -10,7 +10,7 @@
     atlas trace    ID [atlas.toml]     everything about a requirement in Markdown: DOORS, documents (with the
                                        values that differ), code, tests, callers and source
     atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module ([graph] matrix_formats: CSV
-                                       for Excel, Markdown, XLSX); * = all
+                                       for Excel, Markdown, JSON, XLSX); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
     atlas comply   ID|MODULE [atlas.toml]  whether the code of each requirement does all it asks, obligation
                                            by obligation, with the model; * = all
@@ -146,12 +146,17 @@ def time_span(low: float, high: float) -> str:
 # Steps
 # --------------------------------------------------------------------------
 
+DOORS_DISPLAY_KEYS = ("attributes", "max_age_days")     # [sources.doors]: change what is shown, read nothing again
+
+
 def doors_step(ctx) -> Step | None:
     sd = ctx.cfg["sources"].get("doors")
     if not sd or not sd.get("enabled", True):
         return None
     adapter = plugins.get("requirements", sd.get("adapter", "database"), ctx.disabled)(doors_section(ctx.cfg, sd))
+    from datetime import datetime
     from atlas.doors import hash_requirement
+    started = datetime.now().isoformat(timespec="seconds")      # the run this step belongs to
 
     def run(ctx, module: str):
         reqs = list(adapter.requirements(module))
@@ -159,15 +164,23 @@ def doors_step(ctx) -> Step | None:
         hashes = {r.id: hash_requirement(r) for r in reqs}
         previous = ctx.store.requirement_hashes(module)
         ctx.store.replace_module(module, reqs, links, hashes)
+        info = adapter.module_info(module)
+        ctx.store.put_module_info(module, info.get("exported_at", ""), info.get("source", ""), started)
         changes = {"added": len(set(hashes) - set(previous)), "removed": len(set(previous) - set(hashes)),
                    "changed": sum(1 for i, h in hashes.items() if i in previous and previous[i] != h)}
         log.info("doors %s: %d requirements, %d links (%s)", module, len(reqs), len(links), changes)
         return {"requirements": len(reqs), "links": len(links), **changes}
 
+    def fingerprint(ctx, module: str) -> str:
+        # a new export of the same content is read again too, for its date (no model involved)
+        exported = adapter.exported_at(module)
+        settings = ctx.cfg.fingerprint("sources.doors", exclude=DOORS_DISPLAY_KEYS)
+        return f"{adapter.snapshot(module)}|{settings}" + (f"|{exported}" if exported else "")
+
     return Step(
         name="doors.requirements",
         units=lambda ctx: adapter.modules(),
-        fingerprint=lambda ctx, m: f"{adapter.snapshot(m)}|{ctx.cfg.fingerprint('sources.doors')}",
+        fingerprint=fingerprint,
         run=run,
         prune=lambda ctx, m: ctx.store.delete_module(m),
         parallel=False,
@@ -572,6 +585,26 @@ def index_code_step(ctx) -> Step | None:
                 depends_on=["code.parse"])
 
 
+def code_revision(roots: list[str]) -> str:
+    """`git rev-parse HEAD` in the first code root; "" without git or outside a repository."""
+    import subprocess
+    if not roots:
+        return ""
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=roots[0], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.info("no code revision: %s", e)
+        return ""
+    if out.returncode:
+        log.info("no code revision: %s", out.stderr.strip()[:200])
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _exports(store: Store) -> dict[str, dict]:
+    """When and from where each DOORS module was exported, without the run that read it."""
+    return {m: {"exported_at": i["exported_at"], "source": i["source"]} for m, i in store.modules_info().items()}
+
+
 GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
@@ -614,7 +647,7 @@ def graph_step(ctx) -> Step:
         if unit == "code":
             data = ctx.store.code_units()
         elif unit == "doors":
-            data = [ctx.store.requirements(), ctx.store.links(), graph_convention(convention)]
+            data = [ctx.store.requirements(), ctx.store.links(), graph_convention(convention), _exports(ctx.store)]
         else:
             docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
             data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
@@ -624,6 +657,10 @@ def graph_step(ctx) -> Step:
     def build(ctx, unit: str):
         if unit == "code":
             G, stats = build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+            if ctx.cfg["graph"]["code_revision"]:
+                revision = code_revision([str(ctx.cfg.resolve(r)) for r in (ctx.cfg["sources"].get("code") or {}).get("roots", [])])
+                if revision:
+                    stats["code_revision"] = revision
             if ctx.cfg["graph"]["communities"]:          # in the node, for the exports (Gephi colours)
                 groups = find_communities(G)
                 for n, group in groups.items():
@@ -631,7 +668,7 @@ def graph_step(ctx) -> Step:
                 stats["communities"] = len(set(groups.values()))
             return G, stats
         if unit == "doors":
-            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), convention)
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), convention, modules=_exports(ctx.store))
         return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
 
     def export(store: GraphStore) -> None:
@@ -784,6 +821,8 @@ def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 
                   max_requests=max_requests or pc["max_requests"],
                   progress=lambda line: print(line, file=sys.stderr, flush=True)).run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
+    from atlas.doors import warn_stale_exports
+    warn_stale_exports(cfg["sources"].get("doors"), ctx.store.modules_info())
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
@@ -824,10 +863,15 @@ def status(cfg: Config, as_json: bool = False) -> int:
     if as_json:
         _print_json({"workspace": str(cfg.workspace), "data": ctx.store.counts(),
                      "graph": GraphStore(ctx.store.path).counts(), "index": IndexStore(ctx.store.path).counts(),
-                     "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6)})
+                     "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6),
+                     "doors_exports": ctx.store.modules_info()})
         return 0
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
+    exports = ctx.store.modules_info()
+    if exports:
+        from atlas.doors import describe_exports
+        print("DOORS:", describe_exports(exports))
     print("graph:", GraphStore(ctx.store.path).counts())
     print("index:", IndexStore(ctx.store.path).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
@@ -902,7 +946,7 @@ def graph(cfg: Config, as_json: bool = False) -> int:
         print(message)
         return 1
     if as_json:
-        return _json_result({"builds": builds, "gaps": KnowledgeGraph.open(ctx.store.path, cfg.home).gaps(),
+        return _json_result({"builds": builds, "gaps": KnowledgeGraph.from_config(cfg).gaps(),
                              "exported_to": str(cfg.workspace / "graph")})
     s = builds.get("code")
     if s:
@@ -923,17 +967,22 @@ def graph(cfg: Config, as_json: bool = False) -> int:
                 print(f"\n{title}:")
                 for name, n in s[key]:
                     print(f"  {n:5d}  {name}")
+    g = KnowledgeGraph.from_config(cfg)
     s = builds.get("doors")
     if s:
+        from atlas.doors import describe_exports
         print(f"\nDOORS of {s['built_at'][:19]}: {s['modules']} modules, {s['requirements']} requirements, "
               f"{s['headings']} headings; links: "
               + ", ".join(f"{n} {k}" for k, n in s["edges_by_kind"].items() if k != "contains")
               + (f"; {s['linked_outside']} IDs linked from modules that were not read" if s["linked_outside"] else ""))
+        print("DOORS export: " + describe_exports(g.exports()).split(", ", 1)[-1]
+              + "".join(f"\n  {m}: {x['exported_at'][:19] or '?'}" + (f" from {x['source']}" if x["source"] else "")
+                        for m, x in g.exports().items()))
     s = builds.get("docs")
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
-    gaps = KnowledgeGraph.open(ctx.store.path, cfg.home).gaps()
+    gaps = g.gaps()
     print("\ntraceability gaps (atlas matrix MODULE for the detail):")
     for key, value in gaps.items():
         if isinstance(value, dict):
@@ -950,8 +999,8 @@ def trace(cfg: Config, req_id: str, as_json: bool = False) -> int:
     --json, the dictionary of KnowledgeGraph.trace."""
     from atlas.agents.context import build_context
     from atlas.graph import KnowledgeGraph
-    ctx = _context(cfg)
-    g = KnowledgeGraph.open(ctx.store.path, cfg.home)
+    _context(cfg)                         # the logging of the configuration
+    g = KnowledgeGraph.from_config(cfg)
     res = g.trace(req_id)
     if as_json:
         return _json_result(res)
@@ -967,10 +1016,11 @@ def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
     the formats of [graph] matrix_formats (atlas.graph.export), and its summary and gaps on
     the screen."""
     from atlas.graph import GraphStore, KnowledgeGraph, write_matrix
-    from atlas.graph.export import summary_line
+    from atlas.graph.export import matrix_header, summary_line
     ctx = _context(cfg)
     module = "" if module == "*" else module
-    res = KnowledgeGraph.open(ctx.store.path, cfg.home).matrix(module, limit=10**9)
+    g = KnowledgeGraph.from_config(cfg)
+    res = g.matrix(module, limit=10**9)
     if "error" in res:
         if as_json:
             return _json_result(res)
@@ -979,7 +1029,8 @@ def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
     gc = cfg["graph"]
     try:
         files = write_matrix(res, cfg.workspace / "graph" / f"matrix-{module or 'all'}", gc["matrix_formats"],
-                             gc["csv_delimiter"], builds=GraphStore(ctx.store.path).builds())
+                             gc["csv_delimiter"], builds=GraphStore(ctx.store.path).builds(),
+                             modules={row["id"]: g.G.nodes[row["id"]].get("module", "") for row in res["rows"]})
     except ImportError as e:            # "xlsx" without the [xlsx] extra
         sys.exit(str(e))
     except PermissionError as e:        # Windows: the file is open in Excel
@@ -987,6 +1038,8 @@ def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
     if as_json:
         return _json_result(res)
     gaps = res["gaps"]
+    for line in matrix_header(res["meta"]):
+        print(line.removeprefix("- "))
     print(summary_line(res))
     for key, title in (("without_code", "without code"), ("without_tests", "without tests"),
                        ("without_test_procedure", "without a test procedure")):

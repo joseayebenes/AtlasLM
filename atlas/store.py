@@ -1,5 +1,6 @@
 """Workspace store: a single atlas.db with the data of every source (the engine's ledger
-lives in the same file, in the `ledger` table)."""
+lives in the same file, in the `ledger` table). `modules` keeps, for each DOORS module read,
+when and from where it was exported and when the run that read it started."""
 from __future__ import annotations
 
 import json
@@ -11,6 +12,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS requirements (
     id TEXT PRIMARY KEY, module TEXT, text TEXT, parent TEXT, attributes TEXT, hash TEXT, raw_id TEXT);
 CREATE INDEX IF NOT EXISTS idx_req_module ON requirements(module);
+CREATE TABLE IF NOT EXISTS modules (
+    module TEXT PRIMARY KEY, exported_at TEXT, source TEXT, run_started TEXT);
 CREATE TABLE IF NOT EXISTS links (
     source TEXT, target TEXT, type TEXT, module TEXT, PRIMARY KEY (source, target, type));
 CREATE TABLE IF NOT EXISTS code_units (
@@ -53,6 +56,19 @@ class Store:
         with self.lock, self.db:
             self.db.execute("DELETE FROM requirements WHERE module=?", (module,))
             self.db.execute("DELETE FROM links WHERE module=?", (module,))
+            self.db.execute("DELETE FROM modules WHERE module=?", (module,))
+
+    def put_module_info(self, module: str, exported_at: str, source: str, run_started: str) -> None:
+        """When and from where a module was exported (as the adapter says; "" if it does
+        not) and when the run that read it started."""
+        with self.lock, self.db:
+            self.db.execute("INSERT OR REPLACE INTO modules VALUES (?,?,?,?)",
+                            (module, exported_at or "", source or "", run_started))
+
+    def modules_info(self) -> dict[str, dict]:
+        """module -> {"exported_at", "source", "run_started"}, for the modules read."""
+        return {r["module"]: {k: r[k] or "" for k in ("exported_at", "source", "run_started")}
+                for r in self._query("SELECT * FROM modules ORDER BY module")}
 
     def requirement_hashes(self, module: str) -> dict[str, str]:
         return {r["id"]: r["hash"] for r in self._query("SELECT id, hash FROM requirements WHERE module=?", (module,))}

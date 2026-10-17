@@ -66,7 +66,6 @@ languages = ["ada"]
 exclude = ["**/build/**"]
 req_tag = "Req:"
 test_patterns = ["**/tests/**"]
-summaries = "none"
 
 [graph]
 exports = ["graphml", "json"]               # grafo completo en <workspace>/graph/atlas.*

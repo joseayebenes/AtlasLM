@@ -31,7 +31,7 @@ def test_traceability_example(samples, docs_samples, tmp_path):
     for module in ("markitdown", "tree_sitter_ada"):
         pytest.importorskip(module)
     out = _run("traceability.py", tmp_path)
-    assert "implemented by: ['tracks.delete_track']" in out and "'320'" in out and "context package" in out
+    assert "implemented by: ['tracks.delete_track']" in out and "'320 ms'" in out and "context package" in out
 
 
 def test_search_example(docs_samples, tmp_path, fake):

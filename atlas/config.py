@@ -90,7 +90,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
                  "max_requests": int},
     "plugins": {"modules": list, "disabled": list},
     "sources": {"docs": list, "doors": dict, "code": dict},
-    "graph": {"exports": list, "communities": bool, "matrix_formats": list, "csv_delimiter": str},
+    "graph": {"exports": list, "communities": bool, "matrix_formats": list, "csv_delimiter": str,
+              "code_revision": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
@@ -100,19 +101,19 @@ SCHEMA: dict[str, dict[str, Any]] = {
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
 MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of atlas serve (atlas.mcp)
-MATRIX_FORMATS = ("csv", "md", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
-GRAPH_BUILD_KEYS = ("exports", "communities")     # the keys of [graph] that change the graph built
+MATRIX_FORMATS = ("csv", "md", "json", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
+GRAPH_BUILD_KEYS = ("exports", "communities", "code_revision")     # the keys of [graph] that change the graph built
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
                "min_chars": int, "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
-                "modules": list, "attributes": list}
+                "modules": list, "attributes": list, "max_age_days": int}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
                 "temperature": float, "top_p": float, "top_k": int,
                 "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
-               "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
+               "test_patterns": list, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "check_timeout": int,
                "test_timeout": int, "program_timeout": int, "run_command": list,
                "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
@@ -125,8 +126,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"], "max_minutes": 0, "max_requests": 0},
     "plugins": {"modules": [], "disabled": []},
-    "graph": {"exports": ["graphml", "json"], "communities": False, "matrix_formats": ["csv", "md"],
-              "csv_delimiter": ";"},
+    "graph": {"exports": ["graphml", "json"], "communities": False, "matrix_formats": ["csv", "md", "json"],
+              "csv_delimiter": ";", "code_revision": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
@@ -273,14 +274,17 @@ class Config:
         p = Path(os.path.abspath(self.resolve(path)))
         return os.path.relpath(p, self.home) if p.is_relative_to(self.home) else str(p)
 
-    def fingerprint(self, *sections: str) -> str:
+    def fingerprint(self, *sections: str, exclude: tuple[str, ...] = ()) -> str:
         """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings'), without
-        their secrets (see redact)."""
+        their secrets (see redact) and without the keys of `exclude` (those that only change
+        what is shown, not what is read)."""
         parts = []
         for s in sections:
             d: Any = self.data
             for piece in s.split("."):
                 d = d.get(piece, None) if isinstance(d, dict) else None
+            if isinstance(d, dict) and exclude:
+                d = {k: v for k, v in d.items() if k not in exclude}
             parts.append(json.dumps(redact(d), sort_keys=True, ensure_ascii=False, default=str))
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
@@ -357,6 +361,10 @@ def load_config(path: str | Path) -> Config:
     if "doors" in sources:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
         _validate_convention(sources["doors"].get("convention") or {})
+        if not all(isinstance(a, str) and a.strip() for a in sources["doors"].get("attributes", [])):
+            raise ConfigError("[sources.doors] 'attributes' must be a list of attribute names")
+        if sources["doors"].get("max_age_days", 0) < 0:
+            raise ConfigError("[sources.doors] 'max_age_days' must be 0 (no warning) or more")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))

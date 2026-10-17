@@ -34,6 +34,9 @@ def test_written_and_read_back(tmp_path):
     assert [r.id for r in _adapter(db, kinds=["requirement"]).requirements("SRS_TMS")] == ["SRS-0001", "SRS-0002"]
     meta = dict(sqlite3.connect(db).execute("SELECT key, value FROM exchange_meta").fetchall())
     assert meta["schema_version"] == str(SCHEMA_VERSION) and meta["filler"] == "test"
+    filled = sqlite3.connect(db).execute("SELECT filled_at FROM exchange_modules").fetchone()[0]
+    assert ad.module_info("SRS_TMS") == {"exported_at": filled, "source": "/TMS/SRS"} and ad.exported_at("SRS_TMS") == filled
+    assert ad.module_info("NOPE") == {"exported_at": "", "source": ""}
 
 
 def test_the_snapshot_changes_only_with_the_content(tmp_path):
@@ -119,3 +122,63 @@ id_pattern = "^(?:SRS|SSS)-\\\\d{{4}}$"
         w.replace_module("SRS_TMS", [{"id": "SRS-0001", "text": "Only one now."}])
     assert run(cfg) == 0 and json.loads(capsys.readouterr().out)["processed"] == {"doors.requirements": 1}
     assert Store(cfg.workspace).requirement("SRS-0007") is None
+
+
+def test_the_date_of_the_export_is_kept_shown_and_warned(toml, samples, tmp_path, capsys, caplog):
+    """When and from where each module was exported: in atlas.db after reading it, read again
+    when only the date changes (a new export of the same content), and a warning when it is
+    older than [sources.doors] max_age_days."""
+    import shutil
+    from datetime import datetime, timedelta, timezone
+    from atlas.cli import run, status
+    from atlas.config import ConfigError, load_config
+    from atlas.doors import describe_exports, export_age, stale_exports
+    from atlas.store import Store
+    db = tmp_path / "requirements.sqlite"
+    shutil.copy(samples / "requirements.sqlite", db)
+    base = toml().read_text().split("[sources.doors]")[0] + f'''
+[pipeline]
+steps = ["doors"]
+[sources.doors]
+adapter = "exchange"
+modules = ["SSS_MISSION", "SRS_TMS"]
+{{extra}}
+[sources.doors.exchange]
+path = "{db.as_posix()}"
+'''
+    cfg_path = tmp_path / "exchange.toml"
+
+    def config(extra=""):
+        cfg_path.write_text(base.replace("{extra}", extra))
+        return load_config(cfg_path)
+
+    cfg = config()
+    assert run(cfg) == 0
+    capsys.readouterr()
+    info = Store(cfg.workspace).modules_info()
+    filled = dict(sqlite3.connect(db).execute("SELECT module, filled_at FROM exchange_modules").fetchall())
+    assert info["SRS_TMS"]["exported_at"] == filled["SRS_TMS"] and info["SRS_TMS"]["source"] == "/Mission/SRS_TMS"
+    assert info["SRS_TMS"]["run_started"] and set(info) == {"SSS_MISSION", "SRS_TMS"}
+
+    # the filler publishes the same content again, 40 days ago: only the date changed
+    old = (datetime.now(timezone.utc) - timedelta(days=40)).isoformat(timespec="seconds")
+    with sqlite3.connect(db) as conn:
+        conn.execute("UPDATE exchange_modules SET filled_at = ? WHERE module = 'SRS_TMS'", (old,))
+    caplog.clear()
+    assert run(config("max_age_days = 30")) == 0
+    assert json.loads(capsys.readouterr().out)["processed"] == {"doors.requirements": 1}
+    assert Store(cfg.workspace).modules_info()["SRS_TMS"]["exported_at"] == old
+    warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+    assert any("SRS_TMS was exported" in w and "40 days ago" in w for w in warned)
+    assert not any("SSS_MISSION" in w for w in warned)
+    assert run(config("max_age_days = 60")) == 0                       # display only: nothing read again
+    assert json.loads(capsys.readouterr().out)["processed"] == {}
+
+    assert status(cfg) == 0
+    assert f"DOORS: 2 modules, exported {old[:10]} to " in capsys.readouterr().out
+    assert export_age(old) == 40 and export_age("") is None and export_age("not a date") is None
+    assert describe_exports({"A": {"exported_at": old}}) == f"1 module, exported {old[:10]}, 40 days ago"
+    assert describe_exports({"A": {"exported_at": ""}, "B": {}}) == "2 modules, export date unknown"
+    assert stale_exports({"A": {"exported_at": old}}, 0) == [] and stale_exports({"A": {"exported_at": old}}, 39)
+    with pytest.raises(ConfigError, match="max_age_days"):
+        config("max_age_days = -1")

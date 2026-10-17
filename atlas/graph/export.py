@@ -1,12 +1,15 @@
 """The traceability matrix as files for a review: CSV and XLSX for a spreadsheet, Markdown
-to read or paste.
+to read or paste, JSON for a script (rows, summary, gaps and meta).
 
     write_matrix(res, prefix, formats, delimiter)   res = KnowledgeGraph.matrix(...)
 
 The CSV is written for Excel: UTF-8 with a BOM (without it Excel reads the accents as
 another encoding) and ";" between columns by default (the list separator of Excel in
 Spanish; with "," everything lands in one column). The lists of a cell (code, tests,
-documents) go one per line. XLSX needs openpyxl (the [xlsx] extra): a sheet with the matrix
+documents) go one per line. The columns are those of MATRIX_COLUMNS with the DOORS attributes
+of [sources.doors] attributes after the text (those of the matrix `meta`), and the CSV ends
+with `exported_at`, the date of the DOORS export of the module of each row. The Markdown
+starts with where the matrix comes from (matrix_header). XLSX needs openpyxl (the [xlsx] extra): a sheet with the matrix
 (filters, widths, first row fixed), one with the gaps and one with the summary and the date
 of the DOORS part of the graph.
 """
@@ -14,13 +17,14 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 
 from atlas.config import MATRIX_FORMATS
 from atlas.pipeline import atomic_write
 
-__all__ = ["MATRIX_COLUMNS", "write_matrix"]
+__all__ = ["MATRIX_COLUMNS", "columns", "matrix_header", "summary_line", "write_matrix"]
 
 MATRIX_COLUMNS = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "procedures",
                   "documents"]
@@ -30,24 +34,56 @@ GAPS = (("without_code", "Without code"), ("without_tests", "Without tests"),
         ("without_test_procedure", "Without a test procedure"))
 
 
+def columns(res: dict) -> list[str]:
+    """The columns of a matrix: those of MATRIX_COLUMNS, with the DOORS attributes of its
+    `meta` in the place of status and verification."""
+    attributes = (res.get("meta") or {}).get("attributes", ["status", "verification"])
+    return ["id", "text", *attributes, *[c for c in MATRIX_COLUMNS[4:]]]
+
+
+def _exported(res: dict, modules: dict[str, str]) -> dict[str, str]:
+    """id -> the date of the DOORS export of its module (`modules`: id -> module)."""
+    dates = {m: x.get("exported_at", "") for m, x in ((res.get("meta") or {}).get("modules") or {}).items()}
+    return {r: dates.get(m, "") for r, m in modules.items()}
+
+
+def matrix_header(meta: dict) -> list[str]:
+    """Where a matrix comes from, as Markdown lines: the DOORS export of each module, the
+    version of atlas, the builds of the graph and the revision of the code."""
+    from atlas.doors import days_ago, export_age
+    lines = []
+    for m, x in (meta.get("modules") or {}).items():
+        ago = days_ago(export_age(x["exported_at"]))
+        lines.append(f"- DOORS {m}: " + (f"exported {x['exported_at'][:10]} ({ago})" if x["exported_at"]
+                                          else "export date unknown") + (f", from {x['source']}" if x["source"] else ""))
+    built = ", ".join(f"{origin} {at[:19]}" for origin, at in meta.get("built_at", {}).items())
+    if meta:
+        lines.append(f"- atlas {meta.get('atlas_version', '?')}" + (f"; graph built: {built}" if built else ""))
+    if meta.get("code_revision"):
+        lines.append(f"- code revision: {meta['code_revision']}")
+    return lines
+
+
 def _cell(value, separator: str) -> str:
     return separator.join(value) if isinstance(value, list) else str(value)
 
 
-def _csv(res: dict, delimiter: str) -> str:
+def _csv(res: dict, delimiter: str, exported: dict[str, str]) -> str:
     out = io.StringIO()
     w = csv.writer(out, delimiter=delimiter)
-    w.writerow(MATRIX_COLUMNS)
-    w.writerows([_cell(row.get(c, ""), "\n") for c in MATRIX_COLUMNS] for row in res["rows"])
+    cols = columns(res)
+    w.writerow(cols + ["exported_at"])          # the DOORS export of the row's module
+    w.writerows([_cell(row.get(c, ""), "\n") for c in cols] + [exported.get(row["id"], "")] for row in res["rows"])
     return out.getvalue()
 
 
 def _markdown(res: dict) -> str:
     gaps = res["gaps"]
     cell = lambda v: _cell(v, "; ").replace("|", "\\|").replace("\n", " ")
-    md = [f"# Traceability matrix: {res['module']}", "", summary_line(res), "",
-          "| " + " | ".join(MATRIX_COLUMNS) + " |", "|" + "---|" * len(MATRIX_COLUMNS)]
-    md += ["| " + " | ".join(cell(row.get(c, "")) for c in MATRIX_COLUMNS) + " |" for row in res["rows"]]
+    cols, header = columns(res), matrix_header(res.get("meta") or {})
+    md = [f"# Traceability matrix: {res['module']}", "", *header, *([""] if header else []), summary_line(res), "",
+          "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    md += ["| " + " | ".join(cell(row.get(c, "")) for c in cols) + " |" for row in res["rows"]]
     for key, title in GAPS:
         if key not in gaps:
             continue
@@ -80,14 +116,15 @@ def _xlsx(res: dict, path: Path, builds: dict) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "Matrix"
-    for j, name in enumerate(MATRIX_COLUMNS, 1):
+    cols = columns(res)
+    for j, name in enumerate(cols, 1):
         _text(ws, 1, j, name).font = bold
-        ws.column_dimensions[get_column_letter(j)].width = WIDTHS[name]
+        ws.column_dimensions[get_column_letter(j)].width = WIDTHS.get(name, 14)
     for i, row in enumerate(res["rows"], 2):
-        for j, name in enumerate(MATRIX_COLUMNS, 1):
+        for j, name in enumerate(cols, 1):
             _text(ws, i, j, _cell(row.get(name, ""), "\n")).alignment = wrap
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(MATRIX_COLUMNS))}{len(res['rows']) + 1}"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{len(res['rows']) + 1}"
 
     gaps = wb.create_sheet("Gaps")
     for j, name in enumerate(("gap", "requirement"), 1):
@@ -129,10 +166,11 @@ def _xlsx(res: dict, path: Path, builds: dict) -> None:
 
 
 def write_matrix(res: dict, prefix: str | Path, formats=("csv", "md"), delimiter: str = ";",
-                 builds: dict | None = None) -> list[Path]:
+                 builds: dict | None = None, modules: dict[str, str] | None = None) -> list[Path]:
     """Writes the matrix `res` (KnowledgeGraph.matrix) as <prefix>.csv, .md and .xlsx, the
     ones of `formats`, and returns their paths. `delimiter` separates the CSV columns;
-    `builds` (GraphStore.builds()) gives the summary sheet of the XLSX the date of DOORS.
+    `builds` (GraphStore.builds()) gives the summary sheet of the XLSX the date of DOORS;
+    `modules` (requirement -> its DOORS module) gives each CSV row the date of its export.
     "xlsx" without openpyxl raises ImportError before writing anything; a file open in Excel
     on Windows raises PermissionError."""
     unknown = sorted(set(formats) - set(MATRIX_FORMATS))
@@ -153,7 +191,10 @@ def write_matrix(res: dict, prefix: str | Path, formats=("csv", "md"), delimiter
             continue
         path = prefix.with_name(f"{prefix.name}.{kind}")
         if kind == "csv":
-            atomic_write(path, _csv(res, delimiter).encode("utf-8-sig"))
+            atomic_write(path, _csv(res, delimiter, _exported(res, modules or {})).encode("utf-8-sig"))
+        elif kind == "json":
+            atomic_write(path, json.dumps({k: v for k, v in res.items() if k not in ("offset", "truncated")},
+                                          ensure_ascii=False, indent=1, default=str))
         elif kind == "md":
             atomic_write(path, _markdown(res))
         else:

@@ -59,6 +59,25 @@ adapter = "exchange"
 path = "requirements.sqlite"
 ```
 
+## Quién exporta y cada cuánto
+
+La exportación es un paso manual: alguien con acceso a DOORS lanza la descarga en su PC y
+publica la base. atlas no sabe si DOORS ha cambiado desde entonces, así que todo lo que sale
+de los requisitos (`atlas status`, `atlas graph`, la matriz, `trace`) dice de qué exportación
+viene: `publish.py` escribe la fecha de cada módulo en la base (`filled_at`, con su ruta de
+DOORS en `source`).
+
+Conviene acordarlo en el proyecto:
+- **Quién**: una persona con acceso de lectura a los módulos en DOORS, normalmente quien
+  lleva la gestión de requisitos o la integración, y una suplente.
+- **Cada cuánto**: una vez por semana mientras los requisitos cambian, y siempre antes de una
+  revisión formal (la matriz de la revisión debe salir de una exportación del mismo día o
+  del anterior). La descarga es incremental: repetirla cuesta poco.
+- **Dónde**: la base publicada va a la ruta que lee `[sources.doors.exchange] path`; el
+  siguiente `atlas run` la lee.
+- **El aviso**: `[sources.doors] max_age_days = 7` hace que `atlas run` y `atlas serve`
+  avisen de los módulos exportados hace más de 7 días.
+
 ## La correspondencia (`mapping.toml`)
 
 Sigue una regla única: a la izquierda va lo que ve atlas y a la derecha lo que hay en DOORS,

@@ -771,8 +771,9 @@ def _check_chat(response) -> tuple[bool, str]:
 
 def check_service(name: str, cfg: ServiceConfig) -> dict:
     """One real request to a service ("LLM": a short chat; otherwise an embedding):
-    {"ok", "detail", "seconds"}. A failure comes with the diagnosis in "detail"."""
-    t0 = time.time()
+    {"ok", "detail", "seconds"}, and "warning" when the chat model reasons and
+    reasoning_effort does not say anything. A failure comes with the diagnosis in "detail"."""
+    t0, warning = time.time(), ""
     try:
         client, _ = create_client(cfg)
         if name == "LLM":
@@ -782,6 +783,10 @@ def check_service(name: str, cfg: ServiceConfig) -> dict:
                 **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
                 **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
             ok, detail = _check_chat(r)
+            if _reasoning(r, r.choices[0].message) and not cfg.reasoning_effort:
+                warning = ("the model reasons and reasoning_effort is empty: documents will be analysed more "
+                           "slowly. Set reasoning_effort = \"none\" in [llm] (an agent that needs reasoning "
+                           "turns it on in its file)")
         else:
             r = client.embeddings.create(model=cfg.model, input=["test"])
             ok, detail = True, f"dimension {len(r.data[0].embedding)}"
@@ -789,7 +794,7 @@ def check_service(name: str, cfg: ServiceConfig) -> dict:
         raise
     except Exception as e:
         return {"ok": False, "detail": diagnose(e), "seconds": time.time() - t0}
-    return {"ok": ok, "detail": detail, "seconds": time.time() - t0}
+    return {"ok": ok, "detail": detail, "seconds": time.time() - t0, **({"warning": warning} if warning else {})}
 
 
 def check(conn: Connection) -> int:
@@ -800,6 +805,8 @@ def check(conn: Connection) -> int:
         print(f"\n{name}: {describe(cfg)}")
         res = check_service(name, cfg)
         print(f"  {'OK' if res['ok'] else 'FAILED'} ({res['seconds']:.1f}s): {res['detail']}")
+        if res.get("warning"):
+            print(f"  [warning] {res['warning']}")
         failures += not res["ok"]
     if conn.llm.net.insecure or conn.embeddings.net.insecure:
         print("\n[warning] insecure turns TLS verification off; use it only for diagnosis.")

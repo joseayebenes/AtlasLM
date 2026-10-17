@@ -95,12 +95,18 @@ ya use GNAT Pro pone sus comandos en `check_command` y `test_command`.
 ```powershell
 mkdir C:\proyectos\tms
 cd C:\proyectos\tms
-C:\atlas\venv\Scripts\atlas init
+C:\atlas\venv\Scripts\atlas init --profile gateway
 ```
 
-`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Hay que cambiar:
+`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Con `--profile
+gateway`, el del gateway corporativo, con los valores que ya se saben buenos:
+`reasoning_effort = "none"` (gemma 4 razona por defecto; un agente que lo necesita lo
+enciende en su fichero), `requests_per_minute = 28`, `max_concurrent = 6`, `workers = 6`,
+`ca_cert = "system"` y `[search] scope_chars = 300000`. Sin `--profile` (o con `--profile
+ollama`), el de un modelo local en Ollama. Hay que cambiar:
 
-1. `[llm] base_url` y `model`: el gateway o el modelo local.
+1. `[llm] base_url` y `model`: el gateway (`https://<gateway>/v1` en la plantilla) o el
+   modelo local.
 2. Las fuentes que se tengan: `[[sources.docs]] paths`, `[sources.code] roots` y, con la
    base de requisitos, `[sources.doors] enabled = true` y su `path`.
 
@@ -108,8 +114,9 @@ La [guía de configuración](configuracion.md) explica cada clave.
 
 ## 3. Secretos y red
 
-La clave del gateway no se escribe en `atlas.toml`: se lee del entorno. La plantilla ya
-dice `api_key = "${ATLAS_API_KEY:-local}"`.
+La clave del gateway no se escribe en `atlas.toml`: se lee del entorno, siempre de
+`ATLAS_API_KEY`. La plantilla del gateway dice `api_key = "${ATLAS_API_KEY}"` (y la de Ollama,
+`"${ATLAS_API_KEY:-local}"`, que sin la variable vale `local`).
 
 ```powershell
 setx ATLAS_API_KEY "la-clave"            # Windows: abre otra terminal después

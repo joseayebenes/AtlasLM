@@ -298,6 +298,8 @@ def _connection(cfg: Config) -> list[Finding]:
         out.append(Finding("ok" if res["ok"] else "fail", f"connection {name.lower()}",
                            f"{service.model} at {mask_credentials(service.base_url)}: {res['detail']}",
                            "" if res["ok"] else "atlas check gives the details"))
+        if res.get("warning"):
+            out.append(Finding("warn", f"connection {name.lower()}", res["warning"]))
     return out
 
 

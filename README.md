@@ -85,7 +85,7 @@ sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md
 ## Comandos
 
 ```bash
-atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml
+atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml (--profile gateway: la del gateway)
 atlas run      atlas.dev.toml # procesamiento incremental y reanudable
 atlas status   atlas.dev.toml # libro de registro, datos y perfil de tiempos
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
@@ -156,7 +156,7 @@ atlas/
 ├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
 ├── agents/         agentes en Markdown (builtin/), AtlasLlm, build_context, verificación,
 │                   informes y evaluación
-├── templates/      la plantilla de atlas init
+├── templates/      las plantillas de atlas init (ollama y gateway)
 └── cli.py          las acciones de la línea de comandos
 docs/                       instalación, configuración y seguridad
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)

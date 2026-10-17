@@ -34,6 +34,7 @@
                                     its library for search_reference (also done on the first search)
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
+                   [--profile ollama|gateway]   for a local model (the default) or the corporate gateway
     atlas --version
 """
 from __future__ import annotations
@@ -855,7 +856,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
+OPTIONS = {"init": {"--profile": str},
+           "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
 
 
@@ -1071,17 +1073,21 @@ def serve(cfg: Config) -> int:
     return 0
 
 
-TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
+TEMPLATES = {"ollama": Path(__file__).parent / "templates" / "atlas.toml",       # a local model (the default)
+             "gateway": Path(__file__).parent / "templates" / "atlas-gateway.toml"}
 
 
-def init(path: Path) -> int:
-    """Writes the template of atlas.toml in `path`, unless the file exists."""
+def init(path: Path, profile: str = "ollama") -> int:
+    """Writes the template of atlas.toml for `profile` in `path`, unless the file exists."""
+    if profile not in TEMPLATES:
+        print(f"unknown profile '{profile}' (valid: {', '.join(TEMPLATES)})", file=sys.stderr)
+        return 1
     if path.exists():
         print(f"{path} already exists: it is not overwritten", file=sys.stderr)
         return 1
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"created {path}: edit the sources and the model, then `atlas check {path.name}` and "
+    path.write_text(TEMPLATES[profile].read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"created {path}: edit the sources and the model, then `atlas doctor {path.name}` and "
           f"`atlas run {path.name}`")
     return 0
 
@@ -1097,7 +1103,8 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     if action == "init":
-        sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
+        rest, options = _options(action, rest)
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
                "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor, "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,

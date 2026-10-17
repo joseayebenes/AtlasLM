@@ -29,6 +29,7 @@ def test_check_reports_a_reasoning_model(fake, capsys):
     assert check(Connection(llm=_service(url), embeddings=_service(url))) == 0
     out = capsys.readouterr().out
     assert "OK" in out and "'ok' (reasoning model:" in out
+    assert "reasoning_effort is empty: documents will be analysed more slowly" in out
 
 
 def test_check_fails_when_reasoning_leaves_no_answer(fake, capsys):
@@ -53,7 +54,8 @@ def test_check_and_from_config_use_reasoning_effort(fake, capsys, tmp_path):
     conn = from_config(load_config(toml))
     assert conn.llm.reasoning_effort == "none"
     assert check(Connection(llm=conn.llm, embeddings=_service(url))) == 0
-    assert "OK" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OK" in out and "[warning]" not in out
 
 
 def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):

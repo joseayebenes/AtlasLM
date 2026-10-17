@@ -14,10 +14,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   de lenguaje buscados en el `PATH` y `tool_path`, las variables del entorno que faltan, el
   workspace y la conexión. Tabla OK/WARN/FAIL, código de salida 1 si algo falla. En la
   librería, `atlas.doctor.diagnose(cfg)`, de solo lectura.
+- `atlas init --profile gateway`: la plantilla del gateway corporativo
+  (`atlas/templates/atlas-gateway.toml`), con `reasoning_effort = "none"`,
+  `requests_per_minute = 28`, `max_concurrent = 6`, `workers = 6`, `ca_cert = "system"`,
+  una `[[sources.docs]]` de ejemplo y `[search] scope_chars = 300000`. Sin `--profile` (o con
+  `ollama`), la de siempre.
+- `atlas check` (y `atlas doctor`) avisa cuando el modelo razona y `reasoning_effort` está
+  vacío: los documentos se analizan mucho más despacio.
+
+### Cambiado
+- El `atlas.toml` de producción del repositorio sigue la plantilla del gateway: pone
+  `reasoning_effort = "none"`, `max_concurrent`, una `[[sources.docs]]` y `[search]`, y lee la
+  clave de `ATLAS_API_KEY`, como la plantilla y la guía de instalación (antes, `GW_KEY`).
 
 ### Corregido
 - Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
   `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.
+
+### Al actualizar
+- Un `atlas.toml` copiado del ejemplo de producción lee la clave de `GW_KEY`: cámbialo a
+  `${ATLAS_API_KEY}` (y la variable), o deja `GW_KEY` puesta. Si no tiene `reasoning_effort`,
+  `atlas check` lo avisa; ponerlo no reprocesa nada.
 
 ## [0.2.0] — 2026-10-16
 

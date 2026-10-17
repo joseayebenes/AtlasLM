@@ -431,14 +431,20 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     from atlas.cli import main
     monkeypatch.delenv("ATLAS_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
-    for argv, code in ((["init"], 0), (["init"], 1), (["--version"], 0)):     # init never overwrites
+    for argv, code in ((["init"], 0), (["init"], 1), (["--version"], 0),     # init never overwrites
+                       (["init", "gw.toml", "--profile", "gateway"], 0), (["init", "x.toml", "--profile=cloud"], 1)):
         with pytest.raises(SystemExit) as exit:
             main(argv)
         assert exit.value.code == code
-    assert capsys.readouterr().out.strip().endswith(f"atlas {__version__}")
+    assert f"\natlas {__version__}\n" in capsys.readouterr().out
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+    gateway = load_config(tmp_path / "gw.toml")
+    assert "ATLAS_API_KEY" in gateway.unset and gateway["llm"]["reasoning_effort"] == "none"
+    assert gateway["network"]["requests_per_minute"] == 28 and gateway["network"]["ca_cert"] == "system"
+    assert gateway["search"]["scope_chars"] == 300000 and gateway["pipeline"]["workers"] == 6
+    assert not (tmp_path / "x.toml").exists()
 
 
 def test_a_missing_code_root_is_warned(toml, tmp_path, caplog):

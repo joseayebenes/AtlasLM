@@ -1,13 +1,16 @@
-# atlas.toml — producción (gateway corporativo). Copia atlas.dev.toml y cambia solo esto:
+# atlas.toml — producción (gateway corporativo), sobre atlas/templates/atlas-gateway.toml
+# (atlas init --profile gateway). Copia atlas.dev.toml y cambia solo esto:
 [project]
 name = "tms"
 workspace = "C:/atlas/tms"
 
 [llm]
 base_url = "https://llm-gateway.empresa/v1"
-model = "gemma-4"
-api_key = "${GW_KEY}"
+model = "gemma-4"                    # gemma 4 26B A4B: unos 200 000 tokens de entrada
+api_key = "${ATLAS_API_KEY}"         # setx ATLAS_API_KEY "la-clave"
 max_tokens = 8192
+reasoning_effort = "none"            # gemma 4 razona por defecto; un agente que lo necesita lo
+                                     # enciende en su fichero (reasoning_effort: low)
 
 [embeddings]
 model = "embeddinggemma"
@@ -17,10 +20,18 @@ batch = 64
 proxy = "${HTTPS_PROXY:-}"
 ca_cert = "system"
 requests_per_minute = 28
+max_concurrent = 6
 
 [pipeline]
 workers = 6
 steps = ["doors", "code", "docs", "graph", "index"]
+
+[[sources.docs]]
+name = "documentos"
+paths = ["C:/atlas/tms/docs"]
+patterns = ["*.pdf", "*.md"]
+analysis = "llm"
+lang = "Spanish"
 
 [sources.doors]
 adapter = "exchange"                 # la base que publica tools/doors_export (o cualquier otro relleno)
@@ -36,6 +47,9 @@ inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
 roots = ["C:/src/tms"]
 languages = ["ada"]
 test_patterns = ["**/tests/**"]       # sus subprogramas son pruebas: verifican y cubren requisitos
+
+[search]                             # cambiarlo no reprocesa nada
+scope_chars = 300000                 # una pregunta amplia lee de una vez hasta esto (cabe en los 200 000 tokens)
 
 [agents]                             # agentes: ficheros Markdown con cabecera YAML (ver README)
 dirs = ["agents"]                    # los .md del proyecto, junto a este fichero

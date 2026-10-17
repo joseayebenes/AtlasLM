@@ -275,9 +275,12 @@ class DocTools:
         whole instead of the best passages, in parts if they are long; `whole` = true makes
         it read them whole always (`scope` in the answer says how it was read). A question
         about the tests, code, parent, links or impact of a requirement or code element also
-        gets their traceability from DOORS and the graph as its first sources. `sources` are
-        those the answer cites; `unsupported` lists the sentences with an ID or a value that
-        the sources they cite do not contain, and `warnings` says so in a line."""
+        gets their traceability from DOORS and the graph as its first sources. `status` says
+        whether it answers: "answered" (every figure and ID with its source), "partial" (some
+        sentences without a source, in `uncited`, or an answer that says what is missing) or
+        "not_found" (nothing related is indexed); a partial answer must be given as such.
+        `sources` are those the answer cites; `unsupported` lists the sentences with an ID or
+        a value that the sources they cite do not contain, and `warnings` says so in a line."""
         try:
             res = self.index.answer(question, document=document, scope="whole" if whole else "",
                                     extra_sources=self.route(question))

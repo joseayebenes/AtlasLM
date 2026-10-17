@@ -902,7 +902,7 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
 
 def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
     from atlas.index import DocTools
-    from atlas.index.search import citation_warnings
+    from atlas.index.search import citation_warnings, status_line
     kinds = _kinds(kind)
     _context(cfg)
     tools = DocTools.from_config(cfg)
@@ -920,7 +920,8 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
         print(f"  - {u['claim'][:300]}\n    not in {' '.join(f'[{n}]' for n in u['cited'])}: {', '.join(u['missing'])}")
     if res["scope"] == "whole":
         print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
-    return 0
+    print(f"\n{status_line(res)}")
+    return 1 if res["status"] == "not_found" else 0
 
 
 def list_plugins(cfg: Config) -> int:

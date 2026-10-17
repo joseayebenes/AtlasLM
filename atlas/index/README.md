@@ -85,6 +85,24 @@ va a `unsupported` (`{claim, cited, missing}`). `sources` son solo las citadas; 
 resto queda en `unused`. `atlas ask` imprime «n claims not supported by their sources» con
 cada frase, y `ask_docs` lo dice en `warnings`.
 
+## Estado de la respuesta
+
+Un agente o un script tiene que distinguir una respuesta de una no-respuesta sin leerla.
+Cada respuesta lleva, calculado sin modelo y sin pedirle JSON (`answer_status`):
+
+- `status`: `not_found` si no había fuentes o la respuesta es la frase fija «Nothing indexed
+  is related to the question.»; `answered` si cita al menos una fuente y ninguna frase sin
+  cita tiene una cifra o un ID; `partial` en lo demás (una respuesta que dice lo que falta,
+  o datos sin su fuente);
+- `uncited`: las frases sin `[n]`;
+- `consulted`: cuántas fuentes se le pasaron.
+
+`atlas ask` imprime al final «status: partial (2 sentences without a source)» y sale con
+código 1 en `not_found`. `ask_docs` devuelve los tres campos, y `ask_atlas` (el asistente,
+que cita por ID y no por `[n]`) un `status` y un `uncited` frente a lo que devolvieron sus
+herramientas. El asistente y los informes de impacto y cobertura tienen la instrucción de
+decir que su respuesta es parcial cuando lo es.
+
 ## Preguntas de trazabilidad
 
 «¿Qué prueba verifica SRS-0004?» no se contesta bien con pasajes: el índice gastaba dos
@@ -163,5 +181,6 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
 documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas de
-trazabilidad, preguntas amplias en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
+trazabilidad, citas comprobadas, estado de la respuesta, preguntas amplias en una petición y
+por partes), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

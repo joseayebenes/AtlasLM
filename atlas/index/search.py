@@ -21,7 +21,9 @@ reads its documents whole, section by section: in one request if they fit in
 
 Every answer has its citations checked without a model (check_citations): a [n] of a
 source that does not exist, and the IDs and values with a unit of a sentence that none of
-the sources it cites contains, are in the result; `sources` are only those cited.
+the sources it cites contains, are in the result; `sources` are only those cited. Its
+`status` says, without a model either, whether it answers (answer_status): "not_found",
+"answered" or "partial", with the sentences that cite no source in `uncited`.
 
 `extra_sources` (DocTools.route: the traceability of the requirements and code the
 question names, from DOORS and the graph) go before the passages as the first numbered
@@ -40,8 +42,8 @@ from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import REF_PATTERN, IndexStore
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "check_citations", "cite", "citation_warnings", "diverse",
-           "rewrite_question", "rrf", "search", "section_file", "whole_sources"]
+__all__ = ["answer", "answer_status", "build_context", "check_citations", "cite", "citation_warnings", "diverse",
+           "grounded_status", "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -180,6 +182,45 @@ def check_citations(text: str, sources: list[dict]) -> dict:
         if missing:
             unsupported.append({"claim": sentence, "cited": numbers, "missing": missing})
     return {"cited": sorted(cited), "out_of_range": sorted(out_of_range), "unsupported": unsupported}
+
+
+def answer_status(text: str, consulted: int, found: bool = True) -> dict:
+    """Whether an answer with [n] citations answers, from its text alone: {"status",
+    "uncited": the sentences without a citation, "consulted": the sources it was given}.
+    "not_found": no sources, `found` false or the fixed answer of nothing indexed;
+    "answered": at least one citation and no sentence without one that has a figure or an
+    ID; "partial": the rest (an answer that says what the sources lack, or facts without
+    their source)."""
+    if not consulted or not found or text.strip() == NOTHING_FOUND:
+        return {"status": "not_found", "uncited": [], "consulted": consulted}
+    sentences = _sentences(text)
+    uncited = [s for s in sentences if not CITATION.search(s)]
+    answered = len(uncited) < len(sentences) and not any(re.search(r"\d", s) for s in uncited)
+    return {"status": "answered" if answered else "partial", "uncited": uncited, "consulted": consulted}
+
+
+def grounded_status(text: str, results: list[str]) -> dict:
+    """answer_status of an answer that cites by ID and not by [n] (that of an agent), against
+    the texts it was given (its tool results): `uncited` are the sentences with an ID or a
+    value with a unit that none of them contains. "not_found": no answer or no results;
+    "answered": some sentence with an ID or a value, and every one found; "partial": the rest."""
+    if not text.strip() or not results:
+        return {"status": "not_found", "uncited": [], "consulted": len(results)}
+    texts = [f" {_norm(r)} " for r in results]
+    found, uncited = False, []
+    for sentence in _sentences(text):
+        claims = _claims(sentence)
+        if any(not any(f" {key} " in t for t in texts) for key, _ in claims):
+            uncited.append(sentence)
+        found = found or bool(claims)
+    return {"status": "answered" if found and not uncited else "partial", "uncited": uncited,
+            "consulted": len(results)}
+
+
+def status_line(res: dict) -> str:
+    """'status: partial (2 sentences without a source)'."""
+    n = len(res.get("uncited", []))
+    return f"status: {res['status']}" + (f" ({n} sentence{'s' if n != 1 else ''} without a source)" if n else "")
 
 
 def citation_warnings(res: dict) -> list[str]:
@@ -363,6 +404,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     parts = _parts(blocks, max_chars)
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
+    found = True
     if len(parts) == 1:
         text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
     else:
@@ -371,20 +413,22 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
                                   parts))
         notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
         requests = len(parts)
+        found = bool(notes)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
             joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
             text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}"), requests + 1
-    return {**_checked(text, sources, False), "scope": "whole", "documents": names, "requests": requests}
+    return {**_checked(text, sources, False, found), "scope": "whole", "documents": names, "requests": requests}
 
 
-def _checked(text: str, sources: list[dict], passages: bool) -> dict:
-    """The answer, the sources it cites and the check of its citations; from passages, the
-    sources it does not cite in `unused`."""
+def _checked(text: str, sources: list[dict], passages: bool, found: bool = True) -> dict:
+    """The answer, its status, the sources it cites and the check of its citations; from
+    passages, the sources it does not cite in `unused`."""
     check = check_citations(text, sources)
     cited = set(check["cited"])
-    out = {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
+    out = {"answer": text, **answer_status(text, len(sources), found),
+           "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
            "unsupported": check["unsupported"], "out_of_range": check["out_of_range"]}
     if passages:
         out["unused"] = [{"n": i, "cite": cite(s)} for i, s in enumerate(sources, 1) if i not in cited]
@@ -416,7 +460,9 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
            extra_sources: list[dict] = ()) -> dict:
-    """{"answer": text with [n] citations, "sources": those it cites [{n, cite, doc, section, file,
+    """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
+    sentences without a citation, "consulted": how many sources it was given (see
+    answer_status), "sources": those it cites [{n, cite, doc, section, file,
     kind, ref, excerpt}], "unused": from passages, those it does not cite [{n, cite}],
     "unsupported" and "out_of_range" (see check_citations), "scope": "passages" | "whole",
     "documents": those read whole, "requests": to the model}.

@@ -17,9 +17,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   rango (`out_of_range`) y las frases cuyos IDs o cifras con unidad no están en las fuentes
   que citan (`unsupported`). `atlas ask` imprime «n claims not supported by their sources» y
   `ask_docs` lo dice en `warnings`.
+- Estado explícito de cada respuesta, sin modelo: `status` (`not_found`, `answered` o
+  `partial`), `uncited` (las frases sin cita) y `consulted` en `Index.answer`, `ask_docs` y
+  `ask_atlas` (este, frente a lo que devolvieron sus herramientas). `atlas ask` imprime
+  «status: partial (2 sentences without a source)». El asistente y los agentes de impacto y
+  cobertura dicen que su respuesta es parcial cuando lo es.
 
 ### Cambiado
 - Las fuentes de una respuesta de pasajes son solo las que cita; las demás van a `unused`.
+- `atlas ask` sale con código 1 cuando no hay nada indexado relacionado con la pregunta.
 
 ## [0.2.0] — 2026-10-16
 

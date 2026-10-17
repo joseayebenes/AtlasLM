@@ -315,6 +315,7 @@ def test_traceability_questions_get_their_sources_without_searching(docs, sample
     res = tools.ask_docs("Which test verifies SRS-0004?")
     assert res["requests"] == 1 == fake_chats() - before                     # not rewritten
     assert res["answer"] == "Answer taken from the sources [1]."             # it cites the graph
+    assert (res["status"], res["uncited"]) == ("answered", []) and res["consulted"] == 1 + len(res["unused"])
     assert res["sources"][0]["cite"] == "traceability graph › trace SRS-0004 (trace)"
     assert [s["doc"] for s in res["sources"] if s["ref"] == "SRS-0004"] == ["traceability graph"]   # once
 
@@ -344,6 +345,32 @@ def test_citations_are_checked_against_the_sources():
     assert res["cited"] == [1, 2] and res["out_of_range"] == [5]
     assert [(u["claim"], u["missing"]) for u in res["unsupported"]] == [("SRS-0004 says it [2].", ["SRS-0004"]),
                                                                         ("Logs are kept 60 days [2].", ["60 days"])]
+
+
+def test_the_status_of_an_answer_says_whether_it_answers(docs, tmp_path, fake_llm, fake_embeddings):
+    """Without a model: an agent or a script tells an answer from a non-answer."""
+    from atlas.index.search import answer_status, grounded_status
+    url, control = fake_llm
+    empty = Index(tmp_path / "empty.db", fake_embeddings, fake_llm[0])
+    assert {k: empty.answer("When does the HMI raise an alarm?")[k] for k in ("status", "uncited", "consulted")} \
+        == {"status": "not_found", "uncited": [], "consulted": 0}
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    control.write_text(json.dumps({"prose": True}))      # an answer that cites nothing
+    res = idx.answer("When does the HMI raise an alarm?", scope="passages")
+    assert (res["status"], res["uncited"]) == ("partial", ["Sorry, I cannot produce JSON."])
+    assert res["sources"] == [] and len(res["unused"]) == res["consulted"] > 0
+
+    assert answer_status("The alarm is raised within 2 s [1]. Nothing else.", 1)["status"] == "answered"
+    partial = answer_status("The alarm is raised [1]. Its latency is 2 s.", 1)
+    assert (partial["status"], partial["uncited"]) == ("partial", ["Its latency is 2 s."])
+    assert answer_status("Nothing indexed is related to the question.", 3)["status"] == "not_found"
+    results = ['{"id": "SRS-0004", "verified_by": [{"id": "test_tracks.test_tracks"}], "text": "within 320 ms"}']
+    assert grounded_status("SRS-0004 is verified by test_tracks.test_tracks, within 320 ms.", results)["status"] \
+        == "answered"
+    assert grounded_status("SRS-0004 is verified in 500 ms.", results)["uncited"] == ["SRS-0004 is verified in 500 ms."]
+    assert grounded_status("", results)["status"] == grounded_status("SRS-0004.", [])["status"] == "not_found"
 
 
 def test_records_of_a_code_unit(samples):

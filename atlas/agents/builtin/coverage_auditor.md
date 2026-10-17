@@ -18,4 +18,5 @@ Write a short summary in Markdown, in the language of the request:
 
 Use only the data you are given and quote the IDs exactly. Do not invent figures. The lists
 you get show only their first items: quote a few of them and the count, never the whole list
-(the report keeps the full lists after your text).
+(the report keeps the full lists after your text). If the data does not answer part of what
+is asked, the report is partial: say so, and what is missing.

@@ -31,18 +31,33 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
-GET / returns counters (chat, embeddings, emb_texts, rejections), and the options of the last
-chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
+  no_stream: true                  -> 400 "stream is not supported" to chat requests with stream;
+                                      "ignore" -> they get the whole answer as JSON, without SSE
+  chunk_chars: N                   -> characters of content, reasoning or arguments per chunk of a
+                                      streamed answer (8 by default)
+  slow_between_chunks: seconds     -> delay before each chunk of a streamed answer
+  hang_after_chunks: N             -> a streamed answer stops after N chunks and the connection
+                                      stays open, without sending anything, until the client closes
+                                      it (or hang_seconds, 120 by default)
+  hang_keepalive: seconds          -> while it hangs, an SSE comment every so many seconds (what
+                                      OpenRouter sends while the model works)
+A chat request with "stream": true gets the answer in SSE chunks: the reasoning, the content and
+each tool call by its index (the id and the name first, then the arguments in pieces), then
+finish_reason, the usage in a last chunk without choices if stream_options.include_usage, and
+[DONE].
+GET / returns counters (chat, embeddings, emb_texts, rejections, streams; open: the POST requests
+being answered now), and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
 it names.
 """
-import argparse, json, math, re, hashlib, os
+import argparse, json, math, re, hashlib, os, select, socket, threading, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _ap = argparse.ArgumentParser(); _ap.add_argument("--port", type=int, default=8770); _ap.add_argument("--control", default="faults.json")
 ARGS = _ap.parse_args()
-stats = {"chat": 0, "embeddings": 0, "emb_texts": 0}
+stats = {"chat": 0, "embeddings": 0, "emb_texts": 0, "streams": 0, "open": 0}
+lock = threading.Lock()
 once = {"statuses": None, "sent": 0}       # where chat_status_once goes
 def ctl():
     try: return json.load(open(ARGS.control))
@@ -68,8 +83,55 @@ class H(BaseHTTPRequestHandler):
         return self.send(code, {"error": {"message": message, "type": kind}}, headers)
     def do_GET(self): self.send(200, stats)
     def do_POST(self):
+        with lock: stats["open"] += 1
+        try: self.answer()
+        except (BrokenPipeError, ConnectionResetError): pass       # the client went away
+        finally:
+            with lock: stats["open"] -= 1
+    def gone(self):
+        """Whether the client closed the connection (what is left to read is its end)."""
+        try:
+            return bool(select.select([self.connection], [], [], 0)[0]) and not self.connection.recv(1, socket.MSG_PEEK)
+        except OSError:
+            return True
+    def chunk(self, obj):
+        self.wfile.write(b"data: " + (obj if isinstance(obj, bytes) else json.dumps(obj).encode()) + b"\n\n")
+        self.wfile.flush()
+    def stream(self, message, finish, usage, body, c):
+        """The answer in SSE chunks (see the module)."""
+        stats["streams"] += 1
+        self.send_response(200); self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache"); self.end_headers()
+        size = c.get("chunk_chars") or 8
+        pieces = lambda text: [text[i:i + size] for i in range(0, len(text), size)]
+        deltas = [{"role": "assistant", "content": ""}]
+        deltas += [{"reasoning": p} for p in pieces(message.get("reasoning") or "")]
+        deltas += [{"content": p} for p in pieces(message.get("content") or "")]
+        for i, call in enumerate(message.get("tool_calls") or []):
+            deltas.append({"tool_calls": [{"index": i, "id": call["id"], "type": "function",
+                                           "function": {"name": call["function"]["name"], "arguments": ""}}]})
+            deltas += [{"tool_calls": [{"index": i, "function": {"arguments": p}}]}
+                       for p in pieces(call["function"]["arguments"])]
+        head = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": "m"}
+        chunks = [{**head, "choices": [{"index": 0, "delta": d, "finish_reason": None}]} for d in deltas]
+        chunks.append({**head, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
+        if (body.get("stream_options") or {}).get("include_usage"):
+            chunks.append({**head, "choices": [], "usage": usage})
+        for n, obj in enumerate(chunks + [b"[DONE]"]):
+            if c.get("hang_after_chunks") is not None and n >= c["hang_after_chunks"]:
+                return self.hang(c)
+            time.sleep(c.get("slow_between_chunks", 0))
+            self.chunk(obj)
+    def hang(self, c):
+        """Sends nothing more (or only SSE comments) until the client closes the connection."""
+        end, beat = time.time() + c.get("hang_seconds", 120), time.time()
+        while time.time() < end and not self.gone():
+            time.sleep(0.05)
+            if c.get("hang_keepalive") and time.time() - beat >= c["hang_keepalive"]:
+                self.wfile.write(b": OPENROUTER PROCESSING\n\n"); self.wfile.flush(); beat = time.time()
+    def answer(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
-        import time; time.sleep(c.get("slow", 0))
+        time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})
         if self.path.endswith("/embeddings"):
@@ -93,6 +155,8 @@ class H(BaseHTTPRequestHandler):
             return self.reject(statuses[once["sent"] - 1], "the upstream server failed", "server_error", c)
         stats["chat"] += 1
         stats["last_chat"] = {k: v for k, v in body.items() if k != "messages"}   # the options of the request
+        if body.get("stream") and c.get("no_stream") is True:
+            return self.send(400, {"error": {"message": "stream is not supported", "type": "invalid_request_error"}})
         unsupported = c.get("no_structured_output")
         if unsupported and body.get("response_format") and \
                 (unsupported is True or body["response_format"].get("type") == unsupported):
@@ -148,10 +212,11 @@ class H(BaseHTTPRequestHandler):
             finish = "length"
         prompt = tokens(json.dumps(body["messages"]), c)
         completion = spent + tokens(message.get("content") or "", c) if c.get("usage_chars_per_token") else 1
+        usage = {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": prompt + completion}
+        if body.get("stream") and c.get("no_stream") != "ignore":
+            return self.stream(message, finish, usage, body, c)
         self.send(200, {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
-                        "choices": [{"index": 0, "finish_reason": finish, "message": message}],
-                        "usage": {"prompt_tokens": prompt, "completion_tokens": completion,
-                                  "total_tokens": prompt + completion}})
+                        "choices": [{"index": 0, "finish_reason": finish, "message": message}], "usage": usage})
 if __name__ == "__main__":
     print(f"fake API at http://127.0.0.1:{ARGS.port}/v1  (control: {ARGS.control})", flush=True)
     ThreadingHTTPServer(("127.0.0.1", ARGS.port), H).serve_forever()

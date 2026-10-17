@@ -21,13 +21,19 @@ correspondencia con la fuente, y atlas no necesita saber de dónde vienen los da
 
 ```
 DOORS ─► tools/doors_export ─┐
-ReqIF, hoja de cálculo... ───┼─► requirements.sqlite ─► atlas (adapter = "exchange")
+ReqIF ─► tools/reqif_import ─┼─► requirements.sqlite ─► atlas (adapter = "exchange")
+hoja de cálculo... ──────────┘
 ```
 
 - **DOORS**: `tools/doors_export` descarga en bruto desde DOORS (en el PC con DOORS) y
   publica la base aplicando `mapping.toml`. Ese fichero dice qué atributo da el ID y el
   texto, qué atributos pasan, cómo se llama cada módulo y qué tipo es cada módulo de
   enlaces. Ver [su README](../../tools/doors_export/README.md).
+- **ReqIF**: `tools/reqif_import` lee uno o varios `.reqif` o `.reqifz` (lo que entrega
+  DOORS cuando no hay acceso por COM, o lo que manda el cliente) en cualquier equipo, sin
+  dependencias, con el mismo `mapping.toml`: `SPECIFICATION` → módulo, `SPEC-HIERARCHY` →
+  padre, orden y nivel, `SPEC-OBJECT` → requisito, `SPEC-RELATION` → enlace tipado. Ver
+  [su README](../../tools/reqif_import/README.md).
 - **Otro origen**: basta con escribir la base con `ExchangeWriter`, que comprueba el
   contrato: IDs únicos, tipos válidos y enlaces que salen del propio módulo.
 

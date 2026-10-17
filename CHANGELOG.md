@@ -18,6 +18,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas plugins` dice qué raíces de código hay (y si salen del proyecto), qué se excluye y
   cuántos ficheros `.ads` y `.adb` ven.
 - `examples/samples/ada/samples.gpr` (`make_samples.py`), con una variable de escenario.
+- `tools/reqif_import/reqif_to_exchange.py`: la base de intercambio desde ficheros ReqIF
+  (`.reqif` y `.reqifz`), el segundo camino junto a `tools/doors_export`, en cualquier equipo y
+  sin dependencias (`xml.etree`). `SPECIFICATION` → módulo, `SPEC-HIERARCHY` → padre, orden,
+  nivel y numeración, `SPEC-OBJECT` → requisito, `SPEC-RELATION` → enlace del tipo de su
+  `SPEC-RELATION-TYPE`, con el `mapping.toml` de `publish.py` (`[fields]`, `[attributes]`,
+  `[modules]`, `[link_types]`, `[kinds]`; `Object Text` encuentra también `ReqIF.Text`) y sus
+  avisos: IDs repetidos o sin ID, enlaces a objetos de ningún fichero y, con `--id-pattern`,
+  IDs fuera de la convención. Varios ficheros se leen juntos, así que los enlaces entre sus
+  módulos se resuelven. `make_samples.py` escribe `examples/samples/requirements.reqif`, que da
+  las mismas filas que `requirements.sqlite`.
 
 ## [0.2.0] — 2026-10-16
 

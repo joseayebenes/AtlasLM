@@ -34,6 +34,7 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 | [atlas.mcp](atlas/mcp/README.md) | el servidor MCP y su configuración en el editor |
 | [atlas.agents](atlas/agents/README.md) | agentes en Markdown, verificación, informes, evaluación |
 | [tools/doors_export](tools/doors_export/README.md) | el exportador de DOORS a la base de intercambio |
+| [tools/reqif_import](tools/reqif_import/README.md) | el importador de ReqIF a la base de intercambio |
 | [Plan del proyecto](legacy/PLAN.md) | objetivos, arquitectura, fases y su estado |
 
 ## Puesta en marcha para desarrollar
@@ -158,12 +159,14 @@ atlas/
 ├── templates/      la plantilla de atlas init
 └── cli.py          las acciones de la línea de comandos
 docs/                       instalación, configuración y seguridad
-examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
+examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada y su GPR, requisitos,
+                            el mismo ReqIF)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)
 examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
+tools/reqif_import/         importador de ReqIF (.reqif, .reqifz) a la base de intercambio, sin dependencias
 tools/check_install.py      instalación limpia desde el wheelhouse (make check-install)
 tools/constraints.py        genera constraints.txt
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso

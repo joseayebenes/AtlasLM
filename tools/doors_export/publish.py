@@ -148,9 +148,25 @@ class Mapping:
         found = self.link_types.get(link_module) or self.link_types.get(last)
         return found or self.default_link_type or ("_".join(last.lower().split()) if last else "link")
 
+    def kind(self, attributes: dict[str, str], by_attribute: bool = True) -> str:
+        """By the [kinds] attribute if the mapping has one and the module too; otherwise, by
+        the content (`attributes`: the values of the object by their name in the source)."""
+        text, heading = attributes.get(self.text, "").strip(), attributes.get(self.heading, "").strip()
+        if not (self.kind_attribute and by_attribute):
+            return "requirement" if text else "heading" if heading else "information"
+        found = self.kind_values.get(_value_key(attributes.get(self.kind_attribute, "")))
+        if found:
+            return found
+        if self.kind_others == "heading_or_information":           # the attribute only tells the requirements
+            return "heading" if heading and not text else "information"
+        return self.kind_others or "requirement"
+
 
 @dataclass
 class Report:
+    MISSING = "modules not downloaded"          # where the targets of the links left out are
+    KEY = "Absolute Number"                     # what tells apart the objects of a repeated ID
+
     module: str
     path: str
     requirements: int = 0
@@ -171,7 +187,7 @@ class Report:
         missing = sum(self.not_downloaded.values())
         extra = [f"{n} {what}" for n, what in ((self.without_id, "objects without an ID left out"),
                                                (len(self.repeated_ids), "repeated IDs left out"),
-                                               (missing, "links to modules not downloaded"),
+                                               (missing, f"links to {self.MISSING}"),
                                                (self.unresolved_links - missing, "links to objects without an ID or deleted"))
                  if n]
         kinds = ", ".join(f"{k} {self.kinds[k]}" for k in KINDS if self.kinds[k])
@@ -217,17 +233,7 @@ class Publisher:
         return notes
 
     def kind(self, obj: DoorsObject, by_attribute: bool = True) -> str:
-        """By the [kinds] attribute if the mapping has one and the module too; otherwise, by the content."""
-        m = self.mapping
-        text, heading = obj.attributes.get(m.text, "").strip(), obj.attributes.get(m.heading, "").strip()
-        if not (m.kind_attribute and by_attribute):
-            return "requirement" if text else "heading" if heading else "information"
-        found = m.kind_values.get(_value_key(obj.attributes.get(m.kind_attribute, "")))
-        if found:
-            return found
-        if m.kind_others == "heading_or_information":              # the attribute only tells the requirements
-            return "heading" if heading and not text else "information"
-        return m.kind_others or "requirement"
+        return self.mapping.kind(obj.attributes, by_attribute)
 
     def module(self, path: str) -> tuple[list[dict], list[dict], Report]:
         """The requirements and links of a module, as the exchange database wants them."""
@@ -274,6 +280,35 @@ class Publisher:
         return requirements, links, report
 
 
+def warn(report: Report, mapping: Mapping) -> None:
+    """The warnings of a module before it is written (shared with tools/reqif_import)."""
+    if report.other_values:          # expected with [kinds] others; without it, maybe a value left out
+        (log.info if mapping.kind_others else log.warning)(
+            "%s: values of %s not in [kinds.values], taken as %s: %s", report.module,
+            mapping.kind_attribute, mapping.kind_others or "requirement",
+            _listed([f"{v!r} ({n})" for v, n in report.other_values.most_common()]))
+    if report.other_ids:             # documents and code cite requirements by the first one
+        log.warning("%s: %d requirements without %s, published with another ID: %s", report.module,
+                    len(report.other_ids), mapping.id[0], _listed(report.other_ids))
+    if report.repeated_ids:
+        log.warning("%s: %d repeated IDs left out (%s of the object published and of the one left out): %s",
+                    report.module, len(report.repeated_ids), report.KEY, _listed(report.repeated_ids))
+    if report.not_downloaded:        # published once those modules are there too
+        log.info("%s: links to %s: %s", report.module, report.MISSING,
+                 _listed([f"{p} ({n})" for p, n in report.not_downloaded.most_common()]))
+
+
+def write(writer: ExchangeWriter, report: Report, requirements: list[dict], links: list[dict]) -> None:
+    """Writes a module, with its warnings and its summary in the log."""
+    try:
+        report.warnings = writer.replace_module(report.module, requirements, links, source=report.path)
+    except ExchangeError as e:
+        report.error = str(e)
+    for w in report.warnings:
+        log.warning("%s", w)
+    log.info("%s", report.summary())
+
+
 def publish(raw: str, mapping: Mapping, out: str, modules: list[str] | None = None,
             keep_others: bool = False) -> list[Report]:
     """Publishes every complete module of the raw copy (or the given ones)."""
@@ -294,28 +329,8 @@ def publish(raw: str, mapping: Mapping, out: str, modules: list[str] | None = No
                     writer.remove_module(old)
             for path in paths:
                 requirements, links, report = publisher.module(path)
-                if report.other_values:          # expected with [kinds] others; without it, maybe a value left out
-                    (log.info if mapping.kind_others else log.warning)(
-                        "%s: values of %s not in [kinds.values], taken as %s: %s", report.module,
-                        mapping.kind_attribute, mapping.kind_others or "requirement",
-                        _listed([f"{v!r} ({n})" for v, n in report.other_values.most_common()]))
-                if report.other_ids:             # documents and code cite requirements by the first one
-                    log.warning("%s: %d requirements without %s, published with another ID: %s", report.module,
-                                len(report.other_ids), mapping.id[0], _listed(report.other_ids))
-                if report.repeated_ids:
-                    log.warning("%s: %d repeated IDs left out (Absolute Number of the object published and of the "
-                                "one left out): %s", report.module, len(report.repeated_ids),
-                                _listed(report.repeated_ids))
-                if report.not_downloaded:        # published once those modules are downloaded too
-                    log.info("%s: links to modules not downloaded: %s", report.module,
-                             _listed([f"{p} ({n})" for p, n in report.not_downloaded.most_common()]))
-                try:
-                    report.warnings = writer.replace_module(report.module, requirements, links, source=path)
-                except ExchangeError as e:
-                    report.error = str(e)
-                for w in report.warnings:
-                    log.warning("%s", w)
-                log.info("%s", report.summary())
+                warn(report, mapping)
+                write(writer, report, requirements, links)
                 reports.append(report)
     return reports
 

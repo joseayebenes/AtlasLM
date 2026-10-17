@@ -110,6 +110,9 @@ def code_step(ctx) -> Step | None:
     def files(ctx) -> list[str]:
         out = []
         for root in sc.get("roots", []):
+            if not Path(root).is_dir():
+                log.warning("[sources.code] roots: %s does not exist", root)
+                continue
             for p in sorted(Path(root).rglob("*")):
                 if p.is_file() and p.suffix.lower() in by_ext and \
                         not any(fnmatch.fnmatch(str(p).replace("\\", "/"), pat) for pat in exclude):

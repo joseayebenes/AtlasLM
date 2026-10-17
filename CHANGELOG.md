@@ -6,6 +6,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Corregido
+- Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
+  `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

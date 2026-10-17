@@ -439,3 +439,18 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_a_missing_code_root_is_warned(toml, tmp_path, caplog):
+    import pytest
+    from atlas.cli import _context, code_step
+    pytest.importorskip("tree_sitter_ada")
+    cfg = load_config(toml(f'''
+[sources.code]
+roots = ["{(tmp_path / 'no-such-src').as_posix()}"]
+languages = ["ada"]
+'''))
+    step = code_step(_context(cfg))
+    with caplog.at_level("WARNING", logger="atlas"):
+        assert step.units(None) == []
+    assert "no-such-src does not exist" in caplog.text

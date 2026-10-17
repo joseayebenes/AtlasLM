@@ -89,11 +89,12 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
-    "mcp": {"enabled": bool, "tools": list},
+    "mcp": {"enabled": bool, "tools": list, "profile": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
 }
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
+MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of atlas serve (atlas.mcp)
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -123,7 +124,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
     "agents": {"model": "", "dirs": ["agents"]},
-    "mcp": {"enabled": True, "tools": []},
+    "mcp": {"enabled": True, "tools": [], "profile": ""},     # "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
 }
 
@@ -181,6 +182,11 @@ def _validate_search(search: dict) -> None:
     for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
+
+
+def _validate_mcp(mcp: dict) -> None:
+    if mcp.get("profile", "") not in ("", *MCP_PROFILES):
+        raise ConfigError(f"[mcp] profile must be one of {', '.join(MCP_PROFILES)}")
 
 
 @dataclass
@@ -290,6 +296,7 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}))
+    _validate_mcp(data.get("mcp", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

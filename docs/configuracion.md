@@ -312,4 +312,5 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
-| `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
+| `tools` | lista | `[]` | las herramientas del servidor; vacío = las del perfil (`profile`). `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
+| `profile` | texto | `editor` con `[sources.code]`; si no, `all` | qué herramientas de las fuentes configuradas ofrece el servidor cuando `tools` está vacío: `editor`, las que necesita el agente de un editor para cambiar código (buscar, requisitos, trazabilidad, contexto y lectura de código); `trace`, las de trazabilidad de DOORS y los documentos; `all`, todas. Ver [los perfiles](../atlas/mcp/README.md#qué-herramientas-ofrece) |

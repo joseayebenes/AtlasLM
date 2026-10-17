@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -323,7 +324,7 @@ def test_genai_schemas_become_json_schemas():
                                                             "ys": {"type": "array", "items": {"type": "integer"}}}}}}]
 
 
-def test_build_context_fits_a_budget(workspace, monkeypatch):
+def test_build_context_fits_a_budget(workspace, samples, monkeypatch):
     from atlas.agents.tools import AgentTools
     monkeypatch.chdir(workspace.path.parent)
     plugins.load_plugins()
@@ -350,6 +351,59 @@ def test_build_context_fits_a_budget(workspace, monkeypatch):
     small = tools.run(target="tracks", budget_tokens=200)
     assert small["truncated"] and small["tokens"] <= 200 and "Spec" in small["omitted"]
     assert "not in the graph" in tools.run(target="nothing")["error"]
+
+    at = plugins.get("tool", "context_at")(context)                 # the file and line of the editor
+    assert at.run(path=str(samples / "ada" / "src" / "tracks.adb"), line=12)["target"] == "tracks.delete_track"
+    assert [Path(f) for f in at.run(path="nowhere/tracks.adb", line=12)["similar"]] == [
+        samples / "ada" / "src" / "tracks.adb"]
+
+
+def test_similar_requirements_already_implemented(workspace, samples, monkeypatch):
+    """Examples of how the project implements and tags a requirement, without a model: DOORS
+    first, then the search."""
+    from atlas.agents.context import build_context, similar_requirements
+    from atlas.graph import KnowledgeGraph
+    g = KnowledgeGraph.from_config(workspace)
+    found = similar_requirements(g, "srs-0005")                   # it references SRS-0004, which has code
+    assert (found["id"], found["count"]) == ("SRS-0005", 1)
+    x = found["similar"][0]
+    assert (x["id"], x["why"], x["code"]) == ("SRS-0004", ["linked in DOORS (references)"], "tracks.delete_track")
+    assert x["text"] == "The TMF shall process track event 4 within 320 ms."
+    assert x["signature"] == "procedure Delete_Track (I : Integer) is"
+    assert Path(x["tag"]["file"]) == samples / "ada" / "src" / "tracks.ads"    # in the spec, above the declaration
+    assert (x["tag"]["line"], x["tag"]["text"]) == (16, "-- Req: SRS-0004")
+    assert x["body"].startswith("   11 |    procedure Delete_Track") and "Trk_DB (I).Id := 0;" in x["body"]
+    assert similar_requirements(g, "SRS-0004")["similar"] == []    # SRS-0005 and SSS-0005 have no code
+    assert "not in the graph" in similar_requirements(g, "SRS-9999")["error"]
+
+    class Index:                                                   # what the search would find
+        def search(self, query, **options):
+            self.asked = (query, options)
+            return [{"ref": "SRS-0004"}, {"ref": "SRS-0006"}, {"ref": "srs-0005"}, {"ref": "SRS-0002"},
+                    {"ref": "SRS-0001"}]
+    index = Index()
+    found = similar_requirements(g, "SRS-0005", k=2, index=index)
+    assert index.asked == ("The TMF shall process track event 5 within 28 ms. This refines SRS-0004.",
+                           {"k": 8, "kinds": ["requirement"], "dense": False, "per_document": 0})
+    assert [x["id"] for x in found["similar"]] == ["SRS-0004", "SRS-0002"]     # with code, not itself
+    x = found["similar"][1]
+    assert x["why"] == ["its text is alike (search)"] and "body" not in x      # the body, of the first one only
+    assert x["tag"]["text"] == "-- Req: SRS-0002, SRS-0003"
+    x = similar_requirements(g, "SRS-0002", index=index)["similar"][-1]
+    assert (x["id"], x["code"]) == ("SRS-0001", "tracks.track")                # a type: the comment above it
+    assert (x["tag"]["line"], x["tag"]["text"]) == (3, "-- Req: SRS-0001")
+
+    # in build_context, the last block: the first one cut
+    md = build_context(g, "SRS-0005")["markdown"]
+    assert md.index("## Requirement") < md.index("## Similar requirements already implemented")
+    assert "Tag: " in md and "`-- Req: SRS-0004`" in md and "Logger.Log (\"delete\");" in md
+    small = build_context(g, "SRS-0005", budget_tokens=200)
+    assert small["truncated"] and "satisfies SSS-0006" in small["markdown"] and "Logger.Log" not in small["markdown"]
+
+    monkeypatch.chdir(workspace.path.parent)
+    plugins.load_plugins()
+    tool = plugins.get("tool", "similar_requirements")(SimpleNamespace(cfg=workspace, disabled=[]))
+    assert [x["id"] for x in tool.run(req_id="SRS-0005")["similar"]] == ["SRS-0004"]     # no index: DOORS
 
 
 # --- verification of requirements against the documentation ---------------------------------

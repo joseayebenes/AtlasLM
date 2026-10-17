@@ -95,5 +95,6 @@ runs = 1                                    # veces que se hace cada pregunta
 
 [mcp]                                       # atlas serve: servidor MCP para OpenCode, VS Code...
 enabled = true
-tools = []                                  # vacío: las de las fuentes configuradas; o una lista, p. ej.
+tools = []                                  # vacío: las del perfil; o una lista, p. ej.
                                             # ["search", "get_requirement", "trace", "impact", "read_source"]
+# profile = "editor"                         # editor (por defecto con código) | trace | all

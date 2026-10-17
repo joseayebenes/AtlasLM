@@ -6,6 +6,47 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[mcp] profile`: qué herramientas ofrece `atlas serve` cuando `[mcp] tools` está vacío.
+  `editor` (por defecto con `[sources.code]`) da las que necesita el agente de un editor para
+  cambiar código: `search`, `get_requirement`, `get_section`, `list_documents`, `trace`,
+  `trace_code`, `impact`, `build_context`, `find_symbol`, `read_source`, `read_file` y
+  `check_code` (y `context_at` y `similar_requirements`), 13 o 14 en vez de 29 con documentos
+  y código. `trace` da las de trazabilidad
+  de DOORS y los documentos, y `all` (por defecto sin código), todas las de las fuentes, como
+  antes.
+- Cada herramienta del servidor MCP lleva un título (`Trace code`), y las que solo leen el
+  workspace y el código, sin el modelo, se anotan como idempotentes y sin salida al exterior
+  (`idempotentHint`, `openWorldHint` falso): el cliente puede repetirlas sin preguntar.
+- Un elemento de código se puede dar por un fichero y una línea, `src/tracks.adb:12` (también
+  `C:\src\tracks.adb:12`): `trace_code`, `impact`, `read_source`, `get_node` y
+  `build_context` dan lo del subprograma que contiene esa línea, o el tipo, la variable o la
+  unidad. `context_at` (`path`, `line`) es `build_context` del fichero y la línea que el
+  editor tiene abiertos. El subprograma se busca en el fichero tal como está ahora, para que
+  las líneas añadidas desde el último `atlas run` no lo muevan. En la librería,
+  `KnowledgeGraph.at(fichero, línea)`.
+- `similar_requirements(req_id, k=3)` y un bloque «Similar requirements already implemented»
+  en `build_context` de un requisito: requisitos parecidos que ya tienen código, como ejemplo
+  de cómo se implementa y se etiqueta uno en el proyecto, con la firma del subprograma, la
+  línea de su `Req:` y, del primero, el principio de su cuerpo. Sin modelo: primero los
+  enlazados en DOORS (y su padre) y los que declaran las mismas secciones, después los que
+  encuentra la búsqueda por IDs y palabras. El bloque es el último, el primero que se recorta.
+- Las instrucciones de `atlas serve` llevan un párrafo «Traceability of this project»: la
+  etiqueta con la que el código cita los requisitos (`[sources.code] req_tag` o `req_regex`),
+  el patrón de los ID (`id_pattern`), los módulos de DOORS leídos y los pasos de un cambio
+  con las herramientas ofrecidas (contexto, editar, `check_code`, `run_test` de las pruebas
+  que da `trace`). También explican el servidor de lenguaje (`find_definition`,
+  `find_references`, `describe_symbol`), `run_program` y `search_reference`.
+
+### Corregido
+- Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
+  `library_spec`, aunque `check_code` se ofrece por defecto con un compilador.
+
+### Al actualizar
+- Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
+  `callees`, `matrix`, `gaps`, `ask_docs` y las demás. `[mcp] profile = "all"` vuelve a las
+  de antes; una lista en `[mcp] tools` sigue mandando.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

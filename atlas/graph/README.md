@@ -66,6 +66,17 @@ Sin modelo:
 | `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
 | `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
 | `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
+| `at(fichero, línea)` | el elemento de código que contiene esa línea: el subprograma o la prueba más interior, si no el tipo, la variable o la constante declarados en ella, si no la unidad del fichero |
+
+Un elemento de código se puede dar por su identificador (`tracks.update`), por su nombre
+simple si solo un elemento lo tiene (`Update`) o por un fichero y una línea
+(`src/tracks.adb:12`, también `C:\src\tracks.adb:12`): así `trace_code`, `impact`,
+`read_source`, `get_node` y `build_context` aceptan lo que el editor tiene abierto. El
+fichero es relativo a la carpeta del proyecto, o absoluto, y en Windows no distingue
+mayúsculas. El subprograma se busca en el fichero tal como está ahora (con tree-sitter),
+por su nombre, para que las líneas añadidas desde el último `atlas run` no lo muevan; si el
+fichero no se puede leer, valen las líneas del grafo. Un fichero que no está en el grafo
+responde con los del grafo que se llaman igual.
 
 Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta como
 implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
@@ -104,6 +115,7 @@ g = KnowledgeGraph.from_config(load_config("atlas.dev.toml"))
 g.impact("Delete_Track", depth=3)          # lo que depende de él, y los requisitos y pruebas afectados
 g.trace("SRS-0004")                       # DOORS, documentos, código y pruebas del requisito
 g.read_source("tracks.update")            # el código, con números de línea
+g.at("src/tracks.adb", 12)                # ("tracks.delete_track", None): lo que hay en esa línea
 ```
 
 `examples/library/traceability.py` construye el grafo de las muestras y hace estas

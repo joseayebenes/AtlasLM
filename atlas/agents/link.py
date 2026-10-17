@@ -35,7 +35,7 @@ from atlas.agents.definitions import AgentDef
 from atlas.config import Config
 from atlas.pipeline import atomic_write, sha256_text
 
-__all__ = ["CONFIDENCES", "candidates", "link", "link_all"]
+__all__ = ["CONFIDENCES", "candidates", "link", "link_all", "linked_requirements"]
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +61,13 @@ def _declarations(store) -> dict[tuple[str, str], str]:
     return out
 
 
+def linked_requirements(t: dict, graph) -> list[dict]:
+    """The requirements linked in DOORS, either way, to the one whose trace is `t`:
+    [{"id", "type", "text"}]."""
+    return [{"id": x["id"], "type": x["type"], "text": graph.G.nodes[x["id"]].get("text", "")}
+            for x in t["links_out"] + t["links_in"] if x["id"] in graph.G]
+
+
 def candidates(req_id: str, graph, index=None, declarations: dict | None = None) -> dict:
     """The requirement and its candidates, without a model: {"id", "official", "module",
     "documents", "linked", "implemented_by", "candidates": [{"id", "kind", "where", "tag_at",
@@ -80,8 +87,7 @@ def candidates(req_id: str, graph, index=None, declarations: dict | None = None)
     for x in t["documents"]:                                   # 1. what the sections that state it mention
         for n in graph._linked(x["id"], {"mentions"}, incoming=False):
             add(n, f"mentioned in {x['document']} › {x['title']}, which states {rid}")
-    linked = [{"id": x["id"], "type": x["type"], "text": graph.G.nodes[x["id"]].get("text", "")}
-              for x in t["links_out"] + t["links_in"] if x["id"] in graph.G]
+    linked = linked_requirements(t, graph)
     for x in linked:                                           # 2. the code of the requirements linked to it
         for n in graph._code_of(x["id"]):
             add(n, f"implements {x['id']}, linked to {rid} ({x['type']})")

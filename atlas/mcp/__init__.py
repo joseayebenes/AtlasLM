@@ -6,16 +6,29 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 
     atlas serve atlas.toml        stdio, the transport of local MCP clients
 
-[mcp] tools chooses the tools. When it is empty, the server offers those of the configured
-sources: the document tools with [[sources.docs]] (with only [sources.doors],
-get_requirement, and search when "index" is a step), the graph tools and read_file with
-[sources.code] (and check_code when it has a check_command), and without code the
-traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step;
-build_context with the graph. ask_atlas, verify_requirement, link_requirement and
-check_compliance (which need the model, and ask_atlas also ADK) are only offered when listed.
-So are the tools that write (edit_file, write_file, replace_subprogram, add_subprogram: atlas
-provides knowledge and the editor edits) and run_test, which runs code.
+[mcp] tools chooses the tools. When it is empty, [mcp] profile does:
+    editor   what the agent of an editor needs to change code (search, get_requirement,
+             get_section, list_documents, trace, trace_code, impact, build_context,
+             context_at, similar_requirements, find_symbol, read_source, read_file,
+             check_code); the default with [sources.code]
+    trace    the traceability of DOORS and the documents (trace, matrix, gaps,
+             list_requirements, neighbors, get_requirement, search)
+    all      the tools of the configured sources; the default without code
+The tools of the configured sources (default_tools) are the document tools with
+[[sources.docs]] (with only [sources.doors], get_requirement, and search when "index" is a
+step), the graph tools and read_file with [sources.code] (and check_code when it has a
+check_command), and without code the traceability tools of the graph (trace, matrix, gaps...)
+when "graph" is a step; build_context with the graph, and context_at and
+similar_requirements with the graph of the code. A profile only keeps some of them.
+ask_atlas, verify_requirement, link_requirement and check_compliance (which need the model,
+and ask_atlas also ADK) are only offered when listed. So are the tools that write (edit_file,
+write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
+edits) and run_test, which runs code.
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
+
+Every tool has a title ("Trace code") and annotations: those that write or run code are
+destructive; the others are read-only, and those that do not ask the model are also
+idempotent and closed-world (they only read the workspace and the code).
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
 is seen at once: the graph and the vectors are read again after it.
@@ -33,11 +46,16 @@ from atlas import plugins
 from atlas.config import Config, ConfigError
 from atlas.store import Store
 
-__all__ = ["create_server", "default_tools", "instructions", "serve", "tool_names"]
+__all__ = ["create_server", "default_tools", "instructions", "profile", "profile_tools", "serve", "tool_groups",
+           "tool_names", "traceability"]
 
 log = logging.getLogger(__name__)
 
 WRITING_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
+MODEL_TOOLS = ("ask_docs", "ask_atlas", "verify_requirement", "link_requirement", "check_compliance")
+EDITOR_TOOLS = ("search", "get_requirement", "get_section", "list_documents", "trace", "trace_code", "impact",
+                "build_context", "context_at", "similar_requirements", "find_symbol", "read_source", "read_file",
+                "check_code")
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
@@ -52,7 +70,10 @@ INSTRUCTIONS = {
              "and tests of a code element; `impact`, what a change affects; `matrix` and `gaps`, the "
              "traceability of a DOORS module and what it lacks.",
     "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
-               "(requirements, signatures, callers, tests, documents and source): use it before changing code.",
+               "(requirements, signatures, callers, tests, documents and source): use it before changing code. "
+               "`context_at` gives the same for a file and a line, those the editor has open; the tools that "
+               "take a code element also take \"file:line\". `similar_requirements` gives requirements like "
+               "one that already have code, with that code and its `Req:` tag: follow them.",
     "agents": "`ask_atlas` asks the assistant of atlas, which searches by itself and answers with citations "
               "(slower: use it for questions that need several searches); `verify_requirement` checks with the "
               "model whether a requirement and the documents agree; `link_requirement` proposes the code that "
@@ -63,9 +84,14 @@ INSTRUCTIONS = {
     "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
             "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
     "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
-             "every change; `run_test` builds a test procedure and runs it; `library_spec` gives the real "
-             "declarations of a package of the runtime or of the project.",
+             "every change; `run_test` builds a test procedure and runs it; `run_program` runs the program with "
+             "an input and returns its output; `library_spec` gives the real declarations of a package of the "
+             "runtime or of the project; `search_reference` searches the manuals of the compiler and the "
+             "declarations of the library by words.",
+    "lsp": "`find_definition`, `find_references` and `describe_symbol` ask the language server about a name written "
+           "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
+GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "edit", "build", "lsp")
 
 
 def _server_class() -> type:
@@ -98,6 +124,8 @@ def default_tools(cfg: Config) -> list[str]:
         try:
             from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS, TRACE_TOOLS
             names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names] + ["build_context"]
+            if code:
+                names += ["context_at", "similar_requirements"]
         except ImportError as e:            # networkx, of the [code] extra
             log.warning("no graph tools: %s", e)
     if code:
@@ -107,13 +135,35 @@ def default_tools(cfg: Config) -> list[str]:
     return names
 
 
+def profile(cfg: Config) -> str:
+    """[mcp] profile, or the one of the sources: editor with code, all without."""
+    return cfg["mcp"]["profile"] or ("editor" if _enabled(cfg["sources"].get("code")) else "all")
+
+
+def profile_tools(cfg: Config) -> list[str]:
+    """The tools of the configured sources that the profile keeps: what an empty [mcp]
+    tools means."""
+    names, name = default_tools(cfg), profile(cfg)
+    if name == "all":
+        return names
+    if name == "editor":
+        wanted = EDITOR_TOOLS
+    else:
+        try:
+            from atlas.graph.tools import TRACE_TOOLS
+        except ImportError:                 # networkx: default_tools has said it
+            TRACE_TOOLS = ()
+        wanted = (*TRACE_TOOLS, "get_requirement", "search")
+    return [n for n in names if n in wanted]
+
+
 def tool_names(cfg: Config) -> list[str]:
-    """The tools the server offers: [mcp] tools, or default_tools(cfg) if it is empty.
+    """The tools the server offers: [mcp] tools, or profile_tools(cfg) if it is empty.
     The plugins must be loaded (atlas.plugins.load_plugins)."""
     available, disabled = set(plugins.available("tool")), set(cfg["plugins"]["disabled"])
     wanted = list(dict.fromkeys(cfg["mcp"]["tools"]))
     if not wanted:
-        return [n for n in default_tools(cfg) if n in available and f"tool:{n}" not in disabled]
+        return [n for n in profile_tools(cfg) if n in available and f"tool:{n}" not in disabled]
     unknown = [n for n in wanted if n not in available]
     if unknown:
         raise ConfigError(f"[mcp] tools: unknown tools {unknown} (available: {', '.join(sorted(available))})")
@@ -123,21 +173,74 @@ def tool_names(cfg: Config) -> list[str]:
     return wanted
 
 
-def instructions(names: list[str]) -> str:
-    """What the server tells the client about its tools."""
+def tool_groups() -> dict[str, tuple[str, ...]]:
+    """Group of INSTRUCTIONS -> its tools: the paragraph of a group goes in the instructions
+    when the server offers any of them."""
+    from atlas.code.build import BUILD_TOOL_NAMES
+    from atlas.code.lsp import LSP_TOOL_NAMES
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test", "library_spec"),
-              "context": ("build_context",),
-              "agents": ("ask_atlas", "verify_requirement", "link_requirement", "check_compliance")}
-    try:
+    groups = {"docs": DOC_TOOLS, "files": tuple(n for n in FILE_TOOLS if n not in WRITING_TOOLS),
+              "edit": WRITING_TOOLS, "build": BUILD_TOOL_NAMES, "lsp": LSP_TOOL_NAMES}
+    try:                                    # networkx, of the [code] extra
+        from atlas.agents.tools import TOOL_NAMES as AGENT_TOOLS
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
-        groups["graph"] = GRAPH_TOOLS
     except ImportError:
-        pass
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "agents", "files", "edit")
-                                  if g in groups and set(groups[g]) & set(names)]
-    return "\n\n".join(parts)
+        return groups
+    return {**groups, "graph": GRAPH_TOOLS, "context": tuple(n for n in AGENT_TOOLS if n not in MODEL_TOOLS),
+            "agents": tuple(n for n in AGENT_TOOLS if n in MODEL_TOOLS)}
+
+
+def instructions(names: list[str], cfg: Config | None = None, store: Store | None = None) -> str:
+    """What the server tells the client about its tools and, with `cfg`, about the
+    traceability of the project (traceability)."""
+    groups = tool_groups()
+    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
+    if cfg is not None:
+        parts.append(traceability(cfg, names, store))
+    return "\n\n".join(p for p in parts if p)
+
+
+def traceability(cfg: Config, names: list[str], store: Store | None = None) -> str:
+    """The paragraph "Traceability of this project": how the code cites the requirements
+    ([sources.code] req_tag or req_regex), what their IDs look like ([sources.doors.convention]
+    id_pattern), the DOORS modules read (`store`), and the steps of a change with the tools
+    offered. "" without code or DOORS."""
+    sources, said = cfg["sources"], []
+    code = sources.get("code") if _enabled(sources.get("code")) else None
+    doors = sources.get("doors") if _enabled(sources.get("doors")) else None
+    try:
+        modules = store.modules() if store is not None and doors else []
+        example = (store.requirement_ids("", 1) if modules else []) or ["<ID>"]
+    except Exception:                       # a workspace that atlas run has not filled
+        modules, example = [], ["<ID>"]
+    if code:
+        if code.get("req_regex"):
+            said.append(f"The code cites the requirements it implements in comments that match `{code['req_regex']}`, "
+                        "and a test the requirements it verifies.")
+        else:
+            tag = (code.get("req_tag") or "Req:").strip()
+            mark = "#" if (code.get("languages") or ["ada"])[0] == "python" else "--"
+            said.append(f"The code cites the requirements it implements in a comment with the tag `{tag}` "
+                        f"(`{mark} {tag} {example[0]}`) by the subprogram or type, or by its declaration in a spec; a "
+                        "test cites those it verifies the same way. Add the tag to the code that implements a "
+                        "requirement.")
+    if doors:
+        pattern = (doors.get("convention") or {}).get("id_pattern")
+        if pattern:
+            said.append(f"Requirement IDs match `{pattern}`.")
+        if modules:
+            said.append(f"DOORS modules: {', '.join(modules)}.")
+    if code:
+        offered = set(names)
+        context = [f"`{n}`" for n in ("context_at", "build_context") if n in offered] or \
+            (["`trace_code`"] if "trace_code" in offered else [])
+        steps = [" or ".join(context) + " of the code to change" if context else "read the code to change", "edit it",
+                 "`check_code` the file until it has no errors" if "check_code" in offered else "compile it",
+                 ("`run_test` " if "run_test" in offered else "run ") +
+                 ("the tests that `trace` gives for its requirements" if "trace" in offered else "its tests")]
+        said.append("A change: " + " -> ".join(steps) + ".")
+    return "Traceability of this project: " + " ".join(said) if said else ""
 
 
 def create_server(cfg: Config, context: Any = None) -> Any:
@@ -151,13 +254,25 @@ def create_server(cfg: Config, context: Any = None) -> Any:
         plugins.load_plugins(cfg["plugins"]["modules"])
         context = SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
     names = tool_names(cfg)
-    server = server_class("atlas", instructions=instructions(names))
+    server = server_class("atlas", instructions=instructions(names, cfg, getattr(context, "store", None)))
     for name in names:
         tool = plugins.get("tool", name, cfg["plugins"]["disabled"])(context)
-        server.add_tool(tool.function(), name=name, description=tool.description or None,
-                        annotations=ToolAnnotations(readOnlyHint=not tool.writes, destructiveHint=tool.writes))
-    log.info("MCP server over %s with %d tools: %s", cfg.workspace, len(names), ", ".join(names))
+        server.add_tool(tool.function(), name=name, title=name.replace("_", " ").capitalize(),
+                        description=tool.description or None, annotations=_annotations(ToolAnnotations, name, tool))
+    log.info("MCP server over %s with %d tools (profile %s): %s", cfg.workspace, len(names),
+             profile(cfg) if not cfg["mcp"]["tools"] else "[mcp] tools", ", ".join(names))
     return server
+
+
+def _annotations(annotations: type, name: str, tool: Any) -> Any:
+    """What a tool does, for the client: one that writes or runs code is destructive; one that
+    only reads the workspace and the code, without the model, gives the same answer to the
+    same call and reaches nothing outside."""
+    if tool.writes:
+        return annotations(readOnlyHint=False, destructiveHint=True)
+    if name in MODEL_TOOLS:
+        return annotations(readOnlyHint=True, destructiveHint=False)
+    return annotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
 def serve(cfg: Config, context: Any = None) -> None:

@@ -33,16 +33,28 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     code = f'[sources.code]\nroots = ["{tmp_path.as_posix()}"]\n'
     docs = f'[[sources.docs]]\nname = "d"\npaths = ["{tmp_path.as_posix()}"]\n'
     cfg = load_config(toml(code + docs))
-    names = tool_names(cfg)
+    names = tool_names(cfg)                       # with code, the profile of an editor
+    assert names == ["list_documents", "search", "get_section", "get_requirement", "find_symbol", "impact",
+                     "read_source", "trace", "trace_code", "build_context", "context_at", "similar_requirements", "read_file"]
+    checked = load_config(toml(code + 'check_command = ["gcc", "-c", "{file}"]\n' + docs))
+    assert tool_names(checked)[-1] == "check_code"
+    names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "all"\n')))
     assert names[:5] == ["list_documents", "search", "get_section", "get_requirement", "ask_docs"]
     assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "build_context",
             "read_file"} <= set(names)
     assert not {"edit_file", "write_file", "grep"} & set(names)              # knowledge; the editor edits
+    assert tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "trace"\n'))) == [
+        "search", "get_requirement", "trace", "matrix", "gaps", "list_requirements", "neighbors"]
+    assert tool_names(load_config(toml())) == default_tools(load_config(toml()))     # without code, all
+    with pytest.raises(ConfigError, match="profile must be one of editor, trace, all"):
+        load_config(toml('[mcp]\nprofile = "small"\n'))
     server = create_server(cfg)
     tools = _tools(server)
-    assert list(tools) == names
+    assert list(tools) == tool_names(cfg)
     assert tools["impact"]["inputSchema"]["required"] == ["name"]
-    assert tools["impact"]["annotations"]["readOnlyHint"] is True
+    assert tools["trace_code"]["title"] == "Trace code"
+    assert tools["impact"]["annotations"] == {"readOnlyHint": True, "destructiveHint": False,
+                                              "idempotentHint": True, "openWorldHint": False}
     assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
     assert "find_symbol -> get_node" in server.instructions and "edit_file" not in server.instructions
     assert "`build_context` gives in one call" in server.instructions
@@ -53,14 +65,52 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert list(tools) == ["search", "edit_file", "ask_atlas"]
     assert "`ask_atlas` asks the assistant" in server.instructions
     assert tools["edit_file"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
+    assert tools["ask_atlas"]["annotations"] == {"readOnlyHint": True, "destructiveHint": False}   # the model
     with pytest.raises(ConfigError, match=r"unknown tools \['graph_query'\]"):
         create_server(load_config(toml('[mcp]\ntools = ["search", "graph_query"]\n')))
     with pytest.raises(ConfigError, match="disabled"):
         create_server(load_config(toml('[mcp]\ntools = ["search"]\n[plugins]\ndisabled = ["tool:search"]\n')))
     names = tool_names(load_config(toml(code + '[plugins]\ndisabled = ["tool:impact"]\n')))
-    assert "impact" not in names and "callers" in names
+    assert "impact" not in names and "trace_code" in names
     with pytest.raises(ConfigError, match="turned off"):
         create_server(load_config(toml("[mcp]\nenabled = false\n")))
+
+
+def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(toml, samples):
+    """Each tool, offered alone, has its paragraph in the instructions (the compiler and the
+    language server had none), and only the tools that write or run code are not read-only."""
+    pytest.importorskip("mcp")
+    from atlas.mcp import INSTRUCTIONS, create_server, tool_groups
+    from atlas.plugins import Requirement
+    from atlas.store import Store
+    plugins.load_plugins()
+    code = f'[sources.code]\nroots = ["{(samples / "ada").as_posix()}"]\nlanguages = ["ada"]\n'
+    groups = tool_groups()
+    for name in plugins.available("tool"):
+        cfg = load_config(toml(f'{code}[mcp]\ntools = ["{name}"]\n'))
+        server = create_server(cfg)
+        paragraphs = [INSTRUCTIONS[g] for g, tools in groups.items() if name in tools]
+        assert paragraphs and all(p in server.instructions for p in paragraphs), name
+        tool = plugins.get("tool", name)
+        assert _tools(server)[name]["annotations"]["readOnlyHint"] is (not tool.writes), name
+    assert "`run_program` runs the program" in create_server(load_config(
+        toml(code + '[mcp]\ntools = ["run_program"]\n'))).instructions
+
+    # how this project cites requirements, its IDs and modules, and the steps of a change
+    cfg = load_config(toml(code))
+    store = Store(cfg.workspace)
+    store.replace_module("SRS_TMS", [Requirement("SRS-0004", "Delete.", "SRS_TMS")], [], {"SRS-0004": "h"})
+    text = create_server(cfg).instructions
+    assert "Traceability of this project: The code cites the requirements it implements in a comment with the " \
+           "tag `Req:` (`-- Req: SRS-0004`)" in text
+    assert "Requirement IDs match `^(?:SRS|SSS)-\\d{4}$`. DOORS modules: SRS_TMS." in text
+    assert "A change: `context_at` or `build_context` of the code to change -> edit it -> compile it -> run the " \
+           "tests that `trace` gives for its requirements." in text
+    text = create_server(load_config(toml(code.replace("languages", 'req_regex = "@req (.+)"\nlanguages') +
+                                          '[mcp]\ntools = ["read_file", "check_code", "run_test"]\n'))).instructions
+    assert "in comments that match `@req (.+)`" in text
+    assert "A change: read the code to change -> edit it -> `check_code` the file until it has no errors -> " \
+           "`run_test` its tests." in text
 
 
 @pytest.fixture
@@ -91,6 +141,8 @@ analysis = "regex"
 [sources.code]
 roots = ["{ada.as_posix()}"]
 test_patterns = ["**/tests/**"]
+[mcp]
+profile = "all"
 '''))
     assert run(cfg) == 0
     return cfg, ada, docs
@@ -175,7 +227,7 @@ def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
 
     anyio.run(client)
     log = errlog.read_text()
-    assert "MCP server over" in log and "27 tools" in log                     # logs go to stderr
+    assert "MCP server over" in log and "29 tools (profile all)" in log                     # logs go to stderr
 
 
 def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):

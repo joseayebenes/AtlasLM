@@ -1079,3 +1079,18 @@ def test_the_concurrency_of_the_model_is_not_the_workers_of_the_documents(toml):
         load_config(toml('[llm]\nconcurrency = -1\n'))
     with pytest.raises(ConfigError, match="'part_workers' must be at least 1"):
         load_config(toml('[search]\npart_workers = 0\n'))
+
+
+def test_the_output_is_utf_8_in_a_cp1252_console(tmp_path):
+    """A Windows console or redirected output is cp1252: without reconfiguring the output,
+    printing "→" ends the action with UnicodeEncodeError."""
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+    target = tmp_path / "plan → 2.toml"
+    res = subprocess.run([sys.executable, "-m", "atlas.cli", "init", str(target)], capture_output=True,
+                         cwd=Path(__file__).resolve().parents[1], timeout=120,
+                         env={**os.environ, "PYTHONIOENCODING": "cp1252", "PYTHONUTF8": "0"})
+    assert res.returncode == 0, res.stderr.decode("utf-8", "replace")
+    assert "plan → 2.toml" in res.stdout.decode("utf-8") and target.exists()

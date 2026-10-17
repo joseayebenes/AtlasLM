@@ -66,6 +66,9 @@ from typing import Iterable
 from atlas.doors.exchange import KINDS, open_exchange
 from atlas.plugins import Link, Requirement, RequirementsAdapter, register
 
+__all__ = ["DEFAULT_CONVENTION", "DatabaseAdapter", "ExchangeAdapter", "diff_requirements", "hash_requirement",
+           "normalize_id", "requirement_to_dict"]
+
 log = logging.getLogger(__name__)
 
 DEFAULT_CONVENTION = {

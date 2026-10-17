@@ -47,8 +47,10 @@ include = ["atlas*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--durations=15"                   # the 15 slowest tests at the end of every run
 markers = ["model: needs the real model of ATLAS_TEST_CONFIG (atlas.dev.toml by default); skipped if atlas check fails",
-           "ollama: the old name of the marker model (the same tests)"]
+           "ollama: the old name of the marker model (the same tests)",
+           "slow: starts processes, waits or takes seconds (make test-fast leaves them out)"]
 filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning",       # notices of ADK about its own features
                   "ignore:builtin type [Ss]wig.* has no __module__:DeprecationWarning"]   # pymupdf on Python 3.13
 

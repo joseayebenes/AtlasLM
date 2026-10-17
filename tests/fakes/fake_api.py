@@ -57,7 +57,8 @@ each tool call by its index (the id and the name first, then the arguments in pi
 finish_reason, the usage in a last chunk without choices if stream_options.include_usage, and
 [DONE].
 GET / returns counters (chat, embeddings, emb_texts, rejections, streams; open: the POST requests
-being answered now; times: the epoch seconds of the last accepted requests), and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
+being answered now; times: the epoch seconds of the last accepted requests), and the options of the last chat request (without its messages);
+POST /reset puts the counters at zero and forgets the last chat request. Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
@@ -159,6 +160,9 @@ class H(BaseHTTPRequestHandler):
             if c.get("hang_keepalive") and time.time() - beat >= c["hang_keepalive"]:
                 self.wfile.write(b": OPENROUTER PROCESSING\n\n"); self.wfile.flush(); beat = time.time()
     def answer(self):
+        if self.path == "/reset":       # this request is still open: the finally of do_POST closes it
+            stats.clear(); stats.update(chat=0, embeddings=0, emb_texts=0, streams=0, open=1, times=[])
+            return self.send(200, stats)
         raw = self.rfile.read(int(self.headers["Content-Length"])); body = json.loads(raw); c = ctl()
         if c.get("bodies"):
             with open(c["bodies"], "ab") as f: f.write(raw.replace(b"\n", b" ") + b"\n")

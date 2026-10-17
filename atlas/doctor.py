@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from atlas import plugins
-from atlas.config import Config, unset_hint
+from atlas.config import Config, ConfigError, unset_hint
 
 LEVELS = ("ok", "warn", "fail")
 TESTED_PYTHON = ((3, 10), (3, 13))          # the versions of constraints.txt and of the tests
@@ -293,8 +293,8 @@ def _connection(cfg: Config) -> list[Finding]:
     for name, service in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
         try:
             res = check_service(name, service)
-        except SystemExit as e:             # the TLS setup gives up: a ca_cert that does not exist...
-            res = {"ok": False, "detail": str(e.code)}
+        except ConfigError as e:            # the TLS setup gives up: a ca_cert that does not exist...
+            res = {"ok": False, "detail": str(e)}
         out.append(Finding("ok" if res["ok"] else "fail", f"connection {name.lower()}",
                            f"{service.model} at {mask_credentials(service.base_url)}: {res['detail']}",
                            "" if res["ok"] else "atlas check gives the details"))

@@ -22,6 +22,9 @@ lint:           ## ruff sobre todo el repositorio (la configuración, en pyproje
 typecheck:      ## mypy sobre atlas; los módulos aún sin limpiar, en [[tool.mypy.overrides]]
 	$(PY) -m mypy atlas
 
+test-fast:      ## las mismas sin las marcadas slow (ejemplos, proyecto grande, kill -9, esperas, compilador)
+	$(PY) -m pytest -q -m "not slow"
+
 test-ollama:    ## pruebas con modelo contra Ollama local (atlas.dev.toml; se omiten si atlas check falla)
 	$(PY) -m pytest -q -m model
 
@@ -85,6 +88,6 @@ check-install: wheelhouse   ## instalación limpia desde dist/wheelhouse, como d
 clean:
 	rm -rf workspace-dev workspace-test workspace-openrouter examples/samples examples/large .pytest_cache dist build *.egg-info
 
-.PHONY: install samples fake test lint typecheck test-ollama test-gateway run-test large run-dev status sections check serve \
+.PHONY: install samples fake test test-fast lint typecheck test-ollama test-gateway run-test large run-dev status sections check serve \
 	check-openrouter run-openrouter eval-openrouter compare-openrouter eval-develop \
 	wheel wheelhouse wheelhouse-windows check-install clean

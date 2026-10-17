@@ -168,6 +168,7 @@ profile = "all"
     return cfg, ada, docs
 
 
+@pytest.mark.slow
 def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path, capsys):
     import anyio
     from mcp import ClientSession, StdioServerParameters

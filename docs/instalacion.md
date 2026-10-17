@@ -121,6 +121,7 @@ La clave del gateway no se escribe en `atlas.toml`: se lee del entorno, siempre 
 
 ```powershell
 setx ATLAS_API_KEY "la-clave"            # Windows: abre otra terminal después
+setx PYTHONUTF8 1                        # UTF-8 también en lo que no pasa por atlas (scripts de tools/)
 ```
 
 ```bash

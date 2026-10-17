@@ -149,6 +149,7 @@ test_patterns = ["**/tests/**"]
     return cfg
 
 
+@pytest.mark.slow
 def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatch):
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
@@ -368,6 +369,7 @@ def _until(condition, seconds=3.0):
     return condition()
 
 
+@pytest.mark.slow
 def test_a_turn_that_hangs_is_cut_and_asked_again(fake_llm, fake_stats, caplog):
     """The timeout of the HTTP client is between two reads: a server that keeps the connection
     alive never reaches it. A streamed turn without a chunk for idle_timeout seconds is cut (the

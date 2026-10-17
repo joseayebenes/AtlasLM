@@ -428,6 +428,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   nuevo no se abre. `atlas status` muestra la versión del esquema junto a la de atlas de la
   última ejecución. Antes cada tabla se creaba si faltaba y nada comprobaba que el resto
   sirviera.
+- `docs/api.md`: la API pública, lo que se promete de la librería. Cada módulo tiene
+  `__all__`; `atlas` exporta `load`, `Config`, `ConfigError` y `__version__`, y `atlas.agents`
+  `run_agent` y `build_context`. Una prueba comprueba que los ejemplos de `examples/library`
+  solo usan esos nombres.
+- Pruebas: `pytest` imprime las 15 más lentas (`--durations=15`), el marcador `slow`
+  (ejemplos, proyecto grande, `kill -9`, esperas, compilador, servidor de lenguaje y Ollama) y
+  `make test-fast`, que las deja fuera. El servidor falso es uno por sesión: cada prueba lo
+  encuentra sin fallos y con los contadores a cero (`POST /reset`).
+- `docs/contribuir.md`: ramas (gitflow), mensajes de commit, cómo pasar las pruebas y la
+  lista de cada versión. El README dice cuántas pruebas hay (249 sin modelo) y cuánto tardan.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -487,6 +497,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `stall_steps` 15 y `keep_tool_results` 10, sin `reasoning_effort` en el fichero. El de la
   fase 5 (con `edit_file` y `write_file` solamente) se quita: con él fallaba el 53 % de las
   ediciones de `gemma-4-26b`, con el medido el 11 %.
+- `atlas.llm` ya no termina el proceso: un certificado de CA que no existe, `ca_cert =
+  "system"` sin `truststore` o el cliente `openai` sin instalar lanzan `ConfigError` con el
+  mismo texto. En `atlas run` un `ConfigError` para la ingesta (antes cada unidad), y el
+  servidor MCP sigue vivo.
+- Los avisos del limitador (rechazos por límite, reintentos) van al logger `atlas.llm` en vez
+  de escribirse en stderr: los gobierna `[project] log_level`.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -551,9 +567,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
   Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
   `failed_parts`) y la respuesta se escribe con las demás.
+- En Windows, con la salida en una consola `cp1252` o redirigida a un fichero, un texto con
+  `→` o `≤` (un requisito, un título) terminaba la acción con `UnicodeEncodeError`: la línea
+  de comandos escribe siempre en UTF-8. Para los scripts que no pasan por ella, la guía de
+  instalación añade `setx PYTHONUTF8 1`.
+- Los Markdown y el `structure.json` de cada documento, y lo que se escribe con
+  `atomic_write`, llevan `\n` también en Windows (antes `\r\n`): un workspace copiado entre
+  sistemas tiene los mismos bytes.
 
 ### Quitado
 - `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.
+- El modo independiente de `atlas.llm.connection` (`python -m atlas.llm.connection init |
+  show | check`, con su propio `connection.toml`): nadie lo usaba y `legacy/conexion.py` lo
+  conserva. `atlas check` hace lo mismo con `atlas.toml`.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,

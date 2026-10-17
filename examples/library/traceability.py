@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from atlas.agents.context import build_context  # noqa: E402
+from atlas.agents import build_context  # noqa: E402
 from atlas.cli import run  # noqa: E402
 from atlas.config import load_config  # noqa: E402
 from atlas.graph import KnowledgeGraph  # noqa: E402

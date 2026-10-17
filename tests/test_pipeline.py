@@ -1,5 +1,5 @@
 import pytest
-from atlas.pipeline import FatalError, Ledger, Runner, Step
+from atlas.pipeline import FatalError, Ledger, Runner, Step, atomic_write
 
 
 def _step(name, units, fingerprints, run, **kw):
@@ -59,6 +59,17 @@ def test_errors_quarantine_and_fatal(tmp_path):
     assert rep.fatal and ledger.get("q", "after") is None         # never touched
 
 
+def test_a_configuration_error_stops_the_run_instead_of_failing_each_unit(tmp_path):
+    from atlas.config import ConfigError
+
+    def run(ctx, u):
+        raise ConfigError("CA certificate /missing.pem does not exist")
+
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, run, parallel=False)]).run()
+    assert rep.fatal == "p: CA certificate /missing.pem does not exist" and ledger.get("p", "b") is None
+
+
 def test_prunes_vanished_units(tmp_path):
     pruned = []
     units = ["a", "b"]
@@ -99,6 +110,7 @@ def test_parallel_units_share_the_ledger_and_store_safely(tmp_path):
     assert ledger.summary() == {"p": {"ok": 300}} and store.counts()["code_units"] == 300
 
 
+@pytest.mark.slow
 def test_kill_9_releases_the_workspace_and_the_next_run_resumes(tmp_path):
     """A run killed in the middle of a unit (kill -9: no cleanup at all) leaves no lock
     behind: the next run starts, redoes that unit and does not repeat the finished ones."""
@@ -351,3 +363,14 @@ def test_progress_lines_with_the_time_left(tmp_path):
     runner.PROGRESS_UNITS = 5
     runner.run()
     assert lines == ["p 5/12 units, under 1 min, under 1 min left", "p 10/12 units, under 1 min, under 1 min left"]
+
+
+def test_what_atlas_writes_has_no_carriage_returns(tmp_path, docs_samples):
+    """On Windows, text written without newline="\\n" gets \\r\\n: the same workspace would
+    have other bytes on each system."""
+    atomic_write(tmp_path / "a.md", "line → one\nline two\n")
+    assert (tmp_path / "a.md").read_bytes() == "line → one\nline two\n".encode("utf-8")
+    from atlas.docs import DocsOptions, process_document
+    process_document(docs_samples / "hmi_manual.md", tmp_path / "hmi", DocsOptions(analysis="none"))
+    written = [p for p in (tmp_path / "hmi").rglob("*") if p.is_file()]
+    assert len(written) > 6 and [p.name for p in written if b"\r" in p.read_bytes()] == []

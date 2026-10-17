@@ -88,6 +88,8 @@ from atlas.db import schema_version
 from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, Stopping, clock, sha256_file, sha256_text
 from atlas.store import Store
 
+__all__ = ["main", "run"]
+
 if TYPE_CHECKING:
     from atlas.docs import DocsOptions
 
@@ -1963,6 +1965,11 @@ def _logged(action: str, function, cfg: Config):
 
 
 def main(argv: list[str] | None = None) -> None:
+    # A Windows console, or its output redirected to a file, is cp1252: a requirement with
+    # "→" or "≤" would end the action with UnicodeEncodeError.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     argv = sys.argv[1:] if argv is None else argv
     if not argv or argv[0] in ("-h", "--help"):
         print(__doc__)

@@ -24,6 +24,8 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
 | [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
+| [API pública](docs/api.md) | lo que se puede usar como librería y no cambia sin avisar |
+| [Contribuir](docs/contribuir.md) | ramas, mensajes de commit, pruebas y la lista de cada versión |
 | [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
 | [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |
 | [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |
@@ -46,6 +48,11 @@ pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
 python -m pytest -q                                # las pruebas sin modelo (+7 con modelo, si atlas check pasa)
 ```
+
+La suite entera tarda unos 2 minutos en un Mac (2026-10-17, sin las de Ollama); `make
+test-fast`, sin las marcadas `slow` (ejemplos, proyecto grande, `kill -9`, esperas,
+compilador y Ollama), medio minuto. Al final, `pytest` lista las 15 más lentas. Cómo se
+trabaja (ramas, commits, versiones): [contribuir](docs/contribuir.md).
 
 ### Niveles de modelo
 

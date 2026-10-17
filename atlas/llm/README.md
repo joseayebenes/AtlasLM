@@ -175,9 +175,6 @@ data = llm.ask_json("Answer in JSON.", "List two colours.", {"type": "object", "
 print(data["colours"], usage()["chat"])
 ```
 
-También funciona solo, con su propio `connection.toml`:
-`python -m atlas.llm.connection init | show | check`.
-
 ## Pruebas
 
 `tests/test_rate_limit.py` (la ventana compartida, con dos procesos reales), `tests/test_fake_api.py` (cliente, `check` con modelos que razonan y el escalón de salida

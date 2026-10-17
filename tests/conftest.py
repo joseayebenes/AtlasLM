@@ -20,6 +20,23 @@ def _streams_learned_per_test():
     chat._STREAMS.clear()
     yield
     chat._STREAMS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_log_handlers_left():
+    """atlas.logs.setup_logging (each action of the CLI) puts on the root logger a handler of
+    the stderr that the test had: it goes with that test, and the next one starts without it
+    (a handler writing to a stderr already closed prints "Logging error" in the next test)."""
+    yield
+    import logging
+    from atlas import logs
+    root = logging.getLogger()
+    for h in logs._STATE["handlers"]:
+        root.removeHandler(h)
+        h.close()
+    logs._STATE.update(handlers=[], key=None)
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _limits_dir(tmp_path_factory):
     """The windows that the limiter shares between processes (atlas.llm.connection.limits_dir)
@@ -77,11 +94,12 @@ inline_reference_regex = "\\\\b(?:SRS|SSS)-\\\\d{{4}}\\\\b"
     return _make
 
 
-@pytest.fixture
-def fake(tmp_path):
-    """tests/fakes/fake_api.py on a free port. Yields (base_url, control file)."""
+@pytest.fixture(scope="session")
+def fake_server(tmp_path_factory):
+    """tests/fakes/fake_api.py on a free port, one for the whole session. Yields (base_url,
+    control file)."""
     sock = socket.socket(); sock.bind(("127.0.0.1", 0)); port = sock.getsockname()[1]; sock.close()
-    control = tmp_path / "faults.json"; control.write_text("{}")
+    control = tmp_path_factory.mktemp("fake") / "faults.json"; control.write_text("{}")
     proc = subprocess.Popen([sys.executable, str(Path(__file__).parent / "fakes" / "fake_api.py"),
                              "--port", str(port), "--control", str(control)])
     for _ in range(50):
@@ -91,6 +109,26 @@ def fake(tmp_path):
             time.sleep(0.1)
     yield f"http://127.0.0.1:{port}/v1", control
     proc.terminate(); proc.wait(timeout=5)
+
+
+@pytest.fixture
+def fake(fake_server):
+    """The fake API as each test finds it: no faults in the control file, the counters at
+    zero (POST /reset) and nothing of another test learned by this process about it (they are
+    shared by URL): no limiter (a rejection slows down or pauses the next requests), no window
+    of the limit shared between processes, no tier of response_format.
+    Yields (base_url, control file)."""
+    from atlas.llm import connection, structured
+    url, control = fake_server
+    control.write_text("{}")
+    urllib.request.urlopen(urllib.request.Request(url.removesuffix("/v1") + "/reset", data=b"", method="POST"))
+    with connection._LIMITERS_LOCK:
+        connection._LIMITERS.clear()
+    with structured._TIERS_LOCK:
+        structured._TIERS.clear()
+    for window in connection.limits_dir().glob("*"):
+        window.unlink(missing_ok=True)
+    yield url, control
 
 
 @pytest.fixture

@@ -10,6 +10,8 @@ from pathlib import Path
 
 from atlas.db import connect
 
+__all__ = ["Store"]
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requirements (
     id TEXT PRIMARY KEY, module TEXT, text TEXT, parent TEXT, attributes TEXT, hash TEXT, raw_id TEXT);

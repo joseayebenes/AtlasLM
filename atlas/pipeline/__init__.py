@@ -3,9 +3,9 @@
 A `Step` declares its units, how to compute the fingerprint of each one and how to
 process it. The `Runner` checks the `Ledger` (SQLite): if the fingerprint has not changed
 and the unit is ok, it skips it; otherwise it processes it. Errors of a single unit are
-recorded and the run goes on; fatal ones (connection, credentials, exhausted quota) stop
-the run with the state saved. Running again resumes. Units that disappear are marked
-stale and, optionally, pruned.
+recorded and the run goes on; fatal ones (connection, credentials, exhausted quota, and a
+ConfigError, such as a CA certificate that does not exist) stop the run with the state
+saved. Running again resumes. Units that disappear are marked stale and, optionally, pruned.
 
 Each run leaves a time profile in its report and in the `runs` table of the ledger: per
 step, the seconds spent finding the work (units and fingerprints) and doing it, the slowest
@@ -45,7 +45,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from atlas.config import ConfigError
 from atlas.db import connect
+
+__all__ = ["FatalError", "Interrupted", "Ledger", "RunReport", "Runner", "Step", "Stopping", "WorkspaceLocked",
+           "atomic_write", "clock", "sha256_file", "sha256_text"]
 
 log = logging.getLogger(__name__)
 
@@ -104,14 +108,13 @@ def clock(seconds: float) -> str:
 
 def atomic_write(path: str | Path, content: str | bytes) -> None:
     """Atomic write: temporary file + rename. The temporary file is the thread's own, so
-    two threads can write the same file at the same time (the last one wins)."""
+    two threads can write the same file at the same time (the last one wins). A text is
+    written as UTF-8 with its line breaks as they are (\n on Windows too): a workspace
+    copied between systems has the same bytes, and nothing is reprocessed."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
-    if isinstance(content, str):
-        tmp.write_text(content, encoding="utf-8")
-    else:
-        tmp.write_bytes(content)
+    tmp.write_bytes(content.encode("utf-8") if isinstance(content, str) else content)
     os.replace(tmp, path)
 
 
@@ -123,7 +126,8 @@ class Step:
     run: Callable[[Any, str], Any]
     prune: Callable[[Any, str], None] | None = None
     depends_on: list[str] = field(default_factory=list)
-    is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, FatalError)
+    # a configuration error is the same for every unit: retrying them does not fix it
+    is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, (FatalError, ConfigError))
     parallel: bool = True
     workers: int | None = None      # units at the same time; None = those of the Runner
     # Called once with the units about to be processed, before them: to do together what

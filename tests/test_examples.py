@@ -1,5 +1,9 @@
 """The examples run as they are, so that they do not fall behind the code they show: those of
-library use (examples/library), and the agents of examples/agents load with their tools."""
+library use (examples/library), which use only the public API of docs/api.md, and the agents
+of examples/agents load with their tools."""
+import ast
+import importlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,17 +20,20 @@ def _run(script: str, *args) -> str:
     return res.stdout
 
 
+@pytest.mark.slow
 def test_pipeline_example(samples, tmp_path):
     out = _run("pipeline.py", tmp_path)
     assert "second run: {}" in out and "profile of the first one" in out
 
 
+@pytest.mark.slow
 def test_documents_example(docs_samples, tmp_path):
     pytest.importorskip("markitdown")
     out = _run("documents.py", tmp_path)
     assert "requirements, e.g. SRS-0001" in out and (tmp_path / "spec" / "index.md").exists()
 
 
+@pytest.mark.slow
 def test_traceability_example(samples, docs_samples, tmp_path):
     for module in ("markitdown", "tree_sitter_ada"):
         pytest.importorskip(module)
@@ -34,6 +41,7 @@ def test_traceability_example(samples, docs_samples, tmp_path):
     assert "implemented by: ['tracks.delete_track']" in out and "'320 ms'" in out and "context package" in out
 
 
+@pytest.mark.slow
 def test_search_example(docs_samples, tmp_path, fake):
     pytest.importorskip("markitdown")
     (tmp_path / "atlas.toml").write_text(f'''
@@ -80,3 +88,28 @@ def test_the_agents_of_the_examples_load_and_their_tools_exist(monkeypatch):
     assert "run_test" in found["fixer"].tools and not {"write_file", "edit_file"} & set(found["planner"].tools)
     dev = load_definitions(load_config(ROOT / "atlas.dev.toml"))       # gemma4:12b: no sampling of gemma-4-26b
     assert dev["implementer"].top_k is None and dev["implementer"].tools == found["implementer"].tools
+
+
+def _promised() -> dict[str, set[str]]:
+    """The table of docs/api.md: module -> the names it promises."""
+    rows = re.findall(r"^\| `(atlas[\w.]*)` \| ([^|]+) \|", (ROOT / "docs" / "api.md").read_text(encoding="utf-8"),
+                      re.MULTILINE)
+    return {module: set(re.findall(r"`(\w+)`", names)) for module, names in rows}
+
+
+def test_the_public_api_is_in_the_all_of_each_module():
+    promised = _promised()
+    assert {"atlas", "atlas.pipeline", "atlas.plugins", "atlas.mcp"} <= set(promised)
+    for module, names in promised.items():
+        exported = set(importlib.import_module(module).__all__)
+        assert names <= exported, f"{module}: {sorted(names - exported)} are not in its __all__"
+
+
+def test_the_library_examples_import_only_the_public_api():
+    promised = _promised()
+    for script in sorted((ROOT / "examples" / "library").glob("*.py")):
+        for node in ast.walk(ast.parse(script.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "atlas":
+                names = {a.name for a in node.names}
+                assert names <= promised.get(node.module, set()), \
+                    f"{script.name} imports {sorted(names - promised.get(node.module, set()))} from {node.module}"

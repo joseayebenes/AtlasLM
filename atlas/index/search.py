@@ -387,7 +387,7 @@ def query_vectors(store: IndexStore, embedder: Embedder, texts: list[str]) -> li
     if missing:
         new = dict(zip((embedder.query_key(t) for t in missing), embedder.queries(missing)))
         try:
-            store.cache_put(new)
+            store.cache_put(new, embedder.model)
         except sqlite3.Error as e:
             log.debug("the vectors of the queries are not cached: %s", e)
         vectors.update(new)

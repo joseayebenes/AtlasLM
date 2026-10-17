@@ -18,7 +18,7 @@ import numpy as np
 
 from atlas.llm.connection import ServiceConfig, create_client
 
-__all__ = ["FAMILIES", "Embedder", "family", "prefix_note", "prefixes"]
+__all__ = ["FAMILIES", "Embedder", "document_key", "family", "prefix_note", "prefixes"]
 
 log = logging.getLogger(__name__)
 
@@ -72,6 +72,18 @@ def prefix_note(cfg: ServiceConfig) -> str:
     return f"embeddings prefixes: query={q!r} document={d!r}"
 
 
+def document_text(d_prefix: str, text: str, title: str = "") -> str:
+    """What is embedded for a document text: its prefix, with the title of its document."""
+    return d_prefix.replace("{title}", " ".join(title.split()) or "none") + text
+
+
+def document_key(model: str, d_prefix: str, text: str, title: str = "") -> str:
+    """Cache key of a document vector: a hash of the model, its document prefix (with the
+    title) and the text. The model is inside the hash, so a key of one model never matches
+    a text embedded with another (and cannot be read back from the key)."""
+    return hashlib.sha256(f"{model}\x00{document_text(d_prefix, text, title)}".encode("utf-8")).hexdigest()[:32]
+
+
 class Embedder:
     def __init__(self, cfg: ServiceConfig):
         self.q_prefix, self.d_prefix = prefixes(cfg)
@@ -90,11 +102,11 @@ class Embedder:
 
     def document_text(self, text: str, title: str = "") -> str:
         """What is embedded for a document text: its prefix, with the title of its document."""
-        return self.d_prefix.replace("{title}", " ".join(title.split()) or "none") + text
+        return document_text(self.d_prefix, text, title)
 
     def key(self, text: str, title: str = "") -> str:
-        """Cache key of a document vector: it depends on the model, the prefix and the text."""
-        return hashlib.sha256(f"{self.model}\x00{self.document_text(text, title)}".encode("utf-8")).hexdigest()[:32]
+        """Cache key of a document vector: see document_key."""
+        return document_key(self.model, self.d_prefix, text, title)
 
     def query_key(self, text: str) -> str:
         """Cache key of a query vector: the model, the query prefix and the text."""

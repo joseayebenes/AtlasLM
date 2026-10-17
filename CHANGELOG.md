@@ -289,6 +289,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   y se omiten si `atlas check` falla sobre ella. Marcador `model` (`ollama` sigue valiendo) y
   `make test-gateway`, que las pasa contra el gateway de `atlas.toml`. Guía en el README
   («Niveles de modelo») y en `docs/instalacion.md`.
+- `atlas cache export FICHERO` e `import FICHERO` (la librería, `atlas.cache.pack` y `unpack`):
+  lo que un puesto pidió a los modelos, para los demás. El fichero es un SQLite con los vectores
+  de la caché de embeddings, los análisis de sección de `docs/.cache` y, con
+  `--with-judgements`, las cachés de juicios de `verify`, `comply` y `link`; la cabecera dice la
+  versión de atlas, el proyecto, los modelos, la fecha y los recuentos. `import` solo añade lo
+  que falta, nunca sustituye, y dice cuánto entró. Rechaza los vectores de otro modelo de
+  embeddings: la clave de un vector lleva el modelo dentro del hash y nunca casarían. Sobre
+  las muestras, un workspace nuevo con la caché importada procesa todo sin ninguna petición
+  de chat ni de embeddings. En el proyecto real, cada puesto se ahorra las ~2000 secciones y
+  ~20 000 embeddings de su primer `atlas run` (horas con 28 peticiones por minuto).
+- `[project] shared_cache`: una carpeta de red con cachés exportadas, como caché secundaria de
+  solo lectura. Lo que el workspace no tiene se busca ahí y se copia al workspace; `atlas run`
+  nunca escribe en ella. Si no se puede leer, se sigue sin ella con un aviso. Nunca se
+  comparte un `atlas.db`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -479,6 +493,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Los módulos de DOORS se vuelven a leer una vez: su huella ya no incluye `attributes`.
 - `attributes` estaba «reservada: todavía sin efecto». Si alguien la puso como lista de lo que
   se importa, ahora decide lo que se enseña y por lo que se filtra; con `[]`, nada.
+- La caché de embeddings de `atlas.db` gana la columna `model`. Los vectores de un workspace de
+  la 0.2.0 no la tienen: `atlas cache export` se la pone a los de los textos del índice; los
+  demás (textos que ya no están en el índice) no se exportan. No se reprocesa nada.
 
 ## [0.2.0] — 2026-10-16
 

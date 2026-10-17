@@ -14,6 +14,7 @@
 [project]
 name = "mi-proyecto"
 workspace = "./workspace"              # atlas.db, salidas de documentos, grafo e informes
+# shared_cache = "//servidor/atlas/mi-proyecto-cache"   # cachés exportadas por otro puesto (solo lectura)
 
 # --- Modelos: cualquier API compatible con OpenAI ------------------------------------
 [llm]

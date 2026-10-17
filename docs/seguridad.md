@@ -50,9 +50,19 @@ Todo en el workspace del proyecto (`[project] workspace`):
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
 | `reports/` | verificaciones, propuestas de enlaces, juicios de cumplimiento, informes y evaluaciones |
+| el fichero de `atlas cache export` y la carpeta de `[project] shared_cache` | texto de los documentos: lo que el modelo sacó de cada sección (resúmenes, puntos clave, requisitos copiados literalmente, definiciones, entidades), los vectores de los textos indexados y, con `--with-judgements`, los juicios de `verify`, `comply` y `link` |
 
 Es información del proyecto, con la misma confidencialidad que los documentos y el código
-de los que sale: la carpeta necesita los mismos permisos. Nada está cifrado por atlas; en un
+de los que sale: la carpeta necesita los mismos permisos. Lo mismo vale para una caché
+exportada (`atlas cache export`) y para la carpeta de `shared_cache`: contienen texto de
+los documentos (los requisitos, literales; los resúmenes) y los vectores de sus textos, así que van a una carpeta con los permisos del workspace, no
+a una compartida con todos. Un vector no es el texto, pero con el mismo modelo de
+embeddings se puede comprobar qué texto lo produjo.
+
+`atlas cache import` y `shared_cache` solo leen los ficheros como datos: nombres de fichero
+sin rutas (no escriben fuera de `docs/.cache`), JSON y vectores, nunca código. Aun así, una
+caché importada decide lo que atlas cree que dijo el modelo sobre cada sección: tiene la
+confianza de quien la exportó, como el propio `atlas.toml`. Nada está cifrado por atlas; en un
 portátil, el cifrado de disco del sistema (BitLocker, FileVault).
 
 El libro de registro guarda los errores de cada unidad (500 caracteres como mucho). Son

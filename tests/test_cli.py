@@ -796,3 +796,193 @@ kinds = ["requirement", "heading", "information"]
     assert context.split(" … ") == [
         next(r["text"] for r in idx.store.document_records("doors:SRS_TMS") if r["ref"] == "SRS-0003"), hit["text"],
         "Note: the deadlines of these requirements are measured from the reception of the radar plot."]
+
+
+def test_cache_export_and_import_make_a_new_workspace_ask_nothing(toml, samples, docs_samples, tmp_path, fake,
+                                                                   fake_stats, capsys):
+    """run -> export -> a new workspace -> import -> run: no request to the chat model nor
+    to the embeddings. Import adds what is missing and never replaces anything."""
+    import shutil
+    import sqlite3
+    import pytest
+    from atlas.cli import main
+    pytest.importorskip("markitdown")
+    pytest.importorskip("tree_sitter_ada")
+    url, _ = fake
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for f in ("spec_with_bookmarks.pdf", "hmi_manual.md"):
+        shutil.copy(docs_samples / f, docs / f)
+    extra = f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+batch = 8
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code", "docs", "graph", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+lang = "Spanish"
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+languages = ["ada"]
+'''
+    first = toml(extra)
+    second = tmp_path / "second.toml"
+    second.write_text(first.read_text().replace(f"{(tmp_path / 'ws').as_posix()}\"",
+                                                f"{(tmp_path / 'ws2').as_posix()}\""))
+    a, b = load_config(first), load_config(second)
+    assert b.workspace == tmp_path / "ws2"
+
+    def cli(*args) -> tuple[int, str, str]:
+        with pytest.raises(SystemExit) as e:
+            main(list(args))
+        out = capsys.readouterr()
+        return e.value.code, out.out, out.err
+
+    assert run(a) == 0
+    capsys.readouterr()
+    computed = fake_stats()
+    assert computed["chat"] > 0 and computed["embeddings"] > 0
+    # a workspace of atlas 0.2 did not record the model of each vector: export finds it
+    # from the texts of the index; a vector of a text no longer indexed stays out
+    db = sqlite3.connect(a.workspace / "atlas.db")
+    with db:
+        vectors = db.execute("SELECT COUNT(*) FROM embed_cache").fetchone()[0]
+        db.execute("UPDATE embed_cache SET model = NULL")
+        db.execute("INSERT INTO embed_cache VALUES (?, ?, NULL)", ("f" * 32, b"\0" * 16))
+    db.close()
+    (a.workspace / "reports").mkdir(exist_ok=True)
+    (a.workspace / "reports" / ".verify_cache.json").write_text(json.dumps({"k1": {"verdict": "ok"},
+                                                                            "k2": {"verdict": "ok"}}))
+    file = tmp_path / "share" / "tms-cache.sqlite"
+    code, out, err = cli("cache", "export", str(file), str(first), "--with-judgements")
+    assert code == 0, err
+    analyses = len(list((a.workspace / "docs" / ".cache").glob("*.json")))
+    assert analyses > 0
+    assert f"{vectors} vectors (embeddinggemma), {analyses} analyses of sections (fake), 2 judgements" in out
+    assert "1 cached vectors of an unknown model" in err
+
+    # the new workspace: one judgement of its own, which import does not replace
+    (b.workspace / "reports").mkdir(parents=True)
+    (b.workspace / "reports" / ".verify_cache.json").write_text(json.dumps({"k1": {"verdict": "mine"}}))
+    code, out, err = cli("cache", "import", str(file), str(second))
+    assert code == 0, err
+    assert f"vectors (embeddinggemma): {vectors} new, 0 already here" in out
+    assert f"analyses of sections (fake): {analyses} new, 0 already here" in out
+    assert "judgements .verify_cache.json: 1 new, 1 already here" in out
+    assert json.loads((b.workspace / "reports" / ".verify_cache.json").read_text()) == \
+        {"k1": {"verdict": "mine"}, "k2": {"verdict": "ok"}}
+
+    before = fake_stats()
+    assert run(b) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"]["docs.process"] == 2 and rep["processed"]["index.documents"] == 2
+    assert rep["processed"]["index.requirements"] >= 1 and rep["processed"]["index.code"] >= 1
+    after = fake_stats()
+    assert (after["chat"], after["embeddings"]) == (before["chat"], before["embeddings"])
+
+    code, out, _ = cli("cache", "import", str(file), str(second))      # again: nothing new
+    assert code == 0 and f"{vectors} already here" in out and f"0 new, {analyses} already here" in out
+
+    # another embeddings model: refused, its keys would never match
+    other = tmp_path / "other.toml"
+    other.write_text(second.read_text().replace('model = "embeddinggemma"', 'model = "nomic-embed-text"'))
+    code, _, _ = cli("cache", "import", str(file), str(other))
+    assert "embeddings model 'embeddinggemma'" in code and "uses 'nomic-embed-text'" in code
+    for args, error in ((["cache", "import", str(a.workspace / "atlas.db"), str(second)], "is not a cache exported"),
+                        (["cache", "import", str(tmp_path / "none.sqlite"), str(second)], "does not exist"),
+                        (["cache", "import", str(file), str(second), "--with-judgements"], "an option of export"),
+                        (["cache", "list", str(file)], "usage: atlas cache export|import")):
+        code, _, _ = cli(*args)
+        assert error in str(code)
+    empty = tmp_path / "empty.toml"
+    empty.write_text(second.read_text().replace("/ws2\"", "/ws3\""))
+    code, _, _ = cli("cache", "export", str(file), str(empty))
+    assert "has no atlas.db" in str(code) and not (tmp_path / "ws3" / "atlas.db").exists()
+
+
+def test_shared_cache_is_read_through_and_never_written(toml, docs_samples, tmp_path, fake, fake_stats, capsys,
+                                                         caplog):
+    """[project] shared_cache: a folder of exported caches that a new workspace reads when
+    its own cache lacks an entry. What it finds is copied to the workspace; the folder is
+    not written. A folder that cannot be read: a warning, once, and the run goes on."""
+    import hashlib
+    import logging
+    import shutil
+    import sqlite3
+    import pytest
+    from atlas.cache import pack
+    pytest.importorskip("markitdown")
+    url, _ = fake
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    shutil.copy(docs_samples / "hmi_manual.md", docs / "hmi_manual.md")
+    base = toml(f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+batch = 8
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["docs", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+''').read_text()
+    ws = f"{(tmp_path / 'ws').as_posix()}\""
+
+    def config(name: str, shared: str = "") -> object:
+        p = tmp_path / f"{name}.toml"
+        text = base.replace(ws, f"{(tmp_path / name).as_posix()}\"")
+        p.write_text(text.replace('name = "t"\n', f'name = "t"\nshared_cache = "{shared}"\n', 1))
+        return load_config(p)
+
+    a = config("a")
+    assert run(a) == 0
+    capsys.readouterr()
+    share = tmp_path / "share"
+    pack(a, share / "tms-1.sqlite")
+    (share / "notes.txt").write_text("not a cache")
+    (share / "broken.sqlite").write_text("not a database either")
+    sqlite3.connect(share / "other.sqlite").close()           # an empty database: no header
+    digest = lambda: {f.name: hashlib.sha256(f.read_bytes()).hexdigest() for f in sorted(share.iterdir())}
+    before_share = digest()
+
+    b = config("b", "share")                                   # relative to the folder of atlas.toml
+    before = fake_stats()
+    with caplog.at_level(logging.WARNING, logger="atlas.cache"):
+        assert run(b) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"] == {"docs.process": 1, "index.documents": 1}
+    after = fake_stats()
+    assert (after["chat"], after["embeddings"]) == (before["chat"], before["embeddings"])
+    assert digest() == before_share                            # nothing written in the shared folder
+    assert {r.getMessage().split(" left out")[0] for r in caplog.records} == \
+        {f"shared cache {share / 'broken.sqlite'}", f"shared cache {share / 'other.sqlite'}"}
+    # what it read is now in the workspace: the same entries as in the first one
+    names = lambda cfg: sorted(f.name for f in (cfg.workspace / "docs" / ".cache").glob("*.json"))
+    assert names(b) == names(a)
+    count = lambda cfg: sqlite3.connect(cfg.workspace / "atlas.db").execute(
+        "SELECT COUNT(*) FROM embed_cache WHERE model = 'embeddinggemma'").fetchone()[0]
+    assert count(b) == count(a)
+
+    # a folder that is not there: one warning, and the run goes on asking the models
+    c = config("c", (tmp_path / "unplugged").as_posix())
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="atlas.cache"):
+        assert run(c) == 0
+    capsys.readouterr()
+    assert fake_stats()["chat"] > after["chat"]
+    assert [r.getMessage() for r in caplog.records if "not accessible" in r.getMessage()] == \
+        [f"shared cache {tmp_path / 'unplugged'} is not accessible (not a folder): going on without it"]

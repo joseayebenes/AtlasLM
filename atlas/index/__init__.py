@@ -117,7 +117,8 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str | t
 
     def one(batch: list[tuple[str, tuple[str, str]]]) -> int:
         store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, (t, _) in batch],
-                                                                         [ti for _, (_, ti) in batch]))))
+                                                                         [ti for _, (_, ti) in batch]))),
+                        embedder.model)
         return len(batch)
 
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -152,7 +153,7 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
         try:
             new = dict(zip((keys[i] for i in batch),
                            embedder.documents([records[i]["embed_text"] for i in batch], [title] * len(batch))))
-            store.cache_put(new)                 # saved batch by batch
+            store.cache_put(new, embedder.model)     # saved batch by batch
             vectors.update(new)
             log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)
         except Exception as e:
@@ -179,13 +180,15 @@ class Index:
     `settings` are those of [search] (results, per_document, context_chars, context_radius,
     scope, scope_chars, synonyms: the path of a synonyms file, max_parts, scope_documents);
     what is not given takes its default. `fts_tokenizer` is that of [index]; `id_normalize`,
-    that of [sources.doors.convention], for the IDs written in another way in a query."""
+    that of [sources.doors.convention], for the IDs written in another way in a query.
+    `shared`: a read-only cache of vectors to look up what the local one lacks
+    (atlas.cache.SharedCache)."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
-                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER, id_normalize: str = "upper"):
+                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER, id_normalize: str = "upper", shared=None):
         from atlas.config import DEFAULTS, read_synonyms
-        self.store = IndexStore(db, fts_tokenizer)
+        self.store = IndexStore(db, fts_tokenizer, shared)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
@@ -195,13 +198,15 @@ class Index:
     @classmethod
     def from_config(cls, cfg) -> "Index":
         """The index of <workspace>/atlas.db with the [embeddings], [llm], [search], [index]
-        fts_tokenizer and [sources.doors.convention] id_normalize of atlas.toml."""
+        fts_tokenizer and [sources.doors.convention] id_normalize of atlas.toml, and the
+        shared cache of [project] shared_cache, if any."""
+        from atlas.cache import shared_cache
         from atlas.llm import from_config
         conn = from_config(cfg)
         convention = ((cfg.get("sources") or {}).get("doors") or {}).get("convention") or {}
         return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"),
                    (cfg.get("index") or {}).get("fts_tokenizer") or DEFAULT_FTS_TOKENIZER,
-                   convention.get("id_normalize", "upper"))
+                   convention.get("id_normalize", "upper"), shared_cache(cfg))
 
     @property
     def llm(self) -> JsonLlm:

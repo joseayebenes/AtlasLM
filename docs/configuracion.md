@@ -58,6 +58,7 @@ de ella:
 | `name` | texto | `"atlas"` | nombre del proyecto |
 | `workspace` | ruta | `"./workspace"` | carpeta de trabajo: `atlas.db`, salidas de documentos, grafo, informes. Relativa al fichero |
 | `log_level` | texto | `"INFO"` | `DEBUG`, `INFO`, `WARNING` o `ERROR`; el registro va por stderr |
+| `shared_cache` | ruta | `""` | carpeta (normalmente de red, `//servidor/atlas/tms-cache`) con cachés exportadas por `atlas cache export` (`*.sqlite`): caché secundaria de solo lectura. Lo que el workspace no tiene se busca ahí (análisis de secciones y vectores) y se copia al workspace; atlas nunca escribe en ella. Si no se puede leer, se sigue sin ella con un aviso. Relativa al fichero; cambiarla no reprocesa nada. Ver [instalación](instalacion.md#6-varios-puestos-cachés-compartidas) |
 
 ## [llm]
 

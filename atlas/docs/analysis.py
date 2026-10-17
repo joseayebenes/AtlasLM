@@ -28,7 +28,8 @@ from atlas.llm.structured import JsonLlm, TruncatedResponse
 from atlas.pipeline import atomic_write
 
 __all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "analyze_section", "consolidate",
-           "empty_overview", "normalize", "overview", "overview_cache_file", "regex_requirements", "section_cache_file", "verify"]
+           "empty_overview", "is_cached", "normalize", "overview", "overview_cache_file", "regex_requirements",
+           "section_cache_file", "verify"]
 
 log = logging.getLogger(__name__)
 
@@ -229,11 +230,12 @@ def _analyze_text(llm: JsonLlm, s: dict, body: str, doc_title: str, lang: str,
 
 
 def analyze_section(llm: JsonLlm, s: dict, doc_title: str, lang: str = "", cache: Path | None = None,
-                    failures: Path | None = None) -> dict:
-    """Analysis of a section with the model, from the cache if it is there. `failures`
-    is a folder where the invalid answers of the model are kept for diagnosis."""
+                    failures: Path | None = None, shared=None) -> dict:
+    """Analysis of a section with the model, from the cache if it is there (or from the
+    shared cache, atlas.cache.SharedCache, which is only read). `failures` is a folder
+    where the invalid answers of the model are kept for diagnosis."""
     file = section_cache_file(cache, llm.model, s, doc_title, lang)
-    cached = _read_cache(file)
+    cached = _read_cache(file, shared)
     if cached is not None:
         return cached
     result = _analyze_text(llm, s, s["body"], doc_title, lang, failures)
@@ -242,11 +244,23 @@ def analyze_section(llm: JsonLlm, s: dict, doc_title: str, lang: str = "", cache
     return result
 
 
-def _read_cache(file: Path | None) -> dict | None:
+def _read_cache(file: Path | None, shared=None) -> dict | None:
     """A cached analysis, or None if there is none. A damaged file (written by a version
-    that did not write atomically and was cut) counts as missing."""
-    if not file or not file.exists():
+    that did not write atomically and was cut) counts as missing. Without a local file,
+    the one of the same name in the shared cache, if any, which is copied to the local
+    cache (the shared one is never written)."""
+    if not file:
         return None
+    if not file.exists():
+        content = shared.analysis(file.name) if shared is not None else None
+        if content is None:
+            return None
+        try:
+            data = json.loads(content)
+        except ValueError:
+            return None
+        atomic_write(file, content)
+        return data
     try:
         return json.loads(file.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
@@ -268,15 +282,18 @@ def overview_cache_file(cache: Path | None, model: str, sections: list[dict], do
     key = hashlib.sha256(f"{PROMPT_VERSION}|{model}|{lang}|{doc_title}|{_overview_items(sections)}"
                          .encode("utf-8")).hexdigest()[:20]
     return Path(cache) / f"overview_{key}.json"
+def is_cached(file: Path | None, shared=None) -> bool:
+    """Whether the analysis of `file` is in the local cache or in the shared one."""
+    return bool(file) and (file.exists() or (shared is not None and shared.has_analysis(file.name)))
 
 
 def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
-             max_chars: int = 12000, cache: Path | None = None) -> dict:
+             max_chars: int = 12000, cache: Path | None = None, shared=None) -> dict:
     """Overview of the whole document from the section summaries. Hierarchical: if the
     summaries do not fit in one request, they are summarised in groups first."""
     items = _overview_items(sections)
     file = overview_cache_file(cache, llm.model, sections, doc_title, lang)
-    cached = _read_cache(file)
+    cached = _read_cache(file, shared)
     if cached is not None:
         return cached
     result = _overview(llm, items, doc_title, lang, max_chars)

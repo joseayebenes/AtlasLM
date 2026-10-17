@@ -20,7 +20,7 @@ QUESTION = ("Which system requirement (SSS) does SRS-0004 satisfy, and in which 
             "is SRS-0004 implemented and tested?")
 SAMPLE_ADA_FILES = {"tracks.ads", "tracks.adb", "logger.ads", "logger.adb", "test_tracks.adb"}
 
-pytestmark = [pytest.mark.ollama,                      # noise from ADK imports:
+pytestmark = [pytest.mark.ollama, pytest.mark.slow,  # noise from ADK imports:
               pytest.mark.filterwarnings("ignore:.*EXPERIMENTAL.*:UserWarning"),
               pytest.mark.filterwarnings("ignore:.*ReadOnly.*:UserWarning")]
 

@@ -46,6 +46,8 @@ include = ["atlas*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)"]
+addopts = "--durations=15"                   # the 15 slowest tests at the end of every run
+markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)",
+           "slow: starts processes, waits or takes seconds (make test-fast leaves them out)"]
 filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning",       # notices of ADK about its own features
                   "ignore:builtin type [Ss]wig.* has no __module__:DeprecationWarning"]   # pymupdf on Python 3.13

@@ -16,6 +16,9 @@ fake:           ## servidor OpenAI falso en :8770 para atlas.test.toml
 test:           ## pruebas automáticas (sin modelo)
 	$(PY) -m pytest -q
 
+test-fast:      ## las mismas sin las marcadas slow (ejemplos, proyecto grande, kill -9, esperas, compilador)
+	$(PY) -m pytest -q -m "not slow"
+
 test-ollama:    ## prueba de agente ADK contra Ollama local (se omite si no está en marcha)
 	$(PY) -m pytest -q -m ollama
 
@@ -72,6 +75,6 @@ check-install: wheelhouse   ## instalación limpia desde dist/wheelhouse, como d
 clean:
 	rm -rf workspace-dev workspace-test workspace-openrouter examples/samples examples/large .pytest_cache dist build *.egg-info
 
-.PHONY: install samples fake test test-ollama run-test large run-dev status sections check serve \
+.PHONY: install samples fake test test-fast test-ollama run-test large run-dev status sections check serve \
 	check-openrouter run-openrouter eval-openrouter compare-openrouter \
 	wheel wheelhouse wheelhouse-windows check-install clean

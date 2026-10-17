@@ -110,6 +110,7 @@ def test_parallel_units_share_the_ledger_and_store_safely(tmp_path):
     assert ledger.summary() == {"p": {"ok": 300}} and store.counts()["code_units"] == 300
 
 
+@pytest.mark.slow
 def test_kill_9_releases_the_workspace_and_the_next_run_resumes(tmp_path):
     """A run killed in the middle of a unit (kill -9: no cleanup at all) leaves no lock
     behind: the next run starts, redoes that unit and does not repeat the finished ones."""

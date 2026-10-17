@@ -11,6 +11,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `__all__`; `atlas` exporta `load`, `Config`, `ConfigError` y `__version__`, y `atlas.agents`
   `run_agent` y `build_context`. Una prueba comprueba que los ejemplos de `examples/library`
   solo usan esos nombres.
+- Pruebas: `pytest` imprime las 15 más lentas (`--durations=15`), el marcador `slow`
+  (ejemplos, proyecto grande, `kill -9`, esperas, compilador, servidor de lenguaje y Ollama) y
+  `make test-fast`, que las deja fuera. El servidor falso es uno por sesión: cada prueba lo
+  encuentra sin fallos y con los contadores a cero (`POST /reset`).
 
 ### Cambiado
 - `atlas.llm` ya no termina el proceso: un certificado de CA que no existe, `ca_cert =

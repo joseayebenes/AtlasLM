@@ -17,7 +17,8 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
-GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
+GET / returns counters, and the options of the last chat request (without its messages);
+POST /reset puts the counters at zero and forgets the last chat request. Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
@@ -43,6 +44,9 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
     def do_GET(self): self.send(200, stats)
     def do_POST(self):
+        if self.path == "/reset":
+            stats.clear(); stats.update(chat=0, embeddings=0, emb_texts=0)
+            return self.send(200, stats)
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
         import time; time.sleep(c.get("slow", 0))
         if c.get("down"):

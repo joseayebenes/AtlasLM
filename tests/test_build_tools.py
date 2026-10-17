@@ -90,6 +90,7 @@ def test_run_test_builds_runs_and_tells_why_it_failed(project):
     assert res["built"] is False and res["errors"][0]["message"] == 'missing ";"'
 
 
+@pytest.mark.slow
 def test_tool_path_timeout_and_missing_compiler(project, tmp_path):
     ada, make = project
     fake = tmp_path / "bin2" / "fakecc"
@@ -228,6 +229,7 @@ end Tracks;"""))
                for e in res["errors"]), res
 
 
+@pytest.mark.slow
 @gnat
 def test_gnat_builds_and_runs_a_test(project):
     ada, make = project
@@ -555,6 +557,7 @@ def _als() -> list[str]:
     return glob.glob(os.path.expanduser("~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"))
 
 
+@pytest.mark.slow
 @gnat
 @pytest.mark.skipif(not _als(), reason="the Ada Language Server is not installed (the Ada extension of VS Code)")
 def test_the_ada_language_server(project):

@@ -48,6 +48,10 @@ python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada
 python -m pytest -q                                # 203 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
+La suite entera tarda unos 2 minutos en un Mac (2026-10-17, sin las de Ollama); `make
+test-fast`, sin las marcadas `slow` (ejemplos, proyecto grande, `kill -9`, esperas,
+compilador y Ollama), medio minuto. Al final, `pytest` lista las 15 más lentas.
+
 ### Niveles de modelo
 
 | Nivel | Para qué | Configuración |

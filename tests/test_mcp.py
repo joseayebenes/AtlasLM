@@ -96,6 +96,7 @@ test_patterns = ["**/tests/**"]
     return cfg, ada, docs
 
 
+@pytest.mark.slow
 def test_atlas_serve_over_stdio_follows_atlas_run(project, tmp_path):
     import anyio
     from mcp import ClientSession, StdioServerParameters

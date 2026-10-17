@@ -125,6 +125,7 @@ test_patterns = ["**/tests/**"]
     return cfg
 
 
+@pytest.mark.slow
 def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatch):
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
@@ -281,6 +282,7 @@ def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, m
     assert len(client.requests) == 3
 
 
+@pytest.mark.slow
 def test_a_turn_that_hangs_is_asked_again(workspace, monkeypatch, caplog):
     """The timeout of the HTTP client is between two reads: a server that keeps the connection
     alive never reaches it. A turn has [llm.network] timeout seconds in all."""

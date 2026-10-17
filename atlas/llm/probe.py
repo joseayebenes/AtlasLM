@@ -1,4 +1,4 @@
-"""atlas probe: whether the chat model of [llm] works as an agent, with three small requests.
+"""atlas probe: whether the chat model of [llm] works as an agent, with four small requests.
 
     atlas probe atlas.toml
 
@@ -8,6 +8,9 @@
    count of the prompt, the difference says whether it puts back the reasoning that atlas
    returns in [llm] reasoning_field. A chat template that drops it, or a server that does not
    read that field, leaves the prompt as it was.
+4. The first request again, streamed: "streaming: ok" if the server sends it in chunks and they
+   make up the same tool call, "not supported" if it rejects stream or ignores it. That is what
+   [llm] stream = "" does in every process (atlas.llm.chat), and this process notes it.
 
 The first two fail with a server whose chat template breaks tool calls (the first templates
 of gemma 4 closed the turn in the middle of a tool call, and OpenCode fell into loops). The
@@ -20,6 +23,7 @@ import json
 import time
 from typing import Any, Callable
 
+from atlas.llm.chat import StreamUnsupported, learned, streamed
 from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, reasoning_of
 
 __all__ = ["probe"]
@@ -34,8 +38,52 @@ RESULT = {"word": "atlas", "letters": 5}
 
 
 def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None] = print) -> int:
-    """The three requests (see the module); prints what each one shows and returns 0 when the
-    model calls the tool and answers with its result."""
+    """The four requests (see the module); prints what each one shows and returns 0 when the
+    model calls the tool and answers with its result (streaming or not)."""
+    code, first = _agent(service, client, out)
+    if first is not None:
+        _stream(service, first, out)
+    return code
+
+
+def _stream(service: ServiceConfig, first: tuple, out: Callable[[str], None]) -> None:
+    """The fourth request: the first one, streamed."""
+    client, kwargs, call = first
+    t0 = time.time()
+    try:
+        response = streamed(client, kwargs)
+    except StreamUnsupported as e:
+        learned(service, False, say=False)
+        out(f"streaming: not supported ({e})")
+        return
+    except Exception as e:
+        out(f"streaming: FAILED ({diagnose(e)})")
+        return
+    learned(service, True)
+    seconds = f"{time.time() - t0:.1f}s"
+    if call is None:                                     # the first one did not call the tool: nothing to compare
+        out(f"streaming: ok ({seconds})")
+        return
+    calls = response.choices[0].message.tool_calls or []
+    again = next((c for c in calls if c.function.name == "word_length"), None)
+    same = again is not None and _args(again.function.arguments) == _args(call.function.arguments)
+    out(f"streaming: ok ({seconds}, " + (f"the same call word_length({again.function.arguments}))" if same
+                                         else "but the chunks did not make up the same tool call: "
+                                         f"{[c.function.name for c in calls] or 'none'})"))
+
+
+def _args(text: str | None) -> dict:
+    try:
+        args = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    return args if isinstance(args, dict) else {}
+
+
+def _agent(service: ServiceConfig, client: Any, out: Callable[[str], None]) -> tuple[int, tuple | None]:
+    """The first three requests: the exit code, and what the fourth one repeats (the client,
+    the request and the tool call, or None if the model did not call it), or None if the first
+    request failed."""
     out(f"LLM: {describe(service)}")
     effort = service.reasoning_effort if service.reasoning_effort not in ("", "none") else "low"
     out(f"  reasoning_effort for the probe: {effort}; reasoning goes back in: "
@@ -55,7 +103,8 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
         first, seconds = ask(messages)
     except Exception as e:
         out(f"  FAILED: {diagnose(e)}")
-        return 1
+        return 1, None
+    again = (client, {"messages": messages, **base}, None)
     message = first.choices[0].message
     calls = message.tool_calls or []
     reasoning = reasoning_of(message)
@@ -64,16 +113,13 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
     if call is None:
         out(f"1 FAILED ({seconds:.1f}s): the model did not call the tool{thought}. It wrote: "
             f"{(message.content or '').strip()[:200]!r}")
-        return 1
-    try:
-        args = json.loads(call.function.arguments or "{}")
-    except ValueError:
-        args = {}
-    good = str(args.get("word", "")).strip().lower() == "atlas"
+        return 1, again
+    good = str(_args(call.function.arguments).get("word", "")).strip().lower() == "atlas"
     out(f"1 {'OK' if good else 'FAILED'} ({seconds:.1f}s): it called word_length({call.function.arguments})"
         f"{thought}")
+    again = (client, again[1], call)
     if not good:
-        return 1
+        return 1, again
 
     assistant = {"role": "assistant", "content": message.content or None,
                  "tool_calls": [{"id": call.id, "type": "function",
@@ -85,19 +131,19 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
         second, seconds = ask(messages + [with_reasoning, result])
     except Exception as e:
         out(f"2 FAILED: {diagnose(e)}")
-        return 1
+        return 1, again
     answer = (second.choices[0].message.content or "").strip()
     answered = "5" in answer or "five" in answer.lower()
     out(f"2 {'OK' if answered else 'FAILED'} ({seconds:.1f}s): it answered {answer[:120]!r}")
 
     if not (reasoning and service.reasoning_field):
         out("3 skipped: " + ("no reasoning came back to give back" if not reasoning else "reasoning_field is empty"))
-        return 0 if answered else 1
+        return (0 if answered else 1), again
     try:
         third, _ = ask(messages + [assistant, result])
     except Exception as e:
         out(f"3 FAILED: {diagnose(e)}")
-        return 0 if answered else 1
+        return (0 if answered else 1), again
     used, bare = (getattr(getattr(r, "usage", None), "prompt_tokens", None) for r in (second, third))
     if not used or not bare:
         out("3 cannot tell: the server gives no prompt_tokens")
@@ -108,4 +154,4 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
         out(f"3 NOT USED: the prompt has {used} tokens with the reasoning and {bare} without: the chat template "
             f"drops it or the server does not read '{service.reasoning_field}'. Try [llm] reasoning_field = "
             f"\"{other}\", or \"\" to stop sending it")
-    return 0 if answered else 1
+    return (0 if answered else 1), again

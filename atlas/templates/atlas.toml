@@ -24,6 +24,7 @@ max_tokens = 8192
 reasoning_effort = "none"              # gemma4 razona por defecto y tarda minutos por sección
 # reasoning_field = "reasoning"        # agentes: el razonamiento vuelve al modelo en este campo; "" = no
 #                                      # (atlas probe dice si el servidor lo aprovecha)
+# stream = ""                          # "" = en trozos salvo que el servidor no pueda; true / false lo fuerzan
 
 [embeddings]
 model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]

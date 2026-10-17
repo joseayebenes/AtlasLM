@@ -84,10 +84,11 @@ def test_atlas_agents_lists_them(toml, capsys):
 class StubClient:
     """An OpenAI client that answers with scripted turns and keeps the requests: a dict is a
     turn of tool calls ({name: args}), a string the final answer, None a turn that spent the
-    whole max_tokens reasoning (no text, finish_reason "length")."""
+    whole max_tokens reasoning (no text, finish_reason "length"). With streams=True it answers
+    a request with stream in chunks (else it ignores stream, as some servers do)."""
 
-    def __init__(self, turns):
-        self.turns, self.requests = list(turns), []
+    def __init__(self, turns, streams=False):
+        self.turns, self.requests, self.streams = list(turns), [], streams
         self.chat = SimpleNamespace(completions=self)
 
     def create(self, **kwargs):
@@ -103,9 +104,31 @@ class StubClient:
             message, finish = SimpleNamespace(content="", tool_calls=None), "length"
         else:
             message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
-        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
-                               usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110,
-                                                     cost=0.0001))
+        response = SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
+                                   usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10, total_tokens=110,
+                                                         cost=0.0001))
+        return chunks_of(response) if kwargs.get("stream") and self.streams else response
+
+
+def chunks_of(response, size=4):
+    """A whole answer as the chunks of a stream: the reasoning and the content in pieces, each
+    tool call by its index (the id and the name, then the arguments in pieces), finish_reason
+    and the usage in a last chunk without choices."""
+    message, finish = response.choices[0].message, response.choices[0].finish_reason
+    pieces = lambda text: [text[i:i + size] for i in range(0, len(text or ""), size)]
+    delta = lambda **f: SimpleNamespace(**{"content": None, "tool_calls": None, **f})
+    deltas = [delta(reasoning=p) for p in pieces(getattr(message, "reasoning", None))]
+    deltas += [delta(content=p) for p in pieces(message.content)]
+    for i, call in enumerate(message.tool_calls or []):
+        deltas.append(delta(tool_calls=[SimpleNamespace(index=i, id=call.id, function=SimpleNamespace(
+            name=call.function.name, arguments=""))]))
+        deltas += [delta(tool_calls=[SimpleNamespace(index=i, id=None, function=SimpleNamespace(name=None, arguments=p))])
+                   for p in pieces(call.function.arguments)]
+    chunk = lambda choices, **f: SimpleNamespace(id="s", created=0, model="m", choices=choices, **f)
+    out = [chunk([SimpleNamespace(delta=d, finish_reason=None)]) for d in deltas]
+    out.append(chunk([SimpleNamespace(delta=delta(), finish_reason=finish)]))
+    out.append(chunk([], usage=response.usage))
+    return iter(out)
 
 
 @pytest.fixture
@@ -282,31 +305,108 @@ def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, m
     assert len(client.requests) == 3
 
 
-def test_a_turn_that_hangs_is_asked_again(workspace, monkeypatch, caplog):
-    """The timeout of the HTTP client is between two reads: a server that keeps the connection
-    alive never reaches it. A turn has [llm.network] timeout seconds in all."""
-    import time
+def test_a_streamed_turn_gives_the_same_tool_calls_as_a_whole_one(workspace, monkeypatch):
+    """[llm] stream: the chunks of each turn are put together before ADK sees it."""
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)
-    monkeypatch.setitem(workspace.data, "llm", {"network": {"timeout": 0.5}})
+    turns = [{"trace": {"req_id": "SRS-0004"}, "search": {"query": "delete a track"}},
+             {"trace": '{"req_id": "SRS-0005"'}, "SRS-0004 is implemented by tracks.delete_track."]
+    whole, streamed = StubClient(turns), StubClient(turns, streams=True)
+    got = run_agent("assistant", "Who implements SRS-0004?", workspace, client=streamed)
+    expected = run_agent("assistant", "Who implements SRS-0004?", workspace, client=whole)   # then it stops
+    assert got["calls"] == expected["calls"] and got["answer"] == expected["answer"]
+    assert [c["name"] for c in got["calls"]] == ["trace", "search", "trace"]
+    assert got["calls"][2]["args"] == {"req_id": "SRS-0005"}           # the cut JSON, repaired the same way
+    assert all(r["stream"] and r["stream_options"] == {"include_usage": True} for r in streamed.requests)
+    assert whole.requests[0]["stream"] and not any("stream" in r for r in whole.requests[1:])   # ignored: no more
 
-    class Hangs(StubClient):
-        def create(self, **kwargs):
-            if len(self.requests) < self.hangs:
-                self.requests.append(kwargs)
-                time.sleep(5)                            # a request that does not end
-            return super().create(**kwargs)
 
-    client = Hangs(["SRS-0004 is implemented by tracks.delete_track."])
-    client.hangs = 1
+def _ask_model(service, client=None):
+    """One turn of AtlasLlm with the tool word_length: its parts and its usage."""
+    import asyncio
+    from google.adk.models.llm_request import LlmRequest
+    from google.genai import types
+    from atlas.agents.model import AtlasLlm
+    declaration = types.FunctionDeclaration(name="word_length", description="Letters.", parameters=types.Schema(
+        type=types.Type.OBJECT, properties={"word": types.Schema(type=types.Type.STRING)}))
+    request = LlmRequest(contents=[types.Content(role="user", parts=[types.Part(text="How long is atlas?")])],
+                         config=types.GenerateContentConfig(tools=[types.Tool(function_declarations=[declaration])]))
+    llm = AtlasLlm.from_service(service, client)
+
+    async def turn():
+        return [r async for r in llm.generate_content_async(request)][0]
+    response = asyncio.run(turn())
+    calls = [(p.function_call.name, p.function_call.args) for p in response.content.parts if p.function_call]
+    thoughts = [p.text for p in response.content.parts if p.thought]
+    return calls, thoughts, response.usage_metadata
+
+
+def test_atlas_llm_streams_against_the_fake_server(fake_llm, fake_stats):
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    from dataclasses import replace
+    service, control = fake_llm
+    control.write_text(json.dumps({"tool_call": {"name": "word_length", "args": {"word": "atlas", "n": [1, 2]}},
+                                   "reasoning_tokens": 10, "usage_chars_per_token": 4, "chunk_chars": 3}))
+    whole = _ask_model(replace(service, stream="false"))
+    assert fake_stats()["streams"] == 0
+    streamed = _ask_model(service)
+    assert fake_stats()["streams"] == 1
+    assert streamed[0] == whole[0] == [("word_length", {"word": "atlas", "n": [1, 2]})]
+    assert streamed[1] == whole[1] == ["The user wants a short answer. "]
+    assert streamed[2].prompt_token_count == whole[2].prompt_token_count > 1
+
+
+def _until(condition, seconds=3.0):
+    import time
+    end = time.time() + seconds
+    while not condition() and time.time() < end:
+        time.sleep(0.05)
+    return condition()
+
+
+def test_a_turn_that_hangs_is_cut_and_asked_again(fake_llm, fake_stats, caplog):
+    """The timeout of the HTTP client is between two reads: a server that keeps the connection
+    alive never reaches it. A streamed turn without a chunk for idle_timeout seconds is cut (the
+    connection too: the server sees it go) and asked again."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    import time
+    from dataclasses import replace
+    service, control = fake_llm
+    service = replace(service, net=replace(service.net, idle_timeout=1, turn_timeout=20))
+    tool = {"tool_call": {"name": "word_length", "args": {"word": "atlas"}}}
+    control.write_text(json.dumps({**tool, "hang_after_chunks": 3, "hang_requests": 1}))
     t0 = time.time()
-    res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
-    assert res["answer"].startswith("SRS-0004 is implemented") and time.time() - t0 < 3
-    assert len(client.requests) == 2 and "did not answer in 0.5 s" in caplog.text
-    client = Hangs([])
-    client.hangs = 3                                     # every time: an error, and the agent ends
-    with pytest.raises(TimeoutError, match="did not answer in 0.5 s, 3 times"):
-        run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    assert _ask_model(service)[0] == [("word_length", {"word": "atlas"})]
+    assert time.time() - t0 < 6 and fake_stats()["streams"] == 2
+    assert "did not answer (nothing came for 1 s ([llm.network] idle_timeout)): asking again" in caplog.text
+    assert _until(lambda: fake_stats()["open"] == 0)            # the hung request is not left in the server
+
+    # every time, and the server sends SSE comments meanwhile (OpenRouter): only chunks count
+    control.write_text(json.dumps({**tool, "hang_after_chunks": 3, "hang_keepalive": 0.1}))
+    t0 = time.time()
+    with pytest.raises(TimeoutError, match=r"did not answer: nothing came for 1 s .*, 3 times"):
+        _ask_model(service)
+    assert time.time() - t0 < 10 and fake_stats()["streams"] == 5
+    assert _until(lambda: fake_stats()["open"] == 0)
+
+
+def test_a_turn_has_turn_timeout_seconds_in_all(fake_llm, fake_stats):
+    """Chunks that keep coming do not make a turn endless; without streaming, turn_timeout is
+    also the read timeout."""
+    pytest.importorskip("google.adk", reason="needs the [agents] extra")
+    import time
+    from dataclasses import replace
+    service, control = fake_llm
+    service = replace(service, net=replace(service.net, idle_timeout=10, turn_timeout=1))
+    control.write_text(json.dumps({"tool_call": {"name": "word_length", "args": {"word": "atlas"}},
+                                   "chunk_chars": 1, "slow_between_chunks": 0.2}))
+    t0 = time.time()
+    with pytest.raises(TimeoutError, match=r"took more than 1 s in all \(\[llm.network\] turn_timeout\), 3 times"):
+        _ask_model(service)
+    assert time.time() - t0 < 10 and _until(lambda: fake_stats()["open"] == 0)
+    control.write_text(json.dumps({"slow": 3}))
+    with pytest.raises(TimeoutError, match=r"nothing came for 1 s \(\[llm.network\] turn_timeout\), 3 times"):
+        _ask_model(replace(service, stream="false"))
 
 
 def test_genai_schemas_become_json_schemas():

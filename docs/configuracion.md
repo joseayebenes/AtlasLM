@@ -71,6 +71,7 @@ con OpenAI.
 | `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
+| `stream` | sí/no o `""` | `""` | cada petición de chat llega en trozos (SSE) y atlas los junta en la misma respuesta. `""`: con streaming hasta que el servidor demuestre que no puede (rechaza `stream`, contesta sin SSE o cierra un stream vacío); entonces se repite sin él y no se vuelve a intentar en ese proceso con ese servidor y modelo. `true` o `false` lo fuerzan (con `true`, un rechazo es un error). `atlas probe` dice «streaming: ok \| not supported» |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
 ## [embeddings]
@@ -98,7 +99,9 @@ los límites.
 | `ca_cert` | ruta | `SSL_CERT_FILE` del entorno | PEM o carpeta con la CA corporativa, o `"system"` para el almacén del sistema |
 | `client_cert`, `client_key` | ruta | `""` | certificado y clave de cliente (TLS mutuo); la contraseña de la clave, en `RAG_CLIENT_KEY_PASSWORD` |
 | `insecure` | sí/no | `false` | `true` no verifica TLS: solo para diagnosticar |
-| `timeout` | número | `600` | segundos por petición |
+| `timeout` | número | `600` | segundos para conectar y, en lo que no es una vuelta de chat (embeddings), entre dos lecturas |
+| `idle_timeout` | número | `120` | vuelta de chat con streaming: segundos sin recibir un trozo, una vez empezada la respuesta, antes de cortarla (la conexión también) y preguntar otra vez, hasta dos veces. Los comentarios con que algunos servidores mantienen viva la conexión (OpenRouter) no cuentan. La espera hasta el primer trozo (la cola del servidor, la lectura del prompt) la acota `turn_timeout`; 0 = sin límite |
+| `turn_timeout` | número | `600` | vuelta de chat: segundos en total desde que sale la petición (sin contar la espera del cupo) antes de cortarla y preguntar otra vez, hasta dos veces; es también el tiempo entre dos lecturas. 0 = sin límite |
 | `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30 |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |

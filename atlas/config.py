@@ -77,10 +77,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "project": {"name": str, "workspace": str, "log_level": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
-            "network": dict},
+            "stream": (bool, str), "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
-                "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
+                "no_proxy": str, "insecure": bool, "timeout": float, "idle_timeout": float, "turn_timeout": float,
+                "requests_per_minute": int,
                 "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int,
                 "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
                 "retry_statuses": list},
@@ -151,7 +152,8 @@ def _validate(data: dict, schema: dict, where: str) -> None:
             if not isinstance(v, int) or isinstance(v, bool):
                 raise ConfigError(f"[{where}] '{k}' must be an integer")
         elif not isinstance(v, kind):
-            raise ConfigError(f"[{where}] '{k}' must be of type {kind.__name__}")
+            names = " or ".join(t.__name__ for t in kind) if isinstance(kind, tuple) else kind.__name__
+            raise ConfigError(f"[{where}] '{k}' must be of type {names}")
 
 
 def _validate_tests(tests: dict) -> None:
@@ -320,6 +322,9 @@ def load_config(path: str | Path) -> Config:
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}))
     _validate_mcp(data.get("mcp", {}))
+    stream = data.get("llm", {}).get("stream", "")
+    if isinstance(stream, str) and stream.strip().lower() not in ("", "auto", "true", "false"):
+        raise ConfigError("[llm] stream must be true, false or \"\" (streamed unless the server cannot)")
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

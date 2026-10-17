@@ -51,7 +51,7 @@ python -m pytest -q                                # 203 pruebas sin modelo (+7 
 
 | Nivel | Para qué | Configuración |
 |---|---|---|
-| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409 y 429 con `Retry-After` y cabeceras de cupo, 5xx puntuales, 401, respuestas cortadas, prosa, servidores sin `json_schema` o sin salida estructurada, llamadas a herramientas, modelo que razona, `usage` del tamaño real, lentitud; la lista está al principio del fichero) | `atlas.test.toml` |
+| **Servidor falso** (`tests/fakes/fake_api.py`) | pruebas automáticas y desarrollo del motor: determinista, instantáneo, con fallos inyectables (409 y 429 con `Retry-After` y cabeceras de cupo, 5xx puntuales, 401, respuestas cortadas, prosa, servidores sin `json_schema` o sin salida estructurada, llamadas a herramientas, modelo que razona, `usage` del tamaño real, lentitud, streaming SSE con trozos lentos o una vuelta colgada a mitad; la lista está al principio del fichero) | `atlas.test.toml` |
 | **Modelo local** (Ollama o LM Studio) | probar la calidad real de análisis, búsqueda y agentes sin cupo ni red | `atlas.dev.toml` |
 | **OpenRouter** | comparar modelos de chat sobre las muestras, también el del gateway, sin descargarlos ([guía](docs/openrouter.md)) | `atlas.openrouter.toml` |
 | **Gateway corporativo** | producción | `atlas.toml` |

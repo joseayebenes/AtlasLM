@@ -68,6 +68,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `json_schema` (`no_structured_output: "json_schema"`). Con ellos se prueban por HTTP la
   espera por `Retry-After`, los escalones de salida estructurada, `finish_reason` y `atlas
   probe`.
+- El servidor falso contesta también en streaming SSE (razonamiento, texto y llamadas a
+  herramientas por índice, `finish_reason` y `usage`), lento (`slow_between_chunks`), colgado a
+  mitad (`hang_after_chunks`, con `hang_keepalive` para los comentarios que manda OpenRouter) o
+  sin streaming (`no_stream`), y `GET /` cuenta las peticiones abiertas.
+- `[llm] stream`: las peticiones de chat de `JsonLlm` y de los agentes llegan en trozos y se
+  juntan en la misma respuesta (texto, razonamiento, llamadas a herramientas, `finish_reason`
+  y `usage`). Por defecto (`""`) se intenta hasta que el servidor demuestra que no puede
+  (rechaza `stream`, contesta sin SSE o con un stream vacío); entonces se sigue sin él el resto
+  del proceso. `true` y `false` lo fuerzan. `atlas probe` lo prueba con una cuarta petición y
+  dice `streaming: ok | not supported`.
+- `[network] idle_timeout` (120 s sin un trozo, una vez empezada la respuesta) y `turn_timeout` (600 s en total) para cada
+  vuelta de chat, de `JsonLlm` y de los agentes: al vencer, se corta la conexión de verdad (el
+  servidor ve irse al cliente) y la vuelta se pregunta otra vez, hasta dos veces. Los
+  comentarios SSE con que OpenRouter mantiene viva la conexión no cuentan como trozos.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -113,6 +127,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
   `failed_parts`) y la respuesta se escribe con las demás, con sus fuentes y peticiones bien
   contadas.
+- Una vuelta colgada de un agente dejaba la petición viva en el gateway y su hueco de
+  `max_concurrent` ocupado: se abandonaba en un hilo y se preguntaba otra vez, así que podía
+  haber tres peticiones vivas por vuelta. Ahora se corta su conexión. `JsonLlm` no tenía tope
+  por vuelta (el `timeout` de httpx es entre dos lecturas: una petición se quedó colgada una
+  hora); ahora tiene el mismo que los agentes.
+- El hueco de `max_concurrent` se soltaba al llegar las cabeceras de la respuesta, no al
+  acabar de leerla: una respuesta en streaming no contaba. Ahora lo ocupa hasta el último trozo.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
@@ -129,6 +150,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   vez (y se borra lo anterior) los ficheros de una ruta escrita como absoluta pero dentro de
   la carpeta de `atlas.toml`, los de una ruta relativa que sale de ella (`../docs`), y todo
   lo de un workspace que se llenaba lanzando atlas desde otra carpeta.
+- `[network] timeout` ya no acota la vuelta de un agente: eso lo hace `turn_timeout` (600 s por
+  defecto, como antes). Si subiste `timeout` para vueltas largas, sube `turn_timeout`; y si el
+  servidor hace esperar más de 600 s hasta el primer trozo (cola, prompt largo), sube
+  `turn_timeout`. Una vuelta de `JsonLlm` que agota sus tres intentos para `atlas run` como
+  antes lo hacía un `APITimeoutError`.
+- Las peticiones de chat van con streaming salvo que el servidor no pueda. Si con el gateway
+  algo cambia, `[llm] stream = false` deja todo como antes; `atlas probe` dice si lo admite.
 
 ## [0.2.0] — 2026-10-16
 

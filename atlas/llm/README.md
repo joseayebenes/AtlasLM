@@ -8,7 +8,8 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
 |---|---|
 | `connection.py` | configuración de red, cliente OpenAI con proxy, TLS, límites y reintentos, diagnóstico de errores, `atlas check` y los contadores de uso |
 | `structured.py` | `JsonLlm`: pedir un objeto JSON en el escalón de `response_format` que acepte el servidor, comprobarlo contra su esquema y recuperarlo aunque el modelo lo envuelva, lo corte o lo rompa; respuestas de texto que avisan si salen cortadas |
-| `probe.py` | `atlas probe`: si el modelo de chat funciona como agente, con tres peticiones pequeñas |
+| `chat.py` | `complete`: una petición de chat con streaming si el servidor lo admite, con los trozos juntos en la misma respuesta de siempre |
+| `probe.py` | `atlas probe`: si el modelo de chat funciona como agente y si el servidor hace streaming, con cuatro peticiones pequeñas |
 
 ## Conexión
 
@@ -44,12 +45,49 @@ más por cada escalón que rechace).
 2. el resultado de la herramienta: tiene que contestar con él;
 3. la misma petición sin el razonamiento de la primera vuelta: si el servidor da los tokens
    del prompt, la diferencia dice si vuelve a meter el razonamiento que atlas le devuelve en
-   `[llm] reasoning_field`. Si no lo aprovecha, propone el otro campo.
+   `[llm] reasoning_field`. Si no lo aprovecha, propone el otro campo;
+4. la primera otra vez, con streaming: «streaming: ok» si llega en trozos y los trozos dan la
+   misma llamada a la herramienta, «streaming: not supported» si el servidor rechaza `stream`
+   o lo ignora. Es lo mismo que hace `[llm] stream = ""` en cada proceso.
 
 Sirve para comprobar el gateway: las primeras plantillas de chat de gemma 4 cerraban el turno
 a mitad de una llamada a herramienta, y OpenCode entraba en bucles. Con `gemma-4-26b` en
 OpenRouter (2026-10-15): llama a la herramienta en 2 s, contesta con el resultado y el servidor
 mete el razonamiento en el prompt (222 tokens con él, 149 sin él).
+
+## Streaming
+
+Las peticiones de chat de `JsonLlm` y de los agentes pasan por `complete` (`chat.py`). Con
+`[llm] stream` encendido van con `stream=True` y `stream_options={"include_usage": true}`, y
+los trozos se juntan en la respuesta que el servidor habría mandado sin streaming: el texto, el
+razonamiento (`reasoning` o `reasoning_content`), cada llamada a herramienta por su índice (el
+id y el nombre llegan primero, los argumentos a pedazos), `finish_reason` y el `usage` del
+último trozo. Quien lee la respuesta no nota la diferencia.
+
+Por defecto (`stream = ""`) se intenta hasta que el servidor demuestra que no puede: rechaza la
+petición con un 4xx que nombra `stream`, contesta con un cuerpo que no es SSE (lo ignoró: esa
+respuesta se aprovecha) o cierra un stream sin nada. Entonces la petición se repite sin
+streaming y no se vuelve a intentar en todo el proceso con ese `base_url` y modelo, como los
+escalones de `response_format`. `true` y `false` lo fuerzan; forzado, un rechazo es un error.
+El historial del gateway (501 sin esquema, plantillas que cerraban el turno) aconseja mirar
+qué dice `atlas probe` antes de fijarlo.
+
+Cada vuelta tiene dos tiempos, en `[llm.network]`: `idle_timeout` (120 s sin recibir un trozo,
+una vez empezada la respuesta) y `turn_timeout` (600 s en total, contados desde que sale la
+petición, sin la espera del cupo; también el tiempo de lectura de httpx). La espera hasta el
+primer trozo solo la acota `turn_timeout`: un Ollama compartido mandó el primero a los 458 s,
+por la cola, y el resto en 3 s; cortarla solo la mandaría al final de la cola.
+Un hilo vigila cada petición y, cuando vence uno de los dos, apaga el socket de la respuesta:
+la conexión se corta de verdad, el servidor ve irse al cliente y el hueco de `max_concurrent`
+queda libre (el transporte lo ocupa hasta que se cierra la respuesta, no solo hasta las
+cabeceras). Los comentarios SSE con que OpenRouter mantiene viva la conexión no engañan al
+vigilante: solo cuentan los trozos. La vuelta se pregunta otra vez, hasta `TURN_RETRIES` (2)
+veces, y luego sale `TurnTimeout` (un `TimeoutError`, que `atlas run` trata como fallo de
+conexión). Sin streaming solo vale `turn_timeout`, que es también el tiempo de lectura; la
+respuesta se pide de forma que el vigilante la tenga en cuanto llegan las cabeceras. Antes,
+el `timeout` de httpx, entre dos lecturas, era lo único: una petición de `gemma-4-26b` se
+quedó colgada una hora. `[network] timeout` queda para conectar y para lo que no es una vuelta
+de chat (embeddings).
 
 `[llm] extra_body` añade campos tal cual a cada petición de chat (de `JsonLlm`, de los
 agentes y de `atlas check`): las opciones propias de un servidor que la API de OpenAI no
@@ -118,15 +156,21 @@ También funciona solo, con su propio `connection.toml`:
 `tests/test_fake_api.py` (cliente, `check` con modelos que razonan y el escalón de salida
 estructurada, contadores de uso, la espera por `Retry-After` y por las cabeceras
 `x-ratelimit-*` por HTTP, reintentos de los 5xx, un cupo que no se libera, `usage` del tamaño
-real, `atlas probe` contra un servidor que llama a herramientas), `tests/test_llm_structured.py`
-(reparación y validación de JSON, la corrección que cita el error, los escalones
-`json_schema → json_object → none` compartidos entre instancias, `finish_reason` en
-`ask_text`, razonamiento, límite de concurrencia) y `tests/test_config.py` (secretos y
+real, `atlas probe` contra un servidor que llama a herramientas, las respuestas en trozos SSE),
+`tests/test_llm_structured.py` (reparación y validación de JSON, la corrección que cita el
+error, los escalones `json_schema → json_object → none` compartidos entre instancias,
+`finish_reason` en `ask_text`, razonamiento, límite de concurrencia, respuestas con streaming y
+servidores que lo rechazan o lo ignoran, una vuelta colgada que cuesta `idle_timeout` y no deja
+nada abierto en el servidor ni el hueco de `max_concurrent` ocupado), `tests/test_probe.py` (las cuatro peticiones de
+`atlas probe` con un cliente de pega) y `tests/test_config.py` (secretos y
 enmascarado).
 
 Todas usan el servidor falso (`tests/fakes/fake_api.py`), cuyo fichero de control, releído en
 cada petición, inyecta los fallos: `chat_429_after`, `chat_status_once: [500, 503]`,
 `retry_after` y `ratelimit_headers: {remaining, reset}` en los rechazos, `tool_call: {name,
 args}`, `usage_chars_per_token` (con él, una respuesta más larga que `max_tokens` sale cortada
-con `finish_reason` `length`) y `no_structured_output` (`true`, o `"json_schema"` para aceptar
-`json_object`), además de los de antes. La lista completa está al principio del fichero.
+con `finish_reason` `length`), `no_structured_output` (`true`, o `"json_schema"` para aceptar
+`json_object`) y, para el streaming, `no_stream` (`true` lo rechaza, `"ignore"` contesta sin
+SSE), `chunk_chars`, `slow_between_chunks`, `hang_after_chunks`, `hang_requests` y `hang_keepalive`, además de
+los de antes. `GET /` cuenta también las respuestas en trozos (`streams`) y las peticiones que
+se están contestando (`open`). La lista completa está al principio del fichero.

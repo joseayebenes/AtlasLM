@@ -206,3 +206,60 @@ def test_check_says_which_structured_output_the_server_accepts(fake, capsys):
     service.model = "fake-without-any"
     assert check(Connection(llm=service, embeddings=_service(url))) == 0
     assert "structured output: none" in capsys.readouterr().out
+
+
+def _until(condition, seconds=3.0):
+    import time
+    end = time.time() + seconds
+    while not condition() and time.time() < end:
+        time.sleep(0.05)
+    return condition()
+
+
+def test_a_streamed_answer_comes_in_chunks_with_the_usage_at_the_end(fake, fake_stats):
+    url, control = fake
+    control.write_text(json.dumps({"reasoning_tokens": 10, "chunk_chars": 3, "usage_chars_per_token": 4}))
+    chunks = list(_client(url, "x").chat.completions.create(
+        model="fake", messages=OK, stream=True, stream_options={"include_usage": True}))
+    deltas = [c.choices[0].delta for c in chunks if c.choices]
+    assert "".join(d.content or "" for d in deltas) == "ok"
+    assert "".join((d.model_extra or {}).get("reasoning") or "" for d in deltas) == "The user wants a short answer. "
+    assert [c.choices[0].finish_reason for c in chunks if c.choices][-1] == "stop"
+    assert chunks[-1].choices == [] and chunks[-1].usage.completion_tokens == 11
+    assert fake_stats()["streams"] == 1 and fake_stats()["open"] == 0
+
+
+def test_a_streamed_tool_call_comes_by_its_index(fake):
+    url, control = fake
+    control.write_text(json.dumps({"tool_call": {"name": "word_length", "args": {"word": "atlas"}}}))
+    tool = {"type": "function", "function": {"name": "word_length", "parameters": {"type": "object"}}}
+    chunks = list(_client(url, "x").chat.completions.create(model="fake", messages=OK, tools=[tool], stream=True))
+    calls = [t for c in chunks if c.choices for t in c.choices[0].delta.tool_calls or []]
+    assert calls[0].index == 0 and calls[0].id and calls[0].function.name == "word_length"
+    assert "".join(t.function.arguments or "" for t in calls) == '{"word": "atlas"}' and len(calls) > 2
+    assert chunks[-1].choices[0].finish_reason == "tool_calls"
+
+
+def test_a_server_without_streaming_rejects_it_or_ignores_it(fake):
+    url, control = fake
+    client = _client(url, "x")
+    control.write_text(json.dumps({"no_stream": True}))
+    with pytest.raises(Exception, match="stream is not supported"):
+        client.chat.completions.create(model="fake", messages=OK, stream=True)
+    control.write_text(json.dumps({"no_stream": "ignore"}))
+    stream = client.chat.completions.create(model="fake", messages=OK, stream=True)
+    assert stream.response.headers["content-type"] == "application/json"
+    assert json.loads(stream.response.read())["choices"][0]["message"]["content"] == "ok"
+
+
+def test_a_streamed_answer_that_hangs_holds_the_connection_until_the_client_closes_it(fake, fake_stats):
+    import time
+    url, control = fake
+    control.write_text(json.dumps({"hang_after_chunks": 2, "slow_between_chunks": 0.05}))
+    client = _client(url, "x", timeout=0.5)
+    t0 = time.time()
+    with pytest.raises(Exception) as hung:
+        for _ in client.chat.completions.create(model="fake", messages=OK, stream=True):
+            pass
+    assert "timed out" in str(hung.value).lower() and time.time() - t0 < 2
+    assert _until(lambda: fake_stats()["open"] == 0)            # the server sees the client close it

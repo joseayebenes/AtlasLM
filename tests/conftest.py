@@ -11,6 +11,16 @@ sys.path.insert(0, str(ROOT))
 import pytest  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _streams_learned_per_test():
+    """What atlas.llm.chat learns about streaming lasts the whole process: each test starts
+    without it (the stubs of the client ignore stream)."""
+    from atlas.llm import chat
+    chat._STREAMS.clear()
+    yield
+    chat._STREAMS.clear()
+
+
 @pytest.fixture(scope="session")
 def samples():
     """Sample data (generated if missing)."""

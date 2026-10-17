@@ -303,9 +303,11 @@ programa mismo o, para un servidor, un cliente que manda cada línea y escribe l
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` y `run_program`
 ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
-agente de serie las usa: `examples/agents/` trae dos de proyecto, `implementer` (cambia el
-código para cumplir un requisito y compila lo que cambia) y `tester` (escribe una prueba con
-entradas y salidas esperadas y la ejecuta). Las instrucciones de `tester` incluyen las reglas
+agente de serie las usa: `examples/agents/` trae cuatro de proyecto, `implementer` (cambia el
+código para cumplir un requisito y compila lo que cambia), `fixer` (arregla el código de un test
+que falla), `planner` (lee y dice cómo hacer un encargo) y `tester` (escribe una prueba con
+entradas y salidas esperadas y la ejecuta). Los tres primeros son los medidos con `gemma-4-26b`
+en `atlas develop` (ver [atlas.agents](../agents/README.md)). Las instrucciones de `tester` incluyen las reglas
 de Ada en las que falló `gemma4:12b` (`use type` para comparar valores de un tipo de otro
 paquete, `raise Program_Error with "..."`) y un modelo de prueba, que las pruebas de atlas
 compilan y ejecutan.

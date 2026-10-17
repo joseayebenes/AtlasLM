@@ -6,6 +6,21 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `examples/agents/fixer.md` y `planner.md`, los agentes con los que se midió `atlas develop`
+  con `gemma-4-26b` en `atlas-socket-demo`, adaptados a un proyecto Ada cualquiera. Cada uno
+  dice en un comentario con qué modelo se midió; `atlas.openrouter.toml` les pone su muestreo
+  (`[agents.implementer]`, `[agents.fixer]`, `[agents.planner]`: razonamiento `low`,
+  temperatura 1,0, `top_p` 0,95, `top_k` 64). `tests/test_examples.py` comprueba que cargan y
+  que sus herramientas existen.
+
+### Cambiado
+- `examples/agents/implementer.md` es el medido: `replace_subprogram`, `add_subprogram`,
+  `library_spec`, `search_reference`, `find_definition`, `describe_symbol` y `run_program`,
+  `stall_steps` 15 y `keep_tool_results` 10, sin `reasoning_effort` en el fichero. El de la
+  fase 5 (con `edit_file` y `write_file` solamente) se quita: con él fallaba el 53 % de las
+  ediciones de `gemma-4-26b`, con el medido el 11 %.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -90,6 +90,24 @@ dirs = ["agents", "examples/agents"]
 [agents.assistant]                          # los agentes de serie apagan el razonamiento en su fichero:
 max_steps = 10                              # para probarlo, reasoning_effort en [agents.<nombre>]
 reasoning_effort = "${ATLAS_REASONING:-none}"
+# Los agentes de código de examples/agents, con el muestreo con el que se midieron con
+# gemma-4-26b (atlas-socket-demo, 2026-10-13 a 15): razonamiento low y lo que recomienda la
+# ficha de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64). Con otro modelo, revísalos.
+[agents.implementer]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+[agents.fixer]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+[agents.planner]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
 [agents.eval]
 sets = ["examples/eval/assistant.yaml",     # el asistente (necesita el modelo)
         "examples/eval/retrieval.yaml"]     # el índice y el grafo, sin modelo

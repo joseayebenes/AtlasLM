@@ -185,6 +185,28 @@ Deshacer devuelve los ficheros de las raíces del código que un agente puede ca
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
 (`[sources.code] protected`), para que el agente no pueda cambiarlos.
 
+### Los agentes medidos
+
+`examples/agents/` trae los agentes con los que se midió lo que sigue, adaptados de los de
+`atlas-socket-demo` a un proyecto Ada cualquiera (sin lo propio del servidor de órdenes ni el
+resumen de `GNAT.Sockets`):
+
+| Agente | Qué hace | Herramientas | Límites |
+|---|---|---|---|
+| `implementer` | los encargos: cambia el código, lo compila y lo prueba con `run_program` | `replace_subprogram`, `add_subprogram`, `write_file`, `edit_file`, `check_code`, `run_program`, `library_spec`, `search_reference`, `find_definition`, `describe_symbol`, `get_requirement` | `max_steps` 40, `stall_steps` 15, `keep_tool_results` 10 |
+| `fixer` | las rondas: busca por qué falla un test y arregla el código | las mismas, más `grep` y `run_test` | igual |
+| `planner` | lee y dice cómo hacer un encargo (`planner = "planner"`) | solo de lectura | `max_steps` 15, `keep_tool_results` 10 |
+| `tester` | escribe una prueba de un requisito y la ejecuta | `write_file`, `run_test`... | `max_steps` 20 |
+
+Los ficheros no fijan el muestreo: dicen en un comentario con qué modelo se midieron, y
+`atlas.openrouter.toml` pone el de `gemma-4-26b` en `[agents.implementer]`, `[agents.fixer]` y
+`[agents.planner]` (razonamiento `low`, temperatura 1,0, `top_p` 0,95, `top_k` 64). Con
+`atlas.dev.toml` (`gemma4:12b` en Ollama) van con lo de `[llm]`, sin razonamiento. Para un
+proyecto, se copian a su carpeta `agents/` y se añade al cuerpo un resumen de la biblioteca que
+más usa, con sus declaraciones reales (`atlas-socket-demo` lleva el de `GNAT.Sockets`).
+`tests/test_examples.py` comprueba que cargan, que todas sus herramientas existen y el
+muestreo de cada TOML.
+
 Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
 `atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
 protegidos, `run_program`, `code_at` y el registro del servidor con la traza de cada excepción:

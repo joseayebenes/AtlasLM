@@ -71,7 +71,13 @@ de todos los documentos que se procesan juntos `[pipeline] workers` peticiones.
 `usage()` devuelve lo que ha pedido el proceso desde que empezó: peticiones por destino
 (`chat`, `embeddings`, `other`), rechazos por cupo (`rejected`), reintentos (`retried`),
 segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`), y kB
-enviados (`sent_kb`). Los perfiles de `atlas run` guardan lo que creció en cada paso.
+enviados (`sent_kb`). Además, lo que dice el `usage` de cada respuesta (`note_usage`, que
+llaman `JsonLlm`, `Embedder`, `AtlasLlm`, `check` y `probe`): tokens del prompt
+(`prompt_tokens`, de ellos `cached_tokens`), de la respuesta (`completion_tokens`, de ellos
+`reasoning_tokens`), de los textos de los embeddings (`embedding_tokens`) y `cost` cuando el
+servidor lo da (OpenRouter). `usage_since(antes)` da lo que creció. Los perfiles de `atlas
+run` guardan lo que creció en cada paso; `atlas ask`, `atlas agent` y `atlas eval` lo
+imprimen. `set_usage_label(comando, paso)` dice qué está haciendo el proceso.
 
 ## Como librería
 

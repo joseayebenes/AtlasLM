@@ -100,4 +100,4 @@ def test_atlas_eval_with_only_retrieval_needs_no_agent(indexed, monkeypatch, cap
     assert "ok   graph-impact-log  impact Logger.Log" in out
     assert "search, lexical: hit@1" in out and "graph: 10 of 10 right (100%)" in out and "agents:" not in out
     report = json.loads((indexed.workspace / "reports" / "eval-retrieval.json").read_text())
-    assert set(report) == {"retrieval"} and report["retrieval"]["graph"]["passed"] == 10
+    assert set(report) == {"retrieval", "usage"} and report["retrieval"]["graph"]["passed"] == 10

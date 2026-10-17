@@ -146,6 +146,8 @@ patterns = ["*.md"]
 
     rep = go()
     assert rep["processed"] == {"docs.process": 2, "index.documents": 2}
+    assert rep["profile"]["index.documents"]["api"]["embedding_tokens"] > 0       # what the server said
+    assert rep["profile"]["docs.process"]["api"]["prompt_tokens"] > 0            # hmi_manual.md, with the model
     stats = fake_stats()
     rep = go()
     assert rep["processed"] == {} and rep["skipped"]["index.documents"] == 2
@@ -157,6 +159,7 @@ patterns = ["*.md"]
     assert ask(cfg, "When does the HMI raise an alarm?") == 0
     out = capsys.readouterr().out
     assert "[1]" in out and "Sources:" in out and "003-2-alarms.md" in out
+    assert "\nModel: 2 chat, 1 embeddings, " in out and " completion tokens, " in out      # rewriting and answer
     with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
         main(["search", "keep logs", str(path)])
     assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out

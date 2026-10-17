@@ -113,12 +113,16 @@ def evaluate(cases: list[dict], cfg: Config, runs: int = 1, context: Any = None,
             result = {"id": case["id"], "run": n, "seconds": round(time.time() - t0, 1),
                       "passed": not (missing or missing_tools or res["stopped"] or res.get("error")),
                       "missing": missing, "missing_tools": missing_tools, "stopped": res["stopped"],
-                      "calls": called, "answer": res["answer"], **({"error": res["error"]} if res.get("error") else {})}
+                      "calls": called, "answer": res["answer"], "tokens": res.get("tokens", {}),
+                      **({"cost": res["cost"]} if "cost" in res else {}),
+                      **({"error": res["error"]} if res.get("error") else {})}
             results.append(result)
             if on_result:
                 on_result(result)
     passed = sum(r["passed"] for r in results)
-    return {"results": results, "passed": passed, "total": len(results),
+    tokens = {k: sum(r["tokens"].get(k, 0) for r in results) for k in ("prompt", "completion")}
+    return {"results": results, "passed": passed, "total": len(results), "tokens": tokens,
+            **({"cost": round(sum(r.get("cost", 0) for r in results), 6)} if any("cost" in r for r in results) else {}),
             "rate": round(passed / len(results), 3) if results else 0.0,
             "median_seconds": statistics.median(r["seconds"] for r in results) if results else 0.0,
             "by_case": {c["id"]: f"{sum(r['passed'] for r in results if r['id'] == c['id'])}/{runs}" for c in cases}}
@@ -196,7 +200,9 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
                   on_result: Callable[[dict], None] | None = None) -> dict[str, dict]:
     """Runs the sets of [agents.eval] sets and writes reports/eval-<set>.json for each:
     {"agents": the result of evaluate, "retrieval": that of evaluate_retrieval}, each only
-    if the set has cases of its kind."""
+    if the set has cases of its kind, and "usage": what the set asked of the servers
+    (requests, tokens, cost; see atlas.llm.usage)."""
+    from atlas.llm import usage, usage_since
     ev = cfg["agents"].get("eval") or {}
     sets = ev.get("sets") or []
     if not sets:
@@ -205,11 +211,12 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
     for s in sets:
         path = Path(s) if Path(s).is_absolute() else cfg.path.parent / s
         cases = load_cases(path)
-        res = {}
+        res, before = {}, usage()
         if any(c["kind"] != "agent" for c in cases):
             res["retrieval"] = evaluate_retrieval(cases, cfg, on_result=on_result)
         if any(c["kind"] == "agent" for c in cases):
             res["agents"] = evaluate(cases, cfg, runs or int(ev.get("runs", 1)), context, client, on_result)
+        res["usage"] = usage_since(before)          # requests, tokens and cost of the whole set
         report = cfg.workspace / "reports" / f"eval-{path.stem}.json"
         atomic_write(report, json.dumps(res, ensure_ascii=False, indent=1))
         out[path.stem] = res

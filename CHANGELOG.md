@@ -6,6 +6,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Tokens y coste de cada petición: `atlas.llm.note_usage` lee el `usage` de cada respuesta
+  (de `JsonLlm`, los embeddings, los agentes, `atlas check` y `atlas probe`) y lo suma a
+  `usage()`: `prompt_tokens`, `completion_tokens`, `reasoning_tokens`, `cached_tokens`,
+  `embedding_tokens` y `cost` cuando el servidor lo da. Los perfiles de `atlas run` y
+  `atlas status` los enseñan por paso; `atlas ask`, `atlas agent` y `atlas eval` los imprimen,
+  y `atlas eval` los guarda en su informe. `set_usage_label` dice qué comando y qué paso
+  están en marcha. Sin precios configurables: el gateway no tiene precio público.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

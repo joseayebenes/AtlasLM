@@ -269,7 +269,8 @@ class Runner:
     """Runs the steps in dependency order, the units of a parallel step in `workers`
     threads (or the step's own `workers`). `meters` returns cumulative counters (requests
     to the APIs, seconds waiting...): the profile of each step keeps what grew during it.
-    `version` is saved with each run, to compare profiles between versions.
+    `version` is saved with each run, to compare profiles between versions. `on_step` is
+    called with the name of each step before it starts (atlas.cli labels the usage with it).
 
     `stopping` is set when the run is interrupted (Ctrl+C) with units running in other
     threads: the units not started yet are cancelled, and the long ones can watch it and
@@ -279,7 +280,7 @@ class Runner:
                  on_error: str = "continue", max_attempts: int = 3, retry_quarantined: bool = False,
                  prune_missing: bool = True, lock_path: str | Path | None = None,
                  meters: Callable[[], dict[str, float]] | None = None, version: str = "",
-                 stopping: threading.Event | None = None):
+                 stopping: threading.Event | None = None, on_step: Callable[[str], None] | None = None):
         self.ledger, self.context = ledger, context
         self.steps = self._sort(steps)
         self.workers = max(1, workers)
@@ -288,6 +289,7 @@ class Runner:
         self.lock_path = Path(lock_path) if lock_path else ledger.path.with_suffix(".lock")
         self.meters, self.version = meters, version
         self.stopping = stopping or threading.Event()
+        self.on_step = on_step
 
     @staticmethod
     def _sort(steps: list[Step]) -> list[Step]:
@@ -317,6 +319,8 @@ class Runner:
             for step in self.steps:
                 if only and step.name not in set(only):
                     continue
+                if self.on_step:
+                    self.on_step(step.name)
                 try:
                     self._run_step(step, rep)
                 except FatalError as e:

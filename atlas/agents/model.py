@@ -45,7 +45,7 @@ from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
 from atlas.llm import ServiceConfig, create_client
-from atlas.llm.connection import reasoning_of
+from atlas.llm.connection import note_usage, reasoning_of
 from atlas.llm.structured import repair_json
 
 __all__ = ["AtlasLlm", "reasoning_of", "to_llm_response", "to_messages", "to_tools"]
@@ -126,7 +126,9 @@ class AtlasLlm(BaseLlm):
 
             def work() -> None:
                 try:
-                    result = (True, self.client.chat.completions.create(**kwargs))
+                    response = self.client.chat.completions.create(**kwargs)
+                    note_usage(response)
+                    result = (True, response)
                 except BaseException as e:            # to the agent, as if it were raised here
                     result = (False, e)
                 try:

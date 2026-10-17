@@ -556,13 +556,14 @@ def steps(ctx) -> list[Step]:
 
 def run(cfg: Config) -> int:
     from atlas import __version__
-    from atlas.llm import usage
+    from atlas.llm import set_usage_label, usage
     ctx = _context(cfg)
     pc = cfg["pipeline"]
     runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
                     on_error=pc["on_error"], max_attempts=pc["max_attempts"],
                     retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
-                    meters=usage, version=__version__, stopping=ctx.stopping)
+                    meters=usage, version=__version__, stopping=ctx.stopping,
+                    on_step=lambda step: set_usage_label("run", step))
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
@@ -572,10 +573,18 @@ def run(cfg: Config) -> int:
 
 
 def _api_text(api: dict) -> str:
-    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting' from the `api` of a profile."""
+    """'540 chat, 189 embeddings, 3 rejected, 12.0 s waiting, 812000 prompt / 95000 completion
+    tokens, 40000 embedding tokens, $0.41' from the `api` of a profile (or a usage_since)."""
     parts = [f"{api[k]:g} {k}" for k in ("chat", "embeddings", "other", "rejected", "retried") if api.get(k)]
     if api.get("wait_seconds", 0) >= 0.1:
         parts.append(f"{api['wait_seconds']:.1f} s waiting")
+    if api.get("prompt_tokens") or api.get("completion_tokens"):
+        parts.append(f"{api.get('prompt_tokens', 0):g} prompt / {api.get('completion_tokens', 0):g} completion tokens"
+                     + (f" ({api['reasoning_tokens']:g} reasoning)" if api.get("reasoning_tokens") else ""))
+    if api.get("embedding_tokens"):
+        parts.append(f"{api['embedding_tokens']:g} embedding tokens")
+    if api.get("cost"):
+        parts.append(f"${api['cost']:.4f}")
     return ", ".join(parts)
 
 
@@ -902,10 +911,13 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
 
 def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
     from atlas.index import Index
+    from atlas.llm import usage, usage_since
     kinds = _kinds(kind)
     _context(cfg)
+    before = usage()
     res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
                                         scope="whole" if whole else "")
+    used = _api_text(usage_since(before))
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")
@@ -913,6 +925,8 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
         print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
     if res["scope"] == "whole":
         print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
+    if used:
+        print(f"\nModel: {used}")
     return 0
 
 
@@ -947,6 +961,9 @@ def agent(cfg: Config, name: str, question: str) -> int:
         print("\nTools called:")
     for c in res["calls"]:
         print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    tokens = res.get("tokens") or {}
+    print(f"\nModel: {tokens.get('prompt', 0)} prompt / {tokens.get('completion', 0)} completion tokens"
+          + (f", ${res['cost']:.4f}" if "cost" in res else ""))
     return 1 if res["stopped"] else 0
 
 
@@ -1016,6 +1033,8 @@ def evaluate(cfg: Config) -> int:
         if "agents" in res:
             a = res["agents"]
             print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
+        if _api_text(res.get("usage", {})):
+            print(f"  model: {_api_text(res['usage'])}")
     return 0
 
 
@@ -1082,6 +1101,8 @@ def main(argv: list[str] | None = None) -> None:
         print(f"atlas {__version__}")
         sys.exit(0)
     action, rest = argv[0], argv[1:]
+    from atlas.llm import set_usage_label
+    set_usage_label(action)
     if action == "init":
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,

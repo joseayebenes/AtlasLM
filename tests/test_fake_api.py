@@ -71,6 +71,35 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["chat"] == 1 and grown["other"] == 0 and grown["retried"] == 0
     assert grown["rejected"] >= 2 and grown["embeddings"] == 1 + grown["rejected"]
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
+    assert grown["prompt_tokens"] == 0         # a bare client: the tokens are counted by note_usage
+
+
+def test_note_usage_reads_tokens_reasoning_cache_and_cost(fake_llm):
+    """Every answer adds what its usage says; JsonLlm and the embeddings go through it."""
+    from types import SimpleNamespace
+    from atlas.index import Embedder
+    from atlas.llm import JsonLlm, note_usage, usage, usage_since
+    answer = SimpleNamespace(usage=SimpleNamespace(
+        prompt_tokens=120, completion_tokens=30, cost=0.002,
+        completion_tokens_details=SimpleNamespace(reasoning_tokens=20),
+        prompt_tokens_details=SimpleNamespace(cached_tokens=100)))
+    before = usage()
+    assert note_usage(answer) == {"prompt_tokens": 120, "completion_tokens": 30, "reasoning_tokens": 20,
+                                  "cached_tokens": 100, "cost": 0.002}
+    assert note_usage(SimpleNamespace(usage=SimpleNamespace(prompt_tokens=9)), "embeddings") == {"embedding_tokens": 9}
+    assert note_usage(SimpleNamespace(usage=None)) == {} and note_usage(object()) == {}
+    assert usage_since(before) == {"prompt_tokens": 120, "completion_tokens": 30, "reasoning_tokens": 20,
+                                   "cached_tokens": 100, "cost": 0.002, "embedding_tokens": 9}
+
+    service, control = fake_llm
+    control.write_text(json.dumps({"cost": 0.001, "reasoning_tokens": 7}))
+    before = usage()
+    JsonLlm(service).ask_text("Answer.", "Reply with: ok")
+    Embedder(service).queries(["track deletion"])
+    grown = usage_since(before)
+    assert grown["chat"] == 1 and grown["embeddings"] == 1 and grown["reasoning_tokens"] == 7
+    assert grown["completion_tokens"] > 7 and grown["prompt_tokens"] > 0 and grown["embedding_tokens"] > 0
+    assert grown["cost"] == 0.002
 
 
 def _status_error(status: int, message: str, **metadata):

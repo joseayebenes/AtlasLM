@@ -17,6 +17,9 @@ The control file is re-read on every request; keys:
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
+  cost: X                          -> every answer says it cost X (usage.cost, as OpenRouter)
+Every answer has its usage: a token per 4 characters of the messages (or of the texts to
+embed) and of the answer, and the reasoning tokens in completion_tokens_details.
 GET / returns counters, and the options of the last chat request (without its messages). Sections are analysed with a heuristic (sentences with "shall");
 questions with sources ("Sources: ...") get an answer that cites their first source, and
 notes ("Notes: ...") one that cites every source of the notes. The rewriting of a question
@@ -56,7 +59,10 @@ class H(BaseHTTPRequestHandler):
             stats["emb_texts"] += len(inp)
             if any(k in t for t in inp for k in c.get("emb_fail_if", [])):
                 return self.send(400, {"error": {"message": "input rejected by gateway", "type": "invalid_request_error"}})
-            return self.send(200, {"object": "list", "model": "e", "usage": {"prompt_tokens": 1, "total_tokens": 1},
+            tokens = sum(len(t) for t in inp) // 4 + 1
+            return self.send(200, {"object": "list", "model": "e",
+                                   "usage": {"prompt_tokens": tokens, "total_tokens": tokens,
+                                             **({"cost": c["cost"]} if c.get("cost") else {})},
                                    "data": [{"object": "embedding", "index": i, "embedding": emb(t)} for i, t in enumerate(inp)]})
         stats["chat"] += 1
         stats["last_chat"] = {k: v for k, v in body.items() if k != "messages"}   # the options of the request
@@ -96,9 +102,15 @@ class H(BaseHTTPRequestHandler):
             message["reasoning"] = "The user wants a short answer. "
             if body.get("max_tokens") is not None and body["max_tokens"] <= c["reasoning_tokens"]:
                 message["content"], finish = "", "length"
+        prompt = sum(len(str(m.get("content") or "")) for m in body["messages"]) // 4 + 1
+        reasoning = c["reasoning_tokens"] if "reasoning" in message else 0
+        completion = len(message["content"]) // 4 + 1 + reasoning
         self.send(200, {"id": "x", "object": "chat.completion", "created": 0, "model": "m",
                         "choices": [{"index": 0, "finish_reason": finish, "message": message}],
-                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+                        "usage": {"prompt_tokens": prompt, "completion_tokens": completion,
+                                  "total_tokens": prompt + completion,
+                                  "completion_tokens_details": {"reasoning_tokens": reasoning},
+                                  **({"cost": c["cost"]} if c.get("cost") else {})}})
 if __name__ == "__main__":
     print(f"fake API at http://127.0.0.1:{ARGS.port}/v1  (control: {ARGS.control})", flush=True)
     ThreadingHTTPServer(("127.0.0.1", ARGS.port), H).serve_forever()

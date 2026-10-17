@@ -20,7 +20,7 @@ import json
 import time
 from typing import Any, Callable
 
-from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, reasoning_of
+from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, note_usage, reasoning_of
 
 __all__ = ["probe"]
 
@@ -49,7 +49,9 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
 
     def ask(msgs: list[dict]) -> tuple[Any, float]:
         t0 = time.time()
-        return client.chat.completions.create(messages=msgs, **base), time.time() - t0
+        response = client.chat.completions.create(messages=msgs, **base)
+        note_usage(response)
+        return response, time.time() - t0
 
     try:
         first, seconds = ask(messages)

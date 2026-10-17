@@ -24,7 +24,7 @@ import re
 import threading
 from typing import Callable
 
-from atlas.llm.connection import ServiceConfig, create_client
+from atlas.llm.connection import ServiceConfig, create_client, note_usage
 
 __all__ = ["JsonLlm", "TruncatedResponse", "parse_json", "repair_json"]
 
@@ -137,7 +137,9 @@ class JsonLlm:
 
     def _create(self, **kwargs):
         with self._slots:
-            return self.client.chat.completions.create(**kwargs)
+            response = self.client.chat.completions.create(**kwargs)
+        note_usage(response)
+        return response
 
     def _kwargs(self, messages: list[dict]) -> dict:
         kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)

@@ -504,8 +504,11 @@ def _http_module():
 # What went to the APIs since the process started, through every client: the time
 # profiles of `atlas run` keep what each step added.
 _USAGE: dict[str, float] = {"chat": 0, "embeddings": 0, "other": 0, "rejected": 0, "retried": 0,
-                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0}
+                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0,
+                            "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0,
+                            "embedding_tokens": 0, "cost": 0.0}
 _USAGE_LOCK = threading.Lock()
+_LABEL = ["", ""]       # (command, step or agent): see set_usage_label
 
 
 def _count(**deltas: float) -> None:
@@ -518,10 +521,57 @@ def usage() -> dict[str, float]:
     """Cumulative counters of the requests of this process to the APIs: requests sent by
     endpoint (`chat`, `embeddings`, `other`), rate-limit rejections (`rejected`), retries
     after 5xx or connection errors (`retried`), seconds waiting for the pace or a pause of
-    the limiter (`wait_seconds`) and for the server (`api_seconds`), and kilobytes sent
-    (`sent_kb`)."""
+    the limiter (`wait_seconds`) and for the server (`api_seconds`), kilobytes sent
+    (`sent_kb`), and what the servers said each answer used (see note_usage): tokens of the
+    chat prompts (`prompt_tokens`, of them `cached_tokens`), of its answers
+    (`completion_tokens`, of them `reasoning_tokens`), of the texts embedded
+    (`embedding_tokens`), and `cost` when the server gives it (OpenRouter)."""
     with _USAGE_LOCK:
         return dict(_USAGE)
+
+
+def usage_since(before: dict[str, float]) -> dict[str, float]:
+    """What usage() grew since `before` (an earlier usage()), without the counters that did
+    not move."""
+    return {k: round(v - before.get(k, 0), 6) for k, v in usage().items() if v != before.get(k, 0)}
+
+
+def _number(obj, name: str) -> float:
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def note_usage(response, endpoint: str = "chat") -> dict[str, float]:
+    """Adds to usage() what the `usage` of an answer says: prompt and completion tokens,
+    reasoning tokens (completion_tokens_details), cached prompt tokens (prompt_tokens_details)
+    and the cost when the server gives it. The prompt tokens of an `embeddings` answer go to
+    `embedding_tokens`. Returns what it added; nothing if the answer has no usage. Called by
+    every place that gets an answer: JsonLlm, Embedder, AtlasLlm, check and probe."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return {}
+    grown = {"prompt_tokens": _number(u, "prompt_tokens"), "completion_tokens": _number(u, "completion_tokens"),
+             "reasoning_tokens": _number(getattr(u, "completion_tokens_details", None), "reasoning_tokens"),
+             "cached_tokens": _number(getattr(u, "prompt_tokens_details", None), "cached_tokens"),
+             "cost": _number(u, "cost")}
+    if endpoint == "embeddings":
+        grown = {"embedding_tokens": grown["prompt_tokens"], "cost": grown["cost"]}
+    grown = {k: v for k, v in grown.items() if v}
+    if grown:
+        _count(**grown)
+    return grown
+
+
+def set_usage_label(command: str, step_or_agent: str = "") -> None:
+    """What this process is doing: the command (atlas.cli sets it when it starts: run, ask,
+    serve...) and its step or agent (the Runner sets it for each step). It goes in the lines
+    of the log file and in the usage log of the workspace."""
+    _LABEL[:] = [command, step_or_agent]
+
+
+def usage_label() -> tuple[str, str]:
+    """(command, step or agent) of set_usage_label."""
+    return _LABEL[0], _LABEL[1]
 
 
 def _endpoint(request) -> str:
@@ -784,9 +834,11 @@ def check(conn: Connection) -> int:
                     messages=[{"role": "user", "content": "Reply with: ok"}],
                     **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
                     **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
+                note_usage(r)
                 ok, detail = _check_chat(r)
             else:
                 r = client.embeddings.create(model=cfg.model, input=["test"])
+                note_usage(r, "embeddings")
                 ok, detail = True, f"dimension {len(r.data[0].embedding)}"
             print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
             if not ok:

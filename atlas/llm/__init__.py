@@ -10,7 +10,8 @@ from dataclasses import fields, replace
 
 from atlas.llm.connection import (  # noqa: F401
     Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
-    effective_proxy, is_connection_error, mask_credentials, rate_limiter_for, show, usage,
+    effective_proxy, is_connection_error, mask_credentials, note_usage, rate_limiter_for, set_usage_label, show, usage,
+    usage_label, usage_since,
 )
 from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json  # noqa: F401
 

@@ -85,7 +85,7 @@ sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md
 ## Comandos
 
 ```bash
-atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml
+atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml (--profile gateway: la del gateway)
 atlas run      atlas.dev.toml # procesamiento incremental y reanudable
 atlas status   atlas.dev.toml # libro de registro, datos y perfil de tiempos
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
@@ -107,6 +107,7 @@ atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace to
 atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
+atlas doctor   atlas.toml     # lo que puede fallar en este puesto antes de un run: tabla OK/WARN/FAIL
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
@@ -155,7 +156,7 @@ atlas/
 ├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
 ├── agents/         agentes en Markdown (builtin/), AtlasLlm, build_context, verificación,
 │                   informes y evaluación
-├── templates/      la plantilla de atlas init
+├── templates/      las plantillas de atlas init (ollama y gateway)
 └── cli.py          las acciones de la línea de comandos
 docs/                       instalación, configuración y seguridad
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)

@@ -436,14 +436,20 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     from atlas.cli import main
     monkeypatch.delenv("ATLAS_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
-    for argv, code in ((["init"], 0), (["init"], 1), (["--version"], 0)):     # init never overwrites
+    for argv, code in ((["init"], 0), (["init"], 1), (["--version"], 0),     # init never overwrites
+                       (["init", "gw.toml", "--profile", "gateway"], 0), (["init", "x.toml", "--profile=cloud"], 1)):
         with pytest.raises(SystemExit) as exit:
             main(argv)
         assert exit.value.code == code
-    assert capsys.readouterr().out.strip().endswith(f"atlas {__version__}")
+    assert f"\natlas {__version__}\n" in capsys.readouterr().out
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+    gateway = load_config(tmp_path / "gw.toml")
+    assert "ATLAS_API_KEY" in gateway.unset and gateway["llm"]["reasoning_effort"] == "none"
+    assert gateway["network"]["requests_per_minute"] == 28 and gateway["network"]["ca_cert"] == "system"
+    assert gateway["search"]["scope_chars"] == 300000 and gateway["pipeline"]["workers"] == 6
+    assert not (tmp_path / "x.toml").exists()
 
 
 def test_a_configuration_finds_its_files_from_any_folder(tmp_path, samples, monkeypatch, capsys):
@@ -500,3 +506,61 @@ test_patterns = ["**/tests/**"]
     assert run(load_config("atlas.toml")) == 0
     rep = json.loads(capsys.readouterr().out)
     assert rep["processed"] == {} and rep["pruned"] == {} and rep["skipped"]["code.parse"] == 5
+
+
+def test_a_missing_code_root_is_warned(toml, tmp_path, caplog):
+    import pytest
+    from atlas.cli import _context, code_step
+    pytest.importorskip("tree_sitter_ada")
+    cfg = load_config(toml(f'''
+[sources.code]
+roots = ["{(tmp_path / 'no-such-src').as_posix()}"]
+languages = ["ada"]
+'''))
+    ctx = _context(cfg)
+    step = code_step(ctx)
+    with caplog.at_level("WARNING", logger="atlas"):
+        assert step.units(ctx) == []
+    assert "no-such-src does not exist" in caplog.text
+
+
+def test_doctor_finds_a_missing_root_and_a_missing_command(toml, samples, tmp_path, fake, capsys):
+    from atlas.cli import doctor
+    from atlas.doctor import diagnose
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+api_key = "local"
+[network]
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code"]
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}", "{(tmp_path / 'no-such-src').as_posix()}"]
+languages = ["ada"]
+check_command = ["no-such-compiler-xyz", "-c", "{{file}}"]
+tool_path = ["{(tmp_path / 'no-such-gnat-*' / 'bin').as_posix()}"]
+'''))
+    found = {(f.where, f.level): f for f in diagnose(cfg, connect=False)}
+    assert "no-such-src does not exist" in found[("sources.code", "fail")].message
+    assert "files" in found[("sources.code", "ok")].message
+    assert "no-such-compiler-xyz" in found[("sources.code check_command", "fail")].message
+    assert found[("sources.code tool_path", "warn")].fix
+    assert ("workspace", "ok") in found and ("python", "ok") in found
+    assert not (tmp_path / "ws").exists()                   # it only reads: no workspace created
+    assert doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  sources.code" in out and "OK    connection llm" in out and "2 failures" in out
+    no_ca = load_config(toml(f'''
+[llm]
+base_url = "{fake[0]}"
+api_key = "local"
+[network]
+no_proxy = "*"
+ca_cert = "{(tmp_path / 'no-such-ca.pem').as_posix()}"
+[pipeline]
+steps = []
+'''))
+    found = [f for f in diagnose(no_ca) if f.where == "connection llm"]
+    assert found[0].level == "fail" and "no-such-ca.pem does not exist" in found[0].message and "1 warning," in out

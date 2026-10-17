@@ -97,6 +97,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `ask_atlas` (este, frente a lo que devolvieron sus herramientas). `atlas ask` imprime
   «status: partial (2 sentences without a source)». El asistente y los agentes de impacto y
   cobertura dicen que su respuesta es parcial cuando lo es.
+- `atlas doctor [atlas.toml]`: lo que puede fallar en un puesto nuevo, antes de un `run` que lo
+  descubriría horas después. Python y plataforma, los extras que importan los pasos y
+  herramientas configurados, cuántos ficheros da cada ruta de las fuentes, la base de
+  intercambio de DOORS (versión, módulos y fecha), los comandos del compilador y del servidor
+  de lenguaje buscados en el `PATH` y `tool_path`, las variables del entorno que faltan, el
+  workspace y la conexión. Tabla OK/WARN/FAIL, código de salida 1 si algo falla. En la
+  librería, `atlas.doctor.diagnose(cfg)`, de solo lectura.
+- `atlas init --profile gateway`: la plantilla del gateway corporativo
+  (`atlas/templates/atlas-gateway.toml`), con `reasoning_effort = "none"`,
+  `requests_per_minute = 28`, `max_concurrent = 6`, `workers = 6`, `ca_cert = "system"`,
+  una `[[sources.docs]]` de ejemplo y `[search] scope_chars = 300000`. Sin `--profile` (o con
+  `ollama`), la de siempre.
+- `atlas check` (y `atlas doctor`) avisa cuando el modelo razona y `reasoning_effort` está
+  vacío: los documentos se analizan mucho más despacio.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -111,6 +125,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   string»), en vez de pedir JSON sin más.
 - Las fuentes de una respuesta de pasajes son solo las que cita; las demás van a `unused`.
 - `atlas ask` sale con código 1 cuando no hay nada indexado relacionado con la pregunta.
+- El `atlas.toml` de producción del repositorio sigue la plantilla del gateway: pone
+  `reasoning_effort = "none"`, `max_concurrent`, una `[[sources.docs]]` y `[search]`, y lee la
+  clave de `ATLAS_API_KEY`, como la plantilla y la guía de instalación (antes, `GW_KEY`).
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -151,6 +168,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   hora); ahora tiene el mismo que los agentes.
 - El hueco de `max_concurrent` se soltaba al llegar las cabeceras de la respuesta, no al
   acabar de leerla: una respuesta en streaming no contaba. Ahora lo ocupa hasta el último trozo.
+- Con Python 3.13, un certificado sin Authority Key Identifier, como los de algunos proxies que
+  inspeccionan TLS, ya no se rechaza cuando `ca_cert` no es `"system"`: 3.13 enciende
+  `VERIFY_X509_STRICT` y atlas la quita en su contexto propio (la cadena y el nombre se siguen
+  verificando, como en 3.12). Si el error sale, `atlas check` recomienda `ca_cert = "system"`
+  o Python 3.12 en vez de pedir la CA corporativa.
+- Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
+  `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
@@ -174,6 +198,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   antes lo hacía un `APITimeoutError`.
 - Las peticiones de chat van con streaming salvo que el servidor no pueda. Si con el gateway
   algo cambia, `[llm] stream = false` deja todo como antes; `atlas probe` dice si lo admite.
+- Un `atlas.toml` copiado del ejemplo de producción lee la clave de `GW_KEY`: cámbialo a
+  `${ATLAS_API_KEY}` (y la variable), o deja `GW_KEY` puesta. Si no tiene `reasoning_effort`,
+  `atlas check` lo avisa; ponerlo no reprocesa nada.
 
 ## [0.2.0] — 2026-10-16
 

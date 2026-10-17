@@ -95,12 +95,18 @@ ya use GNAT Pro pone sus comandos en `check_command` y `test_command`.
 ```powershell
 mkdir C:\proyectos\tms
 cd C:\proyectos\tms
-C:\atlas\venv\Scripts\atlas init
+C:\atlas\venv\Scripts\atlas init --profile gateway
 ```
 
-`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Hay que cambiar:
+`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Con `--profile
+gateway`, el del gateway corporativo, con los valores que ya se saben buenos:
+`reasoning_effort = "none"` (gemma 4 razona por defecto; un agente que lo necesita lo
+enciende en su fichero), `requests_per_minute = 28`, `max_concurrent = 6`, `workers = 6`,
+`ca_cert = "system"` y `[search] scope_chars = 300000`. Sin `--profile` (o con `--profile
+ollama`), el de un modelo local en Ollama. Hay que cambiar:
 
-1. `[llm] base_url` y `model`: el gateway o el modelo local.
+1. `[llm] base_url` y `model`: el gateway (`https://<gateway>/v1` en la plantilla) o el
+   modelo local.
 2. Las fuentes que se tengan: `[[sources.docs]] paths`, `[sources.code] roots` y, con la
    base de requisitos, `[sources.doors] enabled = true` y su `path`.
 
@@ -108,8 +114,9 @@ La [guía de configuración](configuracion.md) explica cada clave.
 
 ## 3. Secretos y red
 
-La clave del gateway no se escribe en `atlas.toml`: se lee del entorno. La plantilla ya
-dice `api_key = "${ATLAS_API_KEY:-local}"`.
+La clave del gateway no se escribe en `atlas.toml`: se lee del entorno, siempre de
+`ATLAS_API_KEY`. La plantilla del gateway dice `api_key = "${ATLAS_API_KEY}"` (y la de Ollama,
+`"${ATLAS_API_KEY:-local}"`, que sin la variable vale `local`).
 
 ```powershell
 setx ATLAS_API_KEY "la-clave"            # Windows: abre otra terminal después
@@ -131,11 +138,29 @@ atlas solo se conecta a las URL de `[llm]` y `[embeddings]`. Ver
 ## 4. Comprobar y procesar
 
 ```powershell
+atlas doctor atlas.toml     # lo que puede fallar en este puesto, antes de procesar nada
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
 atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
 atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
 ```
+
+`atlas doctor` solo lee: no crea el workspace ni toca las fuentes. Imprime una tabla con una
+línea por comprobación (`OK`, `WARN` o `FAIL`, dónde y qué; debajo, cómo arreglarlo) y sale
+con 1 si algo falla:
+
+- la versión de Python y la plataforma;
+- los extras que importan los pasos y herramientas configurados (`tree_sitter_ada`,
+  `pymupdf`, `mcp`, `google.adk`);
+- cada ruta de `[[sources.docs]] paths` y de `[sources.code] roots`: si existe y cuántos
+  ficheros daría (0 es un aviso: una raíz mal escrita no procesa nada);
+- la base de intercambio de DOORS (`[sources.doors.exchange] path`): si abre, su versión de
+  esquema, sus módulos y cuándo se rellenó;
+- los comandos de `[sources.code]` (`check_command`, `test_command`, `syntax_commands`,
+  `language_server`...) buscados en el `PATH` y en las carpetas de `tool_path`;
+- las variables de entorno que nombra el TOML y no están puestas;
+- si el workspace existe y se puede escribir;
+- y, al final, la conexión: la misma petición al chat y a los embeddings que `atlas check`.
 
 Si `check` falla, dice por qué: certificado, proxy, credenciales, URL o modelo. Con
 `C:\atlas\venv\Scripts` en el `PATH` basta con `atlas`; si no, la ruta completa.

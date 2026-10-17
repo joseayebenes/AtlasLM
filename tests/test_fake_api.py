@@ -29,6 +29,7 @@ def test_check_reports_a_reasoning_model(fake, capsys):
     assert check(Connection(llm=_service(url), embeddings=_service(url))) == 0
     out = capsys.readouterr().out
     assert "OK" in out and "'ok' (reasoning model:" in out
+    assert "reasoning_effort is empty: documents will be analysed more slowly" in out
 
 
 def test_check_fails_when_reasoning_leaves_no_answer(fake, capsys):
@@ -53,7 +54,8 @@ def test_check_and_from_config_use_reasoning_effort(fake, capsys, tmp_path):
     conn = from_config(load_config(toml))
     assert conn.llm.reasoning_effort == "none"
     assert check(Connection(llm=conn.llm, embeddings=_service(url))) == 0
-    assert "OK" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "OK" in out and "[warning]" not in out
 
 
 def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
@@ -263,3 +265,20 @@ def test_a_streamed_answer_that_hangs_holds_the_connection_until_the_client_clos
             pass
     assert "timed out" in str(hung.value).lower() and time.time() - t0 < 2
     assert _until(lambda: fake_stats()["open"] == 0)            # the server sees the client close it
+
+
+def test_the_own_tls_context_is_not_strict_on_python_3_13():
+    import ssl
+    import sys
+    from atlas.llm import NetConfig, diagnose
+    from atlas.llm.connection import ssl_context
+    ctx = ssl_context(NetConfig(ca_cert="", insecure=False))
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname       # the chain and the name, verified
+    if sys.version_info >= (3, 13):
+        assert not ctx.verify_flags & ssl.VERIFY_X509_STRICT
+    strict = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                                             "Missing Authority Key Identifier (_ssl.c:1028)")
+    assert 'ca_cert = "system"' in diagnose(strict) and "Python 3.12" in diagnose(strict)
+    other = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                                            "unable to get local issuer certificate")
+    assert "corporate root CA" in diagnose(other)

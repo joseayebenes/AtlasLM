@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import random
 import re
@@ -43,6 +44,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 FILE_NAME = "connection.toml"
+log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------
@@ -288,6 +290,13 @@ def ssl_context(net: NetConfig) -> ssl.SSLContext | bool:
         ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     else:
         ctx = ssl.create_default_context()      # on Windows it already includes the system store
+        if sys.version_info >= (3, 13) and hasattr(ssl, "VERIFY_X509_STRICT"):
+            # 3.13 turns on the strict X.509 checks of OpenSSL, which reject certificates
+            # without an Authority Key Identifier, such as those of some proxies that inspect
+            # TLS. Off, as in 3.12: the chain and the host name are still verified.
+            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            log.debug("TLS: VERIFY_X509_STRICT off (as in Python 3.12); the chain and the host name "
+                      "are still verified")
         try:
             import certifi
             ctx.load_verify_locations(cafile=certifi.where())
@@ -720,6 +729,10 @@ def diagnose(e: BaseException) -> str:
     text = " | ".join(f"{type(c).__name__}: {c}" for c in chain)
     said = _server_message(chain)
     said = f" (the server says: {said})" if said else ""
+    if any(m in text for m in ("Missing Authority Key Identifier", "Missing Subject Key Identifier", "X509_V_FLAG")):
+        return ("the server certificate (or that of a proxy that inspects TLS) does not pass the strict "
+                "X.509 checks of OpenSSL: it lacks an extension that Python 3.13 requires. Set ca_cert = "
+                "\"system\" (the certificate store of the system), or use Python 3.12.")
     if "CERTIFICATE_VERIFY_FAILED" in text or any(isinstance(c, ssl.SSLCertVerificationError) for c in chain):
         return ("server certificate not verified. If a proxy inspects TLS, set the corporate "
                 "root CA in ca_cert (or ca_cert = \"system\" to use the system certificate "
@@ -829,35 +842,47 @@ def _structured_output(cfg: ServiceConfig) -> str:
         return f"unknown ({diagnose(e)})"
 
 
+def check_service(name: str, cfg: ServiceConfig) -> dict:
+    """One real request to a service ("LLM": a short chat; otherwise an embedding):
+    {"ok", "detail", "seconds"}, and "warning" when the chat model reasons and
+    reasoning_effort does not say anything. A failure comes with the diagnosis in "detail"."""
+    t0, warning = time.time(), ""
+    try:
+        client, _ = create_client(cfg)
+        if name == "LLM":
+            r = client.chat.completions.create(
+                model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
+                messages=[{"role": "user", "content": "Reply with: ok"}],
+                **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
+                **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
+            ok, detail = _check_chat(r)
+            if _reasoning(r, r.choices[0].message) and not cfg.reasoning_effort:
+                warning = ("the model reasons and reasoning_effort is empty: documents will be analysed more "
+                           "slowly. Set reasoning_effort = \"none\" in [llm] (an agent that needs reasoning "
+                           "turns it on in its file)")
+        else:
+            r = client.embeddings.create(model=cfg.model, input=["test"])
+            ok, detail = True, f"dimension {len(r.data[0].embedding)}"
+    except SystemExit:
+        raise
+    except Exception as e:
+        return {"ok": False, "detail": diagnose(e), "seconds": time.time() - t0}
+    return {"ok": ok, "detail": detail, "seconds": time.time() - t0, **({"warning": warning} if warning else {})}
+
+
 def check(conn: Connection) -> int:
     """Real chat and embeddings request. Returns 0 if everything works."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
     failures = 0
     for name, cfg in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
         print(f"\n{name}: {describe(cfg)}")
-        try:
-            client, _ = create_client(cfg)
-            t0 = time.time()
-            if name == "LLM":
-                r = client.chat.completions.create(
-                    model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
-                    messages=[{"role": "user", "content": "Reply with: ok"}],
-                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
-                    **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
-                ok, detail = _check_chat(r)
-            else:
-                r = client.embeddings.create(model=cfg.model, input=["test"])
-                ok, detail = True, f"dimension {len(r.data[0].embedding)}"
-            print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
-            if not ok:
-                failures += 1
-            elif name == "LLM":
-                print(f"  structured output: {_structured_output(cfg)}")
-        except SystemExit:
-            raise
-        except Exception as e:
-            failures += 1
-            print(f"  FAILED: {diagnose(e)}")
+        res = check_service(name, cfg)
+        print(f"  {'OK' if res['ok'] else 'FAILED'} ({res['seconds']:.1f}s): {res['detail']}")
+        if res.get("warning"):
+            print(f"  [warning] {res['warning']}")
+        failures += not res["ok"]
+        if res["ok"] and name == "LLM":
+            print(f"  structured output: {_structured_output(cfg)}")
     if conn.llm.net.insecure or conn.embeddings.net.insecure:
         print("\n[warning] insecure turns TLS verification off; use it only for diagnosis.")
     return 1 if failures else 0

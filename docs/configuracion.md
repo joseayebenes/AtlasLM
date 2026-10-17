@@ -2,10 +2,11 @@
 
 Toda la ejecución de atlas se define en un fichero TOML, `atlas.toml` por defecto. La línea
 de comandos solo dice qué acción lanzar y con qué fichero: `atlas run atlas.toml`.
-`atlas init` escribe una plantilla comentada para empezar.
+`atlas init` escribe una plantilla comentada para empezar: la de un modelo local (Ollama) o,
+con `atlas init --profile gateway`, la del gateway corporativo.
 
 Ejemplos completos en el repositorio:
-- `atlas.toml`: producción, con el gateway;
+- `atlas.toml`: producción, con el gateway (la plantilla `--profile gateway` con el proyecto);
 - `atlas.dev.toml`: Ollama y las muestras;
 - `atlas.openrouter.toml`: modelos de OpenRouter y las muestras, para compararlos
   ([guía](openrouter.md));
@@ -68,7 +69,7 @@ con OpenAI.
 | `api_key` | texto | `"local"` | la clave; siempre `${VARIABLE}` salvo en un servidor local |
 | `temperature` | número | `0.1` | temperatura del análisis y de las respuestas |
 | `max_tokens` | entero | `0` | tope de la respuesta; 0 = el del servidor. Con modelos que razonan, el razonamiento cuenta dentro |
-| `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
+| `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección); `atlas check` avisa si el modelo razona y está vacío |
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
 | `stream` | sí/no o `""` | `""` | cada petición de chat llega en trozos (SSE) y atlas los junta en la misma respuesta. `""`: con streaming hasta que el servidor demuestre que no puede (rechaza `stream`, contesta sin SSE o cierra un stream vacío); entonces se repite sin él y no se vuelve a intentar en ese proceso con ese servidor y modelo. `true` o `false` lo fuerzan (con `true`, un rechazo es un error). `atlas probe` dice «streaming: ok \| not supported» |

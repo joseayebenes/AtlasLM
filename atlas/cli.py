@@ -28,6 +28,8 @@
                                        --resume: goes on from where an earlier run stopped (Ctrl+C)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
+    atlas doctor   [atlas.toml]     what can fail on this machine, before a run: Python, extras, sources,
+                                    the DOORS database, the compiler commands, variables, workspace and connection
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result,
                                     whether the server uses the reasoning that the agents give back, and
                                     whether it streams
@@ -35,6 +37,7 @@
                                     its library for search_reference (also done on the first search)
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
+                   [--profile ollama|gateway]   for a local model (the default) or the corporate gateway
     atlas --version
 """
 from __future__ import annotations
@@ -129,7 +132,11 @@ def code_step(ctx) -> Step | None:
         """The code files, named from the folder of atlas.toml (Config.relative)."""
         out = []
         for root in sc.get("roots", []):
-            for p in sorted(ctx.cfg.resolve(root).rglob("*")):
+            base = ctx.cfg.resolve(root)
+            if not base.is_dir():
+                log.warning("[sources.code] roots: %s does not exist", root)
+                continue
+            for p in sorted(base.rglob("*")):
                 f = ctx.cfg.relative(p)
                 if p.is_file() and p.suffix.lower() in by_ext and \
                         not any(fnmatch.fnmatch(f.replace("\\", "/"), pat) for pat in exclude):
@@ -876,7 +883,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
+OPTIONS = {"init": {"--profile": str},
+           "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
            "develop": {"--check": bool, "--resume": bool}}
 
@@ -1095,6 +1103,15 @@ def check(cfg: Config) -> int:
     return check_connection(from_config(cfg))
 
 
+def doctor(cfg: Config) -> int:
+    """A table of what can fail with this configuration on this machine; 1 if something fails."""
+    from atlas.doctor import diagnose, print_findings
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    findings = diagnose(cfg)
+    print_findings(findings)
+    return 1 if any(f.level == "fail" for f in findings) else 0
+
+
 def probe(cfg: Config) -> int:
     """The chat model as an agent: a tool call, its result, the reasoning given back and streaming."""
     from atlas.llm import from_config
@@ -1125,17 +1142,21 @@ def serve(cfg: Config) -> int:
     return 0
 
 
-TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
+TEMPLATES = {"ollama": Path(__file__).parent / "templates" / "atlas.toml",       # a local model (the default)
+             "gateway": Path(__file__).parent / "templates" / "atlas-gateway.toml"}
 
 
-def init(path: Path) -> int:
-    """Writes the template of atlas.toml in `path`, unless the file exists."""
+def init(path: Path, profile: str = "ollama") -> int:
+    """Writes the template of atlas.toml for `profile` in `path`, unless the file exists."""
+    if profile not in TEMPLATES:
+        print(f"unknown profile '{profile}' (valid: {', '.join(TEMPLATES)})", file=sys.stderr)
+        return 1
     if path.exists():
         print(f"{path} already exists: it is not overwritten", file=sys.stderr)
         return 1
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"created {path}: edit the sources and the model, then `atlas check {path.name}` and "
+    path.write_text(TEMPLATES[profile].read_text(encoding="utf-8"), encoding="utf-8")
+    print(f"created {path}: edit the sources and the model, then `atlas doctor {path.name}` and "
           f"`atlas run {path.name}`")
     return 0
 
@@ -1151,9 +1172,10 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
     action, rest = argv[0], argv[1:]
     if action == "init":
-        sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
+        rest, options = _options(action, rest)
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "eval": evaluate, "check": check, "probe": probe, "reference": reference, "serve": serve}
+               "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor, "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

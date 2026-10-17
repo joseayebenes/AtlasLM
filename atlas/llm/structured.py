@@ -68,7 +68,7 @@ def _step_down(cfg: ServiceConfig, rejected: str, error: Exception) -> None:
                 rejected, _TIERS[key], error)
 
 
-_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list,
+_TYPES: dict[str, type | tuple[type, ...]] = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list,
           "object": dict, "null": type(None)}
 _NAMES = {"string": "a string", "integer": "an integer", "number": "a number", "boolean": "true or false",
           "array": "a list", "object": "an object", "null": "null"}
@@ -308,7 +308,8 @@ class JsonLlm:
                 repaired = repair_json(text, keys)
                 raise TruncatedResponse(f"answer cut by length ({len(text)} chars)", repaired)
             try:
-                obj, error = parse_json(text, keys), ""
+                obj: dict | None = parse_json(text, keys)
+                error = ""
             except ValueError as e:
                 obj, error = repair_json(text, keys), f"That was not a valid JSON object ({e})"
             if obj is not None:

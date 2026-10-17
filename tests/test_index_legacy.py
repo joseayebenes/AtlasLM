@@ -61,4 +61,5 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
     old = rag.responder(old_store, old_embedder, old_llm_client, question)
     res = new.answer(question)
     assert res["answer"] == old["answer"]
-    assert [s["cite"] for s in res["sources"]] == [s["cite"] for s in old["sources"]]
+    sent = sorted(res["sources"] + res["unused"], key=lambda s: s["n"])     # the cited ones and the rest
+    assert [s["cite"] for s in sent] == [s["cite"] for s in old["sources"]]

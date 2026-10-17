@@ -13,6 +13,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   del grafo (sin grafo, su texto, padre y enlaces de DOORS) como las primeras fuentes de la
   respuesta (`extra_sources` en `Index.answer`). «¿Qué prueba verifica SRS-0004?» gastaba dos
   peticiones y solo lo encontraba por casualidad; ahora una, y con la fuente del grafo.
+- Citas comprobadas contra el texto: `check_citations` señala, sin modelo, los `[n]` fuera de
+  rango (`out_of_range`) y las frases cuyos IDs o cifras con unidad no están en las fuentes
+  que citan (`unsupported`). `atlas ask` imprime «n claims not supported by their sources» y
+  `ask_docs` lo dice en `warnings`.
+
+### Cambiado
+- Las fuentes de una respuesta de pasajes son solo las que cita; las demás van a `unused`.
 
 ## [0.2.0] — 2026-10-16
 

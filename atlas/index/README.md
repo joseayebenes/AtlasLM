@@ -75,6 +75,16 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
 pide responder solo con esas fuentes y citándolas como `[n]`.
 
+## Citas comprobadas
+
+Al final de cada respuesta, `check_citations` comprueba sus citas sin modelo: un `[n]` de
+una fuente que no existe va a `out_of_range`; de cada frase con cita, los IDs y los números
+con unidad (320 ms, 30 días, 95 %) se buscan, canonizados (minúsculas, sin puntuación, la
+unidad con un solo nombre), en las fuentes que cita esa frase, y si alguno no está la frase
+va a `unsupported` (`{claim, cited, missing}`). `sources` son solo las citadas; de pasajes, el
+resto queda en `unused`. `atlas ask` imprime «n claims not supported by their sources» con
+cada frase, y `ask_docs` lo dice en `warnings`.
+
 ## Preguntas de trazabilidad
 
 «¿Qué prueba verifica SRS-0004?» no se contesta bien con pasajes: el índice gastaba dos

@@ -334,6 +334,18 @@ def test_traceability_questions_get_their_sources_without_searching(docs, sample
     assert alone.route("Which test verifies SRS-9999?") == []
 
 
+def test_citations_are_checked_against_the_sources():
+    from atlas.index.search import check_citations
+    sources = [{"doc_name": "spec", "section_title": "", "kind": "chunk",
+                "context": "The TMF shall delete a lost track within 320 ms (SRS-0004)."},
+               {"doc_name": "hmi", "section_title": "3 Logging", "kind": "chunk", "context": "Logs are kept for 30 days."}]
+    res = check_citations("A lost track is deleted within 320ms [1]. SRS-0004 says it [2].\n"
+                          "- Logs are kept 60 days [2].\n- Logs: 30 días. [2] See also [5].", sources)
+    assert res["cited"] == [1, 2] and res["out_of_range"] == [5]
+    assert [(u["claim"], u["missing"]) for u in res["unsupported"]] == [("SRS-0004 says it [2].", ["SRS-0004"]),
+                                                                        ("Logs are kept 60 days [2].", ["60 days"])]
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

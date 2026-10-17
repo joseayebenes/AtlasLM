@@ -19,6 +19,10 @@ answer only from those numbered sources, citing them as [n]. An answer to a broa
 reads its documents whole, section by section: in one request if they fit in
 `scope_chars`, and otherwise in parts, each giving notes that a last request combines.
 
+Every answer has its citations checked without a model (check_citations): a [n] of a
+source that does not exist, and the IDs and values with a unit of a sentence that none of
+the sources it cites contains, are in the result; `sources` are only those cited.
+
 `extra_sources` (DocTools.route: the traceability of the requirements and code the
 question names, from DOORS and the graph) go before the passages as the first numbered
 sources; a question that has them is not rewritten, nor read whole unless scope="whole".
@@ -33,11 +37,11 @@ from pathlib import Path
 
 from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
-from atlas.index.store import IndexStore
+from atlas.index.store import REF_PATTERN, IndexStore
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search", "section_file",
-           "whole_sources"]
+__all__ = ["answer", "build_context", "check_citations", "cite", "citation_warnings", "diverse",
+           "rewrite_question", "rrf", "search", "section_file", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -92,6 +96,100 @@ e.g. [2] or [1][3].
 point it out.
 - If the notes do not contain the answer, say so clearly.
 - Answer in the same language as the question."""
+
+
+NOTHING_FOUND = "Nothing indexed is related to the question."
+
+CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+SENTENCE_END = re.compile(r"[.!?](?:\s*\[\d+(?:\s*,\s*\d+)*\])*(?=\s+[^\s\da-z]|\s*$)")
+LIST_MARK = re.compile(r"^\s*(?:[-*•>]|#+|\d+[.)])\s+")
+UNITS = (r"ms|msecs?|milliseconds?|milisegundos?|s|secs?|seconds?|segundos?|min|mins|minutes?|minutos?|h|hrs?"
+         r"|hours?|horas?|days?|d[ií]as?|weeks?|semanas?|Hz|kHz|MHz|GHz|mm|cm|m|km|metres?|meters?|metros?|NM"
+         r"|ft|feet|pies|kts?|kn|knots?|nudos?|deg|degrees?|grados?|°|dB|dBm|mV|mA|kW|bits?|bytes?|KB|kB|MB|GB"
+         r"|bps|kbps|Mbps|%|percent")
+NUMBER_UNIT = re.compile(rf"(?<![\w.,])\d+(?:[.,]\d+)?\s?(?:{UNITS})(?!\w)")
+UNIT_NAMES = {**dict.fromkeys(["msec", "msecs", "millisecond", "milliseconds", "milisegundo", "milisegundos"], "ms"),
+              **dict.fromkeys(["sec", "secs", "second", "seconds", "segundo", "segundos"], "s"),
+              **dict.fromkeys(["mins", "minute", "minutes", "minuto", "minutos"], "min"),
+              **dict.fromkeys(["hr", "hrs", "hour", "hours", "hora", "horas"], "h"),
+              **dict.fromkeys(["day", "days", "dia", "dias", "día", "días"], "d"),
+              **dict.fromkeys(["week", "weeks", "semana", "semanas"], "wk"),
+              **dict.fromkeys(["metre", "metres", "meter", "meters", "metro", "metros"], "m"),
+              **dict.fromkeys(["feet", "pies"], "ft"),
+              **dict.fromkeys(["kt", "kts", "knot", "knots", "nudo", "nudos"], "kn"),
+              **dict.fromkeys(["degree", "degrees", "grado", "grados"], "deg")}
+
+
+def _canon(s: str) -> str:                                  # as in atlas/docs/analysis.py
+    return re.sub(r"\W+", " ", s.replace("-\n", "")).lower().strip()
+
+
+def _norm(text: str) -> str:
+    """A text canonized to look for IDs and values in it: words in lower case, the
+    punctuation as spaces, the number apart from its unit and the units by one name."""
+    text = re.sub(r"(\d)\s?%", r"\1 percent", text.replace("°", " deg"))
+    text = re.sub(r"(?<=\d)(?=[^\W\d_])", " ", text)
+    return " ".join(UNIT_NAMES.get(w, w) for w in _canon(text).split())
+
+
+def _sentences(text: str) -> list[str]:
+    """The sentences of an answer: by line, without their list marks, and by full stop; a
+    citation after the full stop stays with its sentence."""
+    out = []
+    for line in text.splitlines():
+        line, start = LIST_MARK.sub("", line).strip(), 0
+        for m in SENTENCE_END.finditer(line):
+            out.append(line[start:m.end()].strip())
+            start = m.end()
+        out.append(line[start:].strip())
+    return [s for s in out if s.strip("*_#|-: ")]
+
+
+def _cited(sentence: str) -> list[int]:
+    return list(dict.fromkeys(int(n) for group in CITATION.findall(sentence) for n in re.split(r"\s*,\s*", group)))
+
+
+def _claims(sentence: str) -> list[tuple[str, str]]:
+    """The IDs and the values with a unit of a sentence, as written and canonized."""
+    bare = CITATION.sub(" ", sentence)
+    found = [t.rstrip(".-_") for t in REF_PATTERN.findall(bare)]
+    found = [t for t in found if re.search(r"[^\W\d_]", t) and re.search(r"\d", t)] + NUMBER_UNIT.findall(bare)
+    return list({_norm(t): t for t in found}.items())
+
+
+def check_citations(text: str, sources: list[dict]) -> dict:
+    """The citations of an answer against its numbered sources (dicts with `context`, the
+    text the model read), without a model: {"cited": the numbers that exist, "out_of_range":
+    those that do not, "unsupported": [{claim, cited, missing}]}, the sentences with an ID
+    or a value with a unit (320 ms, 30 days, 95 %) that no source they cite contains, after
+    canonizing both texts."""
+    texts: dict[int, str] = {}
+    cited, out_of_range, unsupported = set(), set(), []
+    for sentence in _sentences(text):
+        numbers = _cited(sentence)
+        valid = [n for n in numbers if 1 <= n <= len(sources)]
+        out_of_range.update(set(numbers) - set(valid))
+        cited.update(valid)
+        if not numbers:
+            continue
+        for n in valid:
+            if n not in texts:
+                s = sources[n - 1]
+                texts[n] = f" {_norm(cite(s) + chr(10) + s['context'])} "
+        missing = [t for key, t in _claims(sentence) if not any(f" {key} " in texts[n] for n in valid)]
+        if missing:
+            unsupported.append({"claim": sentence, "cited": numbers, "missing": missing})
+    return {"cited": sorted(cited), "out_of_range": sorted(out_of_range), "unsupported": unsupported}
+
+
+def citation_warnings(res: dict) -> list[str]:
+    """What check_citations found in an answer, in a line each."""
+    out, n = [], len(res.get("unsupported", []))
+    if n:
+        out.append(f"{n} claim{'s' if n != 1 else ''} not supported by {'their' if n != 1 else 'its'} sources")
+    if res.get("out_of_range"):
+        out.append("citations of sources that do not exist: " + " ".join(f"[{i}]" for i in res["out_of_range"]))
+    return out
 
 
 def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
@@ -260,8 +358,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     sources = list(extra_sources) + [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
-        return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "whole",
-                "documents": names, "requests": 0}
+        return {**_checked(NOTHING_FOUND, [], False), "scope": "whole", "documents": names, "requests": 0}
     blocks = [f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1)]
     parts = _parts(blocks, max_chars)
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
@@ -279,9 +376,19 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
         else:
             joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
             text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}"), requests + 1
-    cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-    return {"answer": text, "scope": "whole", "documents": names, "requests": requests,
-            "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited]}
+    return {**_checked(text, sources, False), "scope": "whole", "documents": names, "requests": requests}
+
+
+def _checked(text: str, sources: list[dict], passages: bool) -> dict:
+    """The answer, the sources it cites and the check of its citations; from passages, the
+    sources it does not cite in `unused`."""
+    check = check_citations(text, sources)
+    cited = set(check["cited"])
+    out = {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
+           "unsupported": check["unsupported"], "out_of_range": check["out_of_range"]}
+    if passages:
+        out["unused"] = [{"n": i, "cite": cite(s)} for i, s in enumerate(sources, 1) if i not in cited]
+    return out
 
 
 def _source(n: int, s: dict) -> dict:
@@ -309,8 +416,10 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
            extra_sources: list[dict] = ()) -> dict:
-    """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
-    "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
+    """{"answer": text with [n] citations, "sources": those it cites [{n, cite, doc, section, file,
+    kind, ref, excerpt}], "unused": from passages, those it does not cite [{n, cite}],
+    "unsupported" and "out_of_range" (see check_citations), "scope": "passages" | "whole",
+    "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
     the question is broad. `extra_sources` ({doc_name, section_title, kind, ref, context},
@@ -336,9 +445,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     used = sum(len(s["context"]) for s in extra)
     sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4))
     if not sources:
-        return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",
-                "documents": [], "requests": requests}
+        return {**_checked(NOTHING_FOUND, [], True), "scope": "passages", "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
     text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
-    return {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1)],
-            "scope": "passages", "documents": [], "requests": requests + 1}
+    return {**_checked(text, sources, True), "scope": "passages", "documents": [], "requests": requests + 1}

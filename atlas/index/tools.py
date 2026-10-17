@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 import openai
 
 from atlas.index.records import DOORS_PREFIX, KINDS
-from atlas.index.search import cite
+from atlas.index.search import citation_warnings, cite
 from atlas.index.store import REF_PATTERN
 from atlas.llm import model_failed
 from atlas.plugins import register_methods
@@ -275,12 +275,16 @@ class DocTools:
         whole instead of the best passages, in parts if they are long; `whole` = true makes
         it read them whole always (`scope` in the answer says how it was read). A question
         about the tests, code, parent, links or impact of a requirement or code element also
-        gets their traceability from DOORS and the graph as its first sources."""
+        gets their traceability from DOORS and the graph as its first sources. `sources` are
+        those the answer cites; `unsupported` lists the sentences with an ID or a value that
+        the sources they cite do not contain, and `warnings` says so in a line."""
         try:
-            return self.index.answer(question, document=document, scope="whole" if whole else "",
-                                     extra_sources=self.route(question))
+            res = self.index.answer(question, document=document, scope="whole" if whole else "",
+                                    extra_sources=self.route(question))
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        warnings = citation_warnings(res)
+        return {**res, "warnings": warnings} if warnings else res
 
 
 register_methods(DocTools, TOOL_NAMES)

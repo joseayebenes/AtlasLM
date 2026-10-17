@@ -367,6 +367,44 @@ def test_a_change_that_breaks_the_syntax_is_not_made_and_each_change_is_checked(
     assert tools.syntax == context._build_tools.syntax_errors and tools.after_change is not None
 
 
+def test_the_rules_look_at_the_new_lines_of_a_change(project, tmp_path):
+    """What neither the compiler nor the tests see: a warning goes in the notes, an error of a
+    rule of the project refuses the change, with its line; code that was there does not count."""
+    from atlas.code.build import RULES, load_rules, rule_findings
+    from atlas.config import ConfigError
+    ada, make = project
+    mine = tmp_path / "rules.toml"
+    mine.write_text("[[rule]]\nmatch = '(?i)\\bdelay\\s+\\d'\nmessage = \"No delays in this project.\"\n"
+                    "level = \"error\"\nfiles = [\"*.adb\"]\n")
+    build = make(extra=f'check_on_edit = false\nrules = ["{mine.as_posix()}"]')
+    build.hook()
+    files = build.files
+    new = str(ada / "src" / "spare.adb")
+    swallow = "procedure Spare is\nbegin\n   null;\nexception\n   WHEN OTHERS =>\n      null;\nend Spare;\n"
+    made = files.write_file(new, swallow)                      # a new file is looked at whole
+    assert made["created"] is True and made["notes"][0].startswith("line 5: when others => null swallows")
+    f = str(ada / "src" / "tracks.adb")
+    files.read_file(f)
+    text = Path(f).read_text()
+    refused = files.edit_file(f, 'Logger.Log ("update");', 'delay 1.0;')
+    assert refused["error"].startswith("the change was not made: line ") and "No delays" in refused["error"]
+    assert refused["rules"][0]["level"] == "error" and Path(f).read_text() == text
+    # what was there before is not the change's: an edit elsewhere in the same file goes through
+    files.read_file(new)
+    other = files.edit_file(new, "   null;\nexception", "   Spare_Count := 0;\nexception")
+    assert other["replacements"] == 1 and "notes" not in other
+    # Python, and the rules of a language do not apply to another
+    py = str(ada / "src" / "calc.py")
+    assert "except: pass swallows" in files.write_file(py, "try:\n    x = 1\nexcept:\n    pass\n")["notes"][0]
+    assert rule_findings(load_rules([RULES]), "calc.py", "-- when others => null;\n") == []
+    mine.write_text("[[rule]]\nmatch = 'x'\nmessage = 'y'\nlevel = 'fatal'\n")
+    with pytest.raises(ConfigError, match="level is error or warning"):
+        load_rules([mine])
+    mine.write_text("[[rule]]\nmatch = '(x'\nmessage = 'y'\n")
+    with pytest.raises(ConfigError, match="not a valid regular expression"):
+        load_rules([mine])
+
+
 @gnat
 def test_gnat_rejects_a_begin_left_open(project):
     ada, make = project

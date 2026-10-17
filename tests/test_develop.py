@@ -255,6 +255,36 @@ def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
         develop(base / "plan.toml", cfg, client=StubClient([]))
 
 
+def test_a_reviewer_reads_the_diff_and_its_issues_go_back_once(project):
+    """reviewer: after a task that compiles and breaks nothing, a read-only run with the task and
+    its diff; its JSON verdict goes back to the agent once (review_fixes)."""
+    from atlas.agents.develop import _verdict, develop
+    base, cfg = project
+    (base / "agents" / "reviewer.md").write_text(AGENT.replace("NAME", "reviewer"))   # it has write_file: refused
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'reviewer = "reviewer"\n\n[[tasks]]\nid = "add"\ntext = "Implement add and mul."\n')
+    issues = '{"verdict": "issues", "issues": [{"file": "src/calc.py", "line": 2, "issue": "mul is missing"}]}'
+    client = StubClient(write(ADD)
+                        + [{"write_file": {"path": "src/calc.py", "content": "x = 1\n"}}, f"```json\n{issues}\n```"]
+                        + write(MUL))
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["agent"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "implementer", "kept"), ("review", "reviewer", "issues"), ("review-fix", "implementer", "kept")]
+    assert report["steps"][1]["issues"] == [{"file": "src/calc.py", "line": 2, "issue": "mul is missing"}]
+    assert client.prompts[1].startswith("Review a change to the code of the project. The task it does:\n\n"
+                                        "Implement add and mul.") and "+    return a + b" in client.prompts[1]
+    assert client.prompts[2].startswith("A colleague reviewed") and "- src/calc.py, line 2: mul is missing" in \
+        client.prompts[2]
+    runs = [json.loads(l) for l in (cfg.workspace / "reports" / "develop-plan.calls.jsonl").read_text().splitlines()]
+    assert runs[1]["calls"][0]["result"] == {"error": "these tools are read-only"}
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    assert "## Review" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert _verdict('{"verdict": "ok"}') == [] and _verdict("Looks fine.") is None
+    (base / "plan.toml").write_text(plan + 'reviewer = "nobody"\n\n[[tasks]]\ntext = "x"\n')
+    with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        develop(base / "plan.toml", cfg, client=StubClient([]))
+
+
 def test_a_round_that_fixes_the_test(project):
     from atlas.agents.develop import develop
     base, cfg = project

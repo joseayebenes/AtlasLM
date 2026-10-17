@@ -120,6 +120,8 @@ stuck_rounds = 2                         # rondas sin avanzar antes de dejar un 
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
+reviewer = "reviewer"                    # opcional: un agente que lee el diff de un encargo que compila
+review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente
 
 [[tasks]]
 id = "ping-bye"
@@ -174,7 +176,16 @@ cambios que rompían lo que ya iba.
    tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
-7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+7. Con `reviewer` (apagado por defecto), un encargo que compila y no rompe nada pasa por ese
+   agente con el encargo y el diff del cambio. Solo lee, tenga las herramientas que tenga: las
+   de ficheros le contestan que son de solo lectura. Contesta en JSON, `{"verdict": "ok"}` o
+   `{"verdict": "issues", "issues": [{"file", "line", "issue"}]}`, y los problemas vuelven al
+   agente `review_fixes` veces (una por defecto); un arreglo que rompe algo se deshace. El
+   informe los lista en «Review». Es para lo que no ven ni el compilador ni los tests (ramas
+   muertas, cambios fuera del encargo); antes van las reglas sin modelo de
+   `[sources.code] rules`. Falta medirlo con un banco de encargos antes de encenderlo por
+   defecto. `examples/agents/reviewer.md` es un ejemplo.
+8. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más

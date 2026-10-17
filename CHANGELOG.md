@@ -6,6 +6,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Reglas deterministas para el código nuevo (`[sources.code] rules`): ficheros TOML con
+  `[[rule]]` `match`, `message`, `level` y `files`, aplicados por las herramientas que escriben a
+  las líneas que añade cada cambio, también en ficheros nuevos. Un `error` no se escribe y el
+  agente recibe la línea; un `warning` va en `notes`. De serie, como avisos (`atlas/code/rules.toml`):
+  `when others => null;` y `pragma Suppress` en Ada, `except: pass` en Python. En la tanda 4 de
+  `atlas develop`, un `when others => null` se tragó una excepción que ningún test veía.
+- `reviewer` y `review_fixes` en el plan de `atlas develop`, apagado por defecto: tras un encargo
+  que compila y no rompe nada, un agente de solo lectura lee el encargo y el diff y contesta en
+  JSON; sus problemas vuelven al agente una vez. Ejemplo en `examples/agents/reviewer.md`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

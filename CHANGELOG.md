@@ -12,6 +12,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   large` (5000 SRS), `matrix(limit=50)` pasa de 0,33 s a 0,05 s y `gaps()` de 0,60 s a 0,28 s
   (en una máquina cargada; cifras en `atlas/graph/README.md`). `make large` mide también
   `matrix` y `gaps` (`examples/large_project.py --graph`).
+- La búsqueda densa ya no recarga los vectores con cada escritura de otro proceso en
+  `atlas.db` (el libro de registro de un `atlas run`, la caché de vectores): solo cuando se
+  reemplaza o borra un documento del índice, que lleva su propio contador (`index_meta`).
+  Con `make large` y otro proceso escribiendo en el libro, una búsqueda pasa de 73-165 ms a
+  21-28 ms. `dense` usa `np.argpartition` y una máscara de numpy para el filtro por
+  documento. `examples/dense_search.py` lo mide (cifras en `atlas/index/README.md`).
 
 ## [0.2.0] — 2026-10-16
 

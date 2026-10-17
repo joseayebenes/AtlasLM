@@ -6,7 +6,7 @@ import pytest
 
 from atlas.docs import DocsOptions, process_document
 from atlas.index import Index, build_records, chunk_text
-from atlas.pipeline import FatalError
+from atlas.pipeline import FatalError, Ledger
 
 
 @pytest.fixture
@@ -125,6 +125,26 @@ def test_a_long_lived_index_sees_what_another_connection_indexes(docs, tmp_path,
     assert len(before) < len(after) == total
     runner.remove_document("test:spec_with_bookmarks.pdf")
     assert len(server.store.dense(qvec, server.embedder.model, 10_000, None)) == len(before)
+    loaded = server.store._matrix
+    Ledger(tmp_path / "atlas.db").mark("docs.process", "x.pdf", "ok")    # the ledger of the run: not the index
+    server.store.cache_put({"k": qvec})                                   # nor the embeddings cache
+    server.store.dense(qvec, server.embedder.model, 5, None)
+    assert server.store._matrix is loaded
+
+
+def test_dense_takes_the_best_among_the_allowed(docs, tmp_path, fake_embeddings):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    qvec = idx.embedder.queries(["track deletion"])[0]
+    ids, m = idx.store._load_matrix(idx.embedder.model)
+    score = dict(zip(ids.tolist(), (m @ qvec).tolist()))
+    assert len(set(score.values())) < len(score)                  # the fake vectors tie: ties by id
+    for allowed in (None, set(ids[::3].tolist())):
+        pool = sorted(sorted(allowed if allowed is not None else score), key=lambda i: -score[i])
+        for n in (1, 7, 40, len(ids) + 5):
+            assert idx.store.dense(qvec, idx.embedder.model, n, allowed) == pool[:n]
+    assert idx.store.dense(qvec, idx.embedder.model, 5, set()) == []
 
 
 def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):

@@ -98,7 +98,9 @@ Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se 
 la pregunta no parezca amplia, y `[search] scope = "passages"` no los lee nunca.
 
 Un proceso que vive mucho (el servidor MCP) ve lo que indexa otro: los vectores se vuelven
-a leer cuando cambia la base.
+a leer cuando cambia el índice. Lo dice un contador propio (`index_meta`), que solo sube al
+reemplazar o borrar un documento; el resto de escrituras en `atlas.db` (el libro de
+registro de un `atlas run`, la caché de vectores) no obligan a releerlos.
 
 `Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
 ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
@@ -113,6 +115,44 @@ search` y `atlas ask`, `kind` en la herramienta `search` (o `kinds` en `Index.se
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
 contexto y de la respuesta.
+
+## Rendimiento de la búsqueda densa
+
+`python examples/dense_search.py [DEST] [--dim 768]` cronometra `Index.search(dense=True)`
+sobre el índice de `make large` (15 120 registros): en frío (la primera búsqueda de un
+proceso, que carga los vectores en una matriz), en caliente, y mientras otro proceso
+escribe en el libro de registro de la misma `atlas.db` cada 50 ms, como un `atlas run`
+mientras el servidor MCP responde. Los vectores del servidor falso tienen 64 dimensiones;
+con `--dim 768` (las de `embeddinggemma`) mide una copia con cada vector repetido hasta
+768.
+
+Medido el 17-10-2026, la mediana de tres tandas alternando la versión anterior y la nueva,
+en una máquina con una carga media de 15 a 35 (milisegundos de pared):
+
+| | 64 dim. antes | después | 768 dim. antes | después |
+|---|---|---|---|---|
+| primera búsqueda (carga la matriz) | 113 | 99 | 174 | 127 |
+| cargar la matriz | 89 | 51 | 145 | 212 |
+| búsqueda en caliente | 19 | 20 | 17 | 20 |
+| búsqueda en caliente, un documento | 45 | 43 | 28 | 32 |
+| búsqueda sin vectores | 22 | 19 | 18 | 21 |
+| solo `dense` | 1,4 | 0,7 | 2,8 | 1,6 |
+| solo `dense`, un documento | 1,2 | 0,4 | 2,1 | 1,4 |
+| búsqueda con otro proceso escribiendo | 73 | 28 | 165 | 21 |
+
+Antes, cada commit de otra conexión cambiaba `PRAGMA data_version` y la búsqueda siguiente
+volvía a cargar la matriz: con un `atlas run` en marcha, cada búsqueda pagaba la carga. Ahora
+solo cuenta el contador del índice, y la búsqueda cuesta lo mismo que en caliente. `dense`
+toma los mejores con `np.argpartition` (las puntuaciones iguales, en el orden de los
+registros) y filtra por documento con una máscara de numpy en vez de recorrer todos los
+registros ordenados en Python; es menos del 10 % de una búsqueda,
+que se va en BM25 y en leer los registros de SQLite. Las diferencias de las demás filas
+están dentro del ruido de la máquina.
+
+Los vectores siguen leyéndose fila a fila: cargar la matriz cuesta de 0,1 a 0,2 s con
+15 000 registros de 768 dimensiones y ahora solo ocurre cuando cambia el índice, así que
+guardarlos en un BLOB contiguo por documento no compensa (juntar los BLOB con `b"".join` en
+vez de `np.vstack` tampoco mejoró la carga).
 
 ## Como librería
 

@@ -160,7 +160,8 @@ atlas/
 docs/                       instalación, configuración y seguridad
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
-examples/large_project.py   proyecto grande sintético y medición del motor (make large)
+examples/large_project.py   proyecto grande sintético y medición del motor y del grafo (make large)
+examples/dense_search.py    medición de la búsqueda densa sobre el proyecto grande
 examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)

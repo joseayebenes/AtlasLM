@@ -46,8 +46,8 @@ from atlas import plugins
 from atlas.config import Config, ConfigError
 from atlas.store import Store
 
-__all__ = ["create_server", "default_tools", "instructions", "profile", "profile_tools", "serve", "tool_groups",
-           "tool_names", "traceability"]
+__all__ = ["create_server", "default_tools", "graph_instructions", "instructions", "profile", "profile_tools", "serve",
+           "tool_groups", "tool_names", "traceability"]
 
 log = logging.getLogger(__name__)
 
@@ -64,11 +64,7 @@ INSTRUCTIONS = {
             "citation; `get_section` reads a whole section; `get_requirement` gives the exact text of a "
             "requirement ID, from DOORS and from the documents; `ask_docs` writes an answer with citations. "
             "Cite document and section.",
-    "graph": "Graph of code, requirements and documents: code identifiers are `unit.name` in lower case. "
-             "Usual flow: find_symbol -> get_node -> callers / callees / impact -> read_source. `trace` gives "
-             "everything about a requirement (DOORS, documents, code, tests); `trace_code`, the requirements "
-             "and tests of a code element; `impact`, what a change affects; `matrix` and `gaps`, the "
-             "traceability of a DOORS module and what it lacks.",
+    "graph": "Graph of code, requirements and documents: code identifiers are `unit.name` in lower case.",
     "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
                "(requirements, signatures, callers, tests, documents and source): use it before changing code. "
                "`context_at` gives the same for a file and a line, those the editor has open; the tools that "
@@ -92,6 +88,15 @@ INSTRUCTIONS = {
            "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
 GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "edit", "build", "lsp")
+GRAPH_FLOW = (("find_symbol",), ("get_node",), ("callers", "callees", "trace_code", "impact"), ("read_source",))
+GRAPH_CLAUSES = (                           # the first one whose tools are all offered and not said yet
+    (("trace",), "everything about a requirement (DOORS, documents, code, tests)"),
+    (("trace_code",), "the requirements and tests of a code element"),
+    (("impact",), "what a change affects"),
+    (("matrix", "gaps"), "the traceability of a DOORS module and what it lacks"),
+    (("matrix",), "the traceability of a DOORS module"),
+    (("gaps",), "what a DOORS module lacks"),
+)
 
 
 def _server_class() -> type:
@@ -195,10 +200,29 @@ def instructions(names: list[str], cfg: Config | None = None, store: Store | Non
     """What the server tells the client about its tools and, with `cfg`, about the
     traceability of the project (traceability)."""
     groups = tool_groups()
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
+    parts = [INSTRUCTIONS[""]] + [graph_instructions(names) if g == "graph" else INSTRUCTIONS[g]
+                                  for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
     if cfg is not None:
         parts.append(traceability(cfg, names, store))
     return "\n\n".join(p for p in parts if p)
+
+
+def graph_instructions(names: list[str]) -> str:
+    """The paragraph of the graph, naming only the tools offered: the usual flow, when two of
+    its steps are offered, and what trace, trace_code, impact, matrix and gaps give."""
+    offered = set(names)
+    steps = [s for s in (" / ".join(t for t in step if t in offered) for step in GRAPH_FLOW) if s]
+    said: set[str] = set()
+    clauses: list[str] = []
+    for tools, what in GRAPH_CLAUSES:
+        if offered.issuperset(tools) and not said.intersection(tools):
+            verb = ", " if clauses else " give " if len(tools) > 1 else " gives "     # "`a` gives x; `b`, y"
+            clauses.append(" and ".join(f"`{t}`" for t in tools) + verb + what)
+            said.update(tools)
+    text = INSTRUCTIONS["graph"]
+    if len(steps) > 1:
+        text += " Usual flow: " + " -> ".join(steps) + "."
+    return text + (" " + "; ".join(clauses) + "." if clauses else "")
 
 
 def traceability(cfg: Config, names: list[str], store: Store | None = None) -> str:

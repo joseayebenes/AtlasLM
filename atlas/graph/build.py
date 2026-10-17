@@ -10,7 +10,11 @@ found in its comments).
 
 Identifiers: units by their name ("tracks", "tracks.db"); what a unit declares by
 "unit.name" ("tracks.update"), so that two subprograms with the same name in two packages
-are two nodes; externals by their text, in lower case like everything of the code;
+are two nodes, and two with the same name in one package (overloads) are one: with the
+union of their requirements and calls, the first line of the first, the last line of the
+last and `bodies`, the [start, end] of each one (and its file, if it is not the file of the
+node). A subprogram node has its `subprogram_kind` (procedure, function, operator, task,
+entry, protected); externals by their text, in lower case like everything of the code;
 requirements by their ID normalised like those of DOORS (upper case by default), so that
 the code, DOORS and the documents meet in the same node.
 
@@ -23,7 +27,7 @@ still ambiguous the edge goes to all of them (an impact analysis must not miss a
 from __future__ import annotations
 
 import fnmatch
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Callable, Iterable
 
 import networkx as nx
@@ -59,7 +63,8 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
     spec: dict[tuple[str, str], dict] = {}
     for u in units:
         for d in u.declarations:
-            e = spec.setdefault((u.unit, d["name"]), {"doc": "", "reqs": set(), "spec_file": u.file})
+            e = spec.setdefault((u.unit, d["name"]), {"doc": "", "reqs": set(), "spec_file": u.file,
+                                                     "kind": d.get("kind", "")})
             if d["doc"] and not e["doc"]:
                 e["doc"] = d["doc"]
             e["reqs"].update(normalize(r) for r in d["reqs"])
@@ -70,6 +75,12 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
             if r not in G:
                 G.add_node(r, kind="requirement", name=r)
             G.add_edge(node, r, kind=kind)
+
+    # The bodies of each subprogram: two with the same unit and name (overloads) are one node
+    bodies: dict[str, list[tuple[CodeUnit, dict]]] = defaultdict(list)
+    for u in units:
+        for s in u.subprograms:
+            bodies[f"{u.unit}.{s['name']}"].append((u, s))
 
     # Pass 1: what is defined (units, types, variables, subprograms)
     index: dict[str, dict[str, list[str]]] = {k: defaultdict(list) for k in DECLARED}   # kind -> name -> ids
@@ -100,14 +111,24 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
             G.add_edge(u.unit, vid, kind="defines")
         for s in u.subprograms:
             sid = f"{u.unit}.{s['name']}"
+            group = bodies[sid]
+            if group[0][1] is not s:                   # a later overload: already in the node of the first
+                continue
             sp = spec.get((u.unit, s["name"]), {})
-            reqs = sorted({normalize(r) for r in s["reqs"]} | sp.get("reqs", set()))
+            reqs = sorted({normalize(r) for _, b in group for r in b["reqs"]} | sp.get("reqs", set()))
             if sid not in G:
                 index["subprogram"][s["name"]].append(sid)
+            here = [b for v, b in group if v.file == u.file]
+            extra = {}
+            if len(group) > 1:                         # [start, end], and the file if it is another one
+                extra["bodies"] = [[b["start_line"], b["end_line"], *([v.file] if v.file != u.file else [])]
+                                   for v, b in group]
             G.add_node(sid, kind="test" if u.file in tests else "subprogram", name=s["name"], unit=u.unit,
+                       subprogram_kind=s.get("kind") or sp.get("kind", ""),
                        file=u.file, spec_file=sp.get("spec_file", ""), start_line=s["start_line"],
-                       end_line=s["end_line"], doc=sp.get("doc") or s["doc"],     # the doc of the spec first
-                       requirements=reqs)
+                       end_line=here[-1]["end_line"],    # the doc of the spec first
+                       doc=sp.get("doc") or next((b["doc"] for _, b in group if b["doc"]), ""),
+                       requirements=reqs, **extra)
             G.add_edge(u.unit, sid, kind="defines")
             cites(sid, reqs)
 
@@ -118,8 +139,8 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
             continue
         reqs = sorted(sp["reqs"])
         G.add_node(sid, kind="test" if sp["spec_file"] in tests else "subprogram", name=name, unit=unit,
-                   file=sp["spec_file"], spec_file=sp["spec_file"], start_line=0, end_line=0, doc=sp["doc"],
-                   requirements=reqs)
+                   subprogram_kind=sp["kind"], file=sp["spec_file"], spec_file=sp["spec_file"], start_line=0,
+                   end_line=0, doc=sp["doc"], requirements=reqs)
         index["subprogram"][name].append(sid)
         G.add_edge(unit, sid, kind="defines")
         cites(sid, reqs)
@@ -174,6 +195,9 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         "nodes": G.number_of_nodes(),
         "edges": G.number_of_edges(),
         "subprograms": len(subs),
+        "subprogram_kinds": dict(sorted(Counter(d.get("subprogram_kind") or "?" for _, d in
+                                                [*subs, *nodes_of("test")]).items())),
+        "overloaded": sum(1 for group in bodies.values() if len(group) > 1),
         "tests": len(nodes_of("test")),
         "types": len(nodes_of("type")),
         "variables": len(nodes_of("variable")) + len(nodes_of("constant")),

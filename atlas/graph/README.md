@@ -24,8 +24,13 @@ cambia aquello de lo que sale:
 | `docs` | `docs.process` | documentos (`doc:hmi_manual.md`) y secciones (`doc:hmi_manual.md#003`) | `contains`, `declares` (la sección declara el requisito) y `mentions` (la sección nombra un elemento de código) |
 
 **Código.** Los elementos se identifican como `unidad.nombre` (`tracks.update`), así que dos
-paquetes pueden tener un `Update` cada uno. Cada `Nombre (...)` de un cuerpo se clasifica
-según lo que es `Nombre`:
+paquetes pueden tener un `Update` cada uno. Dos subprogramas con el mismo nombre en un paquete
+(sobrecargas) son un solo nodo, con los requisitos y las llamadas de todos, desde la primera
+línea del primero hasta la última del último, y `bodies`, las líneas `[inicio, fin]` de cada
+uno (con su fichero si no es el del nodo); `read_source` los enseña todos, uno tras otro. Cada
+subprograma lleva su clase en `subprogram_kind` (`procedure`, `function`, `operator`, `task`,
+`entry`, `protected`), y el resumen de un nodo la dice cuando no es un procedimiento ni una
+función. Cada `Nombre (...)` de un cuerpo se clasifica según lo que es `Nombre`:
 - un subprograma: es una llamada;
 - un tipo: es una conversión;
 - una variable de paquete: es un uso;
@@ -127,6 +132,6 @@ consultas.
 ## Pruebas
 
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
-paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
+paquetes, sobrecargas, tareas y operadores, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
 `neighbors`, comunidades y mismo grafo que `ada_graph.py`. `tests/test_cli.py`: el paso
 `graph.build` incremental por origen, `atlas trace` y `atlas matrix`.

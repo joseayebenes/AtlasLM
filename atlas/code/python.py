@@ -142,7 +142,8 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=(),
                         called = _dotted(n.func)
                         if called and called not in BUILTINS:
                             calls.add(called)
-                subprograms.append({"name": name, "start_line": start, "end_line": end, "calls": sorted(calls),
+                subprograms.append({"name": name, "kind": "function", "start_line": start, "end_line": end,
+                                    "calls": sorted(calls),
                                     "doc": doc, "reqs": extract_requirements(doc + "\n" + inner, req_pattern, req_ids)})
                 visit(child, [*scope, child.name])
             elif isinstance(child, ast.ClassDef):
@@ -186,4 +187,4 @@ class PythonAnalyzer(CodeAnalyzer):
                         subprograms=a["subprograms"], types=a["types"], variables=a["variables"])
 
     def version(self) -> str:
-        return "python-1"
+        return "python-2"     # kind

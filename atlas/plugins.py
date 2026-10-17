@@ -44,12 +44,12 @@ class CodeUnit:
     file: str
     unit: str                                   # compilation unit / module name
     language: str
-    subprograms: list[dict] = field(default_factory=list)   # {name, start_line, end_line, calls, doc, reqs}
+    subprograms: list[dict] = field(default_factory=list)   # {name, kind, start_line, end_line, calls, doc, reqs}
     types: list[dict] = field(default_factory=list)
     variables: list[dict] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)        # withs / includes
     tests: list[dict] = field(default_factory=list)         # {name, covers:[...], reqs:[...]}
-    declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, line, doc, reqs}
+    declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, kind, line, doc, reqs}
 
 
 class CodeAnalyzer(ABC):

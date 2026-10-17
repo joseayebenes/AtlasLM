@@ -24,8 +24,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   separador y número de cifras, con cuántos IDs tienen cada una. Están también en las
   estadísticas de cada parte del grafo (`id_shapes`). Responden a qué convención sigue de
   verdad el proyecto en cuanto se procese.
+- El analizador Ada lee los cuerpos de tareas (`task body`), entradas (`entry ... when`),
+  cuerpos protegidos y operadores (`function "+"`, que en el grafo se llama `"+"`). Antes no
+  daban subprograma, y sus llamadas y sus `Req:` desaparecían sin aviso; en un servidor Ada el
+  bucle principal suele ser una tarea. Cada subprograma lleva su `kind` (procedure, function,
+  operator, task, entry o protected) en el `CodeUnit` y en el nodo (`subprogram_kind`), y
+  `atlas graph` los cuenta. Las etiquetas de las entradas y subprogramas de un cuerpo
+  protegido son suyas, no del cuerpo protegido.
+
+### Corregido
+- Dos subprogramas con el mismo nombre en un paquete (sobrecargas) eran un nodo con las
+  líneas y los requisitos del último. Ahora el nodo junta los requisitos y las llamadas de
+  todos, va de la primera línea del primero a la última del último y lleva `bodies` con las
+  líneas de cada uno; `read_source` los lee todos y el índice tiene el código de todos. Los
+  identificadores no cambian.
+- `T'Image (X)`, `T'Write (S, X)` y los demás atributos ya no cuentan `T` como una llamada.
 
 ### Al actualizar
+- El código se vuelve a analizar entero (`ada-2`, `python-2`) y el grafo se reconstruye
+  (`graph-3`), sin modelo. Pueden aparecer subprogramas nuevos (tareas, entradas,
+  operadores) con sus requisitos, y desaparecer llamadas falsas a tipos con atributos.
+  `index.code` vuelve a embeber el código.
 - Con `id_pattern` (o `id_regex`) en `[sources.doors.convention]`, el código y los documentos
   con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los
   IDs que antes se perdían: pueden aparecer requisitos implementados nuevos y, en `gaps`,

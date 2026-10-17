@@ -167,11 +167,13 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
     as a dict; an Ada package has its spec and its body): one `code_doc` per subprogram,
     test, type, variable and constant. The comment of a subprogram is the one of its
     declaration in the spec, if there is one; its code, the body (up to chunk_chars
-    characters). `sources` has the text of each file and `tests` the files that are tests."""
+    characters; an overloaded name, all its bodies). `sources` has the text of each file and
+    `tests` the files that are tests."""
     if kinds is not None and "code_doc" not in set(kinds):
         return []
     tests = set(tests)
     elements: dict[str, dict] = {}
+    overloads: set[tuple[str, str]] = set()        # (name, file) of the bodies already read
 
     def element(name: str, kind: str) -> dict:
         return elements.setdefault(name, {"name": name, "kind": kind, "doc": "", "reqs": [], "where": "", "code": ""})
@@ -194,8 +196,14 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
             e = element(sp["name"], "subprogram")
             e["kind"] = "test" if file in tests else e["kind"]
             merge(e, sp)
+            body = lines(file, sp["start_line"], sp["end_line"])
+            if (e["name"], file) in overloads:            # another body of the same name: both go
+                e["where"] += f", {sp['start_line']}-{sp['end_line']}"
+                e["code"] = f"{e['code']}\n{body}" if body else e["code"]
+                continue
+            overloads.add((e["name"], file))
             e["where"] = f"{name}:{sp['start_line']}-{sp['end_line']}"
-            e["code"] = lines(file, sp["start_line"], sp["end_line"]) or e["code"]
+            e["code"] = body or e["code"]
         for t in part.get("types", []):
             e = element(t["name"], "type")
             merge(e, t)

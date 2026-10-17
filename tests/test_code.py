@@ -97,6 +97,71 @@ def test_ada_bodies_calls_comments_and_requirements(tmp_path):
     assert (smooth["start_line"], smooth["end_line"]) == (8, 18)
 
 
+# The probe of the analysis of 2026-10 (section 6.2): what ada-1 lost or mixed up
+PROBE = b"""package body Probe is
+   type Count is range 0 .. 9;
+   -- The main loop.
+   -- Req: SRS-0010
+   task body Main_Loop is
+      Ticks : Count := 0;
+   begin
+      loop
+         Run (1);                       -- Req: SRS-0011
+         Put_Line (Count'Image (Ticks));
+      end loop;
+   end Main_Loop;
+   protected body Lock is
+      -- Req: SRS-0012
+      entry Seize when not Busy is
+      begin
+         Busy := True;
+         Notify;
+      end Seize;
+      procedure Release is
+      begin
+         Busy := False;
+      end Release;
+   end Lock;
+   function "+" (A, B : Vector) return Vector is
+   begin
+      return Add (A, B);                -- Req: SRS-0013
+   end "+";
+   -- Req: SRS-0014
+   procedure Run (N : Integer) is
+      T : Count := 3;
+   begin
+      Put_Line (T'Image);
+      Put_Line (Count'Image (T));
+      T'Write (Stream, T);
+      Log (N);
+   end Run;
+   procedure Run is
+   begin
+      Reset;                            -- Req: SRS-0015
+   end Run;
+end Probe;
+"""
+
+
+def test_ada_tasks_entries_protected_bodies_operators_and_attributes():
+    unit = AdaAnalyzer({}).analyze_file(Path("probe.adb"), PROBE)
+    subs = [(s["name"], s["kind"], s["start_line"], s["end_line"], s["calls"], s["reqs"]) for s in unit.subprograms]
+    assert subs == [
+        ("main_loop", "task", 5, 12, ["put_line", "run"], ["SRS-0010", "SRS-0011"]),     # not count: an attribute
+        ("lock", "protected", 13, 24, [], []),                   # the tags of its entries are theirs
+        ("seize", "entry", 15, 19, ["notify"], ["SRS-0012"]),
+        ("release", "procedure", 20, 23, [], []),
+        ('"+"', "operator", 25, 28, ["add"], ["SRS-0013"]),
+        ("run", "procedure", 30, 37, ["log", "put_line"], ["SRS-0014"]),   # not t (T'Image, T'Write) nor count
+        ("run", "procedure", 38, 41, ["reset"], ["SRS-0015"])]
+    assert unit.variables == []                                   # Ticks is local to the task
+    spec = AdaAnalyzer({}).analyze_file(Path("probe.ads"), b'package Probe is\n   -- Adds.\n'
+                                        b'   function "+" (A, B : Vector) return Vector;\n   procedure Run;\nend Probe;\n')
+    assert [(d["name"], d["kind"], d["doc"]) for d in spec.declarations] == [('"+"', "operator", "Adds."),
+                                                                            ("run", "procedure", "")]
+    assert AdaAnalyzer({}).version() == "ada-2"
+
+
 def test_spec_declarations_types_and_variables(samples):
     f = samples / "ada" / "src" / "tracks.ads"
     unit = AdaAnalyzer({"req_tag": "Req:"}).analyze_file(f, f.read_bytes())
@@ -113,7 +178,7 @@ LEGACY = Path(__file__).resolve().parents[1] / "legacy"
 @pytest.mark.skipif(not (LEGACY / "ada_graph.py").exists(), reason="legacy/ has been removed")
 def test_same_analysis_as_ada_graph(samples, tmp_path):
     """The analysis of every sample file is the one of legacy/ada_graph.analizar, which
-    lists types in no stable order (to be deleted together with legacy/)."""
+    lists types in no stable order and has no `kind` (to be deleted together with legacy/)."""
     sys.path.insert(0, str(LEGACY))
     try:
         import ada_graph
@@ -128,6 +193,7 @@ def test_same_analysis_as_ada_graph(samples, tmp_path):
         new = analyze_ada(f, f.read_bytes(), pattern)
         in_order = lambda items: sorted(items, key=lambda x: (x.get("line") or x["start_line"], x["name"]))
         assert new["withs"] == old["withs"] and new["unit"] == old["unit"], f
-        assert new["declarations"] == in_order(old["decls"]), f
-        assert new["subprograms"] == in_order(old["subprogramas"]), f
+        without_kind = lambda items: [{k: v for k, v in x.items() if k != "kind"} for x in items]
+        assert without_kind(new["declarations"]) == in_order(old["decls"]), f
+        assert without_kind(new["subprograms"]) == in_order(old["subprogramas"]), f
         assert new["types"] == in_order(old["tipos"]) and new["variables"] == in_order(old["variables"]), f

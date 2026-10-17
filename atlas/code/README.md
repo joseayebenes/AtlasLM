@@ -21,9 +21,16 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 ## Análisis
 
 El paso `code.parse` analiza cada fichero y guarda en `atlas.db`:
-- sus subprogramas, con sus líneas, sus llamadas propias, el comentario de cabecera (el del
-  `.ads` si lo hay) y los requisitos que citan;
+- sus subprogramas, con su clase (`kind`), sus líneas, sus llamadas propias, el comentario de
+  cabecera (el del `.ads` si lo hay) y los requisitos que citan;
 - sus tipos, variables, constantes y `with`.
+
+En Ada, la clase es `procedure`, `function`, `operator` (`function "+"`, que se llama `"+"`),
+`task` (`task body`), `entry` (`entry ... when`, la de un objeto protegido) o `protected`
+(`protected body`, cuyas llamadas y etiquetas propias son las que no están en sus entradas y
+subprogramas). El prefijo de un atributo (`T` en `T'Image (X)`) no es una llamada. Dos
+subprogramas con el mismo nombre en un fichero salen dos veces; el grafo los junta en un
+nodo. En Python, todo es `function`.
 
 Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
 otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los IDs de una etiqueta son los
@@ -388,7 +395,9 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 
 ## Pruebas
 
-`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`),
+`tests/test_code.py` (etiquetas y los IDs de la convención, análisis, el fichero de la sonda con
+tareas, entradas, cuerpos protegidos, operadores, sobrecargas y atributos, mismo resultado que
+`ada_graph.py`),
 `tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
 Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,

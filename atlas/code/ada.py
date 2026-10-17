@@ -1,14 +1,21 @@
 """Ada analyzer with tree-sitter-ada, one file at a time (the analysis of legacy/ada_graph.py).
 
 For each file: the `with` clauses, the subprogram declarations of the spec (their header
-comment is the documentation), the subprogram bodies (lines, own calls, header comment and
-the requirement IDs in their comments), the package-level types and subtypes (with their
+comment is the documentation), the bodies (lines, own calls, header comment and the
+requirement IDs in their comments), the package-level types and subtypes (with their
 source: for a record, its fields) and the package-level variables and constants.
 
+A body is a subprogram of the graph with its `kind`: procedure, function, operator
+(`function "+"`, named `"+"`), task (`task body`: the main loop of an Ada server is often
+one), entry (`entry ... when`) or protected (`protected body`, whose own calls and tags are
+the ones outside its entries and subprograms). Two bodies with the same name (overloads)
+are two entries here; the graph joins them.
+
 In Ada `Name (X)` is a call, a type conversion or an array indexing alike: here every
-`Name (...)` of a body is a "call" except the local objects and parameters of that body;
-the graph tells calls, conversions and uses apart once it knows every name. Names are in
-lower case, because Ada does not tell case apart.
+`Name (...)` of a body is a "call" except the local objects and parameters of that body and
+the prefix of an attribute (`T'Image (X)` does not call T); the graph tells calls,
+conversions and uses apart once it knows every name. Names are in lower case, because Ada
+does not tell case apart.
 
 The grammar and the queries are compiled on first use, so importing this module does not
 need tree-sitter. Works with py-tree-sitter 0.23 to 0.26.
@@ -24,20 +31,25 @@ from types import SimpleNamespace
 from atlas.code.common import extract_requirements, requirement_ids, requirement_pattern
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
-__all__ = ["AdaAnalyzer", "PREDEFINED_TYPES", "analyze_ada"]
+__all__ = ["AdaAnalyzer", "PREDEFINED_TYPES", "analyze_ada", "body_kind"]
 
 log = logging.getLogger(__name__)
 
 # Each pattern is compiled on its own: if the installed grammar names a node differently,
 # that pattern is dropped with a warning and the others are kept.
 PATTERNS = {
-    "body": [        # bodies (usually in .adb)
+    "body": [        # bodies (usually in .adb); their kind comes from the node (body_kind)
         "(subprogram_body (procedure_specification name: (identifier) @name)) @body",
         "(subprogram_body (function_specification name: (identifier) @name)) @body",
+        "(subprogram_body (function_specification name: (string_literal) @name)) @body",
+        "(task_body . (identifier) @name) @body",
+        "(entry_body . (identifier) @name) @body",
+        "(protected_body . (identifier) @name) @body",
     ],
     "declaration": [  # declarations (usually in .ads): the documentation comes from here
         "(subprogram_declaration (procedure_specification name: (identifier) @name)) @decl",
         "(subprogram_declaration (function_specification name: (identifier) @name)) @decl",
+        "(subprogram_declaration (function_specification name: (string_literal) @name)) @decl",
     ],
     "call": [
         "(procedure_call_statement (identifier) @call)",
@@ -154,19 +166,64 @@ def _leading_comment(node, lines: list[str]) -> str:
     return "\n".join(c for c in (_clean_comment(x) for x in block) if c is not None).strip()
 
 
-def _inner_comments(node, src: bytes) -> str:
-    """Every comment inside a node (to look for requirement IDs)."""
+def _inner_comments(node, src: bytes, skip: list[tuple[int, int]] = ()) -> str:
+    """Every comment inside a node (to look for requirement IDs), except those on the lines
+    (0-based, both included) of the ranges of `skip`."""
     q = _grammar().comment
-    return "\n".join(_text(c, src) for c in _captures(q, node).get("c", [])) if q else ""
+    if not q:
+        return ""
+    return "\n".join(_text(c, src) for c in _captures(q, node).get("c", [])
+                     if not any(s <= c.start_point[0] <= e for s, e in skip))
+
+
+def _with_header(node, lines: list[str]) -> tuple[int, int]:
+    """The lines (0-based) of a node with the block of comments right above it, the one of
+    _leading_comment."""
+    i, blanks = node.start_point[0] - 1, 0
+    first = node.start_point[0]
+    while i >= 0:
+        l = lines[i].strip()
+        if l.startswith("--"):
+            first, blanks = i, 0
+        elif l == "" and blanks == 0 and first == node.start_point[0]:
+            blanks += 1
+        else:
+            break
+        i -= 1
+    return first, node.end_point[0]
+
+
+BODIES = {"subprogram_body": "", "task_body": "task", "entry_body": "entry", "protected_body": "protected"}
+
+
+def body_kind(node) -> str:
+    """procedure | function | operator | task | entry | protected, from a body or a
+    declaration node."""
+    if BODIES.get(node.type):
+        return BODIES[node.type]
+    for child in node.children:
+        if child.type == "procedure_specification":
+            return "procedure"
+        if child.type == "function_specification":
+            name = child.child_by_field_name("name")
+            return "operator" if name is not None and name.type == "string_literal" else "function"
+    return ""
 
 
 def _inside_subprogram(node) -> bool:
+    """Inside a body: its objects and types are local (a task body declares them too)."""
     p = node.parent
     while p is not None:
-        if p.type == "subprogram_body":
+        if p.type in BODIES:
             return True
         p = p.parent
     return False
+
+
+def _attribute_prefix(node) -> bool:
+    """`T` in `T'Image (X)` or `T'Write (S, X)`: the prefix of an attribute, not a call."""
+    after = node.next_sibling
+    return after is not None and after.type == "tick"
 
 
 def _parameter_names(param) -> list:
@@ -198,7 +255,8 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern, req_ids: re.Pat
         for _, caps in _matches(g.declaration, root, "decl"):
             decl = caps["decl"][0]
             doc = _leading_comment(decl, lines)
-            declarations.append({"name": _norm(_text(caps["name"][0], src)), "line": decl.start_point[0] + 1,
+            declarations.append({"name": _norm(_text(caps["name"][0], src)), "kind": body_kind(decl),
+                                 "line": decl.start_point[0] + 1,
                                  "doc": doc, "reqs": extract_requirements(doc + "\n" + _text(decl, src), req_pattern, req_ids)})
 
     types = []
@@ -228,7 +286,7 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern, req_ids: re.Pat
     if g.body:
         for _, caps in _matches(g.body, root, "body"):
             body = caps["body"][0]
-            bodies.append({"name": _norm(_text(caps["name"][0], src)), "node": body,
+            bodies.append({"name": _norm(_text(caps["name"][0], src)), "kind": body_kind(body), "node": body,
                            "start_line": body.start_point[0] + 1, "end_line": body.end_point[0] + 1})
 
     # For each body: its own calls (not those of nested subprograms), header comment and
@@ -247,15 +305,20 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern, req_ids: re.Pat
         calls = set()
         if g.call:
             for n in _captures(g.call, node).get("call", []):
-                if any(s <= n.start_byte < e for s, e in nested):
+                if any(s <= n.start_byte < e for s, e in nested) or _attribute_prefix(n):
                     continue
                 name = _norm(_text(n, src))
                 if name not in local_names:            # indexing of a local array or parameter
                     calls.add(name)
         doc = _leading_comment(node, lines)
-        subprograms.append({"name": b["name"], "start_line": b["start_line"], "end_line": b["end_line"],
-                            "calls": sorted(calls), "doc": doc,
-                            "reqs": extract_requirements(doc + "\n" + _inner_comments(node, src), req_pattern, req_ids)})
+        # a protected body only holds its entries and subprograms: their tags (and those of
+        # the comments above them) are theirs
+        inner = _inner_comments(node, src, [_with_header(o["node"], lines) for o in bodies if o is not b
+                                            and node.start_byte <= o["node"].start_byte < node.end_byte]
+                                if b["kind"] == "protected" else ())
+        subprograms.append({"name": b["name"], "kind": b["kind"], "start_line": b["start_line"],
+                            "end_line": b["end_line"], "calls": sorted(calls), "doc": doc,
+                            "reqs": extract_requirements(doc + "\n" + inner, req_pattern, req_ids)})
 
     return {"file": str(path), "unit": unit_name(path), "withs": withs, "declarations": declarations,
             "subprograms": subprograms, "types": types, "variables": variables}
@@ -278,4 +341,4 @@ class AdaAnalyzer(CodeAnalyzer):
                         variables=a["variables"])
 
     def version(self) -> str:
-        return "ada-1"
+        return "ada-2"        # tasks, entries, protected bodies and operators; kind; attributes are not calls

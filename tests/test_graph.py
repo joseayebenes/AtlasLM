@@ -69,6 +69,40 @@ def test_same_names_in_two_packages_are_two_nodes(tmp_path):
     assert g.node("Run")["id"] == "gamma.run"
 
 
+def test_overloads_tasks_and_operators_in_the_graph(tmp_path):
+    """The probe file of test_code: two Run of one package are one node with both bodies,
+    the task and the operator are subprograms with their calls and requirements."""
+    from test_code import PROBE
+    (tmp_path / "probe.adb").write_bytes(PROBE)
+    (tmp_path / "probe.ads").write_text("package Probe is\n   -- Runs.\n   -- Req: SRS-0016\n   procedure Run;\n"
+                                        "   procedure Reset;\nend Probe;\n")
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    run = G.nodes["probe.run"]
+    assert (run["start_line"], run["end_line"], run["bodies"]) == (30, 41, [[30, 37], [38, 41]])
+    assert run["requirements"] == ["SRS-0014", "SRS-0015", "SRS-0016"] and run["doc"] == "Runs.\nReq: SRS-0016"
+    assert {v for _, v in G.out_edges("probe.run")} >= {"log", "put_line", "probe.reset", "SRS-0015", "SRS-0014"}
+    assert ("probe.main_loop", "probe.run") in _edges(G, "calls") and "probe.t" not in G and "t" not in G
+    assert (G.nodes["probe.main_loop"]["subprogram_kind"], G.nodes['probe."+"']["subprogram_kind"]) == \
+        ("task", "operator")
+    assert ("probe.main_loop", "SRS-0011") in _edges(G, "implements")
+    assert ('probe."+"', "SRS-0013") in _edges(G, "implements") and "bodies" not in G.nodes["probe.seize"]
+    assert stats["subprogram_kinds"] == {"entry": 1, "operator": 1, "procedure": 3, "protected": 1, "task": 1}
+    assert stats["overloaded"] == 1 and stats["subprograms"] == 7
+    g = KnowledgeGraph(G, root=tmp_path)
+    source = g.read_source("probe.run")
+    assert source["bodies"] == [{"file": str(tmp_path / "probe.adb"), "start": 30, "end": 37},
+                                {"file": str(tmp_path / "probe.adb"), "start": 38, "end": 41}]
+    assert source["source"].count("procedure Run") == 2 and "\n      ...\n" in source["source"]
+    assert "Main_Loop" not in source["source"]
+    assert g.summary("probe.main_loop")["subprogram_kind"] == "task" and "subprogram_kind" not in g.summary("probe.run")
+    assert [i["id"] for i in g.impact("probe.run")["items"]] == ["probe.main_loop"]
+    from dataclasses import asdict
+    from atlas.index import code_records                      # the index has both bodies too
+    record = next(r for r in code_records("probe", [asdict(u) for u in _units([tmp_path / "probe.adb"])],
+                                          {str(tmp_path / "probe.adb"): PROBE.decode()}) if r["ref"] == "probe.run")
+    assert "probe.adb:30-37, 38-41" in record["text"] and record["text"].count("procedure Run") == 2
+
+
 def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
     G, stats = sample_graph
     store = GraphStore(tmp_path / "atlas.db")

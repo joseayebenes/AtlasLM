@@ -831,7 +831,8 @@ def tests(cfg: Config, target: str) -> int:
     from atlas.code.procedures import generate_tests
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
-    res = generate_tests(KnowledgeGraph.open(ctx.store.path, cfg.home), "" if target == "*" else target, cfg["tests"])
+    res = generate_tests(KnowledgeGraph.open(ctx.store.path, cfg.home), "" if target == "*" else target, cfg["tests"],
+                         cfg.home)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1

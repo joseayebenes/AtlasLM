@@ -56,6 +56,11 @@ embeber documento a documento: en el proyecto grande, 189 en vez de 207 para 12 
 con lotes de 64. Un lote que falla no para los demás; lo que falta se embebe en la
 siguiente ejecución.
 
+Los vectores de las consultas de una búsqueda van a la misma caché (por el modelo, su
+prefijo de consulta y el texto): una consulta repetida no hace ninguna petición a los
+embeddings. Una segunda pasada de `atlas eval`, o la misma pregunta de un agente dos veces,
+no gasta cupo.
+
 ## Búsqueda
 
 Una búsqueda combina tres listas con Reciprocal Rank Fusion:

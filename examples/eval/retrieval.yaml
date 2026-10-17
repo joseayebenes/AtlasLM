@@ -2,109 +2,140 @@
 # A search case ranks the results of the index (hybrid and lexical); a graph case checks
 # that the result of the query contains every expected text. The samples are synthetic and
 # repetitive: this set is a baseline and a regression check; the figure that matters comes
-# from a set written over the real project.
+# from a set written over the real project. `tags` give the figures by type of case
+# (id, words, paraphrase, spanish, section, code; trace, impact and code in the graph).
 
 # --- search: exact identifiers
 - id: search-id-srs-0102
   search: SRS-0102
   expect: [SRS-0102]
+  tags: [id]
 - id: search-id-sss-0005
   search: SSS-0005
   expect: [capability 5]
+  tags: [id]
 - id: search-two-ids
   search: SRS-0004 and SSS-0005
   expect: [track event 4 within 320, capability 5]
+  tags: [id]
 
 # --- search: the words of the text
 - id: search-logs-30-days
   search: keep logs for 30 days
   expect: [30 days]
+  tags: [words]
 - id: search-alarm-track-lost
   search: alarm when a track is lost
   expect: [alarm when a track is lost]
+  tags: [words]
 - id: search-event-of-group
   search: track event 3 of group 2.3.2
   expect: [track event 3 of group 2.3.2]
+  tags: [words]
 - id: search-refines
   search: which requirement refines SRS-0009
   expect: [refines SRS-0009]
+  tags: [words]
 - id: search-doors-deadline
   search: process track event 17
   expect: [track event 17 within]
   kinds: [requirement]
+  tags: [words]
 
 # --- search: paraphrases (other words than the text)
 - id: search-paraphrase-logs
   search: how long does the HMI retain its log files
   expect: [30 days]
+  tags: [paraphrase]
 - id: search-paraphrase-alarm
   search: warning raised when the radar loses a target
   expect: [alarm when a track is lost]
+  tags: [paraphrase]
 - id: search-paraphrase-display
   search: show the tracks on the operator screen
   expect: [display tracks]
+  tags: [paraphrase]
 - id: search-open-issue
   search: what is still to be defined about the alarms
   expect: [latency is TBD]
+  tags: [paraphrase]
 
 # --- search: other languages (the documents are in English)
 - id: search-spanish-logs
   search: ¿cuántos días se guardan los registros de la HMI?
   expect: [30 days]
+  tags: [paraphrase, spanish]
 - id: search-spanish-alarm
   search: alarma cuando se pierde una traza
   expect: [alarm when a track is lost]
+  tags: [paraphrase, spanish]
 
 # --- search: sections and documents
 - id: search-section-logging
   search: logging section of the HMI manual
   expect: [3 Logging]
+  tags: [section]
 - id: search-function-group
   search: Function group 1.2
   expect: [1.2 Function group 1.2]
+  tags: [section]
 - id: search-mission-capabilities
   search: mission system capabilities
   expect: [The mission system shall provide capability]
+  tags: [section]
 
 # --- search: the code (each subprogram, type and variable, with its comment and code)
 - id: search-code-remove-track
   search: which subprogram removes a track from the database
   expect: [tracks.delete_track]
+  tags: [code]
 - id: search-code-log
   search: code that writes a line to the log
   expect: [logger.log]
+  tags: [code]
 - id: search-code-hours
   search: type for the hours of the day
   expect: [tracks.hour_range]
+  tags: [code]
 
 # --- graph: traceability, impact and code, without a model
 - id: graph-trace-srs-0004
   trace: SRS-0004
   expect: [SSS-0005, SRS-0005, tracks.delete_track, test_tracks.test_tracks, spec_with_bookmarks.pdf]
+  tags: [trace]
 - id: graph-trace-srs-0002
   trace: SRS-0002
   expect: [tracks.update, SSS-0003]
+  tags: [trace]
 - id: graph-trace-document-only
   trace: SRS-0103
   expect: [hmi_manual.md, 3 Logging, logger.log]
+  tags: [trace]
 - id: graph-trace-system-requirement
   trace: SSS-0005
   expect: [SRS-0004, SRS-0016]
+  tags: [trace]
 - id: graph-trace-code-update
   trace_code: tracks.update
   expect: [SRS-0002, SRS-0003, logger.log]
+  tags: [code]
 - id: graph-trace-code-test
   trace_code: test_tracks.test_tracks
   expect: [tracks.delete_track, SRS-0004]
+  tags: [code]
 - id: graph-impact-log
   impact: Logger.Log
   expect: [tracks.delete_track, tracks.update, test_tracks.test_tracks, SRS-0004, SSS-0005]
+  tags: [impact]
 - id: graph-impact-delete
   impact: Tracks.Delete_Track
   expect: [test_tracks.test_tracks, SRS-0004]
+  tags: [impact]
 - id: graph-find-symbol
   find_symbol: delete
   expect: [tracks.delete_track]
+  tags: [code]
 - id: graph-code-comments
   search_code_docs: radar track
   expect: [tracks.track, SRS-0001]
+  tags: [code]

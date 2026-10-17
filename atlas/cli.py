@@ -25,6 +25,7 @@
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
+                   [--compare]      and each case against the last report of another version of atlas
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
                                     whether the server uses the reasoning that the agents give back
@@ -851,7 +852,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
+           "eval": {"--compare": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -978,8 +980,34 @@ def develop(cfg: Config, plan: str) -> int:
     return 0 if final["tests_passed"] == final["tests"] else 1
 
 
-def evaluate(cfg: Config) -> int:
-    from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
+def _hits(m: dict) -> str:
+    return ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in (1, 3, 5, 10)) + f", MRR {m['mrr']:.2f}"
+
+
+def _print_comparison(cmp: dict) -> None:
+    """Each case against the same case of the report of another version, and the regressions."""
+    from atlas.agents.evaluate import SEARCH_MODES
+    against = cmp["against"]
+    print(f"  compared with atlas {against.get('version', '?')} of {against.get('date', '?')}:")
+
+    def got(c: dict | None) -> str:
+        if c is None:
+            return "-"
+        if c["kind"] == "search":
+            return " ".join(f"{m} {c[m] or '-'}" for m in SEARCH_MODES)
+        return f"{c['passed']}/{c['runs']}" if "runs" in c else ("ok" if c["passed"] else "fail")
+
+    for c in cmp["cases"]:
+        print(f"    {c['change'].upper() if c['change'] == 'regression' else c['change']:10s} {c['id']}  "
+              f"{got(c['before'])} -> {got(c['after'])}")
+    if cmp["removed"]:
+        print(f"    no longer in the set: {', '.join(cmp['removed'])}")
+    print(f"  regressions: {', '.join(cmp['regressions']) if cmp['regressions'] else 'none'}")
+
+
+def evaluate(cfg: Config, compare: bool = False) -> int:
+    from atlas import __version__
+    from atlas.agents.evaluate import SEARCH_MODES, evaluate_sets, previous_report
 
     def show(r: dict) -> None:
         if r.get("kind") == "search":
@@ -1002,21 +1030,34 @@ def evaluate(cfg: Config) -> int:
         results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
     except ImportError as e:
         sys.exit(str(e))
+    regressions = 0
     for name, res in results.items():
         print(f"\n{name} (written to {cfg.workspace / 'reports' / f'eval-{name}.json'}):")
         found = res.get("retrieval", {})
         if "search" in found:
             for mode in SEARCH_MODES:
-                m = found["search"][mode]
-                print(f"  search, {mode}: " + ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in KS)
-                      + f", MRR {m['mrr']:.2f} ({found['search']['cases']} cases)")
+                print(f"  search, {mode}: {_hits(found['search'][mode])} ({found['search']['cases']} cases)")
+            for tag, t in found["search"].get("tags", {}).items():
+                print(f"    {tag} ({t['cases']}): " + "  ".join(
+                    f"{mode} hit@3 {t[mode]['hit@3']:.0%} MRR {t[mode]['mrr']:.2f}" for mode in SEARCH_MODES))
         if "graph" in found:
             g = found["graph"]
             print(f"  graph: {g['passed']} of {g['total']} right ({g['rate']:.0%})")
+            for tag, t in g.get("tags", {}).items():
+                print(f"    {tag}: {t['passed']} of {t['total']}")
         if "agents" in res:
             a = res["agents"]
             print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
-    return 0
+        if compare:
+            old = previous_report(cfg, name, __version__)
+            if old is None:
+                print(f"  nothing to compare with: no report of {name} from a version other than {__version__}")
+            else:
+                from atlas.agents.evaluate import compare_reports
+                cmp = compare_reports(old, res)
+                _print_comparison(cmp)
+                regressions += len(cmp["regressions"])
+    return 1 if regressions else 0
 
 
 def check(cfg: Config) -> int:
@@ -1103,7 +1144,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if action in with_text:
             sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0], **options))
-        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
+        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml"), **options))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

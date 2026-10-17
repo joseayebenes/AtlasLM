@@ -6,6 +6,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `tags` en los casos de evaluación (`[paraphrase, spanish]`) y cifras por tag: acierto@k y
+  MRR de la búsqueda, híbrida y léxica, y aciertos del grafo, en el informe y en la salida de
+  `atlas eval`. `examples/eval/retrieval.yaml` pasa a tags los tipos que tenía en
+  comentarios. Un texto esperado `section:<documento>#<id>` casa solo con esa sección.
+- `atlas eval` guarda una copia de cada informe, `reports/eval-<conjunto>-<versión>-<fecha>.json`,
+  con una cabecera `meta`, y `atlas eval --compare` compara cada caso con el último informe
+  de otra versión: rango anterior y nuevo, y las regresiones (código 1 si hay alguna).
+
+### Cambiado
+- Los vectores de las consultas de búsqueda quedan en la caché de vectores del índice: la
+  misma consulta otra vez no pide nada a los embeddings (antes, cada búsqueda híbrida la
+  embebía; una pasada de `retrieval.yaml` eran 20 peticiones, y la segunda ya ninguna).
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

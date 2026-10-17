@@ -7,6 +7,9 @@ between scores of different kinds:
 - dense: cosine similarity with the vectors of the current embeddings model;
 - lexical: BM25 over the same texts (FTS5), with every token as an exact phrase.
 
+The vector of a query is kept in the embeddings cache of the index (by the model, its query
+prefix and the text), so the same query asked again makes no request to the embeddings.
+
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
 its name, can take every place.
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -32,8 +36,8 @@ from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import IndexStore
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search", "section_file",
-           "whole_sources"]
+__all__ = ["answer", "build_context", "cite", "diverse", "query_vectors", "rewrite_question", "rrf", "search",
+           "section_file", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -137,6 +141,22 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
     return [r for r in records if r["id"] in chosen]
 
 
+def query_vectors(store: IndexStore, embedder: Embedder, texts: list[str]) -> list:
+    """The vectors of some queries: those in the cache from there, the others in one request,
+    which then go to the cache (a cache that cannot be written is not an error)."""
+    keys = [embedder.query_key(t) for t in texts]
+    vectors = store.cache_get(list(dict.fromkeys(keys)))
+    missing = list(dict.fromkeys(t for t, k in zip(texts, keys) if k not in vectors))
+    if missing:
+        new = dict(zip((embedder.query_key(t) for t in missing), embedder.queries(missing)))
+        try:
+            store.cache_put(new)
+        except sqlite3.Error as e:
+            log.debug("the vectors of the queries are not cached: %s", e)
+        vectors.update(new)
+    return [vectors[k] for k in keys]
+
+
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
            per_document: int = 0, rewritten: dict | None = None) -> list[dict]:
@@ -152,7 +172,7 @@ def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, docume
     keywords = rewritten["keywords"] if rewritten else []
     n = max(k * 3, 20)
     rankings = [store.by_ref(" ".join([query] + keywords), allowed)]
-    for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
+    for q, qvec in zip(queries, query_vectors(store, embedder, queries) if dense else [None] * len(queries)):
         if dense:
             rankings.append(store.dense(qvec, embedder.model, n, allowed))
         rankings.append(store.lexical(q, n, allowed))

@@ -558,7 +558,7 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
     cases_file.write_text("- id: trace\n  question: Who implements SRS-0004?\n  expect: [delete_track, SSS-0005]\n"
                           "  tools: [trace]\n- id: wrong\n  question: And SRS-0002?\n  expect: SRS-0002\n")
     cases = load_cases(cases_file)
-    assert cases[1] == {"id": "wrong", "question": "And SRS-0002?", "expect": ["SRS-0002"], "tools": [],
+    assert cases[1] == {"id": "wrong", "question": "And SRS-0002?", "expect": ["SRS-0002"], "tools": [], "tags": [],
                         "agent": "assistant", "kind": "agent"}
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "tracks.Delete_Track, through SSS-0005.",
                          "I do not know."])
@@ -575,7 +575,7 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
         evaluate_sets(workspace)
     monkeypatch.setitem(workspace["agents"], "eval", {"sets": [str(cases_file)], "runs": 2})
     out = evaluate_sets(workspace, client=StubClient(["delete_track SSS-0005"] * 4))
-    assert set(out["set"]) == {"agents"} and out["set"]["agents"]["total"] == 4
+    assert set(out["set"]) == {"meta", "agents"} and out["set"]["agents"]["total"] == 4
     assert (workspace.workspace / "reports" / "eval-set.json").exists()
 
 

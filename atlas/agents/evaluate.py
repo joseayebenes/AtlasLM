@@ -12,6 +12,7 @@ A set is a YAML file, a list of cases of three kinds, by the key that holds the 
       search: how long are the HMI logs kept
       expect: [SRS-0103]                     # texts that must be in the results
       kinds: [requirement]                   # optional, like document: what to search in
+      tags: [paraphrase]                     # optional, in every kind: the figures by tag
 
     - id: graph-impact-of-log                # a query of the graph, without a model
       impact: Logger.Log                     # trace, trace_code, impact, find_symbol, search_code_docs
@@ -23,15 +24,22 @@ in any case) and the agent called the expected tools, without reaching max_steps
 
 A search case is ranked: each expected text is found at the position of the first result
 that contains it (in its ID, document, section title or text), and the case at the position
-of the last one. That gives hit@k (the share of cases whose expected texts are all in the
+of the last one. An expected text "section:<document>#<section id>" is found only in a
+result of that section (section ids repeat in every document and are short, so they are
+not looked for in the text). That gives hit@k (the share of cases whose expected texts are all in the
 first k results, for k = 1, 3, 5 and 10) and the mean reciprocal rank. Every search is done
 twice: hybrid (IDs, vectors and BM25, as `atlas search`) and lexical (IDs and BM25: no
 request to any model), to see what the vectors add. A graph case passes when the result of
 the query contains every expected text; the graph has no ranking and no randomness.
 
+`tags` group the cases by type (paraphrase, spanish, id, code...): the report has the
+figures of the search and of the graph for each tag as well as for the whole set.
+
 [agents.eval] sets lists the files that `atlas eval` runs (relative to atlas.toml), and
 runs how many times each agent case is asked. The results go to
-<workspace>/reports/eval-<set>.json.
+<workspace>/reports/eval-<set>.json, overwritten each time, and to
+eval-<set>-<version>-<date>.json, which stays: `atlas eval --compare` compares each case with
+the last report of another version of atlas (compare_reports).
 
 adk eval scores the answer against a reference text (ROUGE) and the exact path of tools;
 what matters here is that the IDs and values cited are the right ones, whatever the words.
@@ -42,18 +50,20 @@ import asyncio
 import json
 import statistics
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
 from atlas.config import Config, ConfigError
 from atlas.pipeline import atomic_write
 
-__all__ = ["evaluate", "evaluate_retrieval", "evaluate_sets", "load_cases"]
+__all__ = ["compare_reports", "evaluate", "evaluate_retrieval", "evaluate_sets", "load_cases", "previous_report"]
 
 GRAPH_QUERIES = ("trace", "trace_code", "impact", "find_symbol", "search_code_docs")
-CASE_KEYS = {"id", "agent", "question", "expect", "tools", "search", "kinds", "document", *GRAPH_QUERIES}
+CASE_KEYS = {"id", "agent", "question", "expect", "tools", "search", "kinds", "document", "tags", *GRAPH_QUERIES}
 KS = (1, 3, 5, 10)
 SEARCH_MODES = {"hybrid": True, "lexical": False}       # name: with vectors
+SECTION = "section:"                                    # expected text: section:<document>#<section id>
 
 
 def load_cases(path: str | Path) -> list[dict]:
@@ -78,6 +88,10 @@ def load_cases(path: str | Path) -> list[dict]:
             raise ConfigError(f"{where}: the id {c['id']} is repeated")
         seen.add(c["id"])
         c["expect"] = [str(x) for x in (c["expect"] if isinstance(c["expect"], list) else [c["expect"]])]
+        tags = c.get("tags") or []
+        if not isinstance(tags, list) or not all(isinstance(t, str) and t.strip() for t in tags):
+            raise ConfigError(f"{where}: tags is a list of words, e.g. [paraphrase, spanish]")
+        c["tags"] = list(dict.fromkeys(t.strip() for t in tags))
         c["kind"] = {"question": "agent", "search": "search"}.get(asks[0], "graph")
         if c["kind"] == "agent":
             c["tools"] = list(c.get("tools") or [])
@@ -125,10 +139,14 @@ def evaluate(cases: list[dict], cfg: Config, runs: int = 1, context: Any = None,
 
 
 def _rank(expected: str, hits: list[dict]) -> int | None:
-    """Position (from 1) of the first result that contains `expected`."""
+    """Position (from 1) of the first result that contains `expected`, or that is in the
+    section of "section:<document>#<section id>"."""
     e = expected.lower()
     for n, h in enumerate(hits, 1):
-        if any(e in str(h.get(f) or "").lower() for f in ("ref", "doc_name", "section_title", "text")):
+        if e.startswith(SECTION):
+            if f"{h.get('doc_name') or ''}#{h.get('section_id') or ''}".lower() == e[len(SECTION):]:
+                return n
+        elif any(e in str(h.get(f) or "").lower() for f in ("ref", "doc_name", "section_title", "text")):
             return n
     return None
 
@@ -154,7 +172,7 @@ def evaluate_retrieval(cases: list[dict], cfg: Config, index: Any = None, graph:
             from atlas.index import Index
             index = Index.from_config(cfg)
         for c in searches:
-            result = {"id": c["id"], "kind": "search", "search": c["search"]}
+            result = {"id": c["id"], "kind": "search", "search": c["search"], "tags": c.get("tags", [])}
             for mode, dense in SEARCH_MODES.items():
                 try:
                     hits = index.search(c["search"], max(KS), c.get("document", ""), c.get("kinds"), dense=dense)
@@ -176,27 +194,39 @@ def evaluate_retrieval(cases: list[dict], cfg: Config, index: Any = None, graph:
             res = getattr(graph, c["query"])(c[c["query"]])
             text = json.dumps(res, ensure_ascii=False, default=str).lower()
             missing = [x for x in c["expect"] if x.lower() not in text]
-            result = {"id": c["id"], "kind": "graph", "query": f"{c['query']} {c[c['query']]}",
+            result = {"id": c["id"], "kind": "graph", "query": f"{c['query']} {c[c['query']]}", "tags": c.get("tags", []),
                       "passed": not missing and "error" not in res, "missing": missing,
                       **({"error": res["error"]} if "error" in res else {})}
             results.append(result)
             if on_result:
                 on_result(result)
     out: dict = {"results": results}
-    if searches:
-        found = [r for r in results if r["kind"] == "search"]
-        out["search"] = {"cases": len(found), **{m: _summary([r[m]["rank"] for r in found]) for m in SEARCH_MODES}}
-    if queries:
-        passed = sum(r["passed"] for r in results if r["kind"] == "graph")
-        out["graph"] = {"passed": passed, "total": len(queries), "rate": round(passed / len(queries), 3)}
+    for kind, figures in (("search", _search_figures), ("graph", _graph_figures)):
+        found = [r for r in results if r["kind"] == kind]
+        if found:
+            out[kind] = figures(found)
+            tags = list(dict.fromkeys(t for r in found for t in r["tags"]))      # in their order
+            if tags:
+                out[kind]["tags"] = {t: figures([r for r in found if t in r["tags"]]) for t in tags}
     return out
+
+
+def _search_figures(found: list[dict]) -> dict:
+    return {"cases": len(found), **{m: _summary([r[m]["rank"] for r in found]) for m in SEARCH_MODES}}
+
+
+def _graph_figures(found: list[dict]) -> dict:
+    passed = sum(r["passed"] for r in found)
+    return {"passed": passed, "total": len(found), "rate": round(passed / len(found), 3)}
 
 
 def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, client: Any = None,
                   on_result: Callable[[dict], None] | None = None) -> dict[str, dict]:
-    """Runs the sets of [agents.eval] sets and writes reports/eval-<set>.json for each:
-    {"agents": the result of evaluate, "retrieval": that of evaluate_retrieval}, each only
-    if the set has cases of its kind."""
+    """Runs the sets of [agents.eval] sets and writes, for each, reports/eval-<set>.json
+    (overwritten) and reports/eval-<set>-<version>-<date>.json (kept, for compare_reports):
+    {"meta": {"set", "version", "date"}, "agents": the result of evaluate, "retrieval":
+    that of evaluate_retrieval}, each only if the set has cases of its kind."""
+    from atlas import __version__
     ev = cfg["agents"].get("eval") or {}
     sets = ev.get("sets") or []
     if not sets:
@@ -205,12 +235,77 @@ def evaluate_sets(cfg: Config, runs: int | None = None, context: Any = None, cli
     for s in sets:
         path = Path(s) if Path(s).is_absolute() else cfg.path.parent / s
         cases = load_cases(path)
-        res = {}
+        started = datetime.now()
+        res: dict = {"meta": {"set": path.stem, "version": __version__, "date": started.isoformat(timespec="seconds")}}
         if any(c["kind"] != "agent" for c in cases):
             res["retrieval"] = evaluate_retrieval(cases, cfg, on_result=on_result)
         if any(c["kind"] == "agent" for c in cases):
             res["agents"] = evaluate(cases, cfg, runs or int(ev.get("runs", 1)), context, client, on_result)
-        report = cfg.workspace / "reports" / f"eval-{path.stem}.json"
-        atomic_write(report, json.dumps(res, ensure_ascii=False, indent=1))
+        text = json.dumps(res, ensure_ascii=False, indent=1)
+        reports = cfg.workspace / "reports"
+        atomic_write(reports / f"eval-{path.stem}.json", text)
+        atomic_write(reports / f"eval-{path.stem}-{__version__}-{started.date().isoformat()}.json", text)
         out[path.stem] = res
     return out
+
+
+def previous_report(cfg: Config, name: str, version: str) -> dict | None:
+    """The last report kept of the set `name` (reports/eval-<set>-<version>-<date>.json)
+    written by a version of atlas other than `version`, or None."""
+    found = []
+    for path in (cfg.workspace / "reports").glob(f"eval-{name}-*.json"):
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        meta = report.get("meta") if isinstance(report, dict) else None
+        if isinstance(meta, dict) and meta.get("set") == name and meta.get("version") not in (None, version):
+            found.append((str(meta.get("date", "")), report))
+    return max(found, key=lambda x: x[0])[1] if found else None
+
+
+def _cases_of(report: dict) -> dict[str, dict]:
+    """What each case of a report got: {"kind", "hybrid", "lexical"} for a search (its
+    ranks), {"kind", "passed"} for a query of the graph, {"kind", "passed", "runs"} for a
+    question (how many of its runs passed)."""
+    cases: dict[str, dict] = {}
+    for r in (report.get("retrieval") or {}).get("results", []):
+        if r.get("kind") == "search":
+            cases[r["id"]] = {"kind": "search", **{m: (r.get(m) or {}).get("rank") for m in SEARCH_MODES}}
+        else:
+            cases[r["id"]] = {"kind": r.get("kind", "graph"), "passed": bool(r.get("passed"))}
+    for section, kind in (("answers", "ask"), ("agents", "agent")):
+        for r in (report.get(section) or {}).get("results", []):
+            c = cases.setdefault(r["id"], {"kind": kind, "passed": 0, "runs": 0})
+            c["passed"] += bool(r.get("passed"))
+            c["runs"] += 1
+    return cases
+
+
+def _lower(before: int | None, after: int | None) -> bool:
+    """Whether a search ranked lower: found before and now further down, or not found."""
+    return before is not None and (after is None or after > before)
+
+
+def compare_reports(old: dict, new: dict) -> dict:
+    """Each case of `new` against the same case of `old`: {"against": the meta of old,
+    "cases": [{"id", "kind", "before", "after", "change"}], "regressions": [ids],
+    "removed": [ids only in old]}. change is "regression" (a search ranked lower or not
+    found in either mode; a query or a question that passes less often), "better", "same"
+    or "new" (a case old did not have)."""
+    before, after = _cases_of(old), _cases_of(new)
+    rate = lambda c: c["passed"] / c["runs"] if "runs" in c else float(c["passed"])
+    cases = []
+    for cid, now in after.items():
+        was = before.get(cid)
+        if was is None or was["kind"] != now["kind"]:
+            change = "new"
+        elif now["kind"] == "search":
+            change = "regression" if any(_lower(was[m], now[m]) for m in SEARCH_MODES) else \
+                "better" if any(_lower(now[m], was[m]) for m in SEARCH_MODES) else "same"
+        else:
+            change = "regression" if rate(now) < rate(was) else "better" if rate(now) > rate(was) else "same"
+        cases.append({"id": cid, "kind": now["kind"], "before": was, "after": now, "change": change})
+    return {"against": old.get("meta", {}), "cases": cases,
+            "regressions": [c["id"] for c in cases if c["change"] == "regression"],
+            "removed": [cid for cid in before if cid not in after]}

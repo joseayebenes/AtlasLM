@@ -308,6 +308,7 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
   search: how long does the HMI retain its log files
   expect: [30 days]
   kinds: [requirement]               # opcional, como document: dónde buscar
+  tags: [paraphrase]                 # opcional, en todos los tipos: las cifras por tag
 - id: graph-impact-log               # una consulta del grafo, sin modelo
   impact: Logger.Log                 # trace, trace_code, impact, find_symbol, search_code_docs
   expect: [tracks.delete_track, SRS-0004]
@@ -320,7 +321,10 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
   a 11 s por pregunta. El fallo dice bien qué falta por definir en las alarmas, pero contesta
   en español y sin el literal «TBD» que pide el caso.
 - **Búsqueda.** Cada texto esperado se encuentra en la posición del primer resultado que lo
-  contiene (en su ID, documento, título de sección o texto), y el caso, en la del último. De
+  contiene (en su ID, documento, título de sección o texto), y el caso, en la del último.
+  `section:<documento>#<id de sección>` solo casa con un resultado de esa sección: los IDs
+  de sección se repiten en cada documento y son cortos (`004`), así que no se buscan en el
+  texto. De
   ahí salen el acierto@k (los casos con todo lo esperado entre los k primeros, para k = 1, 3,
   5 y 10) y el rango recíproco medio (MRR). Cada búsqueda se hace dos veces: híbrida (IDs,
   vectores y BM25, como `atlas search`) y léxica (IDs y BM25, sin ninguna petición), para ver
@@ -328,9 +332,14 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
 - **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
   no ordena ni varía: o está o no está.
 
-`examples/eval/retrieval.yaml` tiene 20 búsquedas (IDs exactos, palabras del texto,
-paráfrasis, preguntas en español, secciones y código) y 10 consultas del grafo sobre las
-muestras. Con `embeddinggemma`:
+`tags` agrupa los casos por tipo: el informe y la salida de `atlas eval` dan las cifras de
+la búsqueda (acierto@k y MRR, híbrida y léxica) y del grafo de cada tag, además de las del
+conjunto. Un caso puede tener varios: `[paraphrase, spanish]`.
+
+`examples/eval/retrieval.yaml` tiene 20 búsquedas y 10 consultas del grafo sobre las
+muestras, con sus tags: `id` (IDs exactos), `words` (palabras del texto), `paraphrase`,
+`spanish`, `section` y `code`; en el grafo, `trace`, `impact` y `code`. Con
+`embeddinggemma`:
 
 | Búsqueda | acierto@1 | @3 | @5 | @10 | MRR |
 |---|---|---|---|---|---|
@@ -350,9 +359,37 @@ sets = ["examples/eval/assistant.yaml", "examples/eval/retrieval.yaml"]
 runs = 3                   # veces que se hace cada pregunta a un agente: los modelos no responden siempre igual
 ```
 
-Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`.
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`,
+con una cabecera `meta` (conjunto, versión de atlas, fecha). Ese fichero se sobrescribe; una
+copia queda en `eval-<conjunto>-<versión>-<fecha>.json`. `atlas eval --compare` compara cada
+caso con el del último informe de otra versión de atlas: el rango anterior y el nuevo de
+cada búsqueda (híbrida y léxica), si cada consulta o pregunta pasaba y pasa, y al final las
+regresiones (una búsqueda que baja o deja de encontrarse en cualquiera de los dos modos, o
+algo que pasaba y ya no). Con alguna regresión termina con código 1. El mismo día y la misma
+versión, la copia se sobrescribe. Con `atlas.test.toml` y el servidor falso (sus vectores
+no saben de significado: las cifras solo enseñan la forma), y un informe anterior de otra
+versión:
+
+```text
+retrieval (written to workspace-test/reports/eval-retrieval.json):
+  search, hybrid: hit@1 50%, hit@3 65%, hit@5 75%, hit@10 85%, MRR 0.60 (20 cases)
+  search, lexical: hit@1 60%, hit@3 60%, hit@5 80%, hit@10 90%, MRR 0.66 (20 cases)
+    id (3): hybrid hit@3 67% MRR 0.73  lexical hit@3 67% MRR 0.75
+    paraphrase (6): hybrid hit@3 17% MRR 0.18  lexical hit@3 33% MRR 0.40
+    ...
+  graph: 10 of 10 right (100%)
+    trace: 4 of 4
+    ...
+  compared with atlas 0.2.0 of 2026-10-16T18:02:11:
+    same       search-id-srs-0102  hybrid 1 lexical 1 -> hybrid 1 lexical 1
+    REGRESSION search-code-hours  hybrid 4 lexical 6 -> hybrid - lexical 6
+    ...
+  regressions: search-code-hours
+```
+
 Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el modelo de chat;
-la búsqueda híbrida sí necesita el de embeddings.
+la búsqueda híbrida sí necesita el de embeddings. Los vectores de las consultas quedan en la
+caché del índice: una segunda pasada no hace ninguna petición a los embeddings.
 
 ## Con Ollama
 

@@ -304,6 +304,8 @@ class DocTools:
                                     extra_sources=self.route(question), section=section)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        # the text read from each source is for the model; the agent has the excerpt and get_section
+        res = {**res, "sources": [{k: v for k, v in s.items() if k != "context"} for s in res["sources"]]}
         warnings = citation_warnings(res)
         return {**res, "warnings": warnings} if warnings else res
 

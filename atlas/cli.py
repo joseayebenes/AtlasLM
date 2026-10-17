@@ -36,6 +36,9 @@
                                        --check: the plan, check_code and the tests at the start, no model;
                                        --resume: goes on from where an earlier run stopped (Ctrl+C)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
+                   [--compare]      and each case against the last report of another version of atlas
+                   [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
+                                    graph of the workspace, the same each time (instead of evaluating)
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas doctor   [atlas.toml]     what can fail on this machine, before a run: Python, extras, sources,
                                     the DOORS database, the compiler commands, variables, workspace and connection
@@ -1259,6 +1262,7 @@ OPTIONS = {"init": {"--profile": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--section": str, "--dry-run": bool,
                    **FILTERS},
            "develop": {"--check": bool, "--resume": bool},
+           "eval": {"--compare": bool, "--generate": str, "--n": int},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
                                                       "comply", "link", "coverage", "impact")}}
 DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when it is not the name of the option
@@ -1490,8 +1494,55 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
     return 0 if final["tests_passed"] == final["tests"] else 1
 
 
-def evaluate(cfg: Config) -> int:
-    from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
+def _hits(m: dict) -> str:
+    return ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in (1, 3, 5, 10)) + f", MRR {m['mrr']:.2f}"
+
+
+def _print_comparison(cmp: dict) -> None:
+    """Each case against the same case of the report of another version, and the regressions."""
+    from atlas.agents.evaluate import SEARCH_MODES
+    against = cmp["against"]
+    print(f"  compared with atlas {against.get('version', '?')} of {against.get('date', '?')}:")
+
+    def got(c: dict | None) -> str:
+        if c is None:
+            return "-"
+        if c["kind"] == "search":
+            return " ".join(f"{m} {c[m] or '-'}" for m in SEARCH_MODES)
+        return f"{c['passed']}/{c['runs']}" if "runs" in c else ("ok" if c["passed"] else "fail")
+
+    for c in cmp["cases"]:
+        print(f"    {c['change'].upper() if c['change'] == 'regression' else c['change']:10s} {c['id']}  "
+              f"{got(c['before'])} -> {got(c['after'])}")
+    if cmp["removed"]:
+        print(f"    no longer in the set: {', '.join(cmp['removed'])}")
+    print(f"  regressions: {', '.join(cmp['regressions']) if cmp['regressions'] else 'none'}")
+
+
+def generate_set(cfg: Config, path: str, n: int) -> int:
+    """atlas eval --generate: a set of search and graph cases from the workspace."""
+    from atlas.agents.evaluate import GENERATE_KINDS, generate_cases, write_cases
+    cases = generate_cases(cfg, n)
+    if not cases:
+        print("nothing to generate cases from: no requirement, section or subprogram with callers in "
+              f"{cfg.workspace / 'atlas.db'} (has `atlas run` processed the sources?)", file=sys.stderr)
+        return 1
+    written = write_cases(path, cases, cfg)
+    kinds = {k: sum(1 for c in cases if c["tags"][1] == k) for k in GENERATE_KINDS}
+    print(f"written {written}: {len(cases)} cases (" + ", ".join(f"{v} {k}" for k, v in kinds.items()) + ")")
+    print(f"add it to [agents.eval] sets of {cfg.path.name} and run `atlas eval {cfg.path.name}`")
+    return 0
+
+
+def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0) -> int:
+    from atlas import __version__
+    from atlas.agents.evaluate import SEARCH_MODES, evaluate_sets, previous_report
+    if n and not generate:
+        sys.exit("atlas eval: --n goes with --generate FILE")
+    if generate:
+        if n < 0 or compare:
+            sys.exit("atlas eval: --generate takes --n (how many cases, 50 by default), not --compare")
+        return generate_set(cfg, generate, n or 50)
 
     def show(r: dict) -> None:
         if r.get("kind") == "search":
@@ -1504,6 +1555,12 @@ def evaluate(cfg: Config) -> int:
             print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']}  {r['query']}"
                   + (f"  missing: {', '.join(r['missing'])}" if r["missing"] else "")
                   + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+        elif r.get("kind") == "ask":
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+                  f"[{r['scope'] or '-'}, {r['requests']} requests]"
+                  + (f"  missing: {', '.join(r['missing'])}" if r["missing"] else "")
+                  + (f"  not in a cited source: {', '.join(r['uncited'])}" if r["uncited"] else "")
+                  + (f"  {r['error']}" if r.get("error") else ""), flush=True)
         else:
             missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
             print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
@@ -1514,21 +1571,44 @@ def evaluate(cfg: Config) -> int:
         results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
     except ImportError as e:
         sys.exit(str(e))
+    regressions = 0
     for name, res in results.items():
         print(f"\n{name} (written to {cfg.workspace / 'reports' / f'eval-{name}.json'}):")
         found = res.get("retrieval", {})
         if "search" in found:
             for mode in SEARCH_MODES:
-                m = found["search"][mode]
-                print(f"  search, {mode}: " + ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in KS)
-                      + f", MRR {m['mrr']:.2f} ({found['search']['cases']} cases)")
+                print(f"  search, {mode}: {_hits(found['search'][mode])} ({found['search']['cases']} cases)")
+            for tag, t in found["search"].get("tags", {}).items():
+                print(f"    {tag} ({t['cases']}): " + "  ".join(
+                    f"{mode} hit@3 {t[mode]['hit@3']:.0%} MRR {t[mode]['mrr']:.2f}" for mode in SEARCH_MODES))
         if "graph" in found:
             g = found["graph"]
             print(f"  graph: {g['passed']} of {g['total']} right ({g['rate']:.0%})")
+            for tag, t in g.get("tags", {}).items():
+                print(f"    {tag}: {t['passed']} of {t['total']}")
+        if "answers" in res:
+            a = res["answers"]
+            print(f"  answers: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median "
+                  f"{a['median_seconds']:.0f} s, {a['requests']} requests to the model")
         if "agents" in res:
             a = res["agents"]
-            print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
-    return 0
+            tokens = a.get("tokens") or {}
+            print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s"
+                  + (f", {tokens['prompt']} + {tokens['completion']} tokens" if tokens.get("prompt") else "")
+                  + (f", ${a['cost']:.4f}" if "cost" in a else ""))
+        for section in ("answers", "agents"):
+            for tag, t in res.get(section, {}).get("tags", {}).items():
+                print(f"    {section} {tag}: {t['passed']} of {t['total']}")
+        if compare:
+            old = previous_report(cfg, name, __version__)
+            if old is None:
+                print(f"  nothing to compare with: no report of {name} from a version other than {__version__}")
+            else:
+                from atlas.agents.evaluate import compare_reports
+                cmp = compare_reports(old, res)
+                _print_comparison(cmp)
+                regressions += len(cmp["regressions"])
+    return 1 if regressions else 0
 
 
 def check(cfg: Config) -> int:

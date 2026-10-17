@@ -46,8 +46,11 @@ pasa los conjuntos de `[agents.eval]`. El informe queda en
 `workspace-openrouter/<modelo>/reports/eval-assistant.json`.
 
 Para comparar varios, `make compare-openrouter` hace lo mismo con cada uno y termina con una
-tabla: respuestas correctas, mediana y total de segundos, errores de la API y casos
-fallados.
+tabla: respuestas correctas, mediana y total de segundos, tokens por caso, dólares en total
+y por acierto (OpenRouter dice el coste de cada petición), acierto@3 y MRR de la búsqueda
+híbrida, errores de la API y casos fallados. La tabla y cada caso de cada modelo (si pasó,
+segundos, tokens y coste) quedan en `reports/compare-<fecha>.md` y `.json`, junto a la
+configuración.
 
 ```bash
 make compare-openrouter MODELS="google/gemma-4-26b-a4b-it qwen/qwen3.6-35b-a3b mistralai/mistral-small-2603"

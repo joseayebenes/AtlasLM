@@ -262,6 +262,33 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `[search] scope_chars`, como el resumen de un documento; antes iban todas en una última
   petición, aunque no cupiera. Las citas se conservan y se numeran 1, 2, 3… en el orden de las
   fuentes.
+- `tags` en los casos de evaluación (`[paraphrase, spanish]`) y cifras por tag: acierto@k y
+  MRR de la búsqueda, híbrida y léxica, y aciertos del grafo, en el informe y en la salida de
+  `atlas eval`. `examples/eval/retrieval.yaml` pasa a tags los tipos que tenía en
+  comentarios. Un texto esperado `section:<documento>#<id>` casa solo con esa sección.
+- `atlas eval` guarda una copia de cada informe, `reports/eval-<conjunto>-<versión>-<fecha>.json`,
+  con una cabecera `meta`, y `atlas eval --compare` compara cada caso con el último informe
+  de otra versión: rango anterior y nuevo, y las regresiones (código 1 si hay alguna).
+- Casos `ask` en los conjuntos de evaluación: la pregunta va a `Index.answer` (con
+  `document`, `scope` y `section` si los tiene) y pasa si la respuesta contiene lo esperado
+  y, con `cited: true`, si cada texto esperado está en lo que se leyó de una fuente citada.
+  Guarda peticiones, `scope` y segundos. Cuatro casos nuevos en
+  `examples/eval/assistant.yaml`.
+- El informe de `atlas eval` guarda los tokens y el coste de cada respuesta de un agente, y
+  una cabecera `meta` con el modelo, su `reasoning_effort` y `provider`, el modelo de
+  embeddings, la versión, la fecha, `runs` y el hash del YAML.
+- `atlas eval --generate FICHERO --n 50`: un conjunto de casos deterministas sacados del
+  `atlas.db` y del grafo, sin modelo (búsqueda por el ID exacto de requisitos al azar y por
+  el título de secciones, `trace` de requisitos con código, `impact` de subprogramas con
+  llamadores), con semilla fija. La medida de regresión del proyecto real desde el primer
+  día; no sobrescribe un conjunto escrito a mano.
+- `tools/compare_models.py` añade tokens por caso, dólares en total y por acierto, y el
+  acierto@3 y el MRR de la búsqueda; escribe `reports/compare-<fecha>.md` y `.json`.
+- Las pruebas con modelo pasan contra cualquier configuración: `ATLAS_TEST_CONFIG` (por
+  defecto `atlas.dev.toml`) da su `[llm]`, `[embeddings]`, `[network]` y `[agents] model`,
+  y se omiten si `atlas check` falla sobre ella. Marcador `model` (`ollama` sigue valiendo) y
+  `make test-gateway`, que las pasa contra el gateway de `atlas.toml`. Guía en el README
+  («Niveles de modelo») y en `docs/instalacion.md`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -306,6 +333,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   resúmenes de los documentos y de sus secciones, no en los 8 pasajes de su búsqueda. Un
   módulo de DOORS, que no tiene resúmenes, solo se lee entero si la pregunta lo nombra (o con
   `--document`), salvo que ningún documento tenga resúmenes.
+- Cada fuente de `Index.answer` trae `context`, el texto que leyó el modelo; `ask_docs` no
+  lo devuelve al agente (tiene `excerpt` y `get_section`).
+- Los vectores de las consultas de búsqueda quedan en la caché de vectores del índice: la
+  misma consulta otra vez no pide nada a los embeddings (antes, cada búsqueda híbrida la
+  embebía; una pasada de `retrieval.yaml` eran 20 peticiones, y la segunda ya ninguna).
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

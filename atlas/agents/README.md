@@ -343,7 +343,7 @@ especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log`
 ## Evaluación
 
 `atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.
-Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
+Un conjunto mezcla cuatro tipos de caso, según la clave que lleva la pregunta:
 
 ```yaml
 - id: trace-srs-0004                 # un agente: necesita el modelo y el extra [agents]
@@ -354,29 +354,53 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
   search: how long does the HMI retain its log files
   expect: [30 days]
   kinds: [requirement]               # opcional, como document: dónde buscar
+  tags: [paraphrase]                 # opcional, en todos los tipos: las cifras por tag
 - id: graph-impact-log               # una consulta del grafo, sin modelo
   impact: Logger.Log                 # trace, trace_code, impact, find_symbol, search_code_docs
   expect: [tracks.delete_track, SRS-0004]
+- id: ask-days-of-logs               # una respuesta de los documentos (atlas ask): el modelo, sin ADK
+  ask: How many days must the HMI keep its logs?
+  expect: ["30"]
+  cited: true                        # opcional: cada texto esperado, en una fuente citada
+  document: hmi_manual.md            # opcional, como scope (auto, passages, whole) y section
 ```
 
 - **Agentes.** Un caso está bien si la respuesta contiene los textos esperados (IDs,
   identificadores, valores) y el agente ha llamado a las herramientas esperadas sin llegar a
-  `max_steps`. `examples/eval/assistant.yaml` tiene 24 casos sobre las muestras. Con
+  `max_steps`. Cada resultado guarda sus tokens y, si el servidor lo dice (OpenRouter), su
+  coste; el informe, la suma. `examples/eval/assistant.yaml` tiene 24 casos sobre las
+  muestras (y cuatro de `ask`). Con
   `gemma4:12b` sin razonamiento, el asistente acertó 23 de 24 (96 %), con una mediana de 9
   a 11 s por pregunta. El fallo dice bien qué falta por definir en las alarmas, pero contesta
   en español y sin el literal «TBD» que pide el caso.
 - **Búsqueda.** Cada texto esperado se encuentra en la posición del primer resultado que lo
-  contiene (en su ID, documento, título de sección o texto), y el caso, en la del último. De
+  contiene (en su ID, documento, título de sección o texto), y el caso, en la del último.
+  `section:<documento>#<id de sección>` solo casa con un resultado de esa sección: los IDs
+  de sección se repiten en cada documento y son cortos (`004`), así que no se buscan en el
+  texto. De
   ahí salen el acierto@k (los casos con todo lo esperado entre los k primeros, para k = 1, 3,
   5 y 10) y el rango recíproco medio (MRR). Cada búsqueda se hace dos veces: híbrida (IDs,
   vectores y BM25, como `atlas search`) y léxica (IDs y BM25, sin ninguna petición), para ver
   qué aportan los vectores.
 - **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
   no ordena ni varía: o está o no está.
+- **Respuestas (`ask`).** La pregunta va a `Index.answer`, como `atlas ask` y la herramienta
+  `ask_docs`, con su `document`, `scope` y `section` si los tiene (`section` solo si la
+  versión de `Index.answer` lo admite; si no, el caso falla con ese error). Está bien si la
+  respuesta contiene cada texto esperado y, con `cited: true`, si cada uno está además en el
+  texto que el modelo leyó de una fuente que la respuesta cita (`[n]`): el valor correcto
+  sacado de la fuente equivocada no vale. Guarda las peticiones al modelo, el `scope` con el
+  que se leyó, los segundos y las fuentes citadas (y `status` y `unsupported` cuando la
+  respuesta los trae). Es lo más caro y lo que más cambia entre versiones.
 
-`examples/eval/retrieval.yaml` tiene 20 búsquedas (IDs exactos, palabras del texto,
-paráfrasis, preguntas en español, secciones y código) y 10 consultas del grafo sobre las
-muestras. Con `embeddinggemma`:
+`tags` agrupa los casos por tipo: el informe y la salida de `atlas eval` dan las cifras de
+la búsqueda (acierto@k y MRR, híbrida y léxica) y del grafo de cada tag, además de las del
+conjunto. Un caso puede tener varios: `[paraphrase, spanish]`.
+
+`examples/eval/retrieval.yaml` tiene 20 búsquedas y 10 consultas del grafo sobre las
+muestras, con sus tags: `id` (IDs exactos), `words` (palabras del texto), `paraphrase`,
+`spanish`, `section` y `code`; en el grafo, `trace`, `impact` y `code`. Con
+`embeddinggemma`:
 
 | Búsqueda | acierto@1 | @3 | @5 | @10 | MRR |
 |---|---|---|---|---|---|
@@ -393,23 +417,95 @@ el proyecto real.
 ```toml
 [agents.eval]
 sets = ["examples/eval/assistant.yaml", "examples/eval/retrieval.yaml"]
-runs = 3                   # veces que se hace cada pregunta a un agente: los modelos no responden siempre igual
+runs = 3                   # veces que se hace cada pregunta (agentes y ask): los modelos no responden siempre igual
 ```
 
-Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`.
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `retrieval`, `answers` y
+`agents`, con una cabecera `meta` que dice qué se midió: el modelo de los agentes y el de
+`[llm]`, su `reasoning_effort`, el `provider` de `[llm.extra_body]`, el modelo de
+embeddings, la versión de atlas, la fecha, `runs` y el hash del YAML. Ese fichero se sobrescribe; una
+copia queda en `eval-<conjunto>-<versión>-<fecha>.json`. `atlas eval --compare` compara cada
+caso con el del último informe de otra versión de atlas: el rango anterior y el nuevo de
+cada búsqueda (híbrida y léxica), si cada consulta o pregunta pasaba y pasa, y al final las
+regresiones (una búsqueda que baja o deja de encontrarse en cualquiera de los dos modos, o
+algo que pasaba y ya no). Con alguna regresión termina con código 1. El mismo día y la misma
+versión, la copia se sobrescribe. Con `atlas.test.toml` y el servidor falso (sus vectores
+no saben de significado: las cifras solo enseñan la forma), y un informe anterior de otra
+versión:
+
+```text
+retrieval (written to workspace-test/reports/eval-retrieval.json):
+  search, hybrid: hit@1 50%, hit@3 65%, hit@5 75%, hit@10 85%, MRR 0.60 (20 cases)
+  search, lexical: hit@1 60%, hit@3 60%, hit@5 80%, hit@10 90%, MRR 0.66 (20 cases)
+    id (3): hybrid hit@3 67% MRR 0.73  lexical hit@3 67% MRR 0.75
+    paraphrase (6): hybrid hit@3 17% MRR 0.18  lexical hit@3 33% MRR 0.40
+    ...
+  graph: 10 of 10 right (100%)
+    trace: 4 of 4
+    ...
+  compared with atlas 0.2.0 of 2026-10-16T18:02:11:
+    same       search-id-srs-0102  hybrid 1 lexical 1 -> hybrid 1 lexical 1
+    REGRESSION search-code-hours  hybrid 4 lexical 6 -> hybrid - lexical 6
+    ...
+  regressions: search-code-hours
+```
+
 Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el modelo de chat;
-la búsqueda híbrida sí necesita el de embeddings.
+la búsqueda híbrida sí necesita el de embeddings. Los vectores de las consultas quedan en la
+caché del índice: una segunda pasada no hace ninguna petición a los embeddings.
+
+### Un conjunto generado para el proyecto real
+
+Para el proyecto real nadie ha escrito casos todavía. `atlas eval --generate` los saca del
+`atlas.db` y del grafo del workspace, sin modelo, y da la medida de regresión desde el primer
+día:
+
+```bash
+atlas run atlas.toml
+atlas eval --generate examples/eval/tms.yaml --n 50 atlas.toml
+```
+
+Escribe hasta `--n` casos (50 por defecto) de cuatro tipos, por turnos:
+
+| Tag | Caso | Espera |
+|---|---|---|
+| `id` | `search` con el ID exacto de un requisito al azar | el ID |
+| `section` | `search` con el título de una sección (uno que no tenga otra) | `section:<documento>#<id>` |
+| `trace` | `trace` de un requisito que tiene código | el requisito, su código y sus tests (10 de cada como mucho) |
+| `impact` | `impact` de un subprograma que tiene llamadores | sus llamadores (10 como mucho) |
+
+Todos llevan además el tag `generated`. La semilla es fija: con los mismos datos sale el
+mismo fichero, así que dos versiones de atlas se comparan con `atlas eval --compare`. Son
+solo casos de recuperación y del grafo, sin agentes: miden si la búsqueda encuentra lo que
+el proyecto tiene y si el grafo lo enlaza, no si el modelo responde bien. El fichero se
+reescribe entero cada vez (su primera línea dice que es generado); uno escrito a mano no se
+sobrescribe nunca, y los casos a mano van en otro conjunto. Se añade a `[agents.eval] sets`
+como cualquier otro:
+
+```toml
+[agents.eval]
+sets = ["examples/eval/tms.yaml"]
+```
+
+Sobre las muestras, con el servidor falso, 50 casos (22 `id`, 21 `section`, 5 `trace` y 2
+`impact`): los IDs salen todos primeros, las secciones entre las diez primeras, y el grafo
+acierta 7 de 7. Al regenerar después de cambiar los datos, cambian los casos: para comparar
+versiones, se compara con el mismo fichero.
 
 ## Con Ollama
 
 ```bash
 pip install -e ".[agents]"                       # google-adk
 OLLAMA_CONTEXT_LENGTH=16384 ollama serve         # en otra terminal
-make test-ollama                                 # o: python -m pytest -q -m ollama
+make test-ollama                                 # o: python -m pytest -q -m model
 ```
 
-`tests/test_agents_ollama.py` prueba los agentes contra la URL y el modelo de
-`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son siete pruebas:
+`tests/test_agents_ollama.py` prueba los agentes contra el modelo de la configuración de
+`ATLAS_TEST_CONFIG`, por defecto `atlas.dev.toml`: sus `[llm]`, `[embeddings]` y
+`[network]` van a las configuraciones que escriben las pruebas, y los agentes usan su
+`[agents] model`. Con `make test-gateway` (`ATLAS_TEST_CONFIG=atlas.toml`) son las mismas
+contra el gateway, con su proxy, su CA y su cupo (ver el [README](../../README.md#niveles-de-modelo)).
+Son siete pruebas:
 - un agente con dos herramientas propias sobre las muestras (`get_requirement` y una `trace`
   que busca las etiquetas `Req:`): usa las dos, responde con el requisito y los ficheros
   correctos y no se inventa ficheros;
@@ -420,8 +516,10 @@ make test-ollama                                 # o: python -m pytest -q -m oll
 - las propuestas de enlaces del `req_linker`, una que debe proponer y otra que no;
 - el cumplimiento de un `Classify` con un error de límite y sin él.
 
-Se omiten solas si falta el extra `[agents]`, si Ollama no responde o si el modelo no está
-descargado. Para excluirlas: `python -m pytest -m "not ollama"`.
+Llevan el marcador `model` (y `ollama`, su nombre de antes, que sigue valiendo). Se omiten
+solas si falta el extra `[agents]` o si `atlas check` falla sobre esa configuración (Ollama
+parado, el modelo sin descargar, el gateway sin red o sin clave), y el motivo dice la salida
+de `atlas check`. Para excluirlas: `python -m pytest -m "not model"`.
 
 Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
 (`reasoning_effort: none`, como hacen los agentes de serie). Con razonamiento, 7 de 10

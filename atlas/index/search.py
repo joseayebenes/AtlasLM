@@ -16,6 +16,9 @@ A search can be narrowed to a document, to some kinds of record and by the meta 
 records (`where`): the attributes and the module of a DOORS requirement, the chapter of a
 passage, the kind and the file of a code element (see records.py).
 
+The vector of a query is kept in the embeddings cache of the index (by the model, its query
+prefix and the text), so the same query asked again makes no request to the embeddings.
+
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
 its name, can take every place.
@@ -48,6 +51,7 @@ from __future__ import annotations
 
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -62,7 +66,8 @@ from atlas.llm.structured import JsonLlm
 
 __all__ = ["acronyms", "answer", "answer_status", "answer_whole", "build_context", "check_citations", "cite",
            "citation_warnings", "diverse", "expand_synonyms", "filters", "grounded_status", "ids_in", "in_section",
-           "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_plan", "whole_sources"]
+           "query_vectors", "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_plan",
+           "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -373,6 +378,22 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
     return [r for r in records if r["id"] in chosen]
 
 
+def query_vectors(store: IndexStore, embedder: Embedder, texts: list[str]) -> list:
+    """The vectors of some queries: those in the cache from there, the others in one request,
+    which then go to the cache (a cache that cannot be written is not an error)."""
+    keys = [embedder.query_key(t) for t in texts]
+    vectors = store.cache_get(list(dict.fromkeys(keys)))
+    missing = list(dict.fromkeys(t for t, k in zip(texts, keys) if k not in vectors))
+    if missing:
+        new = dict(zip((embedder.query_key(t) for t in missing), embedder.queries(missing)))
+        try:
+            store.cache_put(new)
+        except sqlite3.Error as e:
+            log.debug("the vectors of the queries are not cached: %s", e)
+        vectors.update(new)
+    return [vectors[k] for k in keys]
+
+
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
            per_document: int = 0, rewritten: dict | None = None, where: dict | None = None,
@@ -396,7 +417,7 @@ def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, docume
     exact = " ".join([query] + keywords)
     ids = store.by_ref(exact, allowed)
     rankings = [ids + [i for i in store.definitions(acronyms(exact), allowed) if i not in ids]]
-    for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
+    for q, qvec in zip(queries, query_vectors(store, embedder, queries) if dense else [None] * len(queries)):
         if dense:
             rankings.append(store.dense(qvec, embedder.model, n, allowed))
         rankings.append(store.lexical(q, n, allowed))
@@ -713,9 +734,10 @@ def _renumber(text: str, count: int) -> tuple[str, dict[int, int]]:
 
 
 def _source(n: int, s: dict) -> dict:
+    """A source of an answer; `context` is the whole text the model read from it."""
     return {"n": n, "cite": cite(s), "doc": s["doc_name"], "section": s["section_id"], "file": section_file(s),
             "kind": s["kind"], "ref": s.get("ref", ""),
-            "excerpt": (s["context"] if s["kind"] == "section" else s["text"])[:300]}
+            "excerpt": (s["context"] if s["kind"] == "section" else s["text"])[:300], "context": s["context"]}
 
 
 def _named(question: str, docs: list[dict]) -> list[str]:
@@ -768,7 +790,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
     """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
     sentences without a citation, "consulted": how many sources it was given (see
     answer_status), "sources": those it cites [{n, cite, doc, section, file,
-    kind, ref, excerpt}], "unused": from passages, those it does not cite [{n, cite}],
+    kind, ref, excerpt, context}], "unused": from passages, those it does not cite [{n, cite}],
     "unsupported" and "out_of_range" (see check_citations), "scope": "passages" | "whole",
     "documents": those read whole, "requests": to the model, "plan": of reading them whole},
     plus "truncated": True if the answer is cut by max_tokens and "failed_parts" with the

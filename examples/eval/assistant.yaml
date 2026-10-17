@@ -1,5 +1,7 @@
 # Evaluation set of the assistant over the samples (atlas.dev.toml): atlas eval atlas.dev.toml
 # Each answer must contain the texts of `expect` (in any case) and the agent must call `tools`.
+# The ask cases at the end go to Index.answer (atlas ask, ask_docs) instead of an agent; with
+# `cited: true`, each expected text must also be in a source the answer cites.
 - id: trace-srs-0004
   question: Which system requirement does SRS-0004 satisfy, and which Ada subprograms implement and test it?
   expect: [SSS-0005, delete_track, test_tracks]
@@ -74,3 +76,27 @@
 - id: section-of-srs-0004
   question: In which section of spec_with_bookmarks.pdf is SRS-0004 stated?
   expect: ["1.1"]
+
+# --- answers from the documents (Index.answer): no agent, the model writes from the sources
+- id: ask-days-of-logs
+  ask: How many days must the HMI keep its logs?
+  expect: ["30"]
+  cited: true
+  tags: [ask, passages]
+- id: ask-alarm-of-track
+  ask: When does the HMI raise an alarm?
+  expect: [track is lost]
+  cited: true
+  tags: [ask, passages]
+- id: ask-days-of-logs-es
+  ask: ¿Cuántos días hay que guardar los registros de la HMI?
+  expect: ["30"]
+  cited: true
+  tags: [ask, spanish]
+- id: ask-whole-alarms
+  ask: Summarise what the HMI manual says about alarms, including what is still to be defined.
+  document: hmi_manual.md
+  scope: whole
+  expect: [track is lost, TBD]
+  cited: true
+  tags: [ask, whole]

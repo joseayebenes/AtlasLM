@@ -1,7 +1,8 @@
 """Embeddings through the [embeddings] connection (proxy, TLS, rate limit, retries).
 
 Vectors are normalised, so the dot product is the cosine similarity. Some models expect a
-prefix that tells queries from documents; it is added here and is part of the cache key.
+prefix that tells queries from documents; it is added here and is part of the cache key
+(`key` for the texts of documents, `query_key` for the queries of a search).
 The prefixes come from the family of the model ([embeddings] family), inferred from its
 name when not given, and the literal query_prefix / document_prefix replace those of the
 family. A model of no known family gets none, and a warning says so: a gateway may publish
@@ -94,6 +95,10 @@ class Embedder:
     def key(self, text: str, title: str = "") -> str:
         """Cache key of a document vector: it depends on the model, the prefix and the text."""
         return hashlib.sha256(f"{self.model}\x00{self.document_text(text, title)}".encode("utf-8")).hexdigest()[:32]
+
+    def query_key(self, text: str) -> str:
+        """Cache key of a query vector: the model, the query prefix and the text."""
+        return hashlib.sha256(f"{self.model}\x00{self.q_prefix}{text}".encode("utf-8")).hexdigest()[:32]
 
     def documents(self, texts: list[str], titles: list[str] | None = None) -> np.ndarray:
         """Document texts, each with the title of its document (`titles`, if the prefix

@@ -365,6 +365,20 @@ class IndexStore:
                     return group if needle in (text, body) else [rec] + group
         return [rec]
 
+    def refs(self, kind: str) -> list[str]:
+        """The distinct IDs (`ref`) of the records of a kind, in order."""
+        return [r[0] for r in self._query("SELECT DISTINCT ref FROM index_records WHERE kind = ? AND ref != '' "
+                                          "ORDER BY ref", (kind,))]
+
+    def sections(self) -> list[tuple[str, str, str]]:
+        """(document name, section id, section title) of every section of the indexed
+        documents (not of DOORS modules or code units), in order."""
+        rows = self._query("SELECT DISTINCT d.name, r.section_id, r.section_title FROM index_records r "
+                           "JOIN index_documents d ON d.doc = r.doc WHERE r.section_id != '' AND r.section_title != '' "
+                           "AND r.doc NOT LIKE ? AND r.doc NOT LIKE ? ORDER BY d.name, r.section_id",
+                           (f"{DOORS_PREFIX}%", f"{CODE_PREFIX}%"))
+        return [(r[0], r[1], r[2]) for r in rows]
+
     def requirement(self, req_id: str) -> list[dict]:
         """Records of the requirement with that exact ID, in every document."""
         rows = self._query("SELECT id FROM index_records WHERE kind = 'requirement' AND UPPER(ref) = ?",

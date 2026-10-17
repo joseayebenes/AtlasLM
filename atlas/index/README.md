@@ -79,6 +79,11 @@ embeber documento a documento: en el proyecto grande, 189 en vez de 207 para 12 
 con lotes de 64. Un lote que falla no para los demás; lo que falta se embebe en la
 siguiente ejecución.
 
+Los vectores de las consultas de una búsqueda van a la misma caché (por el modelo, su
+prefijo de consulta y el texto): una consulta repetida no hace ninguna petición a los
+embeddings. Una segunda pasada de `atlas eval`, o la misma pregunta de un agente dos veces,
+no gasta cupo.
+
 ## Búsqueda
 
 Una búsqueda combina tres listas con Reciprocal Rank Fusion:
@@ -290,6 +295,7 @@ idx = Index.from_config(load_config("atlas.dev.toml"))
 hits = idx.search("alarm latency", k=8, kinds=["requirement"])
 hits = idx.search("deletion", where={"status": "Approved", "module": "SRS_TMS"})   # filtros
 res = idx.answer("When does the HMI raise an alarm?")      # {"answer", "sources", "scope", ...}
+                                                           # cada fuente: cite, excerpt y context (lo leído)
 res = idx.answer("Summarise SRS_TMS", scope="whole")       # el módulo entero, por partes si no cabe
 idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lotes llenos
 ```

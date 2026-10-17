@@ -7,6 +7,7 @@ Each document is indexed at several granularities, each one a `kind`:
     section_summary   summary and key points of each section
     chunk             ~chunk_chars pieces of the text of each section, with overlap
     requirement       each requirement, with its ID in `ref`
+    table             each table of a section (Markdown rows), with its caption
     definition        each glossary term, with the term in `ref`
     open_issue        each TBD / TBC
 
@@ -28,31 +29,86 @@ import re
 from pathlib import Path
 from typing import Iterable
 
+from atlas.docs.structure import TABLE_ROW, TABLE_RULE, tables_in
+
 __all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "code_records", "reflow",
-           "requirement_records"]
+           "requirement_records", "table_pieces"]
 
 DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
 CODE_PREFIX = "code:"       # key of a code unit in the index: "code:tracks"
-KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
+KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc", "table")
+
+# a line that starts a new line even inside a paragraph: a bullet, a numbered step, a table row
+LIST_ITEM = re.compile(r"^(?:[-•*▪◦‣–]\s|\(?\d{1,3}[.)]\s|[a-z]\)\s)")
+
+
+def _is_table(par: str) -> bool:
+    return all(TABLE_ROW.match(l) for l in par.split("\n"))
 
 
 def reflow(text: str) -> str:
-    """Joins the lines broken by the PDF inside each paragraph."""
-    pars = [" ".join(l.strip() for l in p.split("\n") if l.strip()) for p in re.split(r"\n\s*\n", text)]
-    return "\n\n".join(p for p in pars if p)
+    """Joins the lines broken by the PDF inside each paragraph, except before a bullet, a
+    numbered step or a table row ("| c1 | c2 |"), which keep their line."""
+    pars = []
+    for p in re.split(r"\n\s*\n", text):
+        lines: list[str] = []
+        for l in (l.strip() for l in p.split("\n")):
+            if not l:
+                continue
+            if lines and not (LIST_ITEM.match(l) or TABLE_ROW.match(l) or TABLE_ROW.match(lines[-1])):
+                lines[-1] += " " + l
+            else:
+                lines.append(l)
+        pars += [x for x in _split_tables(lines) if x]
+    return "\n\n".join(pars)
+
+
+def _split_tables(lines: list[str]) -> list[str]:
+    """The lines of a paragraph, with each run of table rows as a paragraph of its own."""
+    out, run, table = [], [], None
+    for l in lines:
+        row = bool(TABLE_ROW.match(l))
+        if run and row != table:
+            out.append("\n".join(run))
+            run = []
+        run.append(l)
+        table = row
+    if run:
+        out.append("\n".join(run))
+    return out
+
+
+def table_pieces(table: str, size: int) -> list[str]:
+    """A table in pieces of ~size characters by rows, each one with the header row (and
+    its "|---|" line) in front. A row is never split, however long."""
+    rows = table.split("\n")
+    head = rows[:2] if len(rows) > 1 and TABLE_RULE.match(rows[1]) else rows[:1]
+    pieces, buf = [], []
+    for r in rows[len(head):]:
+        if buf and len("\n".join(head + buf + [r])) > size:
+            pieces.append("\n".join(head + buf))
+            buf = []
+        buf.append(r)
+    if buf or not pieces:
+        pieces.append("\n".join(head + buf))
+    return pieces
 
 
 def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list[str]:
-    """Pieces of ~size characters by paragraphs and sentences, with overlap."""
+    """Pieces of ~size characters by paragraphs and sentences, with overlap. A table is
+    never split inside a row: a large one goes in pieces by rows that repeat its header,
+    and the overlap never takes part of a table."""
     units = []
     for par in reflow(text).split("\n\n"):
-        if len(par) <= size:
-            units.append(par)
+        if _is_table(par):
+            units += [(t, True) for t in table_pieces(par, size)]
+        elif len(par) <= size:
+            units.append((par, False))
         else:
-            units.extend(re.split(r"(?<=[.;:!?])\s+", par))
-    chunks, buf = [], ""
-    for u in units:
-        while len(u) > size:                       # huge sentence (flattened table)
+            units += [(x, False) for x in re.split(r"(?<=[.;:!?])\s+", par)]
+    chunks, buf, last_table, last_lines = [], "", False, False
+    for u, table in units:
+        while len(u) > size and not table:         # huge sentence
             if buf:
                 chunks.append(buf)
                 buf = ""
@@ -60,10 +116,13 @@ def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list[str]:
             u = u[size - overlap:]
         if buf and len(buf) + len(u) + 1 > size:
             chunks.append(buf)
-            tail = buf[-overlap:]
+            tail = "" if table or last_table else buf[-overlap:]
             m = re.search(r"[.;:!?]\s+", tail)          # the overlap starts at a whole sentence
             buf = tail[m.end():] if m else (tail[tail.find(" ") + 1:] if " " in tail else "")
-        buf = f"{buf} {u}".strip() if buf else u
+        # paragraphs joined in one line, unless one keeps its lines (a list, a table)
+        sep = "\n\n" if table or last_table else "\n" if last_lines or "\n" in u else " "
+        buf = f"{buf}{sep}{u}".strip() if buf else u
+        last_table, last_lines = table, "\n" in u
     if buf:
         chunks.append(buf)
     return chunks
@@ -94,17 +153,29 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
 
         # contextual retrieval: each chunk is embedded with its path and its section summary
         context = f"{header}\n{a.get('summary', '')}".strip()
-        for k, ch in enumerate(chunk_text(s.get("body", ""), chunk_chars, chunk_overlap)):
+        body = s.get("body", "")
+        tables = tables_in(body)
+        if tables and (kinds is None or "table" in kinds):
+            # the tables are records of their own, with the path and the caption: not in the chunks
+            body = "\n".join(l for l in body.split("\n") if not TABLE_ROW.match(l.strip()))
+            seq = 0
+            for t in tables:
+                for piece in table_pieces(t["text"], chunk_chars):
+                    text = f"{t['caption']}\n{piece}" if t["caption"] else piece
+                    records.append({**base, "kind": "table", "seq": seq, "text": text,
+                                    "embed_text": f"{header}\n{text}"})
+                    seq += 1
+        for k, ch in enumerate(chunk_text(body, chunk_chars, chunk_overlap)):
             records.append({**base, "kind": "chunk", "seq": k, "text": ch, "embed_text": f"{context}\n\n{ch}"})
 
     for r in data.get("requirements", []):
         sec = next((s for s in data["sections"] if s["id"] == r["section"]), {})
         text = (f"{r['id']}: " if r["id"] else "") + r["text"]
+        path = " > ".join(sec.get("path", []))
         records.append({"kind": "requirement", "ref": r["id"], "text": text,
-                        "section_id": r["section"], "section_title": r.get("section_title", ""),
-                        "path": " > ".join(sec.get("path", [])),
+                        "section_id": r["section"], "section_title": r.get("section_title", ""), "path": path,
                         "page_start": sec.get("page_start") or 0, "page_end": sec.get("page_end") or 0,
-                        "embed_text": f"{title} > requirement\n{text}"})
+                        "embed_text": f"{title} > {path + ' > ' if path else ''}requirement\n{text}"})
     titles = {s["id"]: s["title"] for s in data["sections"]}
     for g in data.get("glossary", []):
         text = f"{g['term']}: {' / '.join(g['definitions'][:3])}"

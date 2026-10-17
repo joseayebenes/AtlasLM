@@ -150,6 +150,8 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `doc_id_regex` | texto | `""` | código del documento (grupo 1): `'Doc\.\s+(\S+)'` |
 | `version_regex` | texto | `""` | su versión (grupo 1): `'\bIssue\s+(\w+)'` |
 | `date_regex` | texto | `""` | su fecha (grupo 1): `'\b(\d{4}-\d{2}-\d{2})\b'`; sin ella, la de los metadatos del PDF |
+| `tables` | sí/no | `false` | las tablas de los PDF como filas Markdown (`page.find_tables` de pymupdf) |
+| `table_requirements` | tabla | `{}` | un requisito por fila de las tablas con esas columnas: `{ id = "ID", text = "Requirement" }` |
 | `authority` | entero | `0` | autoridad del grupo frente a otros: `1` = normativo, `2`..., `0` = ninguna. Solo la usa el grafo |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
@@ -175,6 +177,26 @@ documento del grupo de menor número: `trace` dice qué cifras difieren y `atlas
 en `documents disagree` los requisitos que varios documentos declaran con cifras distintas.
 Dos documentos con el mismo `doc_id` y versiones distintas dan un aviso en `atlas graph`
 (¿está sustituido el más antiguo?). Cambiar `authority` solo reconstruye el grafo.
+
+### Tablas
+
+Con `tables = true`, cada tabla que pymupdf encuentra en un PDF sustituye a los bloques de
+texto que caen dentro de ella por sus filas en Markdown, una por línea (`| ICD-0001 | The
+TMF shall... | Test |`), con la cabecera primero; antes salía cada celda como un párrafo
+suelto. Una línea justo antes o después de la tabla que empieza por «Table n» o «Tabla n»
+es su pie. pymupdf encuentra bien las tablas con bordes; las que no tienen, no siempre:
+compruébalo con `atlas sections`, que dice cuántas tablas encontró, y mirando el
+`_extracted_text.md` del documento.
+
+`table_requirements` saca un requisito de cada fila de las tablas cuya cabecera tiene esas
+dos columnas (sin distinguir mayúsculas): el ID es la primera palabra de su celda. Con
+`analysis = "regex"` se suman a los de `req_regex`; con `"llm"`, completan lo que el modelo
+no sacó (una fila que el modelo dio sin ID recibe el de la tabla). También vale para las
+tablas de los Markdown.
+
+En el índice, cada tabla es un registro de tipo `table` con la ruta de su sección y su pie
+(si `[index] kinds` lo incluye; si no, va en los fragmentos). Una tabla grande se divide por
+filas, y cada parte repite la cabecera; un fragmento nunca parte una fila.
 
 ### PDF escaneados
 
@@ -294,7 +316,7 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 |---|---|---|---|
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
-| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`), `table` (cada tabla de un documento, con la ruta de su sección y su pie; sin él, las tablas van en los fragmentos) |
 
 ## [search]
 

@@ -98,7 +98,8 @@ SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask rea
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
                "min_chars": int, "ocr_command": list, "doc_id_regex": str, "version_regex": str,
-               "date_regex": str, "authority": int, "enabled": bool}
+               "date_regex": str, "authority": int, "tables": bool, "table_requirements": dict,
+               "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
@@ -120,7 +121,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "graph": {"exports": ["graphml", "json"], "communities": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
-                        "code_doc"]},
+                        "code_doc", "table"]},
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
     "agents": {"model": "", "dirs": ["agents"]},

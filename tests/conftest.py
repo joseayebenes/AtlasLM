@@ -43,6 +43,17 @@ def scanned_pdf(samples):
     return f
 
 
+@pytest.fixture(scope="session")
+def tables_pdf(samples):
+    """examples/samples/tables/interface_tables.pdf: requirements in a table with borders."""
+    from examples import make_samples
+    f = samples / "tables" / "interface_tables.pdf"
+    if not f.exists():
+        pytest.importorskip("pymupdf")
+        make_samples.tables()
+    return f
+
+
 @pytest.fixture
 def toml(tmp_path, samples):
     """Writes a test atlas.toml in a temporary directory."""

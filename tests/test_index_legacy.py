@@ -30,8 +30,22 @@ def legacy():
         sys.path.remove(str(LEGACY))
 
 
-def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_path, fake_llm, fake_embeddings):
+def _with_path(construir_registros):
+    """The records of doc_rag.py with the one change made on purpose: the embed_text of a
+    requirement carries the path of its section."""
+    def records(data: dict) -> list[dict]:
+        out = construir_registros(data)
+        for r in out:
+            if r["kind"] == "requirement" and r.get("path"):
+                r["embed_text"] = r["embed_text"].replace(" > requirement\n", f" > {r['path']} > requirement\n", 1)
+        return out
+    return records
+
+
+def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_path, fake_llm, fake_embeddings,
+                                                     monkeypatch):
     rag, ps, cx = legacy
+    monkeypatch.setattr(rag, "construir_registros", _with_path(rag.construir_registros))
     llm = fake_llm[0]
     net = cx.NetConfig(proxy="", no_proxy="*")
     old_llm = cx.ServiceConfig(base_url=llm.base_url, model="fake", api_key="x", net=net)

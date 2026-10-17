@@ -26,6 +26,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `gaps` añade `documents_disagree`: los requisitos fuera de DOORS que varios documentos
   declaran con cifras distintas. Dos documentos con el mismo `doc_id` y versión menor dan un
   aviso en `atlas graph`.
+- Tablas de los PDF: `[[sources.docs]] tables = true` (apagado por defecto) pone cada tabla
+  que encuentra pymupdf (`page.find_tables`) como filas Markdown, una por línea, en vez de una
+  celda por párrafo. `table_requirements = { id = "ID", text = "Requirement" }` saca un
+  requisito por fila, sin modelo con `analysis = "regex"` y como complemento de `"llm"`.
+- `[index] kinds` tiene `table`: cada tabla, con la ruta de su sección y su pie («Table n» o
+  «Tabla n»), es un registro propio y sale de los fragmentos. `chunk_text` no parte una tabla
+  por dentro de una fila y repite la cabecera en cada parte; `reflow` conserva el salto antes
+  de las viñetas, los pasos numerados y las filas de tabla.
+- El `embed_text` de un requisito de documento lleva la ruta de su sección.
 - `DocumentExtractor.read(path)`: el texto y lo que el extractor sabe del fichero (páginas,
   páginas sin texto, metadatos del PDF). Un extractor de un plugin puede seguir implementando
   solo `extract`.
@@ -34,6 +43,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Todos los documentos se vuelven a procesar una vez (`docs-2`), para que `structure.json`
   tenga `doc_id`, `version`, `date` y las páginas sin texto. El texto de las secciones no
   cambia: el análisis sale de la caché y no se pregunta nada al modelo.
+- El índice se reconstruye una vez (`index-2`): cambian los fragmentos con listas o pasos
+  numerados (que ahora conservan sus líneas) y el texto que se embebe de cada requisito.
+  Los textos que no cambian salen de la caché de vectores; el resto se embebe otra vez.
+- `[index] kinds` tiene `table` por defecto. Si tu `atlas.toml` da su propia lista, añade
+  `"table"` para que las tablas tengan registro propio.
+- Encender `tables` en una fuente vuelve a procesar sus documentos, y como el texto de las
+  secciones con tablas cambia, la caché de análisis no les sirve: con `analysis = "llm"`, esas
+  secciones vuelven al modelo una vez. Las demás salen de la caché.
 - Las cadenas de la columna `documents` de `matrix` y de `gaps` llevan versión y página
   (`spec.pdf §1 Tracks p.1`); las secciones de `trace`, `trace_code` e `impact` tienen dos
   claves más (`version`, `page_start`).

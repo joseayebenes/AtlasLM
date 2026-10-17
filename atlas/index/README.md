@@ -19,9 +19,17 @@ El paso `index.documents` indexa cada documento procesado a varias granularidade
 - resúmenes de sección;
 - fragmentos de unos `chunk_chars` caracteres con solape, cada uno con la ruta y el
   resumen de su sección;
-- requisitos;
+- requisitos, con la ruta de su sección;
 - definiciones;
-- pendientes.
+- pendientes;
+- tablas (con `[[sources.docs]] tables = true`, o las de un Markdown): cada una con la ruta
+  de su sección y su pie («Table 3 - Timing»), y fuera de los fragmentos.
+
+Los fragmentos se cortan por párrafos y frases. `reflow` une las líneas que el PDF parte
+dentro de un párrafo, salvo antes de una viñeta, un paso numerado («1.», «2)») o una fila de
+tabla, que conservan su línea. Un fragmento nunca parte una tabla por dentro de una fila: una
+tabla mayor que `chunk_chars` se divide por filas y cada parte repite la cabecera, y el solape
+entre fragmentos nunca toma un trozo de tabla.
 
 Los requisitos de DOORS también se indexan (paso `index.requirements`): cada módulo es un
 documento más del índice, con el nombre del módulo. Cada requisito es un registro de tipo
@@ -40,7 +48,8 @@ removes a track from the database» encuentra `tracks.delete_track` aunque no us
 palabras. Un fichero cambiado solo reindexa su unidad, y de ella solo se embeben los textos
 que cambian.
 
-`[index] kinds` elige qué se indexa; sin `code_doc`, el código no entra en el índice.
+`[index] kinds` elige qué se indexa; sin `code_doc`, el código no entra en el índice, y sin
+`table` las tablas van en los fragmentos.
 
 ## Embeddings
 

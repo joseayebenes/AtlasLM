@@ -113,7 +113,8 @@ class DocTools:
         at most a few of each document unless `document` is given). `document` limits it to
         one document, DOORS module or code unit (its name or part of its title); `kind` to
         one kind of passage: chunk | section_summary | requirement | definition | open_issue |
-        overview | code_doc (a subprogram, type or variable with its comment and code). Each
+        overview | code_doc (a subprogram, type or variable with its comment and code) | table
+        (a table of a document, with its caption). Each
         result has its citation, its document and section (for get_section; for a DOORS
         requirement, get_requirement with its ref; for code, read_source or trace_code with
         its ref) and its text."""

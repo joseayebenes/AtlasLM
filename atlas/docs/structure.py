@@ -13,7 +13,8 @@ from collections import Counter
 from pathlib import Path
 
 __all__ = ["METADATA_KEYS", "STRUCTURES", "clean_headers", "detect_sections", "diagnose_headings",
-           "document_metadata", "document_title", "prepare_sections", "sections_from_bookmarks", "split_text"]
+           "document_metadata", "document_title", "prepare_sections", "sections_from_bookmarks", "split_row",
+           "split_text", "tables_in"]
 
 STRUCTURES = ("auto", "bookmarks", "headings", "size")
 
@@ -107,6 +108,42 @@ def _repeated(pages: list[str]) -> set[str]:
         in_body.update(_norm(x) for x in lines[3:-3])
     threshold = max(3, int(len(pages) * 0.3))
     return {l for l, n in at_edges.items() if n >= threshold and in_body[l] < n}
+
+
+# A table as the pymupdf extractor writes it with tables = true (and as Markdown has it):
+# "| c1 | c2 |" rows, one per line, the header first and "|---|---|" after it
+TABLE_ROW = re.compile(r"^\|.*\|$")
+TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+$")
+CAPTION = re.compile(r"(?i)^(?:table|tabla)\s+(?:[A-Z][.-]?)?\d")       # "Table 3", "Tabla A.1"
+
+
+def split_row(line: str) -> list[str]:
+    """The cells of a "| c1 | c2 |" row ("\\|" is a | inside a cell)."""
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line.strip()[1:-1])]
+
+
+def tables_in(text: str) -> list[dict]:
+    """The Markdown tables of a text: each one with `header` (the cells of its first row),
+    `rows` (the cells of the others), `text` (its lines) and `caption`, the line just
+    before or just after it (blank lines aside) if it starts with "Table n" or "Tabla n"."""
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        if not TABLE_ROW.match(lines[i].strip()):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and TABLE_ROW.match(lines[j].strip()):
+            j += 1
+        rows = [l.strip() for l in lines[i:j]]
+        cells = [split_row(r) for r in rows if not TABLE_RULE.match(r)]
+        before = next((l.strip() for l in reversed(lines[:i]) if l.strip()), "")
+        after = next((l.strip() for l in lines[j:] if l.strip()), "")
+        caption = before if CAPTION.match(before) else after if CAPTION.match(after) else ""
+        if cells:
+            out.append({"header": cells[0], "rows": cells[1:], "text": "\n".join(rows), "caption": caption})
+        i = j
+    return out
 
 
 METADATA_KEYS = ("doc_id", "version", "date")

@@ -181,3 +181,43 @@ def test_a_scanned_pdf_is_an_error_and_goes_through_ocr_command(scanned_pdf, doc
         preview(scanned_pdf, missing)
     with pytest.raises(ValueError, match="ocr_command"):
         DocsOptions(ocr_command=["ocrmypdf", "{file}"])
+
+
+def test_tables_as_markdown_rows_and_requirements_per_row(tables_pdf, tmp_path, fake_llm, fake_chats):
+    from atlas.docs import read_document
+    rows = ["| ID | Requirement | Verification |", "|---|---|---|",
+            "| ICD-0001 | The TMF shall send track updates every 500 ms. | Test |",
+            "| ICD-0002 | The TMF shall raise an alarm within 2 s. | Analysis |",
+            "| ICD-0003 | The TMF shall log every message. | Inspection |"]
+    text, info = read_document(tables_pdf, config={"tables": True})
+    assert "\n".join(rows) in text and info["tables"] == 1
+    assert "Table 1 - Interface requirements\n\n| ID |" in text                 # the caption stays before it
+    assert "| ID |" not in read_document(tables_pdf)[0]                          # tables = false: as before
+
+    columns = {"id": "ID", "text": "Requirement"}
+    data = process_document(tables_pdf, tmp_path / "regex", DocsOptions(analysis="regex", tables=True,
+                                                                       table_requirements=columns))
+    assert [(r["id"], r["text"], r["status"]) for r in data["requirements"]] == [
+        ("ICD-0001", "The TMF shall send track updates every 500 ms.", "literal"),
+        ("ICD-0002", "The TMF shall raise an alarm within 2 s.", "literal"),
+        ("ICD-0003", "The TMF shall log every message.", "literal")]
+    assert data["structure_info"]["tables"] == 1 and preview(tables_pdf, DocsOptions(tables=True))["tables"] == 1
+    assert process_document(tables_pdf, tmp_path / "none", DocsOptions(analysis="regex"))["requirements"] == []
+
+    # with the model, the rows complete what it found (the fake one gives the "shall" sentences, without IDs)
+    data = process_document(tables_pdf, tmp_path / "llm", DocsOptions(tables=True, table_requirements=columns),
+                            llm=fake_llm[0])
+    assert [r["id"] for r in data["requirements"] if r["id"]] == ["ICD-0001", "ICD-0002", "ICD-0003"]
+    with pytest.raises(ValueError, match="table_requirements"):
+        DocsOptions(table_requirements={"id": "ID"})
+
+
+def test_table_requirements_and_add_requirements():
+    from atlas.docs.analysis import add_requirements, table_requirements
+    body = ("Table 2 - More\n\n| Req. ID | Text | Note |\n|---|---|---|\n| SRS-0010 (new) | The A shall b. | x |\n"
+            "| | | only a note |\n| SRS-0011 | The C shall \\| d. |\n\n| Other | Table |\n|---|---|\n| a | b |")
+    reqs = table_requirements(body, {"id": "req. id", "text": "TEXT"})
+    assert reqs == [{"id": "SRS-0010", "text": "The A shall b."}, {"id": "SRS-0011", "text": "The C shall | d."}]
+    analysis = {"requirements": [{"id": "SRS-0011", "text": "other text"}, {"id": "", "text": "The A shall b."}]}
+    assert add_requirements(analysis, reqs)["requirements"] == [{"id": "SRS-0011", "text": "other text"},
+                                                                {"id": "SRS-0010", "text": "The A shall b."}]

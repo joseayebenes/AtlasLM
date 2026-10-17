@@ -6,6 +6,8 @@ documents, code or DOORS:
   samples/docs/spec_without_bookmarks.pdf   the same one, without bookmarks and with split numbers
   samples/docs/hmi_manual.md                a Markdown file with requirements
   samples/scanned/scanned_page.pdf          a page that is only an image (a scan without OCR)
+  samples/tables/interface_tables.pdf       requirements in a table with borders, a caption, a list
+                                            and numbered steps
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
@@ -93,6 +95,46 @@ def scanned() -> None:
     doc.new_page(width=595, height=842).insert_image(pymupdf.Rect(0, 0, 595, 842), pixmap=pix)
     doc.save(ROOT / "scanned" / "scanned_page.pdf")
     print("created", ROOT / "scanned" / "scanned_page.pdf")
+
+
+def tables() -> None:
+    """A PDF whose requirements are the rows of a table with borders (ID | Requirement |
+    Verification), one of them in two lines, with its caption above, and a list and
+    numbered steps around it. Outside samples/docs, like scanned()."""
+    import pymupdf
+    (ROOT / "tables").mkdir(parents=True, exist_ok=True)
+    doc = pymupdf.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_text((72, 60), "Interface Control Document", fontsize=16)
+    page.insert_text((72, 90), "Doc. TMS-ICD-002  Issue 1", fontsize=8)
+    page.insert_text((72, 130), "1 Interface requirements", fontsize=13)
+    y = 155
+    for line in ("The interface carries:", "- track updates", "- alarms"):
+        page.insert_text((72, y), line, fontsize=10)
+        y += 14
+    page.insert_text((72, y + 10), "Table 1 - Interface requirements", fontsize=10)
+    rows = [("ID", "Requirement", "Verification"),
+            ("ICD-0001", ["The TMF shall send track updates", "every 500 ms."], "Test"),
+            ("ICD-0002", ["The TMF shall raise an alarm within 2 s."], "Analysis"),
+            ("ICD-0003", ["The TMF shall log every message."], "Inspection")]
+    xs, top = [72, 160, 430, 523], y + 22
+    for row in rows:
+        lines = row[1] if isinstance(row[1], list) else [row[1]]
+        height = 8 + 13 * len(lines)
+        for k in range(3):
+            page.draw_rect(pymupdf.Rect(xs[k], top, xs[k + 1], top + height), color=(0, 0, 0), width=0.7)
+        page.insert_text((xs[0] + 4, top + 14), row[0], fontsize=10)
+        for n, text in enumerate(lines):
+            page.insert_text((xs[1] + 4, top + 14 + 13 * n), text, fontsize=10)
+        page.insert_text((xs[2] + 4, top + 14), row[2], fontsize=10)
+        top += height
+    y = top + 30
+    for line in ("2 Start-up", "To start the interface:", "1. Power the unit on.", "2. Wait for the green light.",
+                 "3. Send the first track update."):
+        page.insert_text((72, y), line, fontsize=13 if line[0] == "2" and "Start" in line else 10)
+        y += 14 if "Start" not in line else 22
+    doc.save(ROOT / "tables" / "interface_tables.pdf")
+    print("created", ROOT / "tables" / "interface_tables.pdf")
 
 
 def ada() -> None:
@@ -239,5 +281,6 @@ if __name__ == "__main__":
     try:
         pdfs()
         scanned()
+        tables()
     except ImportError:
         print("pymupdf not installed: PDFs not generated (pip install pymupdf)")

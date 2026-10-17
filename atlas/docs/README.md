@@ -35,6 +35,14 @@ model») antes de escribir nada, la unidad de `docs.process` queda en error y `a
 lo avisa. Con `ocr_command` en la fuente, esos PDF se leen de una copia pasada por OCR que se
 guarda en `<workspace>/docs/.ocr` por el hash del PDF y de la orden.
 
+Con `tables = true` en la fuente, pymupdf busca las tablas de cada página
+(`page.find_tables()`) y los bloques que caen dentro de una (la mayor parte de su área)
+se sustituyen por sus filas en Markdown, una por línea y con `|---|` tras la cabecera, en
+el lugar del primero. `table_requirements = { id = "ID", text = "Requirement" }` saca un
+requisito de cada fila (`analysis.table_requirements`), sin modelo con `regex` y como
+complemento de lo que saca el modelo con `llm`. Las tablas sin bordes no siempre se
+encuentran: `atlas sections` dice cuántas tablas salieron de cada documento.
+
 Para volver a pdfminer: `[plugins] disabled = ["extractor:pymupdf"]`. El extractor forma
 parte de la huella de `docs.process`, así que al cambiarlo los PDF se vuelven a procesar, y
 como su texto cambia, sus secciones vuelven al modelo. `atlas sections` dice qué extractor
@@ -59,6 +67,8 @@ procesarlos:
 | `lang` | `"Spanish"` | idioma de los resúmenes (vacío: el del documento) |
 | `doc_id_regex`, `version_regex`, `date_regex` | `'Doc\.\s+(\S+)'` | código, versión y fecha del documento, de sus cabeceras, sus dos primeras páginas o los metadatos del PDF |
 | `authority` | `1` | autoridad del grupo (1 = normativo); solo la usa el grafo |
+| `tables` | `true` | las tablas de los PDF como filas Markdown (apagado por defecto) |
+| `table_requirements` | `{ id = "ID", text = "Requirement" }` | un requisito por fila de las tablas con esas columnas |
 | `ocr_command` | `["ocrmypdf", "--skip-text", "{file}", "{out}"]` | OCR de los PDF con páginas sin texto, sobre una copia |
 
 La referencia completa está en la [guía de configuración](../../docs/configuracion.md).
@@ -117,6 +127,6 @@ print(data["requirements"][0])
 ## Pruebas
 
 `tests/test_docs_structure.py`, `test_docs_analysis.py`, `test_docs_process.py` (caché,
-reintentos, división de secciones cortadas, Ctrl+C, caché dañada, PDF escaneados y
-`ocr_command`) y `test_docs_legacy.py`
+reintentos, división de secciones cortadas, Ctrl+C, caché dañada, PDF escaneados,
+`ocr_command` y tablas) y `test_docs_legacy.py`
 (mismo resultado que `pdf_struct.py`).

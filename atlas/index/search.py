@@ -207,7 +207,7 @@ def _without_overlap(previous: str, chunk: str) -> str:
 
 def whole_sources(store: IndexStore, doc: str) -> list[dict]:
     """A document as sources, one per section and in its order: the text of its chunks
-    without their overlap; in a DOORS module, its requirements and information objects;
+    without their overlap, then its tables; in a DOORS module, its requirements and information objects;
     in a code unit, its elements. A section without any, its summary."""
     sections: dict[str, list[dict]] = {}
     for r in store.document_records(doc):
@@ -216,8 +216,9 @@ def whole_sources(store: IndexStore, doc: str) -> list[dict]:
     document = not doc.startswith((DOORS_PREFIX, CODE_PREFIX))
     sources = []
     for records in sections.values():
-        if document:            # the chunks hold the whole text, requirements included
-            body = sorted((r for r in records if r["kind"] == "chunk"), key=lambda r: r["seq"])
+        if document:            # the chunks hold the whole text, requirements included, and the tables
+            body = sorted((r for r in records if r["kind"] == "chunk"), key=lambda r: r["seq"]) + \
+                sorted((r for r in records if r["kind"] == "table"), key=lambda r: r["seq"])
         else:                   # in the order of the module or the unit
             body = [r for r in records if r["kind"] in ("chunk", "requirement", "code_doc")]
         body = body or [r for r in records if r["kind"] in ("section_summary", "requirement")]

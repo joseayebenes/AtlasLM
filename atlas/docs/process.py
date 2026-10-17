@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Iterable
 
@@ -54,6 +54,8 @@ class DocsOptions:
     doc_id_regex: str = ""          # code, version and date of the document (group 1), from its headers
     version_regex: str = ""         # and first two pages: r"Doc\.\s+(\S+)", r"\bIssue\s+(\w+)"
     date_regex: str = ""
+    tables: bool = False            # PDF tables as Markdown rows (page.find_tables)
+    table_requirements: dict = field(default_factory=dict)     # {"id": "ID", "text": "Requirement"}: one per row
 
     def __post_init__(self):
         if self.analysis not in an.ANALYSES:
@@ -69,6 +71,10 @@ class DocsOptions:
             raise ValueError('ocr_command must be a list of strings with "{file}" and "{out}", '
                              'such as ["ocrmypdf", "--skip-text", "{file}", "{out}"]')
         self.ocr_command = list(self.ocr_command)
+        if self.table_requirements and (set(self.table_requirements) != {"id", "text"} or not all(
+                isinstance(v, str) and v.strip() for v in self.table_requirements.values())):
+            raise ValueError('table_requirements must name the columns of the ID and of the text, such as '
+                             '{ id = "ID", text = "Requirement" }')
         for key in ("req_regex", "heading_regex", "doc_id_regex", "version_regex", "date_regex"):
             try:
                 re.compile(getattr(self, key))
@@ -132,11 +138,12 @@ def extract(path: Path, options: DocsOptions, disabled: Iterable[str], ocr_dir: 
     is one (into `ocr_dir`): then the text is that of the copy, and `ocr` in the info says
     which file it is. Without it, or if after it most pages still have no text, the info
     has `scanned` (the warning)."""
-    text, info = read_document(path, disabled)
+    config = {"tables": options.tables}
+    text, info = read_document(path, disabled, config)
     pdf = path
     if info.get("pages_without_text") and options.ocr_command and path.suffix.lower() == ".pdf":
         pdf = ocr_copy(path, options.ocr_command, ocr_dir)
-        text, info = read_document(pdf, disabled)
+        text, info = read_document(pdf, disabled, config)
         info["ocr"] = str(pdf)
     if scanned(info):
         info["scanned"] = scanned(info)
@@ -167,7 +174,7 @@ def preview(path: str | Path, options: DocsOptions | None = None, disabled: Iter
                                     pdf, options.structure, info)
     out = {"title": document_title(text, path), **metadata, "chars": len(text), "removed_lines": removed,
            "extractor": extractor_for(path, disabled).name,
-           **{k: extracted[k] for k in ("pages", "pages_without_text", "scanned", "ocr") if k in extracted},
+           **{k: extracted[k] for k in ("pages", "pages_without_text", "scanned", "ocr", "tables") if k in extracted},
            "structure": info["source"],
            "subdivided": info["subdivided"], "oversized": info["oversized"],
            "sections": [{"id": s["id"], "pages": pages(s), "chars": len(s["body"]), "path": s["path"],
@@ -219,7 +226,7 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
     metadata = _metadata(raw, extracted, options)
     text, removed = clean_headers(raw)
     doc_title = title or document_title(text, path)
-    info: dict = {k: extracted[k] for k in ("pages", "pages_without_text", "ocr") if extracted.get(k)}
+    info: dict = {k: extracted[k] for k in ("pages", "pages_without_text", "ocr", "tables") if extracted.get(k)}
     sections = prepare_sections(text, options.max_chars, options.min_chars, options.heading_regex or None,
                                 pdf, options.structure, info)
     log.info("'%s': %d chars, %d sections; structure: %s%s%s", doc_title, len(text), len(sections),
@@ -242,10 +249,17 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
             pattern = re.compile(options.req_regex)
             for s in sections:
                 s["analysis"] = an.normalize({"requirements": an.regex_requirements(s["body"], pattern)})
+                if options.table_requirements:
+                    s["analysis"] = an.add_requirements(s["analysis"],
+                                                        an.table_requirements(s["body"], options.table_requirements))
         else:
             cache = Path(cache_dir) if cache_dir else out.parent / ".cache"
             errors = _analyze_all(llm, sections, doc_title, options.lang, cache, tmp / "_llm_failures", workers,
                                   stop)
+            if options.table_requirements:      # the rows the model skipped
+                for s in sections:
+                    s["analysis"] = an.add_requirements(s["analysis"],
+                                                        an.table_requirements(s["body"], options.table_requirements))
             _check(stop, doc_title)
             try:
                 doc_overview = an.overview(llm, sections, doc_title, options.lang, options.max_chars, cache)

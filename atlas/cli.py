@@ -248,7 +248,7 @@ def docs_step(ctx) -> Step | None:
                                 stop=ctx.stopping, ocr_dir=root / ".ocr")
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"],
-                   **{k: data["structure_info"][k] for k in ("pages_without_text", "ocr")
+                   **{k: data["structure_info"][k] for k in ("pages_without_text", "ocr", "tables")
                       if data["structure_info"].get(k)}}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
         if data["errors"]:
@@ -272,7 +272,7 @@ class IndexIncomplete(RuntimeError):
     error so that the next run embeds what is missing."""
 
 
-INDEX_VERSION = "index-1"   # change it when the records or the index tables change
+INDEX_VERSION = "index-2"   # change it when the records or the index tables change
 
 
 def index_options(ctx) -> dict:
@@ -652,6 +652,7 @@ def sections(cfg: Config) -> int:
             elif p.get("pages_without_text"):
                 print(f"  ! {p['pages_without_text']} of {p['pages']} pages have no text (scanned?)")
             print(f"  extractor: {p['extractor']}" + (" (after ocr_command)" if p.get("ocr") else "")
+                  + (f"; {p['tables']} tables as Markdown rows" if p.get("tables") else "")
                   + f"; structure: {p['structure']}"
                   + (f"; {p['subdivided']} large sections subdivided by their headings" if p["subdivided"] else "")
                   + (f"; {p['removed_lines']} header/footer lines removed" if p["removed_lines"] else ""))

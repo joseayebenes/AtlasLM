@@ -55,6 +55,7 @@ import fnmatch
 import json
 import logging
 import math
+import re
 import shutil
 import sys
 import threading
@@ -149,6 +150,24 @@ def time_span(low: float, high: float) -> str:
 DOORS_DISPLAY_KEYS = ("attributes", "max_age_days")     # [sources.doors]: change what is shown, read nothing again
 
 
+def convention(ctx) -> dict:
+    """[sources.doors.convention]: how IDs match between DOORS, the code and the documents."""
+    return ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {})
+
+
+def id_regex(ctx) -> str:
+    """The expression of an ID inside a tag or a statement (atlas.doors.id_regex), checked."""
+    from atlas.doors import id_regex as of
+    ids = of(convention(ctx))
+    if ids:
+        try:
+            re.compile(ids)
+        except re.error as e:
+            raise ConfigError(f"[sources.doors.convention] id_regex (or id_pattern) is not a valid "
+                              f"regular expression: {e}") from None
+    return ids
+
+
 def doors_step(ctx) -> Step | None:
     sd = ctx.cfg["sources"].get("doors")
     if not sd or not sd.get("enabled", True):
@@ -201,11 +220,12 @@ def code_step(ctx) -> Step | None:
     sc = ctx.cfg["sources"].get("code")
     if not sc or not sc.get("enabled", True):
         return None
+    ids = id_regex(ctx)                                          # the IDs inside a tag
     analyzers = {}
     resolved = {**sc, "roots": [str(ctx.cfg.resolve(r)) for r in sc.get("roots", [])]}
     for lang in sc.get("languages", ["ada"]):
         try:
-            analyzers[lang] = plugins.get("code_analyzer", lang, ctx.disabled)(resolved)
+            analyzers[lang] = plugins.get("code_analyzer", lang, ctx.disabled)({**resolved, "id_regex": ids} if ids else resolved)
         except LookupError as e:
             raise ConfigError(str(e)) from None
     by_ext = {ext: a for a in analyzers.values() for ext in a.extensions}
@@ -238,7 +258,7 @@ def code_step(ctx) -> Step | None:
         name="code.parse",
         units=files,
         fingerprint=lambda ctx, f: f"{sha256_file(ctx.cfg.resolve(f))}|{by_ext[Path(f).suffix.lower()].version()}|"
-                                   f"{ctx.cfg.fingerprint('sources.code')}",
+                                   f"{ctx.cfg.fingerprint('sources.code')}" + (f"|{ids}" if ids else ""),
         run=run,
         prune=lambda ctx, f: ctx.store.delete_code_unit(f),
     )
@@ -300,7 +320,9 @@ def doc_files(ctx, source: dict) -> list[Path]:
 
 
 def docs_step(ctx) -> Step | None:
-    sources = doc_sources(ctx)
+    from dataclasses import replace
+    ids = id_regex(ctx)                # the IDs of the requirements that a regex analysis finds
+    sources = [(d, replace(o, id_regex=ids) if ids and o.analysis == "regex" else o) for d, o in doc_sources(ctx)]
     if not sources:
         return None
     from atlas.docs import extractor_for, pending_requests, process_document
@@ -332,7 +354,8 @@ def docs_step(ctx) -> Step | None:
         f = ctx.cfg.resolve(f)
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
                 f"{extractor_for(f, ctx.disabled).name}|"
-                + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
+                + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else "")
+                + (f"|{options.id_regex}" if options.id_regex else ""))
 
     def out_dir(ctx, unit: str) -> Path:
         """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it
@@ -605,7 +628,7 @@ def _exports(store: Store) -> dict[str, dict]:
     return {m: {"exported_at": i["exported_at"], "source": i["source"]} for m, i in store.modules_info().items()}
 
 
-GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
+GRAPH_VERSION = "graph-4"   # change it when the building of the graph changes (3: overloads, 4: uses, aliases)
 GRAPH_EXPORTS = ("graphml", "json")
 
 
@@ -613,7 +636,7 @@ def graph_step(ctx) -> Step:
     """One unit per part of the graph (its origin): "code" (code.parse), "doors"
     (doors.requirements) and "docs" (docs.process). Each one is rebuilt whole (seconds)
     when what it is built from changes; then the whole graph is exported."""
-    from atlas.doors import normalize_id
+    from atlas.doors import canonical_of, normalize_id
     from atlas.graph import (GraphStore, build_code_graph, build_docs_graph, build_doors_graph, code_names,
                              document_names, export_graph, find_communities)
     from atlas.graph.sources import graph_convention
@@ -623,13 +646,19 @@ def graph_step(ctx) -> Step:
         raise ConfigError(f"[graph] unknown exports {unknown} (valid: {', '.join(GRAPH_EXPORTS)})")
     folder = ctx.cfg.workspace / "graph"
     test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
-    convention = (ctx.cfg["sources"].get("doors") or {}).get("convention") or {}
-    id_normalize = convention.get("id_normalize", "upper")
-    normalize = lambda rid: normalize_id(rid, id_normalize)
+    conv = convention(ctx)
+    id_normalize = conv.get("id_normalize", "upper")
+    try:                               # code and documents meet DOORS in the canonical form; DOORS keeps its IDs
+        canonical = canonical_of(conv)
+    except ValueError as e:
+        raise ConfigError(f"[sources.doors.convention] {e}") from None
+    normalize = lambda rid: normalize_id(rid, id_normalize, canonical)
+    ids = id_regex(ctx)
     # only what changes the graph built: the matrix formats ([graph] matrix_formats...) do not
     built = {k: v for k, v in ctx.cfg["graph"].items() if k in GRAPH_BUILD_KEYS}
     settings = (f"{sha256_text(json.dumps(built, sort_keys=True, ensure_ascii=False, default=str))[:16]}|"
-                f"{test_patterns}|{id_normalize}|{GRAPH_VERSION}")
+                f"{test_patterns}|{id_normalize}|{json.dumps(conv.get('id_canonical') or {}, sort_keys=True)}|"
+                f"{ids}|{GRAPH_VERSION}")
 
     def documents(ctx) -> list[dict]:
         docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
@@ -647,7 +676,7 @@ def graph_step(ctx) -> Step:
         if unit == "code":
             data = ctx.store.code_units()
         elif unit == "doors":
-            data = [ctx.store.requirements(), ctx.store.links(), graph_convention(convention), _exports(ctx.store)]
+            data = [ctx.store.requirements(), ctx.store.links(), graph_convention(conv), _exports(ctx.store)]
         else:
             docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
             data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
@@ -668,8 +697,9 @@ def graph_step(ctx) -> Step:
                 stats["communities"] = len(set(groups.values()))
             return G, stats
         if unit == "doors":
-            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), convention, modules=_exports(ctx.store))
-        return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), conv, modules=_exports(ctx.store))
+        return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize,
+                                re.compile(ids) if ids else None)
 
     def export(store: GraphStore) -> None:
         for old in [*folder.glob("atlas.*"), *folder.glob("code.*")]:        # code.*: before graph-2
@@ -934,6 +964,13 @@ def sections(cfg: Config, as_json: bool = False) -> int:
     return 0
 
 
+def id_shape_text(shape: dict) -> str:
+    """'SRS-NNNN' for a shape of atlas.doors.id_shapes; 'other (TBD)' for the IDs without digits."""
+    if shape["prefix"] == "other" and not shape["digits"]:
+        return f"other ({shape['example']})"
+    return f"{shape['prefix']}{shape['separator']}{'N' * shape['digits']}"
+
+
 def graph(cfg: Config, as_json: bool = False) -> int:
     """The report of the last build of every part of the graph, and of its gaps."""
     from atlas.graph import GraphStore, KnowledgeGraph
@@ -953,9 +990,14 @@ def graph(cfg: Config, as_json: bool = False) -> int:
         print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} "
               f"subprograms, {s['tests']} tests, {s['types']} types, {s['variables']} variables, {s['externals']} "
               f"externals, {s['requirements']} requirements) from {s['files']} files ({s['test_files']} of tests)")
+        if s.get("subprogram_kinds"):
+            print("subprograms and tests by kind: " + ", ".join(f"{n} {k}" for k, n in s["subprogram_kinds"].items())
+                  + (f" | overloaded names (one node each): {s['overloaded']}" if s.get("overloaded") else ""))
         c = s["edges_by_kind"]
         print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
-              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}"
+              + (f" | resolved through aliases: {s['calls_through_aliases']}, through use clauses: "
+                 f"{s['calls_through_uses']}" if "calls_through_aliases" in s else ""))
         print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
               f"without a requirement: {s['subprograms_without_requirement']} | "
               f"unresolved calls: {s['unresolved_calls']}"
@@ -982,6 +1024,11 @@ def graph(cfg: Config, as_json: bool = False) -> int:
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
+    shapes = {o: b["id_shapes"] for o, b in builds.items() if b.get("id_shapes")}
+    if shapes:
+        print("\nID shapes as written, by origin (N = a digit; how many times each one is written):")
+        for origin, items in shapes.items():
+            print(f"  {origin:6s} " + ", ".join(f"{x['count']} {id_shape_text(x)}" for x in items))
     gaps = g.gaps()
     print("\ntraceability gaps (atlas matrix MODULE for the detail):")
     for key, value in gaps.items():

@@ -76,9 +76,106 @@ DEFAULT_CONVENTION = {
 }
 
 
-def normalize_id(raw: str, mode: str = "upper") -> str:
-    s = " ".join(str(raw).split()).replace(" ", "")
-    return s.upper() if mode == "upper" else s
+def normalize_id(raw: str, mode: str = "upper", canonical: "Canonical | None" = None) -> str:
+    """The form of an ID in the graph: spaces removed and, with `mode` "upper", in upper
+    case. With `canonical` (id_canonical, for the code and the documents, never for DOORS),
+    a variant that matches its regex is rewritten with its format: "srs 4" -> "SRS-0004"."""
+    s = " ".join(str(raw).split())
+    if mode == "upper":
+        s = s.upper()
+    if canonical is not None:
+        for form in (s, s.replace(" ", "")):        # "SRS 0004", and "SRS - 0004" without spaces
+            rewritten = canonical.apply(form)
+            if rewritten is not None:
+                return rewritten
+    return s.replace(" ", "")
+
+
+class _AnyValue:
+    """Takes any format spec: to check the format of id_canonical against its groups."""
+    def __format__(self, spec: str) -> str:
+        return ""
+
+
+class Canonical:
+    """[sources.doors.convention] id_canonical = { regex = "^(SRS|SSS)[-_ ]?0*(\\d+)$",
+    format = "{1}-{2:04d}" }: `format` is a str.format with the groups of `regex` by number
+    ({0} the whole ID); a group of digits is a number, so {2:04d} pads it with zeros."""
+
+    def __init__(self, spec: dict):
+        if not isinstance(spec, dict) or not spec.get("regex") or not spec.get("format"):
+            raise ValueError("id_canonical needs `regex` and `format`")
+        unknown = sorted(set(spec) - {"regex", "format"})
+        if unknown:
+            raise ValueError(f"id_canonical: unknown keys {unknown} (valid: regex, format)")
+        try:
+            self.regex = re.compile(spec["regex"])
+        except re.error as e:
+            raise ValueError(f"id_canonical regex is not a valid regular expression: {e}") from None
+        self.format = spec["format"]
+        try:                                       # a format that names a group the regex lacks fails now
+            self.format.format(*[_AnyValue()] * (self.regex.groups + 1))
+        except (IndexError, KeyError, ValueError) as e:
+            raise ValueError(f"id_canonical format {self.format!r} does not fit the groups of its regex: "
+                             f"{e!r}") from None
+
+    def apply(self, rid: str) -> str | None:
+        m = self.regex.fullmatch(rid)
+        if not m:
+            return None
+        values = [int(g) if g and g.isdigit() else (g or "") for g in m.groups()]
+        try:
+            return self.format.format(m.group(0), *values)
+        except (IndexError, KeyError, ValueError):     # a group that is not a number for {n:04d}
+            return None
+
+
+def canonical_of(convention: dict | None) -> Canonical | None:
+    """The Canonical of [sources.doors.convention] id_canonical, or None."""
+    spec = (convention or {}).get("id_canonical")
+    return Canonical(spec) if spec else None
+
+
+def id_regex(convention: dict | None) -> str:
+    """The expression that finds IDs inside a text (the rest of a `Req:` line, the ID that a
+    document gives): [sources.doors.convention] id_regex, or else id_pattern without its
+    anchors, case-insensitive and not inside a longer word ("SRS-00045" is not SRS-0004).
+    "" when there is neither: the tags are then read token by token, as before."""
+    c = convention or {}
+    if c.get("id_regex"):
+        return c["id_regex"]
+    pattern = (c.get("id_pattern") or "").strip()
+    if not pattern:
+        return ""
+    flags = re.match(r"\(\?[aiLmsux]+\)", pattern)          # "(?i)^SRS-..." keeps its flags first
+    head = flags.group(0) if flags else ""
+    pattern = pattern[len(head):]
+    if pattern.startswith("^"):
+        pattern = pattern[1:]
+    if pattern.endswith("$") and not pattern.endswith("\\$"):
+        pattern = pattern[:-1]
+    return rf"(?i){head}(?<![A-Za-z0-9])(?:{pattern})(?![A-Za-z0-9])"
+
+
+ID_SHAPE = re.compile(r"^(.*?[A-Za-z])([^A-Za-z0-9]*)(\d+)$")
+
+
+def id_shapes(ids: Iterable[str], limit: int = 10) -> list[dict]:
+    """The forms of a set of IDs as they are written: prefix, separator and width of the
+    digits, with how many have each form and an example ("SRS-0004" and "srs-4" are two
+    forms). An ID that does not end in digits has the form "other"."""
+    count: dict[tuple, list] = {}
+    for rid in ids:
+        rid = str(rid).strip()
+        if not rid:
+            continue
+        m = ID_SHAPE.match(rid)
+        key = (m.group(1), m.group(2), len(m.group(3))) if m else ("other", "", 0)
+        entry = count.setdefault(key, [0, rid])
+        entry[0] += 1
+    shapes = [{"prefix": k[0], "separator": k[1], "digits": k[2], "count": n, "example": example}
+              for k, (n, example) in count.items()]
+    return sorted(shapes, key=lambda x: (-x["count"], x["prefix"], x["separator"], x["digits"]))[:limit]
 
 
 def hash_requirement(r: Requirement) -> str:

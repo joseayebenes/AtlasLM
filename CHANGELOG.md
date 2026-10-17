@@ -180,6 +180,39 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   de construcción de cada parte del grafo y, con `[graph] code_revision = true` y git, la
   revisión del código (`git rev-parse HEAD` al construir el grafo del código). `atlas matrix`
   la escribe en la cabecera del Markdown y en un `matrix-<módulo>.json`.
+- `[sources.doors.convention] id_regex`: la expresión de un ID dentro de un texto. Una
+  etiqueta `Req:` del código da todos los IDs del resto de su línea, y un requisito de un
+  documento (`analysis = "regex"`) los que se escriben seguidos al principio. Si falta, sale
+  de `id_pattern` sin `^` ni `$`, sin distinguir mayúsculas y sin casar dentro de una
+  palabra más larga; sin ninguna de las dos, las etiquetas se leen como antes. La sonda del
+  análisis de 2026-10: `Req: SRS-0004 and SRS-0005` daba solo `SRS-0004`, `see SRS-0004`
+  nada y `SRS-0004 / SRS-0005` perdía el segundo; ahora dan los dos, uno y los dos. Los IDs
+  que da el modelo a un requisito de un documento («SRS-0004 / SRS-0005», «Req. SRS-0006»)
+  también se separan con ella al construir el grafo.
+- `[sources.doors.convention] id_canonical = { regex, format }`: las variantes de un ID en
+  el código y los documentos se escriben como en DOORS (`srs-4` y `SRS 0004` → `SRS-0004`
+  con `regex = "^(SRS|SSS)[-_ ]?0*(\\d+)$"` y `format = "{1}-{2:04d}"`). Los IDs de DOORS no
+  se reescriben.
+- `atlas graph` enseña las formas de ID por origen (código, DOORS, documentos): prefijo,
+  separador y número de cifras, con cuántos IDs tienen cada una. Están también en las
+  estadísticas de cada parte del grafo (`id_shapes`). Responden a qué convención sigue de
+  verdad el proyecto en cuanto se procese.
+- El analizador Ada lee los cuerpos de tareas (`task body`), entradas (`entry ... when`),
+  cuerpos protegidos y operadores (`function "+"`, que en el grafo se llama `"+"`). Antes no
+  daban subprograma, y sus llamadas y sus `Req:` desaparecían sin aviso; en un servidor Ada el
+  bucle principal suele ser una tarea. Cada subprograma lleva su `kind` (procedure, function,
+  operator, task, entry o protected) en el `CodeUnit` y en el nodo (`subprogram_kind`), y
+  `atlas graph` los cuenta. Las etiquetas de las entradas y subprogramas de un cuerpo
+  protegido son suyas, no del cuerpo protegido.
+- La resolución de llamadas del grafo de código sigue las cláusulas `use` (la lista `uses`
+  del `CodeUnit`), los renombramientos (`procedure Log renames Ada.Text_IO.Put_Line`,
+  `package TIO renames Ada.Text_IO`) y las instancias genéricas (`package Int_Stack is new
+  Stacks (Integer)`), que el analizador Ada guarda como `aliases` (nombre → destino). Un
+  nombre se busca en la propia unidad, después como lo que nombra su alias, después en los
+  paquetes de sus `use` y por último en todas. `Put` con `use Store` y `with` de dos paquetes
+  que lo tienen era una llamada ambigua a los dos; ahora va a `store.put`. Un alias de algo de
+  fuera es una llamada externa por su nombre completo (`ada.text_io.put_line`, no `log`).
+  `atlas graph` cuenta las llamadas resueltas por cada camino.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -261,6 +294,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   del código son ahora solo los nodos `test`, y la derivación (`derived`, la cobertura a
   través de los derivados y las subidas de `impact`) solo sigue los tipos de `derives`.
 - Las referencias (`references`) entre módulos ya no cuentan como derivación.
+- Dos subprogramas con el mismo nombre en un paquete (sobrecargas) eran un nodo con las
+  líneas y los requisitos del último. Ahora el nodo junta los requisitos y las llamadas de
+  todos, va de la primera línea del primero a la última del último y lleva `bodies` con las
+  líneas de cada uno; `read_source` los lee todos y el índice tiene el código de todos. Los
+  identificadores no cambian.
+- `T'Image (X)`, `T'Write (S, X)` y los demás atributos ya no cuentan `T` como una llamada.
+- Un nombre que declara la propia unidad (un tipo, una variable) va a ese elemento aunque
+  otra unidad tenga un subprograma con el mismo nombre; antes ganaba el subprograma de fuera.
 
 ### Quitado
 - `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.
@@ -319,6 +360,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
   lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
   hay peticiones al modelo ni a los embeddings.
+- El código se vuelve a analizar entero (`ada-3`, `python-2`) y el grafo se reconstruye
+  (`graph-4`), sin modelo. Pueden aparecer subprogramas nuevos (tareas, entradas,
+  operadores) con sus requisitos, desaparecer llamadas falsas a tipos con atributos y
+  dejar de ser ambiguas las llamadas que un `use` o un alias deciden.
+  `index.code` vuelve a embeber el código.
+- Con `id_pattern` (o `id_regex`) en `[sources.doors.convention]`, el código y los documentos
+  con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los
+  IDs que antes se perdían: pueden aparecer requisitos implementados nuevos y, en `gaps`,
+  IDs citados que no están en DOORS. El grafo se reconstruye entero.
 
 ## [0.2.0] — 2026-10-16
 

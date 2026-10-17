@@ -69,6 +69,96 @@ def test_same_names_in_two_packages_are_two_nodes(tmp_path):
     assert g.node("Run")["id"] == "gamma.run"
 
 
+def test_overloads_tasks_and_operators_in_the_graph(tmp_path):
+    """The probe file of test_code: two Run of one package are one node with both bodies,
+    the task and the operator are subprograms with their calls and requirements."""
+    from test_code import PROBE
+    (tmp_path / "probe.adb").write_bytes(PROBE)
+    (tmp_path / "probe.ads").write_text("package Probe is\n   -- Runs.\n   -- Req: SRS-0016\n   procedure Run;\n"
+                                        "   procedure Reset;\nend Probe;\n")
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    run = G.nodes["probe.run"]
+    assert (run["start_line"], run["end_line"], run["bodies"]) == (30, 41, [[30, 37], [38, 41]])
+    assert run["requirements"] == ["SRS-0014", "SRS-0015", "SRS-0016"] and run["doc"] == "Runs.\nReq: SRS-0016"
+    assert {v for _, v in G.out_edges("probe.run")} >= {"log", "put_line", "probe.reset", "SRS-0015", "SRS-0014"}
+    assert ("probe.main_loop", "probe.run") in _edges(G, "calls") and "probe.t" not in G and "t" not in G
+    assert (G.nodes["probe.main_loop"]["subprogram_kind"], G.nodes['probe."+"']["subprogram_kind"]) == \
+        ("task", "operator")
+    assert ("probe.main_loop", "SRS-0011") in _edges(G, "implements")
+    assert ('probe."+"', "SRS-0013") in _edges(G, "implements") and "bodies" not in G.nodes["probe.seize"]
+    assert stats["subprogram_kinds"] == {"entry": 1, "operator": 1, "procedure": 3, "protected": 1, "task": 1}
+    assert stats["overloaded"] == 1 and stats["subprograms"] == 7
+    g = KnowledgeGraph(G, root=tmp_path)
+    source = g.read_source("probe.run")
+    assert source["bodies"] == [{"file": str(tmp_path / "probe.adb"), "start": 30, "end": 37},
+                                {"file": str(tmp_path / "probe.adb"), "start": 38, "end": 41}]
+    assert source["source"].count("procedure Run") == 2 and "\n      ...\n" in source["source"]
+    assert "Main_Loop" not in source["source"]
+    assert g.summary("probe.main_loop")["subprogram_kind"] == "task" and "subprogram_kind" not in g.summary("probe.run")
+    assert [i["id"] for i in g.impact("probe.run")["items"]] == ["probe.main_loop"]
+    from dataclasses import asdict
+    from atlas.index import code_records                      # the index has both bodies too
+    record = next(r for r in code_records("probe", [asdict(u) for u in _units([tmp_path / "probe.adb"])],
+                                          {str(tmp_path / "probe.adb"): PROBE.decode()}) if r["ref"] == "probe.run")
+    assert "probe.adb:30-37, 38-41" in record["text"] and record["text"].count("procedure Run") == 2
+
+
+USES_AND_ALIASES = {
+    "store.ads": "package Store is\n   procedure Put (X : Integer);\n   procedure Write (X : Integer) renames Put;\n"
+                 "end Store;\n",
+    "store.adb": "package body Store is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Store;\n",
+    "other.adb": "package body Other is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Other;\n",
+    "stacks.adb": "package body Stacks is\n   procedure Push (X : Integer) is\n   begin\n      null;\n"
+                  "   end Push;\nend Stacks;\n",
+    "client.adb": """with Store; with Other; with Stacks; with Ada.Text_IO;
+use Store;
+package body Client is
+   procedure Log (S : String) renames Ada.Text_IO.Put_Line;
+   package Int_Stack is new Stacks (Integer);
+   package TIO renames Ada.Text_IO;
+   procedure Show (X : Integer) renames Other.Put;
+   procedure Run is
+   begin
+      Put (1);
+      Log ("x");
+      Int_Stack.Push (2);
+      Show (3);
+      Store.Write (4);
+      TIO.New_Line;
+   end Run;
+end Client;
+""",
+}
+
+
+def test_use_clauses_and_aliases_in_the_resolution(tmp_path):
+    for name, text in USES_AND_ALIASES.items():
+        (tmp_path / name).write_text(text)
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    calls = {v for u, v in _edges(G, "calls") if u == "client.run"}
+    assert calls == {"store.put", "ada.text_io.put_line", "stacks.push", "other.put", "ada.text_io.new_line"}
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"], stats["calls_through_aliases"]) == (0, 1, 5)
+    assert dict(stats["top_unresolved"]) == {"ada.text_io.new_line": 1, "ada.text_io.put_line": 1}
+    assert "log" not in G and "int_stack.push" not in G and "tio.new_line" not in G
+
+    # without the `use` clause, Put is in two units that Client imports: both
+    (tmp_path / "client.adb").write_text(USES_AND_ALIASES["client.adb"].replace("use Store;\n", ""))
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert {("client.run", "store.put"), ("client.run", "other.put")} <= _edges(G, "calls")
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"]) == (1, 0)
+
+    # a name of the unit itself wins over a subprogram of another unit with the same name
+    (tmp_path / "speeds.adb").write_text("package body Speeds is\n   subtype Knots is Integer range 0 .. 900;\n"
+                                         "   procedure Set (I : Integer) is\n      K : Knots;\n   begin\n"
+                                         "      K := Knots (I);\n   end Set;\nend Speeds;\n")
+    (tmp_path / "units.adb").write_text("package body Units is\n   procedure Knots (X : Integer) is\n   begin\n"
+                                        "      null;\n   end Knots;\nend Units;\n")
+    G, _ = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert ("speeds.set", "speeds.knots") in _edges(G, "converts") and ("speeds.set", "units.knots") not in G.edges
+
+
 def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
     G, stats = sample_graph
     store = GraphStore(tmp_path / "atlas.db")
@@ -231,6 +321,10 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     from atlas.graph import build_doors_graph, document_names
     store, g, stats = unified
     G = g.G
+    assert stats["doors"].pop("id_shapes") == [{"prefix": "SRS", "separator": "-", "digits": 4, "count": 4,
+                                                "example": "SRS-0001"},
+                                               {"prefix": "SSS", "separator": "-", "digits": 4, "count": 2,
+                                                "example": "SSS-0005"}]          # the heading SSS-0900 is not one
     assert stats["doors"] == {"nodes": 10, "edges": 11, "modules": 2, "requirements": 6, "headings": 1,
                               "information": 0, "linked_outside": 1, "duplicate_links": 1,
                               "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3},

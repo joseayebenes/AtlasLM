@@ -26,18 +26,32 @@ cambia aquello de lo que sale:
 | `docs` | `docs.process` | documentos (`doc:hmi_manual.md`) y secciones (`doc:hmi_manual.md#003`) | `contains`, `declares` (la sección declara el requisito) y `mentions` (la sección nombra un elemento de código) |
 
 **Código.** Los elementos se identifican como `unidad.nombre` (`tracks.update`), así que dos
-paquetes pueden tener un `Update` cada uno. Cada `Nombre (...)` de un cuerpo se clasifica
-según lo que es `Nombre`:
+paquetes pueden tener un `Update` cada uno. Dos subprogramas con el mismo nombre en un paquete
+(sobrecargas) son un solo nodo, con los requisitos y las llamadas de todos, desde la primera
+línea del primero hasta la última del último, y `bodies`, las líneas `[inicio, fin]` de cada
+uno (con su fichero si no es el del nodo); `read_source` los enseña todos, uno tras otro. Cada
+subprograma lleva su clase en `subprogram_kind` (`procedure`, `function`, `operator`, `task`,
+`entry`, `protected`), y el resumen de un nodo la dice cuando no es un procedimiento ni una
+función. Cada `Nombre (...)` de un cuerpo se clasifica según lo que es `Nombre`:
 - un subprograma: es una llamada;
 - un tipo: es una conversión;
 - una variable de paquete: es un uso;
 - un tipo predefinido: se ignora;
 - algo desconocido: es una llamada externa.
 
-Un nombre sin paquete se busca primero en la propia unidad y luego en las demás,
-prefiriendo las que se importan con `with`. Si aún hay varias, la arista va a todas, para
-que el análisis de impacto no se deje ninguna; `atlas graph` las cuenta como llamadas
-ambiguas.
+Un nombre se busca, por este orden:
+1. como está escrito (con su paquete) y en la propia unidad;
+2. si es un alias de la unidad (un renombramiento o una instancia genérica), como lo que
+   nombra: `Log` que renombra `Ada.Text_IO.Put_Line`, `Int_Stack.Push` con `Int_Stack`
+   instancia de `Stacks`, o `Store.Write` si `Write` renombra un subprograma de `Store`;
+3. sin paquete, en los paquetes de las cláusulas `use` de la unidad (las de su
+   especificación también valen en el cuerpo);
+4. en todas las unidades, prefiriendo las que se importan con `with`.
+
+Si aún hay varias, la arista va a todas, para que el análisis de impacto no se deje
+ninguna; `atlas graph` las cuenta como llamadas ambiguas, y cuenta también las resueltas
+por un alias o por un `use`. Un alias de algo de fuera del proyecto es una llamada externa
+con su nombre completo (`ada.text_io.put_line`).
 
 Los ficheros que casan con `[sources.code] test_patterns` son pruebas: sus subprogramas son
 nodos `test`. Un elemento que cita un requisito lo implementa (`implements`); una prueba
@@ -45,7 +59,22 @@ que lo cita lo verifica (`verifies`).
 
 **Requisitos.** Un requisito es el mismo nodo en las tres partes. Sus IDs se normalizan
 igual que los de DOORS (`[sources.doors.convention] id_normalize`; mayúsculas por
-defecto), así que `Req: srs-0004` en el código y `SRS-0004` en DOORS se encuentran.
+defecto), así que `Req: srs-0004` en el código y `SRS-0004` en DOORS se encuentran. Con
+`id_canonical`, las variantes del código y de los documentos (`SRS-4`, `SRS 0004`) toman la
+forma de DOORS; los IDs de DOORS no cambian. El ID que el modelo da a un requisito de un
+documento se separa con la expresión de un ID de la convención: «SRS-0004 / SRS-0005» son
+dos requisitos.
+
+Las estadísticas de cada parte llevan `id_shapes`, las formas de ID tal como se escriben
+(prefijo, separador, cifras y cuántas veces se escribe cada una), y `atlas graph` las
+enseña. Con `atlas.test.toml`:
+
+```
+ID shapes as written, by origin (N = a digit; how many times each one is written):
+  code   6 SRS-NNNN
+  docs   336 SRS-NNNN
+  doors  40 SRS-NNNN, 12 SSS-NNNN
+```
 
 **Documentos.** Una sección nombra un elemento de código cuando escribe su nombre completo
 (`Tracks.Delete_Track`) o un nombre con guion bajo que solo tiene un elemento
@@ -218,7 +247,7 @@ consultas.
 ## Pruebas
 
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
-paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`, los
+paquetes, sobrecargas, tareas y operadores, `use` y alias, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`, los
 procedimientos de prueba de DOORS y `link_semantics`, `meta` de la matriz y la fecha de la
 exportación, `neighbors`, comunidades, mismo grafo que `ada_graph.py` y una tabla de casos de
 `values_differ`. `tests/test_cli.py`: el paso `graph.build` incremental por origen, `atlas

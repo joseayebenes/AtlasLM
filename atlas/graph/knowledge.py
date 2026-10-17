@@ -57,6 +57,7 @@ MAX_LIST = 40        # cap of the items of a list
 MAX_ANCESTORS = 5    # levels of the chain of trace up to the system requirement
 MAX_LINES = 300      # cap of the lines of a source read
 REQUIREMENT_KINDS = ("requirement", "heading", "information")
+UNUSUAL_KINDS = ("operator", "task", "entry", "protected")      # of a subprogram, shown in its summary
 DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v affects u
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
 DEFAULT_ATTRIBUTES = ("status", "verification")    # [sources.doors] attributes: what is shown and filtered by
@@ -239,6 +240,8 @@ class KnowledgeGraph:
             return {**out, "document": d.get("document"), "section": d.get("section"), "title": d.get("name")}
         if d.get("kind") in ("document", "module"):
             return {**out, "title": d.get("title") or d.get("name")}
+        if d.get("subprogram_kind") in UNUSUAL_KINDS:       # a procedure or a function goes without saying
+            out["subprogram_kind"] = d["subprogram_kind"]
         if d.get("file"):
             out["file"] = d["file"]
         if d.get("start_line"):
@@ -555,6 +558,8 @@ class KnowledgeGraph:
         if err:
             return err
         d = self.G.nodes[n]
+        if d.get("kind") in ("subprogram", "test") and len(d.get("bodies") or []) > 1:
+            return self._bodies(n, d, context)
         if d.get("kind") == "subprogram" and d.get("start_line"):
             return self._lines(d["file"], d["start_line"] - context, d["end_line"] + context)
         if d.get("source"):
@@ -562,6 +567,20 @@ class KnowledgeGraph:
         if d.get("kind") == "unit" and d.get("files"):
             return self._lines(d["files"][0], 1, MAX_LINES)
         return {"error": f"{n} ({d.get('kind')}) has no source"}
+
+    def _bodies(self, n: str, d: dict, context: int) -> dict:
+        """The source of every body of an overloaded subprogram, one after the other."""
+        parts = []
+        for body in d["bodies"]:
+            file = body[2] if len(body) > 2 else d["file"]
+            part = self._lines(file, body[0] - context, body[1] + context)
+            if "error" in part:
+                return part
+            parts.append(part)
+        return {"id": n, "file": parts[0]["file"], "start": parts[0]["start"], "end": parts[-1]["end"],
+                "truncated": any(p["truncated"] for p in parts),
+                "bodies": [{"file": p["file"], "start": p["start"], "end": p["end"]} for p in parts],
+                "source": "\n      ...\n".join(p["source"] for p in parts)}
 
     def read_file(self, file: str, start: int = 1, end: int = 200) -> dict:
         """A range of lines of a project file (relative to the root)."""

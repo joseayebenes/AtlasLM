@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["REQ_ID_SHAPE", "extract_requirements", "requirement_pattern"]
+__all__ = ["REQ_ID_SHAPE", "extract_requirements", "requirement_ids", "requirement_pattern"]
 
 # An ID has at least one separator (-, _, .) or a digit: loose words are not IDs
 REQ_ID_SHAPE = re.compile(r"^(?=.*[-_.\d])[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*$")
@@ -20,17 +20,29 @@ def requirement_pattern(config: dict) -> re.Pattern:
     return re.compile(rf"(?i)(?<!\w){re.escape(tag)}\s*([^\n]+)")
 
 
-def extract_requirements(text: str, pattern: re.Pattern) -> list[str]:
-    """Requirement IDs. After the tag, tokens that look like an ID are read until one that
-    does not ("Req: A-B, C-D deletes messages" -> A-B, C-D)."""
-    ids = set()
+def requirement_ids(config: dict) -> re.Pattern | None:
+    """The expression of an ID inside a tag: `id_regex` of the analyzer configuration,
+    which the code.parse step takes from [sources.doors.convention] (id_regex, or id_pattern
+    without its anchors). None without it."""
+    return re.compile(config["id_regex"]) if config.get("id_regex") else None
+
+
+def extract_requirements(text: str, pattern: re.Pattern, ids: re.Pattern | None = None) -> list[str]:
+    """Requirement IDs of the tags of a text. With `ids` (the expression of an ID), every
+    ID in the rest of the line after the tag ("Req: SRS-0004 and SRS-0005", "Req: see
+    SRS-0004", "Req: SRS-0004 / SRS-0005"). Without it, tokens that look like an ID are read
+    until one that does not ("Req: A-B, C-D deletes messages" -> A-B, C-D)."""
+    found: set[str] = set()
     for m in pattern.finditer(text):
         rest = m.group(1) if m.groups() else m.group(0)
+        if ids is not None:
+            found.update(i.group(0) for i in ids.finditer(rest))
+            continue
         for tok in re.split(r"[,\s;]+", rest.strip()):
             tok = tok.strip(".:;,()[]")
             if not tok:
                 continue
             if not REQ_ID_SHAPE.match(tok):
                 break
-            ids.add(tok)
-    return sorted(ids)
+            found.add(tok)
+    return sorted(found)

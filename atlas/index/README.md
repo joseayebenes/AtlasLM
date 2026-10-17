@@ -45,9 +45,18 @@ que cambian.
 ## Embeddings
 
 Todo va en `atlas.db`: registros, vectores, índice de texto y una caché de vectores por
-modelo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
+modelo, prefijo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
 embebe sus textos nuevos. Cambiar `[embeddings] model` reindexa todo sin volver al LLM, y
 la búsqueda nunca mezcla vectores de dos modelos.
+
+Los prefijos de consulta y de documento salen de `[embeddings] family` (`embeddinggemma`,
+`nomic`, `e5` o `none`) o, si no se da, del nombre del modelo; `query_prefix` y
+`document_prefix` literales sustituyen a los de la familia. `prefixes(cfg)` los resuelve sin
+crear cliente y avisa en el registro si el nombre no dice ninguna familia: un gateway puede
+publicar `embeddinggemma` con otro nombre, y entonces los vectores se calculaban sin prefijo
+sin que nadie lo supiera. Con `embeddinggemma`, el prefijo de documento lleva el título del
+documento (`title: HMI Manual | text: …`) en vez de `title: none`. Los prefijos efectivos
+entran en la huella de los tres pasos de índice, y `atlas check` los imprime.
 
 Antes de indexar, cada paso junta los textos que faltan en la caché de todos sus
 documentos (o módulos) y los embebe en lotes llenos de `[embeddings] batch`, varios a la
@@ -80,7 +89,7 @@ remove_diacritics 2"` reduce cada palabra inglesa a su raíz (no casa «verifies
 `index_fts` con el pedido y, si difiere, la rehace desde `index_records` en una transacción:
 segundos, sin embeber nada. `porter` es solo inglés y los resúmenes de sección siguen el
 `lang` de su fuente: conviene con documentos en inglés, medido con `atlas eval` antes y
-después (en las muestras, la léxica pasa del 60 % al 75 % de acierto@1, y la híbrida del 75 %
+después (en las muestras, la léxica pasa del 60 % al 75 % de acierto@1, y la híbrida del 80 %
 al 90 %; ver la [guía](../../docs/configuracion.md#index)).
 
 `[search] synonyms` añade grupos de términos equivalentes del proyecto (`examples/synonyms.toml`):
@@ -128,7 +137,8 @@ a leer cuando cambia la base.
 `Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
 ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
 Sobre las muestras, con `embeddinggemma`, la híbrida pone lo buscado en primer lugar en el
-75 % de los casos y entre los tres primeros en el 90 %; la léxica, en el 55 % y el 70 %.
+80 % de los casos y entre los tres primeros en el 90 %; la léxica, en el 60 % y el 60 % (con
+`porter`, la híbrida en el 90 % y el 90 %, y la léxica en el 75 % y el 75 %).
 
 El código compite con los documentos. En las muestras, «show the tracks on the operator
 screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de

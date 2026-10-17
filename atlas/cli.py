@@ -275,6 +275,15 @@ def index_fingerprint(ctx) -> str:
     return ctx.cfg.fingerprint("index", without=("fts_tokenizer",))
 
 
+def embed_settings(ctx) -> str:
+    """What the vectors of the index depend on: the embeddings model and its effective
+    prefixes (changing the family reindexes)."""
+    from atlas.index.embeddings import prefixes
+    from atlas.llm import from_config
+    emb = from_config(ctx.cfg).embeddings
+    return "|".join((emb.model, *prefixes(emb)))
+
+
 def index_options(ctx) -> dict:
     """The validated [index] options for index_document."""
     from atlas.index import KINDS
@@ -292,10 +301,9 @@ def index_step(ctx) -> Step:
     """One unit per processed document (docs.process): its structure.json is indexed. The
     texts of all the documents to index are embedded first, together, in full batches."""
     from atlas.index import Index, build_records
-    from atlas.llm import from_config
     options = index_options(ctx)
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
 
@@ -327,9 +335,11 @@ def index_step(ctx) -> Step:
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, units: list[str]) -> None:
-        texts = [r["embed_text"] for unit in units for r in build_records(
-            json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
-            options["chunk_overlap"], options["kinds"])]
+        texts = []
+        for unit in units:
+            data = json.loads(structure(unit).read_text(encoding="utf-8"))
+            texts += [(r["embed_text"], data["title"]) for r in build_records(
+                data, options["chunk_chars"], options["chunk_overlap"], options["kinds"])]
         index().embed_missing(texts, workers)
 
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
@@ -341,11 +351,10 @@ def index_requirements_step(ctx) -> Step:
     """One unit per DOORS module read by doors.requirements: its requirements are indexed
     as one more document ("doors:<module>"), so that search finds them too. Like
     index.documents, the texts of all the modules to index are embedded first, together."""
-    from atlas.index import DOORS_PREFIX, Index, requirement_records
-    from atlas.llm import from_config
+    from atlas.index import DOORS_PREFIX, Index, module_title, requirement_records
     kinds = index_options(ctx)["kinds"]
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     shared: dict = {}
     lock = threading.Lock()
 
@@ -370,7 +379,7 @@ def index_requirements_step(ctx) -> Step:
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, modules: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for m in modules
+        index().embed_missing([(r["embed_text"], module_title(m)) for m in modules
                                for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
@@ -388,10 +397,9 @@ def index_code_step(ctx) -> Step | None:
     if not sc or not sc.get("enabled", True) or "code_doc" not in options["kinds"]:
         return None
     from atlas.graph.build import is_test_file
-    from atlas.index import CODE_PREFIX, Index, code_records
-    from atlas.llm import from_config
+    from atlas.index import CODE_PREFIX, Index, code_records, code_title
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     test_patterns = sc.get("test_patterns", [])
     shared: dict = {}
     lock = threading.Lock()
@@ -433,7 +441,8 @@ def index_code_step(ctx) -> Step | None:
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, pending: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for unit in pending for r in records(unit)], workers)
+        index().embed_missing([(r["embed_text"], code_title(unit)) for unit in pending for r in records(unit)],
+                              workers)
 
     return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit), prepare=prepare,
@@ -1030,7 +1039,9 @@ def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     if cfg.unset:
         print(f"WARNING {unset_hint(cfg)}", file=sys.stderr)
-    return check_connection(from_config(cfg))
+    from atlas.index.embeddings import prefix_note
+    conn = from_config(cfg)
+    return check_connection(conn, {"Embeddings": [prefix_note(conn.embeddings)]})
 
 
 def probe(cfg: Config) -> int:

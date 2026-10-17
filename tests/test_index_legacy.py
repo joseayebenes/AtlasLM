@@ -2,6 +2,7 @@
 legacy/doc_rag.py on the sample documents, with the fake API as the model and the
 embeddings. To be deleted together with legacy/."""
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,7 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
     old_emb = cx.ServiceConfig(base_url=llm.base_url, model="embeddinggemma", api_key="x",
                                batch=fake_embeddings.batch, net=net)
     old_store, old_embedder = rag.Store(str(tmp_path / "rag.db")), rag.Embedder(old_emb)
-    new = Index(tmp_path / "atlas.db", fake_embeddings, llm,
+    new = Index(tmp_path / "atlas.db", replace(fake_embeddings, document_prefix="title: none | text: "), llm,
                 {"per_document": 0, "scope": "passages"})                # what doc_rag.py did
 
     for f in ("spec_with_bookmarks.pdf", "spec_without_bookmarks.pdf", "hmi_manual.md"):

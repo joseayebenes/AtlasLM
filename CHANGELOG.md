@@ -11,7 +11,7 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   remove_diacritics 2"`, «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo rehace
   solo la tabla de texto al abrir el índice, en segundos y sin embeber. El valor por defecto no
   cambia; en las muestras, `porter` sube la léxica del 60 % al 75 % de acierto@1 y la híbrida del
-  75 % al 90 %. Es solo inglés: conviene con documentos en inglés y medido con `atlas eval`.
+  80 % al 90 %. Es solo inglés: conviene con documentos en inglés y medido con `atlas eval`.
 - `[search] synonyms`: un fichero de grupos de términos equivalentes (`examples/synonyms.toml`);
   una consulta con uno de ellos hace una búsqueda léxica más con los demás, que entra en la
   fusión. Las siglas de la pregunta (de 2 a 6 mayúsculas) se buscan entre las definiciones del
@@ -19,6 +19,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Un ID escrito de otra forma en una búsqueda se busca como está en el índice: «srs0004»,
   «SRS_0004» y «srs-4» dan lo mismo que «SRS-0004» (antes no encontraban nada), con los prefijos
   de los requisitos indexados y su anchura de dígitos, y solo si el ID existe.
+- `[embeddings] family` (`embeddinggemma`, `nomic`, `e5` o `none`) y los prefijos literales
+  `query_prefix` y `document_prefix`. Antes los prefijos se elegían por el nombre del modelo y, si
+  el gateway lo publicaba con otro, no se ponía ninguno sin aviso; ahora el registro lo avisa y
+  `atlas check` imprime los prefijos efectivos. Entran en la huella del índice.
+
+### Cambiado
+- Con `embeddinggemma`, el prefijo de documento lleva el título del documento (`title: HMI
+  Manual | text: …`) en vez de `title: none`, como recomienda su ficha. En las muestras, la híbrida
+  pasa del 75 % al 80 % de acierto@1 (MRR de 0,83 a 0,88).
+
+### Al actualizar
+- Con `embeddinggemma`, el primer `atlas run` vuelve a embeber todos los textos del índice (el
+  prefijo de documento cambia y es parte de la clave de la caché). Con otros modelos, se
+  reindexa desde la caché, sin peticiones.
 
 ## [0.2.0] — 2026-10-16
 

@@ -80,8 +80,8 @@ def test_the_texts_of_several_documents_go_in_full_batches(docs, tmp_path, fake,
     import math
     _, control = fake
     idx = Index(tmp_path / "atlas.db", fake_embeddings)              # batches of 16
-    texts = [r["embed_text"] for data in docs.values() for r in build_records(data)]
-    distinct = len(set(texts))
+    texts = [(r["embed_text"], data["title"]) for data in docs.values() for r in build_records(data)]
+    distinct = len(set(texts))                               # with the title of the document (embeddinggemma)
     alone = sum(math.ceil(len({r["embed_text"] for r in build_records(d)}) / 16) for d in docs.values())
     before = fake_stats()
     res = idx.embed_missing(texts, workers=3)
@@ -378,3 +378,36 @@ def test_ids_written_in_another_way(docs, tmp_path, fake_embeddings):
     assert idx.search("srs 0004 or srs 45", k=1)[0]["ref"] == "SRS-0004"    # SRS-0045 is not indexed
     idx.remove_document("doors:SRS_TMS")
     assert idx.store.id_prefixes() == {"SRS": 4}                              # those of the manual
+
+
+def test_the_prefixes_of_the_embeddings(docs, tmp_path, fake_embeddings, caplog):
+    """The family of the model gives the prefixes; a name of no known family gets none,
+    and says so; with embeddinggemma, the document prefix has the title of the document."""
+    import hashlib
+    from atlas.index.embeddings import Embedder, prefix_note, prefixes
+    from atlas.llm import ServiceConfig
+    gemma = ("task: search result | query: ", "title: {title} | text: ")
+    assert prefixes(ServiceConfig(model="embeddinggemma:300m")) == gemma
+    other = ServiceConfig(model="corp/gemma-embed-300m-v2")
+    with caplog.at_level("WARNING"):
+        assert prefixes(other) == ("", "")
+    assert "'corp/gemma-embed-300m-v2' is of no known family" in caplog.text
+    assert prefix_note(other).startswith("WARNING")
+    assert prefixes(replace(other, family="embeddinggemma")) == gemma
+    assert prefixes(replace(other, family="none")) == ("", "")
+    assert prefix_note(replace(other, family="none")) == "embeddings prefixes: query='' document=''"
+    assert prefixes(replace(other, query_prefix="q: ", document_prefix="d: ")) == ("q: ", "d: ")
+    assert prefixes(ServiceConfig(model="nomic-embed-text", query_prefix="find: ")) == ("find: ", "search_document: ")
+    with pytest.raises(ValueError, match="family 'bert'"):
+        prefixes(replace(other, family="bert"))
+
+    e = Embedder(fake_embeddings)
+    assert e.document_text("x", "HMI  Manual") == "title: HMI Manual | text: x"
+    assert e.document_text("x") == "title: none | text: x"
+    nomic = Embedder(replace(fake_embeddings, model="nomic-embed-text"))     # keys as before for the others
+    assert nomic.key("x", "HMI Manual") == hashlib.sha256(b"nomic-embed-text\x00search_document: x").hexdigest()[:32]
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    texts = {r["embed_text"] for r in build_records(docs["hmi_manual.md"])}
+    assert len(idx.store.cache_get([e.key(t, "HMI Manual") for t in texts])) == len(texts)
+    assert idx.embed_missing([(t, "HMI Manual") for t in texts])["cached"] == len(texts)

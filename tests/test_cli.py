@@ -316,7 +316,7 @@ communities = true
 
 
 def test_doors_requirements_are_indexed(toml, fake, fake_stats, capsys):
-    from atlas.cli import search
+    from atlas.cli import check, search
     extra = f'''
 [llm]
 base_url = "{fake[0]}"
@@ -345,6 +345,16 @@ steps = ["doors", "index"]
         assert search(cfg, query) == 0
         outputs.append(capsys.readouterr().out)
     assert outputs[0].startswith("\n[1] SRS_TMS (requirement)\n    SRS-0004:") and outputs[1:] == outputs[:1] * 2
+    # the effective prefixes of the embeddings are in the fingerprints: another family reindexes
+    none = load_config(toml(extra.replace('model = "embeddinggemma"', 'model = "embeddinggemma"\nfamily = "none"')))
+    assert go(none)["processed"] == {"index.requirements": 3} and go(none)["processed"] == {}
+    check(none)
+    assert "embeddings prefixes: query='' document=''" in capsys.readouterr().out
+    check(cfg)
+    assert "embeddings prefixes: query='task: search result | query: ' document='title: {title} | text: '" in \
+        capsys.readouterr().out
+    check(load_config(toml(extra.replace('model = "embeddinggemma"', 'model = "corp-embed-300m"'))))
+    assert "WARNING the embeddings model 'corp-embed-300m' is of no known family" in capsys.readouterr().out
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 

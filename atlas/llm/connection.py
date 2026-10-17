@@ -92,6 +92,9 @@ class ServiceConfig:
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
     batch: int = 32              # embeddings only
+    family: str = ""             # embeddings only: embeddinggemma | nomic | e5 | none; "" = from the model name
+    query_prefix: str = ""       # embeddings only: literal prefixes, instead of those of the family
+    document_prefix: str = ""
     net: NetConfig = field(default_factory=NetConfig)
 
 
@@ -769,8 +772,9 @@ def _check_chat(response) -> tuple[bool, str]:
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
 
 
-def check(conn: Connection) -> int:
-    """Real chat and embeddings request. Returns 0 if everything works."""
+def check(conn: Connection, notes: dict[str, list[str]] | None = None) -> int:
+    """Real chat and embeddings request. Returns 0 if everything works. `notes`: lines
+    printed under a service ("LLM", "Embeddings") after its result."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
     failures = 0
     for name, cfg in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
@@ -791,6 +795,8 @@ def check(conn: Connection) -> int:
             print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
             if not ok:
                 failures += 1
+            for line in (notes or {}).get(name, []):
+                print(f"  {line}")
         except SystemExit:
             raise
         except Exception as e:
@@ -860,6 +866,9 @@ base_url = ""                   # empty = the same server as the LLM
 model = "embeddinggemma"
 api_key = ""                    # empty = the same as the LLM
 batch = 32
+family = ""                     # embeddinggemma | nomic | e5 | none; "" = from the model name
+query_prefix = ""               # literal prefixes instead of those of the family ("{title}": the document title)
+document_prefix = ""
 
 # [embeddings.network]          # e.g. local embeddings without proxy
 # proxy = ""

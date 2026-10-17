@@ -37,7 +37,7 @@ de ella:
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
 | `[llm] model` | los documentos con `analysis = "llm"` |
-| `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
+| `[embeddings] model`, `family` o los prefijos | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
 | `[index] fts_tokenizer` | solo la tabla de texto, al abrir el índice, sin embeber |
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
@@ -78,10 +78,26 @@ El modelo de embeddings del índice.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `base_url` | URL | la de `[llm]` | la API; sin ella, la misma URL y la misma clave que `[llm]` (la clave nunca se manda a otro servidor) |
-| `model` | texto | `"embeddinggemma"` | el modelo; los prefijos de consulta y documento de embeddinggemma, nomic-embed y e5 se ponen solos |
+| `model` | texto | `"embeddinggemma"` | el modelo; los prefijos de consulta y documento de su familia se ponen solos si el nombre la dice (`embeddinggemma`, `nomic-embed`, `e5`) |
 | `api_key` | texto | la de `[llm]` si comparten URL | la clave |
+| `family` | texto | `""` | la familia del modelo, para sus prefijos: `embeddinggemma`, `nomic`, `e5` o `none` (ninguno). Vacío: la que dice su nombre. Hace falta si el servidor publica el modelo con otro nombre |
+| `query_prefix` | texto | `""` | prefijo literal de las consultas, en lugar del de la familia |
+| `document_prefix` | texto | `""` | prefijo literal de los textos indexados, en lugar del de la familia; `{title}` es el título del documento |
 | `batch` | entero | `32` | textos por petición. Con un límite de peticiones por minuto, cuanto mayor, mejor: el índice llena los lotes con textos de varios documentos |
 | `network` | tabla | — | `[embeddings.network]`: claves de `[network]` solo para los embeddings |
+
+Algunos modelos de embeddings esperan un prefijo que distingue las consultas de los textos
+indexados. Con `embeddinggemma`, `task: search result | query: ` y `title: {title} | text: `,
+con el título real del documento (un módulo de DOORS, `SRS_TMS (DOORS)`; una unidad de código,
+`tracks (code)`). Un modelo cuyo nombre no dice su familia (`corp/gemma-embed-300m`) va sin
+prefijos, y el registro lo avisa; `atlas check` imprime los prefijos efectivos o ese aviso:
+
+```
+  embeddings prefixes: query='task: search result | query: ' document='title: {title} | text: '
+```
+
+Los prefijos entran en la huella del índice: cambiar la familia o un prefijo vuelve a embeber
+los textos.
 
 ## [network]
 
@@ -259,11 +275,12 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 sección siguen el `lang` de su fuente (español por defecto en la plantilla), y sobre texto
 español las raíces de `porter` no son las del español. Antes de cambiarlo, mide con `atlas
 eval` antes y después sobre un conjunto del proyecto. En las muestras (documentos en inglés,
-resúmenes del manual en español), con `embeddinggemma` en Ollama:
+resúmenes del manual en español), con `embeddinggemma` en Ollama y el título del documento
+en su prefijo:
 
 | | léxica acierto@1 | léxica MRR | híbrida acierto@1 | híbrida MRR |
 |---|---|---|---|---|
-| `unicode61` (por defecto) | 60 % | 0,66 | 75 % | 0,83 |
+| `unicode61` (por defecto) | 60 % | 0,66 | 80 % | 0,88 |
 | `porter unicode61` | 75 % | 0,79 | 90 % | 0,93 |
 | `porter` y `examples/synonyms.toml` | 80 % | 0,86 | 90 % | 0,93 |
 

@@ -28,6 +28,7 @@ reasoning_effort = "none"              # gemma4 razona por defecto y tarda minut
 [embeddings]
 model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]
 batch = 64                             # textos por petición
+# family = "embeddinggemma"            # si el gateway lo publica con otro nombre: sus prefijos (atlas check los dice)
 
 [network]
 proxy = "${HTTPS_PROXY:-}"             # con usuario: "http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"

@@ -37,7 +37,8 @@ from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
 __all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
-           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "embed_missing",
+           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "code_title",
+           "embed_missing", "module_title",
            "index_code", "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,16 @@ def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, 
                            "overview": data.get("overview", {})})
 
 
+def module_title(module: str) -> str:
+    """The title of a DOORS module in the index."""
+    return f"{module} (DOORS)"
+
+
+def code_title(unit: str) -> str:
+    """The title of a code unit in the index."""
+    return f"{unit} (code)"
+
+
 def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
                  kinds: Iterable[str] | None = None) -> dict:
     """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
@@ -65,7 +76,7 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     records = requirement_records(module, requirements, kinds)
     summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
-                                                     "title": f"{module} (DOORS)", "out_dir": "",
+                                                     "title": module_title(module), "out_dir": "",
                                                      "overview": {"summary": summary}})
 
 
@@ -76,20 +87,23 @@ def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dic
     records = code_records(unit, parts, sources, tests, chunk_chars, kinds)
     files = ", ".join(sorted(p["file"] for p in parts))
     return _index_records(store, embedder, records, {"doc": CODE_PREFIX + unit, "name": unit,
-                                                     "title": f"{unit} (code)", "out_dir": "",
+                                                     "title": code_title(unit), "out_dir": "",
                                                      "overview": {"summary": f"code unit {unit}: {files}"}})
 
 
-def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str | tuple[str, str]],
+                  workers: int = 1) -> dict:
     """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
     `workers` batches at a time, and saves each batch in the cache. The texts of many
     documents go in the same batches: fewer requests than embedding each document on its
     own (index_document then finds everything in the cache). Returns how many texts there
     were, how many were in the cache, how many were embedded and the failed batches. A
-    connection error raises FatalError; the batches that finished stay in the cache."""
-    by_key: dict[str, str] = {}
+    connection error raises FatalError; the batches that finished stay in the cache. Each
+    text can be (text, title of its document), for a document prefix with its title."""
+    by_key: dict[str, tuple[str, str]] = {}
     for t in texts:
-        by_key.setdefault(embedder.key(t), t)               # each distinct text once
+        text, title = (t, "") if isinstance(t, str) else t
+        by_key.setdefault(embedder.key(text, title), (text, title))     # each distinct text once
     cached = store.cache_get(list(by_key))
     missing = [(k, t) for k, t in by_key.items() if k not in cached]
     batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
@@ -99,8 +113,9 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
     log.info("embeddings: %d texts, %d in the cache, %d to compute in %d batches of up to %d (%s)",
              len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
 
-    def one(batch: list[tuple[str, str]]) -> int:
-        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+    def one(batch: list[tuple[str, tuple[str, str]]]) -> int:
+        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, (t, _) in batch],
+                                                                         [ti for _, (_, ti) in batch]))))
         return len(batch)
 
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -123,7 +138,8 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
 
 def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
     name = doc["name"]
-    keys = [embedder.key(r["embed_text"]) for r in records]
+    title = doc["title"]                         # in the document prefix of embeddinggemma
+    keys = [embedder.key(r["embed_text"], title) for r in records]
     vectors = store.cache_get(keys)
     missing = [i for i, k in enumerate(keys) if k not in vectors]
     batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
@@ -132,7 +148,8 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
     failed, t0 = [], time.time()
     for n, batch in enumerate(batches, 1):
         try:
-            new = dict(zip((keys[i] for i in batch), embedder.documents([records[i]["embed_text"] for i in batch])))
+            new = dict(zip((keys[i] for i in batch),
+                           embedder.documents([records[i]["embed_text"] for i in batch], [title] * len(batch))))
             store.cache_put(new)                 # saved batch by batch
             vectors.update(new)
             log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)

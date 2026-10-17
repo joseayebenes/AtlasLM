@@ -75,7 +75,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
             "network": dict},
-    "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
+    "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "family": str,
+                   "query_prefix": str, "document_prefix": str, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
                 "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int,
@@ -95,6 +96,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
 }
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
+EMBED_FAMILIES = ("embeddinggemma", "nomic", "e5", "none")   # [embeddings] family (atlas.index.embeddings)
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -338,6 +340,10 @@ def load_config(path: str | Path) -> Config:
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}), path.parent)
     _validate_index(data.get("index", {}))
+    family = (data.get("embeddings") or {}).get("family", "")
+    if family and family not in EMBED_FAMILIES:
+        raise ConfigError(f"[embeddings] family must be one of {', '.join(EMBED_FAMILIES)} (or empty: from the "
+                          f"name of the model)")
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

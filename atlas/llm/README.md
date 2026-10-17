@@ -33,7 +33,9 @@ hacen inútil seguir: el motor los trata como fatales.
 `atlas check atlas.toml` hace una petición real al chat y otra a los embeddings y muestra la
 configuración efectiva con las claves enmascaradas. Reconoce los modelos que razonan: dice
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
-razonando sin contestar.
+razonando sin contestar. Bajo los embeddings, imprime los prefijos de consulta y de documento
+efectivos, o un aviso si el nombre del modelo no dice su familia (`[embeddings] family`, ver
+[atlas.index](../index/README.md#embeddings)).
 
 `atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
 (`[llm] reasoning_effort`, o `low` si está vacío o es `none`):

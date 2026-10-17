@@ -207,6 +207,11 @@ class Linker:
         with self._lock:
             judged = self.cache.get(key)
         if judged is None:
+            from atlas.outbound import record_sent
+            labels = ["code"] + ([f"doors:{c['module']}"] if c["module"] else [])
+            labels += [f"docs:{self.graph.G.nodes.get('doc:' + d['source'].split(' › ')[0], {}).get('source', '?')}"
+                       for d in c["documents"] if d["text"]]
+            record_sent(self.cfg.workspace / "atlas.db", self.service.model, set(labels), "judgements")
             judged = _clean(self.llm.ask_json(self.agent.instruction, prompt, SCHEMA, "links"), offered)
             with self._lock:
                 self.cache[key] = judged

@@ -15,6 +15,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   prompt y dicen qué dejaron (`local_only`). `search`, `trace` y las herramientas MCP que no
   llaman al modelo los siguen dando enteros. Un agente con herramientas que leen el código
   no arranca si el código es local.
+- Registro de lo enviado: `atlas status` dice, por modelo y por fuente, cuántas secciones se
+  analizaron, cuántos textos se embebieron y cuántas respuestas, juicios, informes y
+  ejecuciones de agentes se pidieron, con la fecha del último envío; el informe de
+  `atlas run` dice lo que envió esa ejecución (`sent`). Lo guarda una tabla nueva de
+  `atlas.db` (`sent`), que cuenta desde la primera ejecución de esta versión.
 
 ## [0.2.0] — 2026-10-16
 

@@ -37,6 +37,7 @@ from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import IndexStore
 from atlas.llm.structured import JsonLlm
+from atlas.outbound import record_sent, source_label
 
 __all__ = ["LOCAL_ONLY_ANSWER", "answer", "build_context", "cite", "diverse", "local_source", "rewrite_question", "rrf",
            "search", "section_file", "whole_sources"]
@@ -284,6 +285,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     parts = _parts(blocks, max_chars)
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
+    record_sent(store.path, getattr(llm, "model", ""), {source_label(d["doc"]) for d in docs}, "answers")
     if len(parts) == 1:
         text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
     else:
@@ -355,6 +357,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
         return {"answer": LOCAL_ONLY_ANSWER if held else "Nothing indexed is related to the question.",
                 "sources": held, "scope": "passages", "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
+    record_sent(store.path, getattr(llm, "model", ""), {source_label(s["doc"]) for s in sources}, "answers")
     text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
     return {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1)] + held,
             "scope": "passages", "documents": [], "requests": requests + 1}

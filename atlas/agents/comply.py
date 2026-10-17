@@ -149,6 +149,10 @@ class Checker:
         with self._lock:
             judged = self.cache.get(key)
         if judged is None:
+            from atlas.outbound import record_sent
+            module = self.graph.G.nodes[ev["id"]].get("module")
+            record_sent(self.cfg.workspace / "atlas.db", self.service.model,
+                        ["code"] + ([f"doors:{module}"] if module else []), "judgements")
             judged = _clean(self.llm.ask_json(self.agent.instruction, prompt, SCHEMA, "compliance"))
             with self._lock:
                 self.cache[key] = judged

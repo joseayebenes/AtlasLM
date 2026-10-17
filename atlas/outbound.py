@@ -14,12 +14,25 @@ says what it left out (`local_only`).
 
 Identifiers (requirement IDs, code names, file names) are not text of a source: they may go
 in a prompt to say what was left out.
+
+The record (table `sent` of atlas.db): by model, source and kind (sections analysed, texts
+embedded, answers, judgements, reports, agent runs), how many and when the last one went.
+It is written where the text is sent, so it counts from the first run of a version that has
+it; atlas status and the report of atlas run show it.
+
+    record_sent(cfg.workspace / "atlas.db", "gemma", {"docs:manuals": 3}, "sections")
+    sent_summary(cfg.workspace / "atlas.db")  # [{"model", "source", "kind", "count", "last"}]
 """
 from __future__ import annotations
 
+import sqlite3
+import threading
 from dataclasses import dataclass, field
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Iterable, Mapping
 
-__all__ = ["MODELS", "LocalOnly", "source_label"]
+__all__ = ["MODELS", "LocalOnly", "record_sent", "sent_summary", "sent_totals", "source_label"]
 
 MODELS = ("full", "none")          # model = ...: "none" keeps the text of a source in the workstation
 DOORS_PREFIX = "doors:"            # the keys of the index (atlas.index.records)
@@ -92,3 +105,59 @@ class LocalOnly:
         out += ["doors (every module)"] if self.all_modules else [f"doors:{m}" for m in sorted(self.modules)]
         return out + (["code"] if self.code else [])
 
+
+# --- the record of what was sent --------------------------------------------------------
+
+SCHEMA = """CREATE TABLE IF NOT EXISTS sent (
+    model TEXT, source TEXT, kind TEXT, count INTEGER, last TEXT, PRIMARY KEY (model, source, kind))"""
+_LOCK = threading.Lock()
+
+
+def _connect(db: str | Path) -> sqlite3.Connection:
+    con = sqlite3.connect(Path(db), timeout=30)
+    con.execute("PRAGMA busy_timeout=30000")
+    con.execute(SCHEMA)
+    return con
+
+
+def record_sent(db: str | Path | None, model: str, counts: Mapping[str, int] | Iterable[str], kind: str) -> None:
+    """Adds to the record of atlas.db that `model` was sent `counts` ({source: n}, or the
+    sources, one each) of `kind`. Never fails: the record must not stop the work."""
+    if not db or not model:
+        return
+    if not isinstance(counts, Mapping):
+        counts = {s: 1 for s in counts}
+    rows = [(model, source, kind, int(n)) for source, n in counts.items() if n]
+    if not rows:
+        return
+    now = datetime.now().isoformat(timespec="seconds")
+    try:
+        with _LOCK:
+            con = _connect(db)
+            try:
+                with con:
+                    con.executemany("INSERT INTO sent VALUES (?,?,?,?,?) ON CONFLICT(model, source, kind) DO UPDATE "
+                                    "SET count = count + excluded.count, last = excluded.last",
+                                    [(*r, now) for r in rows])
+            finally:
+                con.close()
+    except sqlite3.Error as e:
+        import logging
+        logging.getLogger(__name__).warning("the record of what was sent could not be written: %s", e)
+
+
+def sent_summary(db: str | Path) -> list[dict[str, Any]]:
+    """Every row of the record, by model, source and kind."""
+    if not Path(db).exists():
+        return []
+    con = _connect(db)
+    try:
+        con.row_factory = sqlite3.Row
+        return [dict(r) for r in con.execute("SELECT * FROM sent ORDER BY model, source, kind")]
+    finally:
+        con.close()
+
+
+def sent_totals(db: str | Path) -> dict[tuple[str, str, str], int]:
+    """(model, source, kind) -> count: to subtract two moments (what a run sent)."""
+    return {(r["model"], r["source"], r["kind"]): r["count"] for r in sent_summary(db)}

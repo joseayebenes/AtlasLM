@@ -65,13 +65,16 @@ def evidence(req_id: str, graph, index=None) -> dict:
     linked = [{"id": x["id"], "type": x["type"], "text": graph.G.nodes[x["id"]].get("text", "")}
               for x in t["links_out"] + t["links_in"]]
     passages, seen, held = [], set(), []
+    labels = {f"doors:{t['module']}"} if t.get("module") else set()       # for the record of what was sent
 
-    def add(source: str, text: str) -> None:
+    def add(source: str, text: str, label: str) -> None:
         key = " ".join(text.split())[:200]
         if text and key not in seen and len(passages) < MAX_PASSAGES:
             seen.add(key)
             passages.append({"source": source, "text": text[:MAX_PASSAGE_CHARS]})
+            labels.add(label)
 
+    from atlas.outbound import source_label
     if index is not None:                     # the statements and the passages around them
         from atlas.index import DOORS_PREFIX, cite
         hits = index.requirement(t["id"])
@@ -83,19 +86,20 @@ def evidence(req_id: str, graph, index=None) -> dict:
         for h in hits:
             if not h["doc"].startswith(DOORS_PREFIX) and (h["kind"] == "requirement" or t["id"] in h["text"]):
                 if not local(h["doc"]):
-                    add(cite(h), h["text"])
+                    add(cite(h), h["text"], source_label(h["doc"]))
                 elif h["doc_name"] not in held:
                     held.append(h["doc_name"])
     for x in t["documents"]:                  # the sections of the graph, if the index had nothing
         if not x.get("local_only"):
-            add(f"{x['document']} › {x['title']}", x.get("text", ""))
+            doc = graph.G.nodes.get(f"doc:{x['document']}", {})
+            add(f"{x['document']} › {x['title']}", x.get("text", ""), f"docs:{doc.get('source', '?')}")
         elif x["document"] not in held:
             held.append(x["document"])
     differ = [{"source": f"{x['document']} › {x['title']}", **x["values_differ"]}
               for x in t["documents"] if "values_differ" in x]
     return {"id": t["id"], "in_doors": t.get("in_doors", True),
             "official": {k: t[k] for k in ("module", "text", "attributes", "parent") if t.get(k)},
-            "linked": linked, "passages": passages, "values_differ": differ, "local_only": held,
+            "linked": linked, "passages": passages, "values_differ": differ, "local_only": held, "labels": labels,
             "local": bool(graph.G.nodes[t["id"]].get("local_only"))}
 
 
@@ -178,6 +182,8 @@ class Verifier:
         with self._lock:
             cached = self.cache.get(key)
         if cached is None:
+            from atlas.outbound import record_sent
+            record_sent(self.cfg.workspace / "atlas.db", self.service.model, ev["labels"], "judgements")
             cached = _clean(self.llm.ask_json(self.agent.instruction, prompt, SCHEMA, "verification"))
             with self._lock:
                 self.cache[key] = cached

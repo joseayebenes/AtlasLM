@@ -26,7 +26,7 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 import numpy as np
 
@@ -38,7 +38,7 @@ from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
-from atlas.outbound import LocalOnly
+from atlas.outbound import LocalOnly, record_sent, source_label
 from atlas.pipeline import FatalError
 
 __all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
@@ -87,13 +87,16 @@ def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dic
                                                      "overview": {"summary": f"code unit {unit}: {files}"}}, local)
 
 
-def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1,
+                  sources: Mapping[str, str] | None = None) -> dict:
     """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
     `workers` batches at a time, and saves each batch in the cache. The texts of many
     documents go in the same batches: fewer requests than embedding each document on its
     own (index_document then finds everything in the cache). Returns how many texts there
     were, how many were in the cache, how many were embedded and the failed batches. A
-    connection error raises FatalError; the batches that finished stay in the cache."""
+    connection error raises FatalError; the batches that finished stay in the cache.
+    `sources` gives the source of each text (atlas.outbound.source_label), for the record
+    of what was sent: a batch counts once it reached the server, even if it failed."""
     by_key: dict[str, str] = {}
     for t in texts:
         by_key.setdefault(embedder.key(t), t)               # each distinct text once
@@ -107,7 +110,13 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
              len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
 
     def one(batch: list[tuple[str, str]]) -> int:
-        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+        try:
+            store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+        except Exception as e:
+            if not is_connection_error(e):
+                _record_texts(store, embedder, [(sources or {}).get(t, "") for _, t in batch])
+            raise
+        _record_texts(store, embedder, [(sources or {}).get(t, "") for _, t in batch])
         return len(batch)
 
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -128,6 +137,11 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
     return out
 
 
+def _record_texts(store: IndexStore, embedder: Embedder, labels: list[str]) -> None:
+    """The record of the texts sent to the embeddings model, by source ("?" if unknown)."""
+    record_sent(store.path, embedder.model, Counter(label or "?" for label in labels), "texts")
+
+
 def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict,
                    local: bool = False) -> dict:
     name = doc["name"]
@@ -146,12 +160,14 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
     for n, batch in enumerate(batches, 1):
         try:
             new = dict(zip((keys[i] for i in batch), embedder.documents([records[i]["embed_text"] for i in batch])))
+            _record_texts(store, embedder, [source_label(doc["doc"])] * len(batch))
             store.cache_put(new)                 # saved batch by batch
             vectors.update(new)
             log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)
         except Exception as e:
             if is_connection_error(e):
                 raise FatalError(f"connection error with the embeddings: {diagnose(e)}") from e
+            _record_texts(store, embedder, [source_label(doc["doc"])] * len(batch))
             failed.append({"batch": n, "records": len(batch), "error": f"{type(e).__name__}: {e}"[:500],
                            "kinds": sorted({records[i]["kind"] for i in batch}),
                            "sections": sorted({records[i].get("section_id", "") for i in batch} - {""})})
@@ -223,9 +239,9 @@ class Index:
         """See index_code."""
         return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds, local)
 
-    def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
+    def embed_missing(self, texts: Iterable[str], workers: int = 1, sources: Mapping[str, str] | None = None) -> dict:
         """See embed_missing."""
-        return embed_missing(self.store, self.embedder, texts, workers)
+        return embed_missing(self.store, self.embedder, texts, workers, sources)
 
     def remove_document(self, doc: str) -> None:
         self.store.delete_document(doc)

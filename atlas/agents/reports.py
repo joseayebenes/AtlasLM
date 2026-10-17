@@ -32,6 +32,22 @@ def _writer(name: str, cfg: Config, llm: Any):
     return d, llm
 
 
+def _record(cfg: Config, agent, nodes: list[str], g) -> None:
+    """The record of what a report sends: the sources of the nodes in its data."""
+    from atlas.agents.runtime import agent_service
+    from atlas.outbound import record_sent
+    labels = set()
+    for n in nodes:
+        d = g.G.nodes.get(n, {})
+        if d.get("module"):
+            labels.add(f"doors:{d['module']}")
+        elif d.get("kind") == "section":
+            labels.add(f"docs:{g.G.nodes.get('doc:' + str(d.get('document')), {}).get('source', '?')}")
+        elif d.get("file") or d.get("kind") == "unit":
+            labels.add("code")
+    record_sent(cfg.workspace / "atlas.db", agent_service(agent, cfg).model, labels, "reports")
+
+
 def _file(cfg: Config, kind: str, target: str):
     name = "".join(c if c.isalnum() or c in "-_." else "_" for c in target) or "all"
     return cfg.workspace / "reports" / f"{kind}-{name}.md"
@@ -72,6 +88,8 @@ def impact_report(name: str, cfg: Config, llm: Any = None, graph=None, depth: in
                   "requirements": [{**r, "via": [impact["node"]]} for r in impact["requirements"]]}
     data = _impact_data(g, impact)
     agent, llm = _writer("impact_analyst", cfg, llm)
+    _record(cfg, agent, [i["id"] for i in impact["items"]] + [impact["node"]]
+            + [r["id"] for r in impact["requirements"]] + [x["id"] for x in impact["documents"]], g)
     text = llm.ask_text(agent.instruction, f"Impact analysis of a change to {impact['node']}.\n\n{data}")
     path = _file(cfg, "impact", impact["node"])
     atomic_write(path, f"{text.strip()}\n\n---\n\n## Data of the graph\n\n{data}\n")
@@ -100,6 +118,8 @@ def coverage_report(module: str, cfg: Config, llm: Any = None, graph=None) -> di
         return "\n".join(out)
 
     agent, llm = _writer("coverage_auditor", cfg, llm)       # the model sees the first ones of each list
+    reqs, _ = g._module_requirements(module)
+    _record(cfg, agent, reqs, g)
     text = llm.ask_text(agent.instruction, f"Traceability audit of {matrix['module']}.\n\n{data(SHOWN)}")
     path = _file(cfg, "coverage", module or "all")
     atomic_write(path, f"{text.strip()}\n\n---\n\n## Data of the graph\n\n{data(10**6)}\n")

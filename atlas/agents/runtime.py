@@ -240,6 +240,9 @@ def run_agent(name: str, question: str, cfg: Config, context: Any = None, client
               record: list | None = None) -> dict:
     """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
     with their results."""
+    from atlas.outbound import record_sent
     state: dict = {}
     agent = build_agent(name, cfg, context, client, record, state)
-    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps, state))
+    d = definition(name, cfg)
+    record_sent(cfg.workspace / "atlas.db", agent_service(d, cfg).model, {f"agent:{name}": 1}, "runs")
+    return asyncio.run(ask(agent, question, d.max_steps, state))

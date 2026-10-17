@@ -255,9 +255,10 @@ def _read_cache(file: Path | None) -> dict | None:
 
 
 def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
-             max_chars: int = 12000, cache: Path | None = None) -> dict:
+             max_chars: int = 12000, cache: Path | None = None, sent: list | None = None) -> dict:
     """Overview of the whole document from the section summaries. Hierarchical: if the
-    summaries do not fit in one request, they are summarised in groups first."""
+    summaries do not fit in one request, they are summarised in groups first. `sent`, a
+    list, gets an item when the model is asked (not from the cache)."""
     items = [f"[{s['title']}] {s['analysis']['summary']}" for s in sections if s["analysis"]["summary"]]
     key = hashlib.sha256(f"{PROMPT_VERSION}|{llm.model}|{lang}|{doc_title}|{items}"
                          .encode("utf-8")).hexdigest()[:20]
@@ -265,6 +266,8 @@ def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
     cached = _read_cache(file)
     if cached is not None:
         return cached
+    if sent is not None and items:
+        sent.append(doc_title)
     result = _overview(llm, items, doc_title, lang, max_chars)
     if file:
         atomic_write(file, json.dumps(result, ensure_ascii=False, indent=1))

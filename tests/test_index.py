@@ -230,6 +230,31 @@ def test_a_few_hits_of_each_document():
     assert [r["id"] for r in diverse(records, 3, 9)] == [0, 1, 2]
 
 
+def test_rrf_weights_each_kind_of_list():
+    from atlas.index.search import rrf
+    assert rrf([[1, 2, 3], [3, 2]]) == [3, 2, 1]                        # as atlas/code/reference.py calls it
+    assert rrf([("dense", [1, 2, 3]), ("lexical", [3, 2])]) == [3, 2, 1]  # weights 1: the same
+    assert rrf([("dense", [1, 2, 3]), ("lexical", [3, 2])], weights={"dense": 3.0}) == [2, 3, 1]
+    assert rrf([("dense", [1, 2]), ("lexical", [3])], weights={"lexical": 0}) == [1, 2]   # 0: left out
+    assert rrf([("dense", [1]), ("lexical", [2])], k=1, weights={"lexical": 1.5}) == [2, 1]
+    assert rrf([("dense", [1, 2]), ("lexical", [2, 1])], k=1) == [1, 2]                   # ties: first seen
+
+
+def test_search_takes_rrf_k_and_weights_from_the_settings(docs, tmp_path, fake_llm, fake_embeddings, monkeypatch):
+    import importlib
+    search_module = importlib.import_module("atlas.index.search")      # atlas.index.search is also a function
+    seen = []
+    rrf = search_module.rrf
+    monkeypatch.setattr(search_module, "rrf", lambda r, k, w: seen.append(([x[0] for x in r], k, w)) or rrf(r, k, w))
+    weights = {"dense": 2.0, "lexical": 0.5}
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"rrf_k": 10, "weights": weights})
+    _add(idx, docs["hmi_manual.md"])
+    idx.search("SRS-0102 alarm")
+    assert seen[-1][1:] == (10, weights) and set(seen[-1][0]) <= {"ids", "dense", "lexical"}
+    idx.search("alarm", dense=False)
+    assert "dense" not in seen[-1][0]
+
+
 def test_search_keeps_a_few_hits_of_each_document(docs, tmp_path, fake_llm, fake_embeddings):
     idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"results": 4, "per_document": 2})
     for data in docs.values():

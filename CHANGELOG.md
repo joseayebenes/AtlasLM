@@ -6,6 +6,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[search] rrf_k` y `[search] weights`: la `k` de Reciprocal Rank Fusion (60) y el peso de
+  cada lista de una búsqueda (`ids`, `dense`, `lexical`, `keywords`; 1 cada una). `rrf`
+  acepta listas con etiqueta y pesos, y sigue aceptando listas sin etiqueta. Los valores por
+  defecto no cambian nada: en las muestras, `dense = 2.0` sube el MRR de 0,83 a 0,93, pero se
+  ajustan solo con un conjunto de evaluación del proyecto real. Cambiarlo no reprocesa nada.
+
 ### Cambiado
 - `matrix` y `gaps` del grafo, más rápidas: cachés por instancia de lo que se calcula de cada
   requisito, los huecos una vez por módulo y solo las filas de la página pedida. Con `make

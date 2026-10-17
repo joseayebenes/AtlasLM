@@ -265,6 +265,8 @@ Cambiarlo no reprocesa nada.
 | `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `rrf_k` | entero | `60` | la `k` de Reciprocal Rank Fusion, que junta las listas de una búsqueda: cada resultado suma `peso / (k + puesto)` de cada lista. Menor, más cuentan los primeros puestos frente a los siguientes |
+| `weights` | tabla | `{ids = 1.0, dense = 1.0, lexical = 1.0, keywords = 1.0}` | el peso de cada lista: `ids` (los IDs exactos de la pregunta), `dense` (los vectores), `lexical` (BM25 con la pregunta y sus reescrituras), `keywords` (BM25 con las palabras exactas de la reescritura). La que no se da pesa 1; con 0 no cuenta |
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
 tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
@@ -272,6 +274,12 @@ peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30
 partes se leen de cuatro en cuatro; `[network] max_concurrent` lo limita. En un Mac de 24 GB
 con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
 caracteres en partes de 5000 tardó 11 minutos.
+
+Los pesos se ajustan solo con un conjunto de evaluación escrito sobre el proyecto real
+(`atlas eval`, ver [atlas/agents](../atlas/agents/README.md)), no con las muestras: son
+sintéticas y repetitivas. En ellas, con `embeddinggemma`, `dense = 2.0` (o `lexical = 0.5`)
+sube el MRR de la búsqueda híbrida de 0,83 a 0,93, pero eso dice más de las muestras que
+del proyecto.
 
 ## [agents]
 

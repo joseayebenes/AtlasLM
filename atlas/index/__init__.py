@@ -158,7 +158,7 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    scope_chars, rrf_k, weights); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
@@ -211,15 +211,17 @@ class Index:
                rewrite: bool = False, dense: bool = True, per_document: int | None = None) -> list[dict]:
         """k = 0 and per_document = None: those of the settings."""
         per = self.settings["per_document"] if per_document is None else per_document
-        return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per)
+        s = self.settings
+        return search(self.store, self.embedder, query, k or s["results"], document, kinds,
+                      self.llm if rewrite else None, dense, per, rrf_k=s["rrf_k"], weights=s["weights"])
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "") -> dict:
         """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+                      rrf_k=s["rrf_k"], weights=s["weights"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

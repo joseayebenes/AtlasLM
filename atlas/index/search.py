@@ -3,9 +3,13 @@
 A search merges several rankings with Reciprocal Rank Fusion, which needs no calibration
 between scores of different kinds:
 
-- exact IDs (requirements, terms) mentioned in the query, matched against `ref`;
+- ids: exact IDs (requirements, terms) mentioned in the query, matched against `ref`;
 - dense: cosine similarity with the vectors of the current embeddings model;
-- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase.
+- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase;
+- keywords: BM25 over the exact keywords of the rewritten question.
+
+Each kind of list can weigh more or less ([search] weights, 1 each) and `rrf_k` (60) says
+how much the first places count more than the next ones.
 
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
@@ -90,12 +94,22 @@ point it out.
 - Answer in the same language as the question."""
 
 
-def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
-    """Reciprocal Rank Fusion: merges rankings without calibrating their scores."""
+RRF_K = 60
+
+
+def rrf(rankings: list, k: int = RRF_K, weights: dict[str, float] | None = None) -> list[int]:
+    """Reciprocal Rank Fusion: merges rankings without calibrating their scores. Each
+    ranking is a list of ids or a (label, list of ids) pair; `weights` {label: weight}
+    multiplies what each list gives (1 for a label it does not have, and for a list without
+    a label); a list that weighs 0 is left out."""
     score: dict[int, float] = {}
     for ranking in rankings:
-        for rank, rid in enumerate(ranking):
-            score[rid] = score.get(rid, 0.0) + 1.0 / (k + rank + 1)
+        label, ids = ranking if isinstance(ranking, tuple) else ("", ranking)
+        weight = (weights or {}).get(label, 1.0)
+        if not weight:
+            continue
+        for rank, rid in enumerate(ids):
+            score[rid] = score.get(rid, 0.0) + weight / (k + rank + 1)
     return sorted(score, key=lambda r: -score[r])
 
 
@@ -139,26 +153,28 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
 
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
-           per_document: int = 0, rewritten: dict | None = None) -> list[dict]:
+           per_document: int = 0, rewritten: dict | None = None, rrf_k: int = RRF_K,
+           weights: dict[str, float] | None = None) -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
     its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
     no limit) is the most hits of one document while others have some. With `llm`, the
     query is rewritten first (or `rewritten` gives it already). With dense=False there are
-    no vectors (IDs and BM25 only): no request to any model."""
+    no vectors (IDs and BM25 only): no request to any model. `rrf_k` and `weights` (by kind
+    of list: ids, dense, lexical, keywords) go to rrf."""
     allowed = store.allowed(document, kinds)
     if rewritten is None and llm is not None:
         rewritten = rewrite_question(llm, query)
     queries = [query] + (rewritten["queries"] if rewritten else [])
     keywords = rewritten["keywords"] if rewritten else []
     n = max(k * 3, 20)
-    rankings = [store.by_ref(" ".join([query] + keywords), allowed)]
+    rankings = [("ids", store.by_ref(" ".join([query] + keywords), allowed))]
     for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
         if dense:
-            rankings.append(store.dense(qvec, embedder.model, n, allowed))
-        rankings.append(store.lexical(q, n, allowed))
+            rankings.append(("dense", store.dense(qvec, embedder.model, n, allowed)))
+        rankings.append(("lexical", store.lexical(q, n, allowed)))
     if keywords:
-        rankings.append(store.lexical(" ".join(keywords), n, allowed))
-    ranked = rrf([r for r in rankings if r])
+        rankings.append(("keywords", store.lexical(" ".join(keywords), n, allowed)))
+    ranked = rrf([r for r in rankings if r[1]], rrf_k, weights)
     if per_document and not document:
         return diverse(store.records(ranked), k, per_document)
     return store.records(ranked[:k])
@@ -303,7 +319,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
-           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
+           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
+           rrf_k: int = RRF_K, weights: dict[str, float] | None = None) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
@@ -315,12 +332,14 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, rewritten=rewritten)
+                                                   per_document=per_document, rewritten=rewritten,
+                                                   rrf_k=rrf_k, weights=weights)
         docs = _scope_documents(store, document, named, hits)
         if docs:
             res = answer_whole(store, llm, question, docs, scope_chars)
             return {**res, "requests": res["requests"] + requests}
-    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
+    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
+                  rrf_k=rrf_k, weights=weights)
     sources = build_context(store, hits, context_chars)
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",

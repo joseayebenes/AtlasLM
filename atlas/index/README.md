@@ -58,10 +58,16 @@ siguiente ejecución.
 
 ## Búsqueda
 
-Una búsqueda combina tres listas con Reciprocal Rank Fusion:
-- los IDs exactos que aparecen en la consulta;
-- la similitud de los vectores;
-- BM25 sobre el mismo texto (FTS5 de SQLite).
+Una búsqueda combina varias listas con Reciprocal Rank Fusion:
+- `ids`: los IDs exactos que aparecen en la consulta;
+- `dense`: la similitud de los vectores, de la consulta y de cada reescritura;
+- `lexical`: BM25 sobre el mismo texto (FTS5 de SQLite), de la consulta y de cada
+  reescritura;
+- `keywords`: BM25 con las palabras exactas de la reescritura, si las hay.
+
+Cada resultado suma `peso / (k + puesto)` de cada lista. `[search] rrf_k` (60) y `[search]
+weights` (1 cada lista) los cambian; ajustarlos solo tiene sentido con un conjunto de
+evaluación del proyecto real (ver más abajo).
 
 Una búsqueda en todos los documentos da como mucho `[search] per_document` resultados (3)
 de cada documento, módulo de DOORS o unidad de código mientras otros tengan alguno; si no
@@ -111,6 +117,23 @@ El código compite con los documentos. En las muestras, «show the tracks on the
 screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de
 `tracks` habla de *tracks*. Para buscar solo en una clase de texto, `--kind` en `atlas
 search` y `atlas ask`, `kind` en la herramienta `search` (o `kinds` en `Index.search`).
+
+Comprobado de nuevo el 17-10-2026 con `per_document = 3` (`atlas eval` con
+`embeddinggemma` de Ollama y el servidor falso para el análisis): sigue cuarta en la
+híbrida y quinta en la léxica; los tres primeros puestos son elementos de `tracks`, justo
+los que deja `per_document`. Con las demás búsquedas igual que antes (75 % a la primera,
+90 % entre las tres primeras, MRR 0,83), probando pesos sobre ese conjunto:
+
+| `[search]` | puesto de «operator screen» | acierto@1 | @3 | MRR |
+|---|---|---|---|---|
+| por defecto (`rrf_k = 60`, pesos 1) | 4 | 75 % | 90 % | 0,83 |
+| `rrf_k = 20` | 4 | 75 % | 90 % | 0,83 |
+| `weights = {dense = 2.0}` | 1 | 90 % | 95 % | 0,93 |
+| `weights = {lexical = 0.5}` | 1 | 90 % | 95 % | 0,93 |
+| `weights = {ids = 2.0}` | 4 | 75 % | 85 % | 0,83 |
+
+Los pesos se quedan en 1: las muestras son sintéticas y repetitivas, y el ajuste se hace
+con un conjunto escrito sobre el proyecto real.
 
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del

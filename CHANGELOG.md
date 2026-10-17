@@ -461,6 +461,25 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   relativas, «does not exist» en las fuentes y el entorno del servidor MCP).
 - `make wheelhouse` y `make wheelhouse-windows` aceptan `EXTRAS` (`all` por defecto):
   `EXTRAS=all,dev` mete pytest para pasar `tests/test_security.py` en el puesto.
+- `tools/licenses.py` y `make licenses`: `dist/THIRD_PARTY_NOTICES.md` (nombre, versión,
+  licencia y URL de cada dependencia de `atlaslm[all]`, agrupadas por licencia y con las AGPL
+  y GPL aparte) y `dist/sbom.cdx.json` (SBOM CycloneDX 1.5 con el purl y la licencia de cada
+  paquete), desde el entorno instalado; avisa de lo instalado en otra versión que la de
+  `constraints.txt`. `make wheelhouse` y `make wheelhouse-windows` dejan los dos ficheros en
+  el wheelhouse, sacados de sus propios wheels (así cuentan también los paquetes que solo se
+  instalan en Windows). Hoy salen dos con GPL: pymupdf (AGPL-3.0) y docutils, que llega por
+  `tree-sitter-ada` → `twine` → `readme-renderer`.
+- `make audit`: `pip-audit` sobre las versiones de `constraints.txt` de todos los Python
+  sin instalarlas (`--no-deps`, un fichero por versión de un mismo paquete); necesita red para
+  consultar las vulnerabilidades y tarda menos de un minuto. `pip-audit` entra en el extra `dev`.
+- `atlas plugins` dice de cada extractor de documentos sus extensiones, su licencia y si
+  está desactivado. Los plugins `DocumentExtractor` tienen un atributo `license`.
+- `docs/seguridad.md` («pymupdf y la AGPL-3.0»): qué supone la AGPL para una herramienta
+  interna, la alternativa MIT (el extractor `markitdown`) y dos opciones: pymupdf por defecto
+  con la nota, o un extra `docs-pymupdf` aparte del `docs`. La elección queda pendiente de la
+  política de la empresa; mientras, sigue pymupdf por defecto.
+- README, «Antes de publicar una versión»: pruebas, `make audit`, `make licenses`, wheelhouse y
+  `make check-install`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -692,6 +711,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   borrar cuando todo funcione. Ver «Al actualizar» en `docs/instalacion.md`.
 - Con la 0.2.0 o anterior instalada en otro puesto, ese puesto sigue abriendo el workspace
   (no mira la versión); las versiones siguientes ya no abren uno de un atlas más nuevo.
+- `constraints.txt` fija `pip-audit` y sus dependencias, añadidas a mano desde Python 3.13
+  (`platformdirs` solo desde 3.11: en 3.10 lo resuelve pip). La próxima vez que se genere
+  con `tools/constraints.py` saldrán de las instalaciones limpias de cada Python.
 
 ## [0.2.0] — 2026-10-16
 

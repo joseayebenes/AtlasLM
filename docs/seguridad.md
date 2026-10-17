@@ -220,10 +220,74 @@ En el código no hay `eval`, `exec`, `pickle` ni procesos lanzados con shell.
 
 - Todas vienen de PyPI. `constraints.txt` fija la versión exacta de cada una, y el
   wheelhouse permite instalar sin red (ver [instalación](instalacion.md)).
-- `pip-audit` sobre los conjuntos fijados de Python 3.10, 3.11, 3.12 y 3.13: sin
-  vulnerabilidades conocidas el 11 de octubre de 2026. Conviene repetirlo con cada versión:
-  `pip-audit -r constraints.txt`.
+- **Vulnerabilidades**: `make audit` pasa `pip-audit` por las versiones fijadas de todos los
+  Python (las de `constraints.txt`, sin instalarlas; necesita red). Sin vulnerabilidades
+  conocidas el 17 de octubre de 2026. Es un paso de cada versión (ver la lista de
+  [Antes de publicar una versión](../README.md#antes-de-publicar-una-versión)).
+- **Licencias**: `make licenses` escribe `dist/THIRD_PARTY_NOTICES.md` (nombre, versión,
+  licencia y URL de cada dependencia, por licencia) y `dist/sbom.cdx.json` (SBOM CycloneDX
+  1.5); `make wheelhouse` y `make wheelhouse-windows` dejan los dos dentro del wheelhouse,
+  sacados de sus propios wheels. La licencia es la que declara cada paquete. Casi todo es
+  MIT, BSD, Apache-2.0, PSF o MPL-2.0. Dos declaran GPL:
+  - **pymupdf**: AGPL-3.0 o comercial de Artifex. Ver [abajo](#pymupdf-y-la-agpl-30).
+  - **docutils** llega por `tree-sitter-ada` → `twine` → `readme-renderer`. Su código es de
+    dominio público o BSD-2-Clause; según su `COPYING`, la GPL-3.0 solo cubre `rst.el`, el
+    modo de Emacs, que no va en el wheel.
 - `tree-sitter-ada` 0.1.0 declara `build` y `twine` como dependencias, aunque no los usa.
+- `atlas plugins` dice la licencia de cada extractor de documentos y si está desactivado.
+
+### pymupdf y la AGPL-3.0
+
+**Decisión pendiente de la política de la empresa sobre software AGPL en herramientas
+internas.** Mientras no se decida, se queda la opción A.
+
+pymupdf es el extractor de PDF por defecto (`extractor:pymupdf`) y también lee los
+marcadores (`structure = "bookmarks"`). Su licencia es doble: AGPL-3.0, o una comercial que
+vende Artifex.
+
+Qué implica la AGPL-3.0 para atlas:
+
+- Obliga a quien **entregue** el programa a otro (atlas con pymupdf dentro, el wheelhouse) a
+  darle también el código fuente completo bajo la AGPL, el de atlas incluido. Si se modifica
+  pymupdf, también a quien lo use a través de una red.
+- Usar y copiar el programa dentro de la misma empresa no es entregarlo: así lo dice la FAQ de
+  la GPL. atlas es una herramienta interna: se instala en puestos de la empresa, no se entrega
+  fuera, no se ofrece como servicio a terceros (`atlas serve` habla por stdio con el editor
+  del propio puesto) y no modifica pymupdf. En ese uso, la AGPL no pide nada.
+- Cambiaría si atlas o el wheelhouse salen de la empresa: a un cliente, a un socio o a un
+  subcontratista con sus propios equipos. Entonces hay que quitar pymupdf (opción B), comprar
+  la licencia comercial o entregar el código fuente bajo la AGPL.
+- Lo que diga el área legal manda sobre esta lectura.
+
+La alternativa existe ya como plugin: el extractor `markitdown` (markitdown y pdfminer.six,
+MIT). Se elige con `[plugins] disabled = ["extractor:pymupdf"]`. Cuesta:
+
+- unas 30 veces más tiempo por página (45 ms en vez de 1,5; la primera ejecución del
+  proyecto grande pasa de 6,1 a 17,2 s);
+- peores secciones cuando el PDF no tiene marcadores: pdfminer no sigue el orden en que se
+  escribió el texto, el número de un título se separa de él y, en la muestra sin marcadores,
+  se pierden 18 de las 27 subsecciones;
+- sin pymupdf instalado no se leen los marcadores: `structure = "auto"` pasa a los títulos
+  del texto.
+
+Las dos opciones:
+
+- **A. pymupdf por defecto, con esta nota** (lo que hay). Nada que cambiar en el código.
+  `THIRD_PARTY_NOTICES.md` la pone aparte, y quien vaya a entregar atlas fuera de la empresa
+  tiene que resolverlo antes (opción B para esa entrega, licencia comercial o código fuente).
+- **B. Un extra `docs-pymupdf` separado del extra `docs`.** `docs` queda solo con licencias
+  MIT (markitdown y pdfminer.six) y `all` no lleva pymupdf; quien lo quiera instala
+  `"atlaslm[all,docs-pymupdf]"`. El wheelhouse de serie sale sin AGPL. Hay que hacer:
+  - que `extractor_for` salte `extractor:pymupdf` si pymupdf no está instalado (hoy
+    fallaría al extraer) y que `atlas sections` y `atlas doctor` digan qué extractor se usa
+    y que los marcadores no se leen;
+  - leer los marcadores también con pdfminer (`PDFDocument.get_outlines`), para no perder
+    `structure = "bookmarks"`;
+  - sacar pymupdf del extra `dev` o dejarlo solo ahí para las pruebas que generan PDF;
+  - cambiar la tabla de extras de la [instalación](instalacion.md) y regenerar
+    `constraints.txt`.
+
+  El precio son las secciones y el tiempo de arriba para todos los que no instalen el extra.
 
 ## Riesgos que quedan
 

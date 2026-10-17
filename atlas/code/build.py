@@ -25,6 +25,7 @@ to a compiler. Placeholders:
     {include}   one -I<folder> per folder of the code roots that holds source files
     {build}     <workspace>/build, where the compiler leaves what it produces
     {exe}       the executable of run_test: <workspace>/build/<name of the file>
+    {project}   the GPR of [sources.code] project (gpr.py)
 
 With GNAT (installed with Alire, `alr toolchain --select gnat_native gprbuild`):
 
@@ -47,7 +48,8 @@ server and prints the answer).
 
 `tool_path` goes before PATH for these commands (globs allowed; a relative folder is relative
 to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
-used without touching the shell. A project with a GPR file would use gprbuild instead. The commands
+used without touching the shell. With [sources.code] project (a GPR file), check_command and
+test_command are gprbuild over it unless given (gpr.py). The commands
 have the trust of atlas.toml itself; run_test runs code, so it is only offered when asked for.
 
 The file tools of the same context get two hooks from here (CodeTools.for_context):
@@ -204,7 +206,7 @@ class BuildTools:
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
                  hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
-                 reference: Iterable[str] = (), reference_db: str | Path | None = None):
+                 reference: Iterable[str] = (), reference_db: str | Path | None = None, project: str = ""):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
         self.library = Library(library, files.roots)
@@ -220,25 +222,29 @@ class BuildTools:
         self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
                           for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
         self.timeout = timeout
+        self.project = project                # {project}: the GPR of [sources.code] project
 
     @classmethod
     def from_config(cls, cfg, files: CodeTools | None = None, base: str | Path | None = None) -> "BuildTools":
         """Over [sources.code]. With `base`, a copy of the working folder (a parallel attempt of
         atlas develop): its own build folder, and the folders of tool_path in the copy (the
         scripts of the project build what is in it); the manuals and the library are shared."""
-        sc = cfg["sources"].get("code") or {}
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
         tool_path = sc.get("tool_path", [])
         build_dir = cfg.workspace / "build"
+        project = sc.get("project", "")
         if base is not None:
             tool_path = [rebased(p, base) if Path(p).expanduser().is_absolute() else str(Path(base) / p)
                          for p in tool_path]          # relative ones are relative to where atlas runs: the copy
             build_dir = Path(base) / ".atlas" / "build"
+            project = rebased(project, base) if project else ""
         return cls(files or CodeTools.from_config(cfg, base=base), build_dir, sc.get("check_command", []),
                    sc.get("test_command", []), tool_path, int(sc.get("command_timeout", 120)),
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
                    load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []),
-                   sc.get("reference", []), cfg.workspace / "reference.db")
+                   sc.get("reference", []), cfg.workspace / "reference.db", project)
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -306,7 +312,7 @@ class BuildTools:
         return [f"-I{f}" for f in folders]
 
     def _command(self, template: list[str], file: Path | None) -> list[str]:
-        values = {"{build}": str(self.build_dir)}
+        values = {"{build}": str(self.build_dir), "{project}": self.project}
         if file is not None:
             values.update({"{file}": str(file), "{exe}": str(self.build_dir / file.stem)})
         out: list[str] = []

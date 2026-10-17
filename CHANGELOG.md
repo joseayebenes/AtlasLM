@@ -6,6 +6,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[sources.code] project = "tms.gpr"` y `[sources.code.project_vars]`: el proyecto GPR del
+  código Ada da las raíces (las carpetas de fuentes suyas y de los proyectos que importa, con
+  `**`), añade a `exclude` las de objetos, ejecutables y bibliotecas, y, si no se dan, los
+  comandos de gprbuild (`gprbuild -P {project} -X... -c -u -f {file}`, `-gnatc` para una
+  especificación sola, y el de las pruebas). El servidor de lenguaje abre ese proyecto con sus
+  variables en vez del mínimo que escribía atlas. El lector (`atlas/code/gpr.py`) es propio y
+  sin dependencias, y avisa con fichero y línea de lo que no entiende. `{project}` vale en
+  cualquier comando.
+- `atlas plugins` dice qué raíces de código hay (y si salen del proyecto), qué se excluye y
+  cuántos ficheros `.ads` y `.adb` ven.
+- `examples/samples/ada/samples.gpr` (`make_samples.py`), con una variable de escenario.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -102,7 +102,8 @@ def default_tools(cfg: Config) -> list[str]:
             log.warning("no graph tools: %s", e)
     if code:
         names.append("read_file")
-        if sources["code"].get("check_command"):          # a compiler: the errors the model cannot see
+        from atlas.code.gpr import code_config
+        if code_config(cfg).get("check_command"):          # a compiler: the errors the model cannot see
             names.append("check_code")
     return names
 

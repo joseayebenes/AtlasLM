@@ -19,7 +19,8 @@
                    [--k N] [--kind KIND] [--document NAME]
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
-    atlas plugins  [atlas.toml]     available plugins
+    atlas plugins  [atlas.toml]     available plugins, and the code roots and how many Ada files they have
+                                    (those of the GPR of [sources.code] project, if any)
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
@@ -94,10 +95,23 @@ def doors_step(ctx) -> Step | None:
     )
 
 
+def code_files(sc: dict, extensions) -> list[str]:
+    """The files of the code roots with these extensions, without the excluded ones."""
+    exclude, out = sc.get("exclude", []), []
+    for root in sc.get("roots", []):
+        for p in sorted(Path(root).rglob("*")):
+            if p.is_file() and p.suffix.lower() in extensions and \
+                    not any(fnmatch.fnmatch(str(p).replace("\\", "/"), pat) for pat in exclude):
+                out.append(str(p))
+    return out
+
+
 def code_step(ctx) -> Step | None:
+    from atlas.code.gpr import code_config
     sc = ctx.cfg["sources"].get("code")
     if not sc or not sc.get("enabled", True):
         return None
+    sc = code_config(ctx.cfg)          # with a GPR project: its source folders and object folders
     analyzers = {}
     for lang in sc.get("languages", ["ada"]):
         try:
@@ -105,16 +119,9 @@ def code_step(ctx) -> Step | None:
         except LookupError as e:
             raise ConfigError(str(e)) from None
     by_ext = {ext: a for a in analyzers.values() for ext in a.extensions}
-    exclude = sc.get("exclude", [])
 
     def files(ctx) -> list[str]:
-        out = []
-        for root in sc.get("roots", []):
-            for p in sorted(Path(root).rglob("*")):
-                if p.is_file() and p.suffix.lower() in by_ext and \
-                        not any(fnmatch.fnmatch(str(p).replace("\\", "/"), pat) for pat in exclude):
-                    out.append(str(p))
-        return out
+        return code_files(sc, by_ext)
 
     def run(ctx, f: str):
         a = by_ext[Path(f).suffix.lower()]
@@ -920,6 +927,22 @@ def list_plugins(cfg: Config) -> int:
     _context(cfg)
     for kind, names in plugins.describe().items():
         print(f"{kind:16s} {', '.join(names) or '-'}")
+    if cfg["sources"].get("code"):
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
+        project = sc.get("_project")
+        if project:
+            scenario = ", ".join(f"{k}={v}" for k, v in project["externals"].items())
+            print(f"\n{'code project':16s} {project['path']}" + (f" ({scenario})" if scenario else ""))
+            for label, key in (("  imports", "withs"), ("  object dirs", "object_dirs")):
+                if project[key]:
+                    print(f"{label:16s} {', '.join(project[key])}")
+        else:
+            print()
+        given = "" if project is None or (cfg["sources"]["code"].get("roots")) else " (from the project)"
+        print(f"{'code roots':16s} {', '.join(sc.get('roots', [])) or '-'}{given}")
+        ada = code_files(sc, (".ads", ".adb"))
+        print(f"{'code files':16s} {len(ada)} .ads/.adb ({sum(f.lower().endswith('.ads') for f in ada)} .ads)")
     return 0
 
 

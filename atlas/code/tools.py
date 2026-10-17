@@ -100,7 +100,8 @@ class CodeTools:
     def from_config(cls, cfg, read_only: bool = False, base: str | Path | None = None) -> "CodeTools":
         """Over the roots and exclude patterns of [sources.code]; paths from the working
         directory, or from `base`, a copy of it (a parallel attempt of atlas develop)."""
-        sc = cfg["sources"].get("code") or {}
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
         roots = sc.get("roots", []) if base is None else [rebased(r, base) for r in sc.get("roots", [])]
         return cls(roots, sc.get("exclude", []), base=base or ".", read_only=read_only,
                    protected=sc.get("protected", []))

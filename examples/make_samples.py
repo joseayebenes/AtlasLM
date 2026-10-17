@@ -6,6 +6,7 @@ documents, code or DOORS:
   samples/docs/spec_without_bookmarks.pdf   the same one, without bookmarks and with split numbers
   samples/docs/hmi_manual.md                a Markdown file with requirements
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
+  samples/ada/samples.gpr                   its GPR project: a scenario variable, src and tests
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
                                             (atlas.doors.exchange), with headings and hierarchy
@@ -146,6 +147,24 @@ procedure Test_Tracks is
 begin
    Tracks.Delete_Track (1);
 end Test_Tracks;
+""", encoding="utf-8")
+    (ROOT / "ada" / "samples.gpr").write_text("""-- The GPR project of the samples ([sources.code] project in the tests).
+project Samples is
+   type Build_Type is ("debug", "release");
+   Build : Build_Type := external ("BUILD", "debug");
+
+   for Source_Dirs use ("src", "tests");
+   for Object_Dir use "obj/" & Build;
+
+   package Compiler is
+      case Build is
+         when "debug" =>
+            for Default_Switches ("Ada") use ("-g", "-gnata");
+         when others =>
+            for Default_Switches ("Ada") use ("-O2");
+      end case;
+   end Compiler;
+end Samples;
 """, encoding="utf-8")
     print("created", ROOT / "ada")
 

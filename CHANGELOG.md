@@ -21,6 +21,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   procedimientos enlazados por `verifies` (`test_stp_0101.py`); y tras conservarlo, el paso dice
   qué requisitos no cita ningún subprograma cambiado (`untagged`). Con `require_tags = true`,
   el encargo vuelve una vez al agente para etiquetarlos.
+- Un banco de encargos en `atlas eval`: casos `develop` (un plan, una carpeta de partida que se
+  copia a un temporal antes de cada ejecución, `expect_tests_passed` y `runs`) en un conjunto
+  aparte, `examples/eval/develop.yaml`, sobre `examples/develop/calc`, un proyecto Python
+  mínimo con su plan. El informe guarda de cada ejecución los tests que pasan, las ediciones
+  hechas y fallidas, las compilaciones con errores, las llamadas, el tiempo y el coste, con el
+  modelo. `atlas eval --set FICHERO` pasa un solo conjunto (`make eval-develop`) y
+  `tools/compare_models.py --develop` añade una tabla por modelo.
 
 ### Cambiado
 - `examples/agents/implementer.md` es el medido: `replace_subprogram`, `add_subprogram`,

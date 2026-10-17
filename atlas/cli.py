@@ -25,6 +25,7 @@
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
+                   [--set FILE]     only that set (examples/eval/develop.yaml: plans of atlas develop)
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
                                     whether the server uses the reasoning that the agents give back
@@ -850,7 +851,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
+OPTIONS = {"eval": {"--set": str},
+           "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
 
 
@@ -979,11 +981,19 @@ def develop(cfg: Config, plan: str) -> int:
     return 0 if final["tests_passed"] == final["tests"] else 1
 
 
-def evaluate(cfg: Config) -> int:
+def evaluate(cfg: Config, set: str = "") -> int:
+    """The sets of [agents.eval] sets, or only `set` (--set FILE, relative to atlas.toml)."""
     from atlas.agents.evaluate import KS, SEARCH_MODES, evaluate_sets
 
     def show(r: dict) -> None:
-        if r.get("kind") == "search":
+        if r.get("kind") == "develop":
+            e, c = r.get("edits") or {}, r.get("compiles") or {}
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+                  + (f"{r['tests_passed']} of {r['tests']} tests (expected {r['expect_tests_passed']}), "
+                     f"{r['calls']} calls, edits {e.get('made', 0) + e.get('failed', 0)} ({e.get('failed', 0)} failed), "
+                     f"compilations with errors {c.get('failed', 0)}" + (f", ${r['cost']}" if "cost" in r else "")
+                     if "error" not in r else r["error"]), flush=True)
+        elif r.get("kind") == "search":
             ranks = "  ".join(f"{m} {r[m]['rank'] or '-'}" for m in SEARCH_MODES)
             lost = sorted({x for m in SEARCH_MODES for x, n in r[m]["ranks"].items() if not n})
             print(f"{'ok  ' if r['hybrid']['rank'] else 'MISS'} {r['id']}  position: {ranks}"
@@ -1000,7 +1010,7 @@ def evaluate(cfg: Config) -> int:
                   + (f"  {r['error']}" if r.get("error") else ""), flush=True)
 
     try:
-        results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show, sets=[set] if set else None)
     except ImportError as e:
         sys.exit(str(e))
     for name, res in results.items():
@@ -1017,6 +1027,12 @@ def evaluate(cfg: Config) -> int:
         if "agents" in res:
             a = res["agents"]
             print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
+        if "develop" in res:
+            d, totals = res["develop"], res["develop"]["totals"]
+            print(f"  develop: {d['passed']} of {d['total']} runs reached their tests ({d['rate']:.0%}); "
+                  f"{totals['tests_passed']} of {totals['tests']} tests, {totals['calls']} calls, "
+                  f"{totals['edits']['failed']} of {totals['edits']['made'] + totals['edits']['failed']} edits failed, "
+                  f"{totals['seconds'] / 60:.1f} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
     return 0
 
 
@@ -1104,7 +1120,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if action in with_text:
             sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0], **options))
-        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
+        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml"), **options))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

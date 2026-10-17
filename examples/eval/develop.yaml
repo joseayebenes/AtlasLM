@@ -1,0 +1,9 @@
+# Develop cases, apart from the default sets: each one runs a plan of atlas develop on a copy of
+# its starting folder and counts the tests that pass at the end (and the edits, compilations,
+# calls, time and cost). Paths relative to the atlas.toml evaluated.
+#   atlas eval atlas.openrouter.toml --set examples/eval/develop.yaml     (make eval-develop)
+- id: calc-from-start
+  develop: examples/develop/calc/plan.toml       # the plan
+  from: examples/develop/calc/start              # copied to a temporary folder before each run
+  expect_tests_passed: 2                         # the case passes with at least these tests passing
+  runs: 1                                        # optional: runs of the case ([agents.eval] runs otherwise)

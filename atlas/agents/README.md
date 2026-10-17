@@ -349,8 +349,9 @@ especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log`
 
 ## Evaluación
 
-`atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.
-Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
+`atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML), o solo el de `--set
+FICHERO`, y los puntúa sin modelo. Un conjunto mezcla cuatro tipos de caso, según la clave que
+lleva la pregunta:
 
 ```yaml
 - id: trace-srs-0004                 # un agente: necesita el modelo y el extra [agents]
@@ -364,6 +365,11 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
 - id: graph-impact-log               # una consulta del grafo, sin modelo
   impact: Logger.Log                 # trace, trace_code, impact, find_symbol, search_code_docs
   expect: [tracks.delete_track, SRS-0004]
+- id: calc-from-start                # un plan de atlas develop: necesita el modelo y el extra [agents]
+  develop: examples/develop/calc/plan.toml
+  from: examples/develop/calc/start  # se copia a una carpeta temporal antes de cada ejecución
+  expect_tests_passed: 2             # pasa si al final pasan al menos estos tests
+  runs: 1                            # opcional: si no, [agents.eval] runs
 ```
 
 - **Agentes.** Un caso está bien si la respuesta contiene los textos esperados (IDs,
@@ -380,6 +386,21 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
   qué aportan los vectores.
 - **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
   no ordena ni varía: o está o no está.
+- **Encargos.** Un caso `develop` ejecuta un plan de `atlas develop` sobre una copia de su
+  carpeta de partida, en una carpeta temporal, y está bien si al final pasan al menos
+  `expect_tests_passed` tests. El modelo y la red son los del `atlas.toml` evaluado;
+  `[sources.code]` y `[agents] dirs`, los del `atlas.toml` que hay junto al plan (o el de
+  `config`). De cada ejecución se guardan los tests que pasan, las ediciones hechas y
+  fallidas, las compilaciones con errores, las llamadas, los tokens, el tiempo y el coste, y el
+  informe de `atlas develop` va a `reports/eval-<conjunto>/<caso>-<n>.md`. Hasta ahora, cada
+  versión del bucle se juzgaba a mano; así se compara con la anterior y entre modelos
+  (`tools/compare_models.py --develop`, ver [OpenRouter](../../docs/openrouter.md)).
+  `examples/develop/calc` es un proyecto Python mínimo (una calculadora con `add` mal hecha,
+  sin `divide`, y dos tests protegidos) con su plan y su agente `python_implementer`; sirve con
+  el servidor falso (no cambia nada: el informe dice 0 de 2) y con un modelo real. Va en un
+  conjunto aparte, `examples/eval/develop.yaml`, fuera de los de por defecto, porque con un
+  modelo real tarda minutos: `make eval-develop` (con `EVAL_CONFIG=atlas.test.toml` y
+  `make fake`, sin modelo).
 
 `examples/eval/retrieval.yaml` tiene 20 búsquedas (IDs exactos, palabras del texto,
 paráfrasis, preguntas en español, secciones y código) y 10 consultas del grafo sobre las
@@ -403,7 +424,8 @@ sets = ["examples/eval/assistant.yaml", "examples/eval/retrieval.yaml"]
 runs = 3                   # veces que se hace cada pregunta a un agente: los modelos no responden siempre igual
 ```
 
-Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`.
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents`, `retrieval` y
+`develop`.
 Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el modelo de chat;
 la búsqueda híbrida sí necesita el de embeddings.
 
@@ -466,5 +488,6 @@ que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona 
 anclados a requisitos, con DOORS y el grafo de verdad).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
-agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.
+agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda, del grafo y
+de los casos `develop` (con un agente de pega y con el servidor falso).
 Con Ollama, `tests/test_agents_ollama.py`.

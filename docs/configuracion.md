@@ -304,8 +304,15 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice y consultas del grafo |
-| `runs` | entero | `1` | veces que se hace cada pregunta a un agente: los modelos no responden siempre igual |
+| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice, consultas del grafo y planes de `atlas develop`. `atlas eval --set FICHERO` pasa solo ese conjunto |
+| `runs` | entero | `1` | veces que se hace cada pregunta a un agente, o cada plan de un caso `develop` que no diga las suyas: los modelos no responden siempre igual |
+
+Los casos `develop` (`examples/eval/develop.yaml`, fuera de los conjuntos por defecto porque
+tardan) ejecutan un plan sobre una copia temporal de su carpeta de partida (`from`). Toman el
+modelo y la red de este fichero, y `[sources.code]` y `[agents] dirs` del `atlas.toml` que hay
+junto al plan (o del de su clave `config`). Sus rutas son relativas a este fichero.
+`ATLAS_PYTHON`, si no está puesta, es el Python que ejecuta atlas, para los comandos de un
+proyecto en Python.
 
 ## El plan de `atlas develop`
 

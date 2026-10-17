@@ -107,6 +107,7 @@ atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace to
 atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
+atlas eval atlas.openrouter.toml --set examples/eval/develop.yaml   # el banco de encargos de atlas develop
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
@@ -161,7 +162,9 @@ docs/                       instalación, configuración y seguridad
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)
-examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
+examples/eval/              conjuntos de evaluación de los agentes (atlas eval); develop.yaml, aparte
+examples/agents/            agentes de proyecto que escriben código: los medidos en atlas develop
+examples/develop/calc/      un proyecto Python mínimo con su plan, para el banco de encargos
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tools/check_install.py      instalación limpia desde el wheelhouse (make check-install)

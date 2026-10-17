@@ -6,10 +6,19 @@ leave trailing commas, so the answer goes through three stages:
 
 1. `parse_json`: the largest JSON object in the text that has one of the expected keys.
 2. `repair_json`: what can be saved from a cut or slightly broken object.
-3. If neither works, the model is asked once to correct itself, showing it the error.
+3. `validate`: the object against the schema (the subset atlas uses: type, properties,
+   required, items, enum).
+4. If there is no object, or it breaks the schema, the model is asked once to correct
+   itself, quoting the error (`requirements[2].text must be a string`).
 
 An answer cut by length is never taken as good: `TruncatedResponse` carries what could be
 repaired so that the caller can split its input and ask again.
+
+The answer is asked for with `response_format` in three tiers: `json_schema`, `json_object`
+(most servers that reject a schema accept it, and it already keeps prose and code blocks
+out) and none. A server that rejects a tier is asked with the next one from then on, by
+every JsonLlm of the process that goes to the same `base_url` and model
+(`structured_output`).
 
     from atlas.llm import JsonLlm
     llm = JsonLlm(conn.llm)
@@ -26,9 +35,73 @@ from typing import Callable
 
 from atlas.llm.connection import ServiceConfig, create_client
 
-__all__ = ["JsonLlm", "TruncatedResponse", "parse_json", "repair_json"]
+__all__ = ["JsonLlm", "TextAnswer", "TruncatedResponse", "parse_json", "repair_json", "structured_output",
+           "validate"]
 
 log = logging.getLogger(__name__)
+
+# How the JSON is asked for, from the best to none
+TIERS = ("json_schema", "json_object", "none")
+
+# The tier each server accepts, learned by (base_url, model) for the whole process: a JsonLlm
+# is created per command and per MCP call, and each would pay another rejected request.
+_TIERS: dict[tuple[str, str], str] = {}
+_TIERS_LOCK = threading.Lock()
+
+
+def structured_output(cfg: ServiceConfig) -> str:
+    """The `response_format` tier that the server of cfg accepts, as far as this process
+    knows: "json_schema" (until one is rejected), "json_object" or "none"."""
+    with _TIERS_LOCK:
+        return _TIERS.get((cfg.base_url, cfg.model), TIERS[0])
+
+
+def _step_down(cfg: ServiceConfig, rejected: str, error: Exception) -> None:
+    """The server rejected `rejected`: from now on, the next tier (once, even if several
+    threads were rejected at the same time)."""
+    key = (cfg.base_url, cfg.model)
+    with _TIERS_LOCK:
+        if _TIERS.get(key, TIERS[0]) != rejected:
+            return
+        _TIERS[key] = TIERS[TIERS.index(rejected) + 1]
+    log.warning("the server does not accept response_format %s, going on with %s: %s",
+                rejected, _TIERS[key], error)
+
+
+_TYPES = {"string": str, "integer": int, "number": (int, float), "boolean": bool, "array": list,
+          "object": dict, "null": type(None)}
+_NAMES = {"string": "a string", "integer": "an integer", "number": "a number", "boolean": "true or false",
+          "array": "a list", "object": "an object", "null": "null"}
+
+
+def _is(value, type_name: str) -> bool:
+    if type_name in ("integer", "number") and isinstance(value, bool):
+        return False
+    return isinstance(value, _TYPES.get(type_name, object))
+
+
+def validate(obj, schema: dict, path: str = "") -> list[str]:
+    """What `obj` breaks of a JSON schema, as sentences that name the place
+    ("requirements[2].text must be a string"); [] if nothing. Only the subset atlas uses:
+    type, properties, required, items and enum."""
+    where = path or "the answer"
+    types = schema.get("type")
+    types = [types] if isinstance(types, str) else types or []
+    if types and not any(_is(obj, t) for t in types):
+        return [f"{where} must be {' or '.join(_NAMES.get(t, t) for t in types)}"]
+    problems = []
+    if "enum" in schema and obj not in schema["enum"]:
+        problems.append(f"{where} must be one of {', '.join(json.dumps(v) for v in schema['enum'])}")
+    if isinstance(obj, dict):
+        prefix = f"{path}." if path else ""
+        problems += [f"{prefix}{k} is missing" for k in schema.get("required", []) if k not in obj]
+        for k, sub in schema.get("properties", {}).items():
+            if k in obj and isinstance(sub, dict):
+                problems += validate(obj[k], sub, prefix + k)
+    if isinstance(obj, list) and isinstance(schema.get("items"), dict):
+        for i, x in enumerate(obj):
+            problems += validate(x, schema["items"], f"{path}[{i}]")
+    return problems
 
 
 def _is_answer(obj, keys: list[str] | None) -> bool:
@@ -112,10 +185,22 @@ class TruncatedResponse(Exception):
         self.partial = partial
 
 
+class TextAnswer(str):
+    """The text of `ask_text`, with how it came: `truncated` if it was still cut by
+    max_tokens after asking again with twice the budget, and how many `requests` it took."""
+    truncated: bool = False
+    requests: int = 1
+
+    def __new__(cls, text: str, truncated: bool = False, requests: int = 1):
+        obj = super().__new__(cls, text)
+        obj.truncated, obj.requests = truncated, requests
+        return obj
+
+
 class JsonLlm:
     """Chat client that answers with JSON objects (`ask_json`) or with text (`ask_text`).
-    It asks for `response_format` with a JSON schema and, if the server does not accept
-    it, goes on without it. Thread-safe: one instance can be shared by the workers that
+    It asks for `response_format` in tiers (see the module) and learns which one the server
+    accepts. Thread-safe: one instance can be shared by the workers that
     analyse sections in parallel, and `concurrency` (0 = no limit) caps how many requests
     of all of them are in flight at once (e.g. the sections of several documents that are
     processed at the same time)."""
@@ -131,8 +216,6 @@ class JsonLlm:
         self._status_error = APIStatusError
         self.model = cfg.model
         self.temperature = cfg.temperature
-        self.schema_ok = True   # turned off if the server does not accept json_schema
-        self._lock = threading.Lock()
         self._slots = threading.BoundedSemaphore(concurrency) if concurrency > 0 else contextlib.nullcontext()
 
     def _create(self, **kwargs):
@@ -149,61 +232,106 @@ class JsonLlm:
             kwargs["extra_body"] = self.cfg.extra_body
         return kwargs
 
-    def ask_text(self, system: str, user: str) -> str:
-        """A plain text answer (e.g. a cited answer for a person)."""
-        resp = self._create(**self._kwargs(
-            [{"role": "system", "content": system}, {"role": "user", "content": user}]))
-        return (resp.choices[0].message.content or "").strip()
+    @property
+    def structured(self) -> str:
+        """The response_format tier used with this server: json_schema, json_object or none."""
+        return structured_output(self.cfg)
+
+    def ask_text(self, system: str, user: str) -> TextAnswer:
+        """A plain text answer (e.g. a cited answer for a person). If it comes empty or cut
+        by max_tokens, it is asked once more with twice the budget (twice the tokens the
+        first one spent if no max_tokens is set); if that one is cut too, the answer says
+        `truncated`."""
+        kwargs = self._kwargs([{"role": "system", "content": system}, {"role": "user", "content": user}])
+        resp = self._create(**kwargs)
+        ch = resp.choices[0]
+        text, finish = (ch.message.content or "").strip(), ch.finish_reason or ""
+        if text and finish != "length":
+            return TextAnswer(text)
+        budget = kwargs.get("max_tokens") or getattr(getattr(resp, "usage", None), "completion_tokens", 0) or 0
+        if budget:
+            kwargs["max_tokens"] = 2 * budget
+        log.warning("the answer came %s (finish_reason %s): asking again with max_tokens %s",
+                    "cut" if text else "empty", finish or "-", kwargs.get("max_tokens", "unset"))
+        resp = self._create(**kwargs)
+        ch = resp.choices[0]
+        again, finish = (ch.message.content or "").strip(), ch.finish_reason or ""
+        if again or not text:
+            text = again
+        else:
+            finish = "length"                    # the first one, cut, is all there is
+        if finish == "length":
+            log.warning("the answer is still cut by max_tokens (%s)", kwargs.get("max_tokens", "unset"))
+        return TextAnswer(text, truncated=finish == "length", requests=2)
 
     def _call(self, messages: list[dict], schema: dict, name: str) -> tuple[str, str]:
         while True:
             kwargs = self._kwargs(messages)
-            if self.schema_ok:
-                kwargs["response_format"] = {"type": "json_schema", "json_schema":
-                                             {"name": name, "schema": schema}}
+            tier = self.structured
+            if tier == "json_schema":
+                kwargs["response_format"] = {"type": "json_schema", "json_schema": {"name": name, "schema": schema}}
+            elif tier == "json_object":
+                kwargs["response_format"] = {"type": "json_object"}
             try:
                 resp = self._create(**kwargs)
             except self._status_error as e:
-                if "response_format" in kwargs and e.status_code in self.NO_SCHEMA_STATUSES:
-                    with self._lock:
-                        if self.schema_ok:
-                            log.warning("the server does not accept json_schema, going on without it: %s", e)
-                            self.schema_ok = False
+                if tier != "none" and e.status_code in self.NO_SCHEMA_STATUSES:
+                    _step_down(self.cfg, tier, e)
                     continue
                 raise
             ch = resp.choices[0]
             return ch.message.content or "", (ch.finish_reason or "")
 
+    def probe_structured(self) -> str:
+        """One small JSON request, to learn the tier the server accepts (atlas check)."""
+        self._call([{"role": "user", "content": 'Answer with the JSON object {"ok": true}.'}],
+                   {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]}, "check")
+        return self.structured
+
     def ask_json(self, system: str, user: str, schema: dict, name: str,
                  on_failure: Callable[[int, str, str], None] | None = None) -> dict:
         """Asks for a JSON object. If the answer is not valid: repairs it if it is a detail,
         raises TruncatedResponse if it was cut by length (so the input can be split), and
-        otherwise asks the model for a correction showing it its error (instead of
-        repeating the same request). `on_failure(attempt, text, finish_reason)` is called
-        with every invalid answer, to keep it for diagnosis."""
+        otherwise asks the model for a correction quoting its first error (instead of
+        repeating the same request). An object that still breaks the schema after the
+        correction is returned as it is (the correction only if it has fewer errors): the callers make it
+        fit. `on_failure(attempt, text, finish_reason)` is called with every answer that is
+        thrown away, to keep it for diagnosis."""
         keys = schema.get("required") or list(schema.get("properties", {}))
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         text, finish = self._call(messages, schema, name)
+        best: tuple[int, dict] | None = None             # (errors, object) of the best answer so far
         for attempt in (1, 2):
-            if finish != "length":                 # a cut answer is never taken as good
-                try:
-                    return parse_json(text, keys)
-                except ValueError as e:
-                    error = e
-            else:
-                error = ValueError("answer cut by length")
+            if finish == "length":                        # a cut answer is never taken as good
+                if on_failure:
+                    on_failure(attempt, text, finish)
+                repaired = repair_json(text, keys)
+                raise TruncatedResponse(f"answer cut by length ({len(text)} chars)", repaired)
+            try:
+                obj, error = parse_json(text, keys), ""
+            except ValueError as e:
+                obj, error = repair_json(text, keys), f"That was not a valid JSON object ({e})"
+            if obj is not None:
+                problems = validate(obj, schema)
+                if not problems:
+                    return obj
+                if best is None or len(problems) < best[0]:
+                    best = (len(problems), obj)
+                    if attempt == 2:
+                        break
+                error = error or (f"That JSON object does not follow the schema: {problems[0]}"
+                                  + (f" (and {len(problems) - 1} more)" if len(problems) > 1 else ""))
             if on_failure:
                 on_failure(attempt, text, finish)
-            repaired = repair_json(text, keys)
-            if finish == "length":
-                raise TruncatedResponse(f"answer cut by length ({len(text)} chars)", repaired)
-            if repaired is not None:
-                return repaired
             if attempt == 2:
                 break
             messages = messages + [
                 {"role": "assistant", "content": text[:3000]},
-                {"role": "user", "content": f"That was not a valid JSON object ({error}). Reply "
-                                            f"again with ONLY the JSON object, nothing before or after it."}]
+                {"role": "user", "content": f"{error}. Reply again with ONLY the JSON object, nothing before "
+                                            f"or after it."}]
             text, finish = self._call(messages, schema, name)
+        if best is not None:
+            log.warning("the model answered a JSON object that does not follow the schema %s: %s",
+                        name, validate(best[1], schema)[0])
+            return best[1]
         raise RuntimeError(f"the model did not return valid JSON, not even after asking for a correction: {error}")

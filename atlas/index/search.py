@@ -263,21 +263,34 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
     if len(parts) == 1:
-        text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
+        text = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}")
+        requests, truncated = _requests(text), _truncated(text)
     else:
         with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
             notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}"),
                                   parts))
+        requests, truncated = sum(_requests(n) for n in notes), any(_truncated(n) for n in notes)
         notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
-        requests = len(parts)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
             joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
-            text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}"), requests + 1
+            text = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}")
+            requests, truncated = requests + _requests(text), truncated or _truncated(text)
     cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-    return {"answer": text, "scope": "whole", "documents": names, "requests": requests,
-            "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited]}
+    return {"answer": str(text), "scope": "whole", "documents": names, "requests": requests,
+            "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
+            **({"truncated": True} if truncated else {})}
+
+
+def _requests(text: str) -> int:
+    """Requests an answer of ask_text took (two when it was asked again for being cut)."""
+    return getattr(text, "requests", 1)
+
+
+def _truncated(text: str) -> bool:
+    """Whether an answer of ask_text is still cut by max_tokens."""
+    return bool(getattr(text, "truncated", False))
 
 
 def _source(n: int, s: dict) -> dict:
@@ -305,7 +318,8 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
-    "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
+    "scope": "passages" | "whole", "documents": those read whole, "requests": to the model},
+    plus "truncated": True if the answer is cut by max_tokens.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
     the question is broad."""
@@ -327,5 +341,6 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
                 "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
     text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
-    return {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1)],
-            "scope": "passages", "documents": [], "requests": requests + 1}
+    return {"answer": str(text), "sources": [_source(i, s) for i, s in enumerate(sources, 1)],
+            "scope": "passages", "documents": [], "requests": requests + _requests(text),
+            **({"truncated": True} if _truncated(text) else {})}

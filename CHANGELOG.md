@@ -6,6 +6,21 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Cambiado
+- La salida estructurada va por escalones: `json_schema`, `json_object` y ninguno. Antes, un
+  servidor que rechazaba el esquema se quedaba sin `response_format`, cuando casi todos
+  aceptan `json_object`. El escalón se aprende por servidor y modelo para todo el proceso
+  (antes, por instancia: cada llamada MCP de `verify` o `link` pagaba otra petición
+  rechazada), y `atlas check` lo dice: `structured output: json_schema | json_object | none`.
+- `ask_json` comprueba la respuesta contra su esquema (tipos, claves obligatorias, listas y
+  valores permitidos) y la corrección cita el primer error («requirements[2].text must be a
+  string»), en vez de pedir JSON sin más.
+
+### Corregido
+- Una respuesta de texto cortada por `max_tokens` (o vacía, con un modelo que razona) llegaba
+  al usuario sin aviso. Ahora se pregunta otra vez con el doble de presupuesto y, si sigue
+  cortada, la respuesta de `atlas ask` y `ask_docs` lleva `truncated` y `atlas ask` lo avisa.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

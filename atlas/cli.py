@@ -917,9 +917,14 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
 
 
 def list_plugins(cfg: Config) -> int:
-    _context(cfg)
+    ctx = _context(cfg)
     for kind, names in plugins.describe().items():
         print(f"{kind:16s} {', '.join(names) or '-'}")
+        if kind == "extractor":
+            for name in names:
+                cls = plugins.get("extractor", name)
+                off = " (disabled)" if f"extractor:{name}" in ctx.disabled else ""
+                print(f"  {name:14s} {' '.join(cls.extensions)}  license: {cls.license or 'no third-party library'}{off}")
     return 0
 
 

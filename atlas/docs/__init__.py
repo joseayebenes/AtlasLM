@@ -32,6 +32,7 @@ class PymupdfExtractor(DocumentExtractor):
     name = "pymupdf"
     extensions = (".pdf",)
     priority = 10           # before markitdown; [plugins] disabled = ["extractor:pymupdf"] goes back to it
+    license = "AGPL-3.0 or commercial (pymupdf, Artifex)"     # see docs/seguridad.md, "Dependencias"
 
     def extract(self, path: Path) -> str:
         try:
@@ -46,6 +47,7 @@ class PymupdfExtractor(DocumentExtractor):
 class MarkitdownExtractor(DocumentExtractor):
     name = "markitdown"
     extensions = (".pdf", ".docx", ".pptx", ".xlsx", ".html")
+    license = "MIT (markitdown, pdfminer.six)"
 
     def extract(self, path: Path) -> str:
         from markitdown import MarkItDown   # optional dependency [docs]

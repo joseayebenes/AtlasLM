@@ -110,10 +110,13 @@ class RequirementsAdapter(ABC):
 
 class DocumentExtractor(ABC):
     """Turns a document into text (with \\f between pages if it has them). When several
-    enabled extractors handle an extension, the one with the highest `priority` is used."""
+    enabled extractors handle an extension, the one with the highest `priority` is used.
+    `license` is that of the third-party library that does the work, as `atlas plugins`
+    shows it ("" if there is none)."""
     name: str = ""
     extensions: tuple[str, ...] = ()
     priority: int = 0
+    license: str = ""
 
     def __init__(self, config: dict):
         self.config = config

@@ -166,6 +166,7 @@ examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tools/check_install.py      instalación limpia desde el wheelhouse (make check-install)
 tools/constraints.py        genera constraints.txt
+tools/licenses.py           aviso de terceros y SBOM de las dependencias (make licenses)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso
 legacy/                     los scripts de partida y el plan del proyecto
 ```

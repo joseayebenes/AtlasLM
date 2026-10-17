@@ -6,6 +6,26 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `tools/licenses.py` y `make licenses`: `dist/THIRD_PARTY_NOTICES.md` (nombre, versión,
+  licencia y URL de cada dependencia de `atlaslm[all]`, agrupadas por licencia y con las AGPL
+  y GPL aparte) y `dist/sbom.cdx.json` (SBOM CycloneDX 1.5 con el purl y la licencia de cada
+  paquete), desde el entorno instalado; avisa de lo instalado en otra versión que la de
+  `constraints.txt`. `make wheelhouse` y `make wheelhouse-windows` dejan los dos ficheros en
+  el wheelhouse, sacados de sus propios wheels (así cuentan también los paquetes que solo se
+  instalan en Windows). Hoy salen dos con GPL: pymupdf (AGPL-3.0) y docutils, que llega por
+  `tree-sitter-ada` → `twine` → `readme-renderer`.
+- `make audit`: `pip-audit` sobre las versiones de `constraints.txt` de todos los Python
+  sin instalarlas (`--no-deps`, un fichero por versión de un mismo paquete); necesita red para
+  consultar las vulnerabilidades y tarda menos de un minuto. `pip-audit` entra en el extra `dev`.
+- `atlas plugins` dice de cada extractor de documentos sus extensiones, su licencia y si
+  está desactivado. Los plugins `DocumentExtractor` tienen un atributo `license`.
+
+### Al actualizar
+- `constraints.txt` fija `pip-audit` y sus dependencias, añadidas a mano desde Python 3.13
+  (`platformdirs` solo desde 3.11: en 3.10 lo resuelve pip). La próxima vez que se genere
+  con `tools/constraints.py` saldrán de las instalaciones limpias de cada Python.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

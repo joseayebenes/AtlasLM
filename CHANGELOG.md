@@ -11,7 +11,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `editor` (por defecto con `[sources.code]`) da las que necesita el agente de un editor para
   cambiar código: `search`, `get_requirement`, `get_section`, `list_documents`, `trace`,
   `trace_code`, `impact`, `build_context`, `find_symbol`, `read_source`, `read_file` y
-  `check_code` (y `context_at`), 12 o 13 en vez de 28 con documentos y código. `trace` da las de trazabilidad
+  `check_code` (y `context_at` y `similar_requirements`), 13 o 14 en vez de 29 con documentos
+  y código. `trace` da las de trazabilidad
   de DOORS y los documentos, y `all` (por defecto sin código), todas las de las fuentes, como
   antes.
 - Cada herramienta del servidor MCP lleva un título (`Trace code`), y las que solo leen el
@@ -24,6 +25,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   editor tiene abiertos. El subprograma se busca en el fichero tal como está ahora, para que
   las líneas añadidas desde el último `atlas run` no lo muevan. En la librería,
   `KnowledgeGraph.at(fichero, línea)`.
+- `similar_requirements(req_id, k=3)` y un bloque «Similar requirements already implemented»
+  en `build_context` de un requisito: requisitos parecidos que ya tienen código, como ejemplo
+  de cómo se implementa y se etiqueta uno en el proyecto, con la firma del subprograma, la
+  línea de su `Req:` y, del primero, el principio de su cuerpo. Sin modelo: primero los
+  enlazados en DOORS (y su padre) y los que declaran las mismas secciones, después los que
+  encuentra la búsqueda por IDs y palabras. El bloque es el último, el primero que se recorta.
 - Las instrucciones de `atlas serve` llevan un párrafo «Traceability of this project»: la
   etiqueta con la que el código cita los requisitos (`[sources.code] req_tag` o `req_regex`),
   el patrón de los ID (`id_pattern`), los módulos de DOORS leídos y los pasos de un cambio

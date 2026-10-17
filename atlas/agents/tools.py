@@ -3,6 +3,8 @@
     build_context        everything about a requirement, a code element or a unit, in one
                          Markdown package within a budget of tokens, without a model
     context_at           the same for the element at a line of a file (what the editor has open)
+    similar_requirements requirements like one that already have code, with the signature and
+                         the Req: tag of that code: examples to follow, without a model
     verify_requirement   whether the official text of a requirement and the documents agree,
                          judged by the agent requirement_verifier (needs the model)
     link_requirement     the code that may implement a requirement, proposed by the agent
@@ -16,16 +18,19 @@ They are registered as "tool" plugins with these names, for agent files and [mcp
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from atlas.agents.context import build_context
+from atlas.agents.context import build_context, similar_requirements
 from atlas.graph.tools import NO_GRAPH, GraphTools
 from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "context_at", "verify_requirement", "link_requirement", "check_compliance",
-              "ask_atlas")
+TOOL_NAMES = ("build_context", "context_at", "similar_requirements", "verify_requirement", "link_requirement",
+              "check_compliance", "ask_atlas")
+
+log = logging.getLogger(__name__)
 
 
 class AgentTools:
@@ -33,6 +38,7 @@ class AgentTools:
         self.graph = graph
         self.cfg = cfg
         self.context = context
+        self._search: Any = None           # the index, opened on first use; False if there is none
 
     @classmethod
     def for_context(cls, context: Any) -> "AgentTools":
@@ -49,7 +55,7 @@ class AgentTools:
         signatures and comments, callers and callees, tests, document sections and source.
         Call it before changing code, instead of many searches."""
         g = self.graph.graph()
-        return build_context(g, target, budget_tokens) if g is not None else {"error": NO_GRAPH}
+        return build_context(g, target, budget_tokens, self._index()) if g is not None else {"error": NO_GRAPH}
 
     def context_at(self, path: str, line: int, budget_tokens: int = 4000) -> dict:
         """build_context of the code at a line of a file: the subprogram that holds it (or
@@ -60,7 +66,29 @@ class AgentTools:
         if g is None:
             return {"error": NO_GRAPH}
         n, err = g.at(path, line)
-        return err or build_context(g, n, budget_tokens)
+        return err or build_context(g, n, budget_tokens, self._index())
+
+    def similar_requirements(self, req_id: str, k: int = 3) -> dict:
+        """Up to `k` requirements like this one that already have code, as examples of how
+        this project implements and tags one: those linked to it in DOORS or stated in the
+        same sections, then those whose text is alike. For each one, its text, why it is
+        similar, the subprogram that implements it with its signature, the line of its
+        `Req:` tag and, for the first one, the start of its body. Without a model."""
+        g = self.graph.graph()
+        return similar_requirements(g, req_id, k, self._index()) if g is not None else {"error": NO_GRAPH}
+
+    def _index(self) -> Any:
+        """The index of the workspace for the searches without vectors, or None if there is
+        none (no atlas.db, or atlas.index cannot be imported)."""
+        if self._search is None:
+            self._search = False
+            if self.cfg is not None and (self.cfg.workspace / "atlas.db").exists():
+                try:
+                    from atlas.index import Index
+                    self._search = Index.from_config(self.cfg)
+                except Exception as e:
+                    log.info("no index for the similar requirements: %s", e)
+        return self._search or None
 
     def verify_requirement(self, req_id: str) -> dict:
         """Whether the official text of a requirement (DOORS) and the documents say the same:

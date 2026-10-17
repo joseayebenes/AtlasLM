@@ -9,8 +9,8 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
 [mcp] tools chooses the tools. When it is empty, [mcp] profile does:
     editor   what the agent of an editor needs to change code (search, get_requirement,
              get_section, list_documents, trace, trace_code, impact, build_context,
-             context_at, find_symbol, read_source, read_file, check_code); the default with
-             [sources.code]
+             context_at, similar_requirements, find_symbol, read_source, read_file,
+             check_code); the default with [sources.code]
     trace    the traceability of DOORS and the documents (trace, matrix, gaps,
              list_requirements, neighbors, get_requirement, search)
     all      the tools of the configured sources; the default without code
@@ -18,8 +18,8 @@ The tools of the configured sources (default_tools) are the document tools with
 [[sources.docs]] (with only [sources.doors], get_requirement, and search when "index" is a
 step), the graph tools and read_file with [sources.code] (and check_code when it has a
 check_command), and without code the traceability tools of the graph (trace, matrix, gaps...)
-when "graph" is a step; build_context with the graph, and context_at with the graph of the
-code. A profile only keeps some of them.
+when "graph" is a step; build_context with the graph, and context_at and
+similar_requirements with the graph of the code. A profile only keeps some of them.
 ask_atlas, verify_requirement, link_requirement and check_compliance (which need the model,
 and ask_atlas also ADK) are only offered when listed. So are the tools that write (edit_file,
 write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
@@ -54,7 +54,8 @@ log = logging.getLogger(__name__)
 WRITING_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 MODEL_TOOLS = ("ask_docs", "ask_atlas", "verify_requirement", "link_requirement", "check_compliance")
 EDITOR_TOOLS = ("search", "get_requirement", "get_section", "list_documents", "trace", "trace_code", "impact",
-                "build_context", "context_at", "find_symbol", "read_source", "read_file", "check_code")
+                "build_context", "context_at", "similar_requirements", "find_symbol", "read_source", "read_file",
+                "check_code")
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
@@ -71,7 +72,8 @@ INSTRUCTIONS = {
     "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
                "(requirements, signatures, callers, tests, documents and source): use it before changing code. "
                "`context_at` gives the same for a file and a line, those the editor has open; the tools that "
-               "take a code element also take \"file:line\".",
+               "take a code element also take \"file:line\". `similar_requirements` gives requirements like "
+               "one that already have code, with that code and its `Req:` tag: follow them.",
     "agents": "`ask_atlas` asks the assistant of atlas, which searches by itself and answers with citations "
               "(slower: use it for questions that need several searches); `verify_requirement` checks with the "
               "model whether a requirement and the documents agree; `link_requirement` proposes the code that "
@@ -123,7 +125,7 @@ def default_tools(cfg: Config) -> list[str]:
             from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS, TRACE_TOOLS
             names += [n for n in (GRAPH_TOOLS if code else TRACE_TOOLS) if n not in names] + ["build_context"]
             if code:
-                names.append("context_at")
+                names += ["context_at", "similar_requirements"]
         except ImportError as e:            # networkx, of the [code] extra
             log.warning("no graph tools: %s", e)
     if code:

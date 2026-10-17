@@ -9,12 +9,12 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `definitions.py` | `AgentDef` y `load_definitions`: los agentes de `builtin/` y de `[agents] dirs`, con los retoques de `[agents.<nombre>]` (sin ADK) |
 | `model.py` | `AtlasLlm`: un modelo de ADK sobre el cliente de `atlas.llm` (proxy, TLS, límites, reintentos) |
 | `runtime.py` | `build_agent` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo |
-| `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete |
+| `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete; `similar_requirements`: requisitos parecidos que ya tienen código |
 | `verify.py` | la verificación de los requisitos con la documentación |
 | `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
 | `comply.py` | el cumplimiento del código con un requisito, obligación a obligación |
 | `reports.py` | informes de impacto y de cobertura: el grafo encuentra, un agente redacta |
-| `tools.py` | `build_context`, `context_at`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
+| `tools.py` | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 | `develop.py` | `atlas develop`: un agente escribe el código encargo a encargo y los tests lo juzgan; lo que rompe algo se deshace |
 
@@ -90,6 +90,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 |---|---|---|
 | `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
 | `context_at` | `build_context` del código de una línea de un fichero (`path`, `line`): lo que el editor tiene abierto. También vale `build_context("src/tracks.adb:12")` | no |
+| `similar_requirements` | hasta `k` (3) requisitos parecidos a uno que ya tienen código, como ejemplo de cómo se implementa y se etiqueta uno en el proyecto: su texto, por qué se parece, el subprograma que lo implementa con su firma, la línea de su etiqueta `Req:` y, del primero, las 20 primeras líneas de su cuerpo. Primero los enlazados en DOORS (en los dos sentidos, y su padre) y los que declaran las mismas secciones; después, si hay índice, los que encuentra la búsqueda por su texto (ID y palabras, sin vectores). `build_context` de un requisito los trae en su último bloque, el primero que se recorta | no |
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
 | `atlas comply` | si el código que implementa cada requisito hace todo lo que pide, obligación a obligación: cumplida, no cumplida, en parte o imposible de saber leyendo el código. También es la herramienta `check_compliance` | `compliance_checker` |
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |

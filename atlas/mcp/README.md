@@ -11,7 +11,7 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
 | Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
-| Agentes | `build_context`, `context_at`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
+| Agentes | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
 - Tres herramientas cambian de nombre para que no se confundan:
@@ -41,12 +41,12 @@ entre las herramientas de las fuentes configuradas:
 
 | Perfil | Herramientas | Por defecto |
 |---|---|---|
-| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `find_symbol`, `read_source`, `read_file` y `check_code` (si hay `check_command`) | con `[sources.code]` |
+| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `similar_requirements`, `find_symbol`, `read_source`, `read_file` y `check_code` (si hay `check_command`) | con `[sources.code]` |
 | `trace` | `trace`, `matrix`, `gaps`, `list_requirements`, `neighbors`, `get_requirement` y `search` | |
 | `all` | todas las de las fuentes configuradas (abajo) | sin código |
 
-`editor` es lo que necesita el agente de un editor para cambiar código: 12 o 13
-herramientas en vez de 28. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
+`editor` es lo que necesita el agente de un editor para cambiar código: 13 o 14
+herramientas en vez de 29. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
 descripción en cada petición. `trace` es para quien revisa la trazabilidad sin tocar el
 código.
 
@@ -57,7 +57,8 @@ Las herramientas de las fuentes configuradas son:
 - con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
 - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
   `list_requirements` y `neighbors`), si `graph` está entre los pasos;
-- con el grafo, `build_context`, y con el del código, `context_at`.
+- con el grafo, `build_context`, y con el del código, `context_at` y
+  `similar_requirements`.
 
 Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
 - Con una lista en `[mcp] tools`, ofrece exactamente esas herramientas, sea cual sea el

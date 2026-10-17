@@ -38,7 +38,15 @@ hacen inútil seguir: el motor los trata como fatales.
 `atlas check atlas.toml` hace una petición real al chat y otra a los embeddings y muestra la
 configuración efectiva con las claves enmascaradas. Reconoce los modelos que razonan: dice
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
-razonando sin contestar.
+razonando sin contestar. Pide también el contexto del modelo al servidor, si lo publica
+(`served_context`): `context_length` de `GET /models` en OpenRouter, `max_model_len` en vLLM y
+el `num_ctx` del modelo en el `/api/show` de Ollama, fuera de `/v1`. Si `[llm] context_tokens`
+es 0, propone el valor; si no coincide, avisa. Ollama sin `num_ctx` solo dice cuánto admite el
+modelo, no cuánto le da el servidor (`OLLAMA_CONTEXT_LENGTH`), y entonces solo lo cuenta.
+
+Todos los tamaños se cuentan en caracteres, a 4 por token. Calibrarlo con los
+`usage.prompt_tokens` que devuelve el servidor (una media por modelo en el workspace) queda
+para cuando atlas guarde los tokens de cada petición.
 
 `atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
 (`[llm] reasoning_effort`, o `low` si está vacío o es `none`):

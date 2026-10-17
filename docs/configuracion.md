@@ -68,6 +68,7 @@ con OpenAI.
 | `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
+| `context_tokens` | entero | `0` | el contexto del modelo en tokens (entrada y salida); 0 = desconocido. `atlas check` lo pide al servidor si lo publica (OpenRouter y vLLM en `/models`, Ollama el `num_ctx` del modelo) y lo propone o avisa si no coincide. Con él, `[search] scope_chars` y `context_chars` salen de él si no se dan, y cada vuelta de un agente que no cabe en `context_tokens − max_tokens` deja fuera resultados viejos de herramientas, con un aviso. Tiene que ser mayor que `max_tokens` |
 | `concurrency` | entero | `0` | peticiones al modelo en vuelo a la vez desde un mismo cliente: en `docs`, entre las secciones de todos los documentos que se procesan juntos. 0 = las `workers` del paso, como antes. Sirve para llenar el cupo sin abrir más documentos a la vez: `atlas status` dice cuántas lo llenarían |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
@@ -286,7 +287,10 @@ Cambiarlo no reprocesa nada.
 | `part_workers` | entero | `4` | partes de documentos enteros que se leen a la vez |
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
-tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
+tokens. Con `[llm] context_tokens`, si `[search]` no los da, `scope_chars` es el 60 % de
+`context_tokens − max_tokens` a 4 caracteres por token, y `context_chars` el menor de 14 000 y
+ese mismo número: con 200 000 tokens y `max_tokens = 8192`, 460 000 caracteres por petición;
+con 16 384 tokens (Ollama), 19 660. Lo que diga `[search]` manda. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
 peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30 000. Las
 partes se leen de `part_workers` en `part_workers`; `[llm] concurrency` y `[network]
 max_concurrent` lo limitan. En un Mac de 24 GB

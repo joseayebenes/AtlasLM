@@ -38,6 +38,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `[llm] concurrency`: las peticiones al modelo en vuelo, separadas de los documentos que se
   abren a la vez (`[pipeline] workers`). Por defecto, las `workers`, como antes.
 - `[search] part_workers`: las partes de documentos enteros que se leen a la vez (4, como antes).
+- `[llm] context_tokens`: el contexto del modelo (0 = desconocido, como antes). `atlas check` lo
+  pide al servidor cuando lo publica (OpenRouter y vLLM en `GET /models`, Ollama en `/api/show`)
+  y lo propone o avisa si no coincide. Con él, `[search] scope_chars` y `context_chars` salen del
+  contexto si no se dan (el 60 % de `context_tokens − max_tokens`, a 4 caracteres por token), y
+  un agente estima los tokens de cada vuelta y, si no cabe, deja fuera resultados viejos de
+  herramientas con un aviso: antes enviaba todo, sin recuento ni tope. Queda por hacer la
+  calibración de los caracteres por token con el `usage` del servidor: depende de guardar los
+  tokens de cada petición, que aún no está en `develop`.
 
 ### Al actualizar
 - Con `requests_per_minute` o `tokens_per_minute`, atlas escribe en `~/.atlas/limits` (o

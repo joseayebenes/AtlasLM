@@ -29,6 +29,12 @@ takes its place. JetBrains found this as good as summarizing with the model, at 
 (The Complexity Trap, 2025); in a run of atlas develop, the turns of a fix carried 55 000
 tokens of input, most of them old reads. The old results go in steps of MASK_STEP, so that the
 beginning of the conversation changes seldom (servers reuse the prompt they have seen).
+
+With [llm] context_tokens, a turn has to fit in the context of the model: before each one, its
+tokens are estimated (characters / 4, the tools included) and, if they go over context_tokens -
+max_tokens, the old tool results are left out with a smaller keep, MASK_STEP at a time, until
+it fits, with a warning. Without it, a long run of atlas develop went on sending turns that the
+server cut or rejected.
 """
 from __future__ import annotations
 
@@ -48,7 +54,8 @@ from atlas.llm import ServiceConfig, create_client
 from atlas.llm.connection import reasoning_of
 from atlas.llm.structured import repair_json
 
-__all__ = ["AtlasLlm", "reasoning_of", "to_llm_response", "to_messages", "to_tools"]
+__all__ = ["AtlasLlm", "estimate_tokens", "fit_context", "reasoning_of", "to_llm_response", "to_messages",
+           "to_tools"]
 
 log = logging.getLogger(__name__)
 RETRIES = 2      # times an empty turn cut by max_tokens is asked again, doubling max_tokens
@@ -56,6 +63,7 @@ TURN_RETRIES = 2  # times a turn that takes longer than [llm.network] timeout in
 MASK_STEP = 5     # old tool results are left out in groups of this many
 SMALL_RESULT = 600   # characters of a tool result that always stays
 SHORT_FIELD = 120    # characters of a field of a left-out result that stays in its note
+CHARS_PER_TOKEN = 4  # the estimate of the tokens of a turn
 
 SCHEMA_KEYS = ("description", "enum", "required", "default", "format", "minimum", "maximum", "title")
 FINISH = {"stop": types.FinishReason.STOP, "tool_calls": types.FinishReason.STOP,
@@ -86,10 +94,13 @@ class AtlasLlm(BaseLlm):
 
     async def generate_content_async(self, llm_request: LlmRequest,
                                      stream: bool = False) -> AsyncGenerator[LlmResponse, None]:
-        kwargs = {"model": self.service.model,
-                  "messages": to_messages(llm_request, self.service.reasoning_field, self.keep_tool_results),
-                  "temperature": self.service.temperature}
         tools = to_tools(llm_request)
+        budget = self.service.context_tokens - (self.service.max_tokens or 0) if self.service.context_tokens else 0
+        kwargs = {"model": self.service.model,
+                  "messages": to_messages(llm_request, self.service.reasoning_field, self.keep_tool_results,
+                                          budget, len(json.dumps(tools, ensure_ascii=False)) if tools else 0,
+                                          self.service.context_tokens),
+                  "temperature": self.service.temperature}
         if tools:
             kwargs["tools"] = tools
         if self.service.max_tokens:
@@ -166,12 +177,14 @@ def _text(value: Any) -> str:
     return str(getattr(value, "text", "") or "")
 
 
-def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_tool_results: int = 0) -> list[dict]:
+def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_tool_results: int = 0,
+                budget_tokens: int = 0, extra_chars: int = 0, context_tokens: int = 0) -> list[dict]:
     """The conversation of an ADK request as OpenAI chat messages: the system instruction,
     the turns of the user, those of the model (text and tool calls) and the tool results.
     The reasoning of a turn of the model with tool calls goes in its `reasoning_field`
     ("" = it is left out). With keep_tool_results, the old tool results are left out (see
-    the module and masked)."""
+    the module and masked); with budget_tokens, also as many as it takes to fit in it
+    (fit_context; `extra_chars` are those of the tools, `context_tokens` for the warning)."""
     messages = []
     system = _text(request.config.system_instruction) if request.config else ""
     if system:
@@ -206,10 +219,46 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
             messages.append({"role": "user", "content": "\n".join(texts)})
     if keep_tool_results > 0:
         masked(messages, keep_tool_results)
+    if budget_tokens > 0:
+        before, after, left = fit_context(messages, budget_tokens, keep_tool_results, extra_chars)
+        if before > budget_tokens:
+            log.warning("turn of %d tokens over a context of %d (%d for the input): %d old tool results left out%s",
+                        before, context_tokens or budget_tokens, budget_tokens, left,
+                        f"; it still has {after}" if after > budget_tokens else "")
     for m in messages:
         m.pop("_name", None)
         m.pop("_response", None)
     return messages
+
+
+def estimate_tokens(messages: list[dict], extra_chars: int = 0) -> int:
+    """The tokens of a request, as characters / CHARS_PER_TOKEN: the texts, the reasoning and
+    the tool calls of its messages, and `extra_chars` (the tools)."""
+    chars = extra_chars
+    for m in messages:
+        chars += 8 + len(m.get("content") or "") + sum(len(v) for k, v in m.items() if k.startswith("reason")
+                                                        and isinstance(v, str))
+        if m.get("tool_calls"):
+            chars += len(json.dumps(m["tool_calls"], ensure_ascii=False))
+    return chars // CHARS_PER_TOKEN
+
+
+def fit_context(messages: list[dict], budget_tokens: int, keep: int = 0, extra_chars: int = 0) -> tuple[int, int, int]:
+    """Leaves out, in place, old tool results (masked with a smaller keep each time, MASK_STEP
+    at a time) until the messages fit in `budget_tokens`, or only the last ones are left.
+    Returns (tokens before, tokens after, results left out). The messages must still have
+    their _name and _response (to_messages)."""
+    before = estimate_tokens(messages, extra_chars)
+    if before <= budget_tokens:
+        return before, before, 0
+    tools = [m for m in messages if m["role"] == "tool"]
+    original = [m["content"] for m in tools]
+    k, after = (keep if keep > 0 else len(tools)), before
+    while k > 0 and after > budget_tokens:
+        k = max(0, k - MASK_STEP)
+        masked(messages, k)
+        after = estimate_tokens(messages, extra_chars)
+    return before, after, sum(m["content"] != c for m, c in zip(tools, original))
 
 
 def masked(messages: list[dict], keep: int) -> None:

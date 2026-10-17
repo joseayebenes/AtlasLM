@@ -74,7 +74,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "project": {"name": str, "workspace": str, "log_level": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
-            "concurrency": int, "network": dict},
+            "concurrency": int, "context_tokens": int, "network": dict},
     "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "requests_per_minute": int,
@@ -95,6 +95,14 @@ SCHEMA: dict[str, dict[str, Any]] = {
 }
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
+CHARS_PER_TOKEN = 4         # until a calibration with the usage of the server
+CONTEXT_SHARE = 0.6         # of the input that a request can take (the prompt and the question take the rest)
+
+
+def search_budget(context_tokens: int, max_tokens: int = 0) -> int:
+    """Characters of documents in one request to a model of `context_tokens`, leaving
+    `max_tokens` for the answer: CONTEXT_SHARE of the rest, at CHARS_PER_TOKEN."""
+    return max(1000, int(CONTEXT_SHARE * (context_tokens - max_tokens) * CHARS_PER_TOKEN))
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -295,6 +303,11 @@ def load_config(path: str | Path) -> Config:
     _validate_search(data.get("search", {}))
     if data.get("llm", {}).get("concurrency", 0) < 0:
         raise ConfigError("[llm] 'concurrency' must be 0 (no cap) or more")
+    llm = data.get("llm", {})
+    context, max_tokens = llm.get("context_tokens", 0), llm.get("max_tokens", 0)
+    if context < 0 or (context and context <= max_tokens):
+        raise ConfigError("[llm] 'context_tokens' must be 0 (unknown) or more than max_tokens")
+    given = set(data.get("search", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "
@@ -303,5 +316,11 @@ def load_config(path: str | Path) -> Config:
 
     for section, defaults in DEFAULTS.items():
         data[section] = {**defaults, **data.get(section, {})}
+    if context:                     # with the context of the model, what [search] does not say comes from it
+        budget = search_budget(context, max_tokens)
+        if "scope_chars" not in given:
+            data["search"]["scope_chars"] = budget
+        if "context_chars" not in given:
+            data["search"]["context_chars"] = max(1000, min(DEFAULTS["search"]["context_chars"], budget))
     data.setdefault("sources", {})
     return Config(path=path, data=data, unset=unset_variables(raw))

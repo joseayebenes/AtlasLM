@@ -14,6 +14,9 @@ The control file is re-read on every request; keys:
   no_structured_output: true       -> 501 to chat requests with response_format (Ollama does
                                       this with some models)
   slow: seconds                    -> delay per request
+  context_length: N / max_model_len: N -> in GET /v1/models, the context of the model, as
+                                      OpenRouter / vLLM publish it
+  num_ctx: N                       -> POST /api/show answers as Ollama, with that num_ctx
   rpm_limit: N                     -> 429 "rate limit" on chat and embeddings when N requests were
                                       accepted in the last 60 s (a gateway with a quota per minute)
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
@@ -54,9 +57,20 @@ class H(BaseHTTPRequestHandler):
         data = json.dumps(obj).encode()
         self.send_response(code); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
-    def do_GET(self): self.send(200, stats)
+    def do_GET(self):
+        if self.path.rstrip("/").endswith("/models"):
+            c = ctl()
+            extra = {k: c[k] for k in ("context_length", "max_model_len") if k in c}
+            return self.send(200, {"object": "list", "data": [{"id": "fake", "object": "model", **extra},
+                                                              {"id": "other", "object": "model", "context_length": 1}]})
+        self.send(200, stats)
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"]))); c = ctl()
+        if self.path.endswith("/api/show"):
+            if c.get("num_ctx") is None:
+                return self.send(404, {"error": "not found"})
+            return self.send(200, {"parameters": f"temperature 1\nnum_ctx {c['num_ctx']}",
+                                   "model_info": {"gemma3.context_length": 131072}})
         time.sleep(c.get("slow", 0))
         if c.get("down"):
             return self.send(401, {"error": {"message": "invalid api key", "type": "auth"}})

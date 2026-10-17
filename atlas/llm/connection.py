@@ -93,6 +93,7 @@ class ServiceConfig:
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
     concurrency: int = 0         # LLM only: requests of one JsonLlm in flight; 0 = no cap (in docs, the workers)
+    context_tokens: int = 0      # LLM only: the context of the model (input + output); 0 = unknown
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -864,6 +865,7 @@ def describe(cfg: ServiceConfig) -> str:
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
+            + (f"  context_tokens={cfg.context_tokens}" if cfg.context_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
             + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
@@ -927,6 +929,53 @@ def _check_chat(response) -> tuple[bool, str]:
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
 
 
+def served_context(cfg: ServiceConfig, client) -> tuple[int, str]:
+    """The context of the model of `cfg` in tokens, as its server publishes it, and where it
+    says so: GET /models with `context_length` (OpenRouter) or `max_model_len` (vLLM), or
+    Ollama's /api/show (outside /v1) with the `num_ctx` of the model. (0, why) when it says
+    nothing usable: Ollama without num_ctx only says what the model admits, not what the
+    server gives it (OLLAMA_CONTEXT_LENGTH)."""
+    try:
+        listed = client.get("/models", cast_to=object)
+    except Exception:
+        listed = None
+    for m in (listed.get("data") or []) if isinstance(listed, dict) else []:
+        if not isinstance(m, dict) or m.get("id") != cfg.model:
+            continue
+        for key, where in (("context_length", "context_length of GET /models, as OpenRouter publishes it"),
+                           ("max_model_len", "max_model_len of GET /models, as vLLM publishes it")):
+            if isinstance(m.get(key), int) and not isinstance(m[key], bool) and m[key] > 0:
+                return m[key], where
+    root = re.sub(r"/v1/?$", "", cfg.base_url.rstrip("/"))
+    try:
+        shown = client.with_options(base_url=root).post("/api/show", body={"model": cfg.model}, cast_to=object)
+    except Exception:
+        return 0, ""
+    if not isinstance(shown, dict):
+        return 0, ""
+    found = re.search(r"\bnum_ctx\s+(\d+)", str(shown.get("parameters") or ""))
+    if found:
+        return int(found[1]), "num_ctx of the model in Ollama (/api/show)"
+    admits = next((v for k, v in (shown.get("model_info") or {}).items() if k.endswith(".context_length")), 0)
+    return 0, (f"Ollama says the model admits {admits} tokens, but it gives it OLLAMA_CONTEXT_LENGTH (or the num_ctx "
+               "of a Modelfile): set [llm] context_tokens to that" if admits else "")
+
+
+def _check_context(cfg: ServiceConfig, client) -> str:
+    """The line of `check` about the context of the model: the one the server publishes,
+    proposed for [llm] context_tokens or compared with it."""
+    tokens, where = served_context(cfg, client)
+    mine = cfg.context_tokens
+    if not tokens:
+        return (f"  context: {where}" if where else "  context: the server does not publish it") + \
+            (f"; [llm] context_tokens = {mine}" if mine else "; set [llm] context_tokens by hand (0 = unknown)")
+    if not mine:
+        return f"  context: {tokens} tokens ({where}): set [llm] context_tokens = {tokens}"
+    if mine != tokens:
+        return f"  WARNING context: [llm] context_tokens = {mine}, but the server says {tokens} ({where})"
+    return f"  context: {tokens} tokens, as [llm] context_tokens ({where})"
+
+
 def check(conn: Connection) -> int:
     """Real chat and embeddings request. Returns 0 if everything works."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
@@ -943,10 +992,14 @@ def check(conn: Connection) -> int:
                     **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
                     **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
                 ok, detail = _check_chat(r)
+                context = _check_context(cfg, client) if ok else ""
             else:
+                context = ""
                 r = client.embeddings.create(model=cfg.model, input=["test"])
                 ok, detail = True, f"dimension {len(r.data[0].embedding)}"
             print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
+            if context:
+                print(context)
             if not ok:
                 failures += 1
         except SystemExit:
@@ -1003,6 +1056,8 @@ api_key = "${OPENAI_API_KEY:-local}"
 temperature = 0.1
 max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
 reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
+context_tokens = 0              # the context of the model in tokens (input + output); 0 = unknown. `check` asks
+                                # the server (OpenRouter, vLLM, Ollama) and proposes it
 reasoning_field = "reasoning"   # agents: the reasoning of a turn with tool calls goes back to the model in this
                                 # field of the message (gemma 4 asks for it); "reasoning_content" for some
                                 # servers; "" = never

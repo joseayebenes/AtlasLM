@@ -734,7 +734,8 @@ def _exports(store: Store) -> dict[str, dict]:
     return {m: {"exported_at": i["exported_at"], "source": i["source"]} for m, i in store.modules_info().items()}
 
 
-GRAPH_VERSION = "graph-4"   # change it when the building of the graph changes (3: overloads, 4: uses, aliases)
+GRAPH_VERSION = "graph-5"   # change it when the building of the graph changes (3: overloads, 4: uses, aliases;
+                            # 5: signature, calls to units not imported)
 GRAPH_EXPORTS = ("graphml", "json")
 
 
@@ -1204,7 +1205,8 @@ def graph(cfg: Config, as_json: bool = False) -> int:
         print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
               f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}"
               + (f" | resolved through aliases: {s['calls_through_aliases']}, through use clauses: "
-                 f"{s['calls_through_uses']}" if "calls_through_aliases" in s else ""))
+                 f"{s['calls_through_uses']}" if "calls_through_aliases" in s else "")
+              + (f" | calls to units not imported: {s['unimported_calls']}" if "unimported_calls" in s else ""))
         print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
               f"without a requirement: {s['subprograms_without_requirement']} | "
               f"unresolved calls: {s['unresolved_calls']}"

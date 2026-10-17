@@ -36,7 +36,9 @@ función. Cada `Nombre (...)` de un cuerpo se clasifica según lo que es `Nombre
 - un subprograma: es una llamada;
 - un tipo: es una conversión;
 - una variable de paquete: es un uso;
-- un tipo predefinido: se ignora;
+- un nombre del lenguaje (`Integer`, `Float`...): se ignora. Cuáles son lo dice el
+  analizador del lenguaje de la unidad que llama (`CodeAnalyzer.predefined`, ver
+  [atlas.code](../code/README.md#la-interfaz-codeunit));
 - algo desconocido: es una llamada externa.
 
 Un nombre se busca, por este orden:
@@ -52,6 +54,45 @@ Si aún hay varias, la arista va a todas, para que el análisis de impacto no se
 ninguna; `atlas graph` las cuenta como llamadas ambiguas, y cuenta también las resueltas
 por un alias o por un `use`. Un alias de algo de fuera del proyecto es una llamada externa
 con su nombre completo (`ada.text_io.put_line`).
+Una llamada que solo se encuentra en unidades que el llamador no importa (`calls to units not
+imported`, `unimported_calls`) es la otra suposición de la resolución: una sola candidata no
+es ambigua, pero puede ser la equivocada.
+
+Un subprograma lleva en su nodo, si el analizador los da, `subprogram_kind` (`procedure`,
+`function`, `method`) y `signature` (su perfil en una línea), que `get_node` enseña.
+
+### Precisión de la resolución por nombres
+
+Antes de pedir las referencias al Ada Language Server en la construcción del grafo (un paso
+`code.resolve` con `textDocument/definition` por cada llamada) se midió cuánto falla la
+resolución por nombres. Con la versión de octubre de 2026 (antes y después de dar posición a
+las llamadas, las mismas aristas):
+
+| Código | Ficheros | Sitios de llamada | Aristas `calls` | Ambiguas | A unidades no importadas | Sin resolver |
+|---|---|---|---|---|---|---|
+| `examples/samples/ada` | 5 | 9 | 4 | 0 | 0 | 1 |
+| `make large` (300 paquetes, 3000 subprogramas) | 660 | 6060 | 6059 | 0 | 0 | 0 |
+| atlas-socket-demo, `src` y `tests` (el servidor que escribieron los agentes) | 12 | 226 | 67 | 0 | 0 | 46 |
+| un proyecto Ada pequeño de prueba | 4 | 28 | 7 | 0 | 0 | 5 |
+
+Las llamadas sin resolver son nombres del runtime que llegan con `use` (`To_Unbounded_String`,
+`Receive_Socket`): aristas a un nodo externo, que no cambian el impacto dentro del
+proyecto. Con el ALS de la extensión de VS Code (2027.0) sobre atlas-socket-demo, de 226
+peticiones, 82 apuntan al proyecto y las 82 dan la misma arista que la resolución por
+nombres; 120 apuntan al runtime y 24 no tienen respuesta. Coste: unos 10 s en arrancar, la
+primera petición no contesta en 30 s mientras el servidor indexa y después 77 ms de
+mediana, en total 96 s para 226 llamadas. En `make large`, 6060 peticiones: 7,6 s en
+arrancar, la primera sin respuesta en 30 s, 11 ms de mediana y 364 s en total (unos 6
+minutos más en cada construcción del grafo en la que cambie el código); 6059 apuntan al
+proyecto, que es lo que ya decía la resolución por nombres.
+
+Por eso el paso no se ha hecho: en estos proyectos no corregiría ninguna arista y añadiría
+minutos a cada construcción. Lo que sí está es la posición de cada llamada en el
+`CodeUnit`, que es lo que ese paso necesita. Hay que repetir la medida con el proyecto real
+(`atlas graph`: `ambiguous calls` y `calls to units not imported`); si salen cientos, el
+paso tiene sentido. Las llamadas sin resolver por `use` se arreglan antes y más barato
+resolviendo los nombres contra las unidades de los `use` (sección 6.2 del análisis de
+mejoras).
 
 Los ficheros que casan con `[sources.code] test_patterns` son pruebas: sus subprogramas son
 nodos `test`. Un elemento que cita un requisito lo implementa (`implements`); una prueba
@@ -290,7 +331,8 @@ consultas.
 ## Pruebas
 
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
-paquetes, sobrecargas, tareas y operadores, `use` y alias, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`, los
+paquetes, sobrecargas, tareas y operadores, `use` y alias, los nombres predefinidos según el
+lenguaje del llamador, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`, los
 procedimientos de prueba de DOORS y `link_semantics`, `meta` de la matriz y la fecha de la
 exportación, `neighbors`, comunidades, mismo grafo que `ada_graph.py` y una tabla de casos de
 `values_differ`. `tests/test_cli.py`: el paso `graph.build` incremental por origen, `atlas

@@ -24,8 +24,9 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 ## Análisis
 
 El paso `code.parse` analiza cada fichero y guarda en `atlas.db`:
-- sus subprogramas, con su clase (`kind`), sus líneas, sus llamadas propias, el comentario de
-  cabecera (el del `.ads` si lo hay) y los requisitos que citan;
+- sus subprogramas, con su clase (`kind`: `procedure`, `function`, `method`, `task`...), su
+  perfil, sus líneas, sus llamadas propias con la línea y la columna de cada una, el
+  comentario de cabecera (el del `.ads` si lo hay) y los requisitos que citan;
 - sus tipos, variables, constantes y `with`.
 
 En Ada, la clase es `procedure`, `function`, `operator` (`function "+"`, que se llama `"+"`),
@@ -63,6 +64,32 @@ Con `test_patterns`, una prueba Python y una Ada verifican el mismo requisito en
 
 Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en el
 [README](../../README.md)).
+
+## La interfaz `CodeUnit`
+
+Es lo que `CodeAnalyzer.analyze_file` devuelve de un fichero y lo que `code.parse` guarda
+(`atlas/plugins.py`):
+
+| Campo | Qué es |
+|---|---|
+| `file`, `unit`, `language` | el fichero, su unidad (`tracks.db`, `python.test_session`) y el lenguaje, el nombre del analizador |
+| `subprograms` | `{name, start_line, end_line, calls, doc, reqs}` y, si el analizador las sabe, `kind` (`procedure`, `function`, `method`, `task`, `entry`, `operator`) y `signature`, el perfil en una línea (`procedure Update (I : Integer)`, `def send(self, line)`) |
+| `subprograms[].calls` | cada llamada, como el nombre escrito (`"pkg.op"`) o como `{"name", "line", "column"}`: dónde empieza el nombre, las dos cosas contadas desde 1 y la columna en caracteres. Ada y Python dan una por cada sitio donde se llama; el grafo toma cada nombre una vez por subprograma |
+| `declarations` | las de una especificación: `{name, line, doc, reqs}` |
+| `types`, `variables`, `imports` | tipos, variables y constantes del paquete o módulo, y sus `with` o `import` |
+
+`CodeAnalyzer.predefined` son los nombres del lenguaje que nunca son llamadas: en Ada,
+`Integer`, `Float`, `String`...; en Python ninguno, porque el analizador ya deja fuera los
+`builtins`. El grafo los busca en el analizador del lenguaje de la unidad que llama, así que
+`integer (...)` se ignora en Ada y es una llamada externa en Python, y otro lenguaje no
+tiene que tocar `atlas.graph`. `CodeUnit.from_dict` lee lo que guardaron versiones anteriores,
+sin el campo `tests` (no lo leía nadie y ya no existe) y con las llamadas sin posición.
+
+La posición de cada llamada es lo que necesitaría un paso que preguntase al servidor de
+lenguaje (`textDocument/definition`) por cada una y guardase aristas exactas. Medido en
+octubre de 2026, no compensa todavía: la resolución por nombres no deja ninguna llamada
+ambigua en los proyectos Ada que hay a mano, y donde el Ada Language Server sabe la
+definición dentro del proyecto da la misma arista (ver [atlas.graph](../graph/README.md#precisión-de-la-resolución-por-nombres)).
 
 ## Herramientas para agentes de código
 
@@ -500,9 +527,10 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 ## Pruebas
 
 `tests/test_code.py` (etiquetas y los IDs de la convención, análisis, el fichero de la sonda con
-tareas, entradas, cuerpos protegidos, operadores, sobrecargas y atributos, mismo resultado que
-`ada_graph.py`; el proyecto GPR con proyectos de pega —variables, `with`, `**`— y con GNAT,
-gprbuild y el Ada Language Server si están instalados),
+tareas, entradas, cuerpos protegidos, operadores, sobrecargas y atributos, posiciones de las
+llamadas, lo guardado por la 0.2, mismo resultado que `ada_graph.py`; el proyecto GPR con
+proyectos de pega —variables, `with`, `**`— y con GNAT, gprbuild y el Ada Language Server si
+están instalados),
 `tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
 Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,

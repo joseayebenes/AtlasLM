@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from atlas.code import AdaAnalyzer, extract_requirements, requirement_pattern
+from atlas.plugins import CodeUnit, call_name
 
 pytest.importorskip("tree_sitter_ada")
 
@@ -90,11 +91,27 @@ def test_ada_bodies_calls_comments_and_requirements(tmp_path):
     assert unit.unit == "radar.filters" and unit.imports == ["ada.text_io", "store"]
     subs = {s["name"]: s for s in unit.subprograms}
     smooth = subs["smooth"]
-    assert smooth["calls"] == ["ada.text_io.put_line", "weight"]          # not window, plots or kernel
+    assert smooth["calls"] == [{"name": "weight", "line": 15, "column": 21},           # not window, plots or kernel
+                               {"name": "ada.text_io.put_line", "line": 17, "column": 7}]
     assert smooth["doc"] == "Smooths the plots of a scan.\nREQ : RDR-0010, RDR_0011 also see the ICD"
     assert smooth["reqs"] == ["RDR-0010", "RDR-0012", "RDR_0011"]
-    assert subs["weight"]["calls"] == ["kernel"]
+    assert subs["weight"]["calls"] == [{"name": "kernel", "line": 12, "column": 17}]
     assert (smooth["start_line"], smooth["end_line"]) == (8, 18)
+    assert smooth["kind"] == "procedure" and subs["weight"]["kind"] == "function"
+    assert smooth["signature"] == "procedure Smooth (Plots : in out Plot_Array; N : Integer)"
+    assert subs["weight"]["signature"] == "function Weight (I : Integer) return Float"
+    assert AdaAnalyzer.predefined >= {"integer", "float", "string"}
+
+
+def test_the_column_of_a_call_counts_characters_and_old_units_still_load(tmp_path):
+    src = "package body P is\n   procedure Go is\n   begin\n      Ñu (1); Q.Run;\n   end Go;\nend P;\n"
+    unit = AdaAnalyzer({}).analyze_file(tmp_path / "p.adb", src.encode("utf-8"))
+    assert unit.subprograms[0]["calls"] == [{"name": "ñu", "line": 4, "column": 7},
+                                            {"name": "q.run", "line": 4, "column": 15}]   # Ñ is two bytes
+    stored = {"file": "p.adb", "unit": "p", "language": "ada", "subprograms": [{"name": "go", "calls": ["q.run"]}],
+              "tests": []}                                   # as 0.2 stored it: calls without place, and tests
+    old = CodeUnit.from_dict(stored)
+    assert [call_name(c) for c in old.subprograms[0]["calls"]] == ["q.run"] and not hasattr(old, "tests")
 
 
 # The probe of the analysis of 2026-10 (section 6.2): what ada-1 lost or mixed up
@@ -145,7 +162,8 @@ end Probe;
 
 def test_ada_tasks_entries_protected_bodies_operators_and_attributes():
     unit = AdaAnalyzer({}).analyze_file(Path("probe.adb"), PROBE)
-    subs = [(s["name"], s["kind"], s["start_line"], s["end_line"], s["calls"], s["reqs"]) for s in unit.subprograms]
+    subs = [(s["name"], s["kind"], s["start_line"], s["end_line"], sorted({call_name(c) for c in s["calls"]}), s["reqs"])
+            for s in unit.subprograms]
     assert subs == [
         ("main_loop", "task", 5, 12, ["put_line", "run"], ["SRS-0010", "SRS-0011"]),     # not count: an attribute
         ("lock", "protected", 13, 24, [], []),                   # the tags of its entries are theirs
@@ -159,7 +177,7 @@ def test_ada_tasks_entries_protected_bodies_operators_and_attributes():
                                         b'   function "+" (A, B : Vector) return Vector;\n   procedure Run;\nend Probe;\n')
     assert [(d["name"], d["kind"], d["doc"]) for d in spec.declarations] == [('"+"', "operator", "Adds."),
                                                                             ("run", "procedure", "")]
-    assert AdaAnalyzer({}).version() == "ada-3"
+    assert AdaAnalyzer({}).version() == "ada-4"
 
 
 def test_ada_use_clauses_and_aliases():
@@ -184,7 +202,7 @@ end P;
     assert unit.uses == ["ada.text_io", "store", "other.pkg", "inner"]        # not the `use type` ones
     assert unit.aliases == {"tio": "ada.text_io", "q": "store.put", '"-"': "sub", "int_stack": "stacks",
                             "p2": "gen_p"}
-    assert unit.subprograms[0]["calls"] == ["q"]                  # the graph resolves the alias
+    assert [call_name(c) for c in unit.subprograms[0]["calls"]] == ["q"]   # the graph resolves the alias
 
 
 def test_spec_declarations_types_and_variables(samples):
@@ -220,7 +238,9 @@ def test_same_analysis_as_ada_graph(samples, tmp_path):
         assert new["withs"] == old["withs"] and new["unit"] == old["unit"], f
         without_kind = lambda items: [{k: v for k, v in x.items() if k != "kind"} for x in items]
         assert without_kind(new["declarations"]) == in_order(old["decls"]), f
-        assert without_kind(new["subprograms"]) == in_order(old["subprogramas"]), f
+        names = [{**{k: v for k, v in s.items() if k not in ("kind", "signature")},
+                  "calls": sorted({call_name(c) for c in s["calls"]})} for s in new["subprograms"]]
+        assert names == in_order(old["subprogramas"]), f
         assert new["types"] == in_order(old["tipos"]) and new["variables"] == in_order(old["variables"]), f
 
 

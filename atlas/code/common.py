@@ -1,9 +1,9 @@
-"""What every code analyzer shares: the requirement tags in comments."""
+"""What every code analyzer shares: the requirement tags in comments and the place of a call."""
 from __future__ import annotations
 
 import re
 
-__all__ = ["REQ_ID_SHAPE", "extract_requirements", "requirement_ids", "requirement_pattern"]
+__all__ = ["REQ_ID_SHAPE", "call_at", "extract_requirements", "requirement_ids", "requirement_pattern"]
 
 # An ID has at least one separator (-, _, .) or a digit: loose words are not IDs
 REQ_ID_SHAPE = re.compile(r"^(?=.*[-_.\d])[A-Za-z0-9]+(?:[-_.][A-Za-z0-9]+)*$")
@@ -46,3 +46,10 @@ def extract_requirements(text: str, pattern: re.Pattern, ids: re.Pattern | None 
                 break
             found.add(tok)
     return sorted(found)
+
+
+def call_at(name: str, line: int, before: bytes) -> dict:
+    """A call of a CodeUnit with its place: `line` from 1, and the column from 1 in
+    characters, from `before`, the bytes of the line in front of the name (parsers count
+    columns in bytes)."""
+    return {"name": name, "line": line, "column": len(before.decode("utf-8", errors="replace")) + 1}

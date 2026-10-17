@@ -26,7 +26,7 @@ import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -45,18 +45,35 @@ KINDS = ("code_analyzer", "requirements", "extractor", "tool")
 
 @dataclass
 class CodeUnit:
-    """Result of analysing a code file: the minimum the graph needs."""
+    """Result of analysing a code file: the minimum the graph needs.
+
+    A subprogram is {name, start_line, end_line, calls, doc, reqs} and, if the analyzer
+    knows them, `kind` (procedure, function, method, task, entry, operator) and `signature`
+    (its profile as written, on one line). A call is the name as written ("pkg.op") or
+    {"name", "line", "column"}: where that name starts, both counted from 1, so that a
+    language server can be asked what it is."""
     file: str
     unit: str                                   # compilation unit / module name
     language: str
-    subprograms: list[dict] = field(default_factory=list)   # {name, kind, start_line, end_line, calls, doc, reqs}
+    subprograms: list[dict] = field(default_factory=list)   # {name, kind, start_line, end_line, calls, doc, reqs, signature?}
     types: list[dict] = field(default_factory=list)
     variables: list[dict] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)        # withs / includes
-    tests: list[dict] = field(default_factory=list)         # {name, covers:[...], reqs:[...]}
     declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, kind, line, doc, reqs}
     uses: list[str] = field(default_factory=list)           # Ada `use`: units looked into after the own one
     aliases: dict[str, str] = field(default_factory=dict)   # renamings and generic instances: name -> target
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CodeUnit":
+        """A CodeUnit from its stored form, without the fields this version no longer has
+        (`tests`, before 0.3)."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+def call_name(call: str | dict) -> str:
+    """The name of a call of a CodeUnit, with or without its position."""
+    return call if isinstance(call, str) else call["name"]
 
 
 class CodeAnalyzer(ABC):
@@ -64,6 +81,7 @@ class CodeAnalyzer(ABC):
     unit of the incremental engine)."""
     name: str = ""                # "ada", "cpp"...
     extensions: tuple[str, ...] = ()
+    predefined: frozenset[str] = frozenset()   # names of the language that are never calls (Ada: Integer...)
 
     def __init__(self, config: dict):
         self.config = config

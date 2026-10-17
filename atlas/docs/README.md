@@ -50,6 +50,7 @@ procesarlos:
 | `heading_regex` | grupo 1 = número, grupo 2 = título | si los títulos tienen un formato que no se reconoce |
 | `max_chars`, `min_chars` | 12000, 300 | tamaño máximo de sección; las más cortas se unen a la anterior |
 | `lang` | `"Spanish"` | idioma de los resúmenes (vacío: el del documento) |
+| `model`, `reasoning_effort` | vacíos | el modelo y el razonamiento del análisis de esta fuente (vacíos: los de `[llm]`); por la misma conexión, cupo y límite de peticiones a la vez que el resto |
 
 La referencia completa está en la [guía de configuración](../../docs/configuracion.md).
 

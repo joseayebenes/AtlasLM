@@ -88,7 +88,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "graph": {"exports": list, "communities": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int,
-               "rrf_k": int, "weights": dict},
+               "rrf_k": int, "weights": dict, "rewrite": dict, "answer": dict},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -96,10 +96,11 @@ SCHEMA: dict[str, dict[str, Any]] = {
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
 SEARCH_LISTS = ("ids", "dense", "lexical", "keywords")    # [search] weights: the lists that RRF merges
+TASK_SCHEMA = {"model": str, "reasoning_effort": str}       # [search.rewrite] and [search.answer]
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
-               "min_chars": int, "enabled": bool}
+               "min_chars": int, "enabled": bool, "model": str, "reasoning_effort": str}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
@@ -124,7 +125,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                         "code_doc"]},
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000,
-               "rrf_k": 60, "weights": {"ids": 1.0, "dense": 1.0, "lexical": 1.0, "keywords": 1.0}},
+               "rrf_k": 60, "weights": {"ids": 1.0, "dense": 1.0, "lexical": 1.0, "keywords": 1.0},
+               "rewrite": {}, "answer": {}},     # [search.rewrite], [search.answer]: model, reasoning_effort
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
     "tests": {"languages": {}, "steps": []},
@@ -190,6 +192,8 @@ def _validate_search(search: dict) -> None:
             raise ConfigError(f"[search.weights] unknown list: '{name}' (valid: {', '.join(SEARCH_LISTS)})")
         if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight < 0:
             raise ConfigError(f"[search.weights] '{name}' must be a number, 0 or more")
+    for task in ("rewrite", "answer"):                  # empty: the model and effort of [llm]
+        _validate(search.get(task, {}), TASK_SCHEMA, f"search.{task}")
 
 
 @dataclass

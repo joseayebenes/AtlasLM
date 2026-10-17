@@ -27,7 +27,7 @@ from atlas.docs import extractor_for, read_text
 from atlas.docs.structure import STRUCTURES, clean_headers, diagnose_headings, document_title, prepare_sections
 from atlas.docs.writer import pages, write_document
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
-from atlas.llm.structured import JsonLlm
+from atlas.llm.structured import JsonLlm, using
 from atlas.pipeline import FatalError, Interrupted, atomic_write
 
 __all__ = ["DocsOptions", "preview", "process_document"]
@@ -45,6 +45,8 @@ class DocsOptions:
     lang: str = ""                  # language of summaries; "" = the one of the document
     max_chars: int = 12000          # largest section sent to the model
     min_chars: int = 300            # shorter sections are merged with the previous one
+    model: str = ""                 # the model of the analysis; "" = that of the llm ([llm])
+    reasoning_effort: str = ""      # the same for the reasoning effort
 
     def __post_init__(self):
         if self.analysis not in an.ANALYSES:
@@ -113,6 +115,7 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
             raise ValueError("analysis = 'llm' needs the model: pass llm=ServiceConfig or JsonLlm")
         if isinstance(llm, ServiceConfig):
             llm = JsonLlm(llm)
+        llm = using(llm, options.model, options.reasoning_effort)       # those of the source, if any
     t0 = time.time()
 
     text, removed = clean_headers(read_text(path, disabled))

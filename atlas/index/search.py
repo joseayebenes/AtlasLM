@@ -97,6 +97,12 @@ point it out.
 RRF_K = 60
 
 
+def _task(settings: dict | None) -> dict:
+    """The model and reasoning_effort that [search.rewrite] or [search.answer] set, as
+    arguments of ask_json and ask_text; none if they are empty (those of [llm])."""
+    return {k: v for k, v in (settings or {}).items() if k in ("model", "reasoning_effort") and v}
+
+
 def rrf(rankings: list, k: int = RRF_K, weights: dict[str, float] | None = None) -> list[int]:
     """Reciprocal Rank Fusion: merges rankings without calibrating their scores. Each
     ranking is a list of ids or a (label, list of ids) pair; `weights` {label: weight}
@@ -113,15 +119,15 @@ def rrf(rankings: list, k: int = RRF_K, weights: dict[str, float] | None = None)
     return sorted(score, key=lambda r: -score[r])
 
 
-def rewrite_question(llm: JsonLlm, question: str, documents: list[dict] = ()) -> dict:
+def rewrite_question(llm: JsonLlm, question: str, documents: list[dict] = (), task: dict | None = None) -> dict:
     """The question as search queries and exact keywords, whether it is broad and the
     documents it is about, among `documents` ({name, title}). If the model fails, the
-    question as it is."""
+    question as it is. `task`: the model and reasoning_effort of [search.rewrite]."""
     out = {"queries": [], "keywords": [], "broad": False, "documents": []}
     listed = "\n".join(f"- {d['name']}: {d['title']}" for d in documents)
     try:
         d = llm.ask_json(REWRITE_SYSTEM, f"Documents:\n{listed}\n\nQuestion: {question}" if listed else question,
-                         REWRITE_SCHEMA, "rewrite")
+                         REWRITE_SCHEMA, "rewrite", **_task(task))
     except Exception as e:
         log.warning("query rewriting failed, going on with the original one: %s", e)
         return out
@@ -154,16 +160,17 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
            per_document: int = 0, rewritten: dict | None = None, rrf_k: int = RRF_K,
-           weights: dict[str, float] | None = None) -> list[dict]:
+           weights: dict[str, float] | None = None, tasks: dict | None = None) -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
     its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
     no limit) is the most hits of one document while others have some. With `llm`, the
     query is rewritten first (or `rewritten` gives it already). With dense=False there are
     no vectors (IDs and BM25 only): no request to any model. `rrf_k` and `weights` (by kind
-    of list: ids, dense, lexical, keywords) go to rrf."""
+    of list: ids, dense, lexical, keywords) go to rrf. `tasks` {"rewrite": {model,
+    reasoning_effort}}: [search.rewrite]."""
     allowed = store.allowed(document, kinds)
     if rewritten is None and llm is not None:
-        rewritten = rewrite_question(llm, query)
+        rewritten = rewrite_question(llm, query, task=(tasks or {}).get("rewrite"))
     queries = [query] + (rewritten["queries"] if rewritten else [])
     keywords = rewritten["keywords"] if rewritten else []
     n = max(k * 3, 20)
@@ -266,9 +273,11 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
-                 max_chars: int = SCOPE_CHARS) -> dict:
+                 max_chars: int = SCOPE_CHARS, task: dict | None = None) -> dict:
     """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them."""
+    if not, notes from each part and a last request that combines them. `task`: the model
+    and reasoning_effort of [search.answer]."""
+    using = _task(task)
     sources = [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
@@ -279,18 +288,19 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
     if len(parts) == 1:
-        text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
+        text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}", **using), 1
     else:
         with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
-            notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}"),
-                                  parts))
+            notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}",
+                                                            **using), parts))
         notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
         requests = len(parts)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
             joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
-            text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}"), requests + 1
+            text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}",
+                                          **using), requests + 1
     cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
     return {"answer": text, "scope": "whole", "documents": names, "requests": requests,
             "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited]}
@@ -320,14 +330,16 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
-           rrf_k: int = RRF_K, weights: dict[str, float] | None = None) -> dict:
+           rrf_k: int = RRF_K, weights: dict[str, float] | None = None, tasks: dict | None = None) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
-    the question is broad."""
+    the question is broad. `tasks` {"rewrite": ..., "answer": ...}: the model and
+    reasoning_effort of [search.rewrite] and [search.answer]."""
+    tasks = tasks or {}
     candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX)]
-    rewritten = rewrite_question(llm, question, candidates) if rewrite else None
+    rewritten = rewrite_question(llm, question, candidates, tasks.get("rewrite")) if rewrite else None
     requests = 1 if rewrite else 0
     if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
@@ -336,7 +348,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
                                                    rrf_k=rrf_k, weights=weights)
         docs = _scope_documents(store, document, named, hits)
         if docs:
-            res = answer_whole(store, llm, question, docs, scope_chars)
+            res = answer_whole(store, llm, question, docs, scope_chars, tasks.get("answer"))
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
                   rrf_k=rrf_k, weights=weights)
@@ -345,6 +357,6 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",
                 "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
-    text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
+    text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}", **_task(tasks.get("answer")))
     return {"answer": text, "sources": [_source(i, s) for i, s in enumerate(sources, 1)],
             "scope": "passages", "documents": [], "requests": requests + 1}

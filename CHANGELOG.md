@@ -12,6 +12,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   acepta listas con etiqueta y pesos, y sigue aceptando listas sin etiqueta. Los valores por
   defecto no cambian nada: en las muestras, `dense = 2.0` sube el MRR de 0,83 a 0,93, pero se
   ajustan solo con un conjunto de evaluación del proyecto real. Cambiarlo no reprocesa nada.
+- Modelo y razonamiento por tarea: `model` y `reasoning_effort` en cada `[[sources.docs]]`
+  (el análisis de sus documentos), en `[search.rewrite]` (la reescritura de las preguntas) y
+  en `[search.answer]` (las respuestas, también las que leen documentos enteros); vacíos, los
+  de `[llm]`. Todo va por el mismo cliente, cupo y límite de peticiones a la vez:
+  `JsonLlm.ask_json` y `ask_text` aceptan `model` y `reasoning_effort` por petición, y
+  `JsonLlm.using(...)` los fija para todas. La huella de `docs.process` lleva el modelo de
+  cada fuente; cambiar `[search]` sigue sin reprocesar nada.
 
 ### Cambiado
 - `matrix` y `gaps` del grafo, más rápidas: cachés por instancia de lo que se calcula de cada

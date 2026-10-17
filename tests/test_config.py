@@ -73,6 +73,12 @@ def test_search_settings(toml):
         load_config(toml('[search]\nweights = {dense = -1}'))
     with pytest.raises(ConfigError, match="'rrf_k' must be at least 1"):
         load_config(toml('[search]\nrrf_k = 0'))
+    cfg = load_config(toml('[search.rewrite]\nmodel = "small"\nreasoning_effort = "none"'))
+    assert cfg["search"]["rewrite"] == {"model": "small", "reasoning_effort": "none"} and cfg["search"]["answer"] == {}
+    with pytest.raises(ConfigError, match=r"\[search.answer\] unknown key: 'temperature'"):
+        load_config(toml('[search.answer]\ntemperature = 0.5'))
+    with pytest.raises(ConfigError, match=r"\[search.rewrite\] 'model' must be of type str"):
+        load_config(toml('[search.rewrite]\nmodel = 3'))
 
 
 def test_wrong_type(toml):

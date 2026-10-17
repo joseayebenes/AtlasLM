@@ -215,11 +215,12 @@ def docs_step(ctx) -> Step | None:
 
     def fingerprint(ctx, unit: str) -> str:
         # the extractor too: another one gives another text (and other sections)
+        # and the model of its source, or that of [llm]
         name, f = unit.split(":", 1)
         d, options = by_name[name]
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
                 f"{extractor_for(f, ctx.disabled).name}|"
-                + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
+                + (f"{options.model or model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
 
     def out_dir(ctx, unit: str) -> Path:
         """<workspace>/docs/<source>/<name>_<extension>, unless another file already has it

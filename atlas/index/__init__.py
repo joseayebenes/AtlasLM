@@ -158,7 +158,8 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars, rrf_k, weights); what is not given takes its default."""
+    scope_chars, rrf_k, weights, and rewrite and answer: the model and reasoning_effort
+    of each task); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
@@ -213,7 +214,8 @@ class Index:
         per = self.settings["per_document"] if per_document is None else per_document
         s = self.settings
         return search(self.store, self.embedder, query, k or s["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per, rrf_k=s["rrf_k"], weights=s["weights"])
+                      self.llm if rewrite else None, dense, per, rrf_k=s["rrf_k"], weights=s["weights"],
+                      tasks=self._tasks())
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "") -> dict:
@@ -221,7 +223,10 @@ class Index:
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
                       s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
-                      rrf_k=s["rrf_k"], weights=s["weights"])
+                      rrf_k=s["rrf_k"], weights=s["weights"], tasks=self._tasks())
+
+    def _tasks(self) -> dict:
+        return {"rewrite": self.settings["rewrite"], "answer": self.settings["answer"]}
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

@@ -98,3 +98,22 @@ def test_concurrency_caps_the_requests_in_flight(fake_llm):
     with ThreadPoolExecutor(6) as pool:
         answers = list(pool.map(lambda _: llm.ask_text("system", "Reply with: ok"), range(6)))
     assert answers == ["ok"] * 6 and state["max"] == 2
+
+
+def test_model_and_reasoning_effort_by_request(fake_llm, monkeypatch):
+    from dataclasses import replace
+    sent, create = [], JsonLlm._create
+    monkeypatch.setattr(JsonLlm, "_create", lambda self, **kw: sent.append((kw["model"], kw.get("reasoning_effort")))
+                        or create(self, **kw))
+    llm = JsonLlm(replace(fake_llm[0], reasoning_effort="low"))
+    llm.ask_text("system", "Reply with: ok")
+    llm.ask_text("system", "Reply with: ok", model="small", reasoning_effort="none")
+    llm.ask_json("system", "<section>x</section>", SCHEMA, "section", model="big")
+    small = llm.using("small")
+    assert small.model == "small" and small.ask_text("system", "Reply with: ok") == "ok"
+    small.ask_json("system", "<section>x</section>", SCHEMA, "section", reasoning_effort="high")
+    small.using(reasoning_effort="none").ask_text("system", "Reply with: ok")
+    assert sent == [("fake", "low"), ("small", "none"), ("big", "low"), ("small", "low"), ("small", "high"),
+                    ("small", "none")]
+    assert llm.using() is llm and llm.using("", "") is llm and llm.model == "fake"
+    assert small.schema_ok is llm.schema_ok and small.client is llm.client      # one connection

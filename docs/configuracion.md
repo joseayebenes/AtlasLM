@@ -36,7 +36,8 @@ de ella:
 | Cambio | Qué se reprocesa |
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
-| `[llm] model` | los documentos con `analysis = "llm"` |
+| `[llm] model` | los documentos con `analysis = "llm"` de las fuentes sin `model` propio |
+| `model` de una `[[sources.docs]]` | los documentos de esa fuente (sus secciones, con ese modelo) |
 | `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
@@ -56,7 +57,10 @@ de ella:
 ## [llm]
 
 El modelo de chat: análisis de documentos, respuestas y agentes. Cualquier API compatible
-con OpenAI.
+con OpenAI. Cada tarea puede usar otro modelo o razonamiento por la misma conexión: el
+análisis de los documentos de una fuente (`model` y `reasoning_effort` de
+`[[sources.docs]]`), la reescritura de las preguntas y las respuestas (`[search.rewrite]` y
+`[search.answer]`) y cada agente (`[agents.<nombre>]`).
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
@@ -145,6 +149,8 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `max_chars` | entero | `12000` | tamaño máximo de una sección (las mayores se dividen) |
 | `min_chars` | entero | `300` | las secciones más cortas se unen a la anterior |
 | `lang` | texto | `""` | idioma de los resúmenes (`"Spanish"`); vacío = el del documento |
+| `model` | texto | `""` | el modelo que analiza los documentos de esta fuente; vacío = el de `[llm]`. Entra en la huella: cambiarlo vuelve a analizar los documentos de la fuente (las secciones se guardan por modelo, así que volver al anterior las toma de la caché) |
+| `reasoning_effort` | texto | `""` | el razonamiento de ese análisis; vacío = el de `[llm]`. Como el de `[llm]`, no vuelve a preguntar por las secciones ya analizadas |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
@@ -266,6 +272,8 @@ Cambiarlo no reprocesa nada.
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
 | `rrf_k` | entero | `60` | la `k` de Reciprocal Rank Fusion, que junta las listas de una búsqueda: cada resultado suma `peso / (k + puesto)` de cada lista. Menor, más cuentan los primeros puestos frente a los siguientes |
+| `rewrite` | tabla | `{}` | `[search.rewrite]`: `model` y `reasoning_effort` de la reescritura de las preguntas (vacíos: los de `[llm]`) |
+| `answer` | tabla | `{}` | `[search.answer]`: `model` y `reasoning_effort` de las respuestas, también de las que leen documentos enteros por partes (vacíos: los de `[llm]`) |
 | `weights` | tabla | `{ids = 1.0, dense = 1.0, lexical = 1.0, keywords = 1.0}` | el peso de cada lista: `ids` (los IDs exactos de la pregunta), `dense` (los vectores), `lexical` (BM25 con la pregunta y sus reescrituras), `keywords` (BM25 con las palabras exactas de la reescritura). La que no se da pesa 1; con 0 no cuenta |
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
@@ -274,6 +282,19 @@ peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30
 partes se leen de cuatro en cuatro; `[network] max_concurrent` lo limita. En un Mac de 24 GB
 con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
 caracteres en partes de 5000 tardó 11 minutos.
+
+La reescritura es una petición corta que solo devuelve consultas y palabras clave, y las
+respuestas necesitan leer bien las fuentes: cada una puede ir con su modelo y su
+razonamiento, por la misma conexión, cupo y límite de peticiones a la vez que el resto:
+
+```toml
+[search.rewrite]
+model = "gemma4:e4b"               # un modelo pequeño para la reescritura, sin razonar
+reasoning_effort = "none"
+
+[search.answer]
+reasoning_effort = "low"           # el modelo de [llm], razonando poco
+```
 
 Los pesos se ajustan solo con un conjunto de evaluación escrito sobre el proyecto real
 (`atlas eval`, ver [atlas/agents](../atlas/agents/README.md)), no con las muestras: son

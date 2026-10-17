@@ -255,6 +255,28 @@ def test_search_takes_rrf_k_and_weights_from_the_settings(docs, tmp_path, fake_l
     assert "dense" not in seen[-1][0]
 
 
+def test_rewrite_and_answer_with_their_own_model(docs, tmp_path, fake_llm, fake_embeddings, monkeypatch):
+    from atlas.llm import JsonLlm
+    sent, create = [], JsonLlm._create
+    monkeypatch.setattr(JsonLlm, "_create", lambda self, **kw: sent.append(
+        ("rewrite" if "search queries" in kw["messages"][0]["content"] else "answer", kw["model"],
+         kw.get("reasoning_effort"))) or create(self, **kw))
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0],
+                {"rewrite": {"model": "rewriter", "reasoning_effort": "none"}, "answer": {"model": "writer"}})
+    _add(idx, docs["hmi_manual.md"])
+    idx.answer("How long are the logs kept?", scope="passages")
+    assert sent == [("rewrite", "rewriter", "none"), ("answer", "writer", None)]
+    sent.clear()
+    idx.answer("Summarise every requirement", scope="whole")
+    assert sent[0] == ("rewrite", "rewriter", "none") and {s[1:] for s in sent[1:]} == {("writer", None)}
+    sent.clear()
+    idx.search("logs", rewrite=True)
+    assert sent == [("rewrite", "rewriter", "none")]
+    sent.clear()
+    Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0]).answer("How long are the logs kept?")
+    assert {s[1] for s in sent} == {"fake"}                            # empty: those of [llm]
+
+
 def test_search_keeps_a_few_hits_of_each_document(docs, tmp_path, fake_llm, fake_embeddings):
     idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"results": 4, "per_document": 2})
     for data in docs.values():

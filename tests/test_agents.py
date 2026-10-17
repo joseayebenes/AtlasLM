@@ -651,3 +651,61 @@ def test_a_change_that_leaves_the_same_errors_is_not_progress():
     write(path="s.adb", content="d")              # 1 error now: progress again
     write(path="s.adb", content="e")
     assert not state
+
+
+# --- local-only sources (model = "none") ----------------------------------------------------
+
+def test_local_only_sources_never_reach_the_model(workspace, monkeypatch):
+    """With a DOORS module and the code local-only, what is sent to a model keeps their IDs and
+    links but not their text; the person (the CLI, the editor) still gets everything."""
+    import copy
+    from atlas.agents.comply import comply
+    from atlas.agents.definitions import AgentDef
+    from atlas.agents.link import link
+    from atlas.agents.reports import coverage_report, impact_report
+    from atlas.agents.runtime import agent_tools, context_for, model_context
+    from atlas.agents.tools import AgentTools
+    from atlas.agents.verify import verify, verify_all
+    from atlas.graph import KnowledgeGraph
+    from atlas.graph.tools import GraphTools
+    from atlas.outbound import LocalOnly
+    monkeypatch.chdir(workspace.path.parent)
+    cfg = copy.deepcopy(workspace)
+    cfg.data["sources"]["doors"]["local_only"] = ["SSS_MISSION"]
+    cfg.data["sources"]["code"]["model"] = "none"
+    g = KnowledgeGraph.from_config(cfg)
+    view = g.for_model(LocalOnly.from_config(cfg))
+    assert g.trace("SSS-0001")["text"] and "text" not in view.trace("SSS-0001")
+    assert view.trace("SSS-0001")["module"] == "SSS_MISSION" and view.G.nodes["SSS-0001"]["local_only"]
+    assert view.trace("SRS-0004")["text"] == g.trace("SRS-0004")["text"]          # SRS_TMS is not local
+    assert "source" in g.read_source("tracks.delete_track") and view.read_source("tracks.delete_track")["local_only"]
+    assert view.read_file(g.G.nodes["tracks.delete_track"]["file"])["local_only"]
+    assert "Removes track I" not in json.dumps(view.trace_code("tracks.delete_track"))
+    assert g.for_model(LocalOnly()) is g
+
+    # an agent's context: the graph tools and build_context without the local text
+    context = model_context(context_for(cfg), cfg)
+    assert context.for_model and model_context(context_for(workspace), workspace).__dict__.get("for_model") is None
+    assert "text" not in GraphTools.for_context(context).trace("SSS-0001")
+    md = AgentTools.for_context(context).build_context("SRS-0004")["markdown"]
+    assert "tracks.delete_track" in md and "Removes track I" not in md and "## Source" not in md
+    assert "## Source" in AgentTools.for_context(context_for(cfg)).build_context("SRS-0004")["markdown"]
+    coder = AgentDef(name="coder", instruction="Code.", tools=["trace", "read_file"])
+    with pytest.raises(ConfigError, match="keeps it in the workstation"):
+        agent_tools(coder, context)
+
+    # what judges or writes with the model: nothing of the local sources is asked
+    judge = StubJudge({"verdict": "consistent", "issues": [], "summary": "ok", "obligations": [], "links": []})
+    res = verify("SSS-0001", cfg, llm=judge, graph=g)
+    assert res["verdict"] == "local_only" and not judge.prompts
+    assert verify_all("SSS_MISSION", cfg, llm=judge, graph=g)["counts"]["local_only"] == 12 and not judge.prompts
+    res = comply("SRS-0004", cfg, llm=judge, graph=g)
+    assert res["verdict"] == "local_only" and res["local_only"] == ["tracks.delete_track"] and not judge.prompts
+    res = link("SRS-0005", cfg, llm=judge, graph=g)
+    assert res["verdict"] == "no_candidates" and "tracks.delete_track" in res["local_only"] and not judge.prompts
+    writer = StubWriter("Report.")
+    impact_report("Logger.Log", cfg, llm=writer)
+    coverage_report("SSS_MISSION", cfg, llm=writer)
+    sent = json.dumps(writer.prompts)
+    assert "tracks.delete_track" in sent and "Removes track I" not in sent
+    assert "SSS-0005" in sent and "mission system shall provide" not in sent

@@ -20,6 +20,10 @@ A requirement without candidates is "no_candidates", without asking the model. T
 judgements are kept in <workspace>/reports/.link_cache.json by the hash of the evidence, the
 instructions and the model: proposing again only asks for what changed.
 
+Nothing of a local-only source (model = "none") goes to the model: a requirement of a
+local-only DOORS module is "local_only" without asking; local-only code is not a candidate
+(it goes in `local_only`, unjudged), and local-only documents do not say what it states.
+
     res = link("SRS-0005", cfg)              # {"id", "verdict", "links", "candidates", ...}
     report = link_all("SRS_TMS", cfg)         # every requirement without code of a module
 """
@@ -71,7 +75,13 @@ def candidates(req_id: str, graph, index=None, declarations: dict | None = None)
     rid, found = t["id"], {}
     current = [x["id"] for x in t["implemented_by"]["items"]] if t.get("implemented_by") else []
 
+    held: list[str] = []
+
     def add(n: str, why: str) -> None:
+        if n in graph.G and graph.G.nodes[n].get("local_only"):
+            if n not in held and n not in current:
+                held.append(n)
+            return
         if n in graph.G and graph.G.nodes[n].get("kind") in CODE_KINDS and n not in current:
             reasons = found.setdefault(n, [])
             if why not in reasons:
@@ -111,7 +121,8 @@ def candidates(req_id: str, graph, index=None, declarations: dict | None = None)
     return {"id": rid, "official": t.get("text", ""), "module": t.get("module", ""),
             "documents": [{"source": f"{x['document']} › {x['title']}", "text": x.get("text", "")}
                           for x in t["documents"]][:3],
-            "linked": linked, "implemented_by": current, "candidates": out}
+            "linked": linked, "implemented_by": current, "candidates": out, "local_only": held,
+            "local": bool(graph.G.nodes[rid].get("local_only"))}
 
 
 def _prompt(c: dict) -> str:
@@ -149,12 +160,13 @@ class Linker:
     def __init__(self, cfg: Config, llm: Any = None, graph=None, index=None):
         from atlas.agents.runtime import agent_service, definition
         from atlas.graph import KnowledgeGraph
+        from atlas.outbound import LocalOnly
         from atlas.store import Store
         self.cfg = cfg
         self.agent: AgentDef = definition("req_linker", cfg)
         self.service = agent_service(self.agent, cfg)
         self._llm = llm
-        self.graph = graph or KnowledgeGraph.from_config(cfg)
+        self.graph = (graph or KnowledgeGraph.from_config(cfg)).for_model(LocalOnly.from_config(cfg))
         self.index = index
         self.declarations = _declarations(Store(cfg.workspace))
         tag = (cfg["sources"].get("code") or {}).get("req_tag") or "Req:"
@@ -180,7 +192,12 @@ class Linker:
             return {"id": req_id, **c}
         offered = {x["id"]: x for x in c["candidates"]}
         base = {"id": c["id"], "official": c["official"], "implemented_by": c["implemented_by"],
-                "candidates": [{k: x[k] for k in ("id", "kind", "where", "evidence")} for x in c["candidates"]]}
+                "candidates": [{k: x[k] for k in ("id", "kind", "where", "evidence")} for x in c["candidates"]],
+                **({"local_only": c["local_only"]} if c["local_only"] else {})}
+        if c["local"]:
+            return {**base, "verdict": "local_only", "links": [],
+                    "summary": "Not proposed: the requirement is of a local-only DOORS module, and its text does not "
+                               "go to the model."}
         if not offered:
             return {**base, "verdict": "no_candidates", "links": [],
                     "summary": "No code element is mentioned with it, implements a linked requirement or "
@@ -257,6 +274,8 @@ def link_all(target: str, cfg: Config, llm: Any = None, graph=None, index=None, 
     files = [folder / f"link-{name}.json", folder / f"link-{name}.md"]
     atomic_write(files[0], json.dumps(results, ensure_ascii=False, indent=1))
     atomic_write(files[1], _report(target, results))
+    held = sum(r.get("verdict") == "local_only" for r in results)
     return {"target": target, "results": results,
-            "counts": {v: sum(r.get("verdict") == v for r in results) for v in VERDICTS},
+            "counts": {**{v: sum(r.get("verdict") == v for r in results) for v in VERDICTS},
+                       **({"local_only": held} if held else {})},
             "asked": linker.asked, "files": [str(f) for f in files]}

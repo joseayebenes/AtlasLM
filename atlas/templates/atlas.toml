@@ -47,6 +47,7 @@ paths = ["docs"]                       # carpetas (se recorren enteras) o ficher
 patterns = ["*.pdf", "*.md"]
 analysis = "llm"                       # llm: resumen, requisitos y glosario; regex: solo requisitos; none
 lang = "Spanish"                       # idioma de los resúmenes
+# model = "none"                      # ningún texto de estos documentos sale del puesto (ni al gateway)
 
 [sources.doors]
 adapter = "exchange"                   # la base de intercambio que publica tools/doors_export

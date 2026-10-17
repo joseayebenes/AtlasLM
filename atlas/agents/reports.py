@@ -7,7 +7,8 @@ plan: the steps are fixed, and the model only writes at the end).
 The data comes from the graph (impact, matrix, gaps); the agent of each Markdown file writes
 the report with its instructions and model. The report keeps, after the text of the model,
 the data it was written from, so that nothing depends on what the model chose to cite. Both
-are written to <workspace>/reports.
+are written to <workspace>/reports. The model sees the graph without the text of the
+local-only sources (KnowledgeGraph.for_model): their IDs and links, not what they say.
 """
 from __future__ import annotations
 
@@ -61,7 +62,8 @@ def impact_report(name: str, cfg: Config, llm: Any = None, graph=None, depth: in
     """What changing `name` (a code element or a requirement) affects, written by the agent
     impact_analyst. {"node", "report", "file", "impact"} or {"error"}."""
     from atlas.graph import KnowledgeGraph
-    g = graph or KnowledgeGraph.from_config(cfg)
+    from atlas.outbound import LocalOnly
+    g = (graph or KnowledgeGraph.from_config(cfg)).for_model(LocalOnly.from_config(cfg))
     impact = g.impact(name, depth=depth, limit=60)
     if "error" in impact:
         return impact
@@ -80,7 +82,8 @@ def coverage_report(module: str, cfg: Config, llm: Any = None, graph=None) -> di
     """The traceability gaps of a DOORS module ("" = every requirement), summarised by the
     agent coverage_auditor. {"module", "report", "file", "summary", "gaps"} or {"error"}."""
     from atlas.graph import KnowledgeGraph
-    g = graph or KnowledgeGraph.from_config(cfg)
+    from atlas.outbound import LocalOnly
+    g = (graph or KnowledgeGraph.from_config(cfg)).for_model(LocalOnly.from_config(cfg))
     matrix = g.matrix(module, limit=0)
     if "error" in matrix:
         return matrix

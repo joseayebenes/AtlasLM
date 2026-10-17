@@ -15,6 +15,10 @@ A requirement without any passage is "no_documentation", without asking the mode
 judgements are kept in <workspace>/reports/.verify_cache.json by the hash of the evidence,
 the instructions and the model: verifying again only asks for what changed.
 
+Nothing of a local-only source (model = "none") goes to the model: a requirement of a
+local-only DOORS module is "local_only" without asking, and the passages of local-only
+documents are left out of the evidence and listed in `local_only`.
+
     res = verify("SRS-0001", cfg)            # {"id", "verdict", "issues", "summary", ...}
     report = verify_all("SRS_TMS", cfg)       # every requirement of a module, written to reports/
 """
@@ -52,13 +56,15 @@ MAX_PASSAGE_CHARS = 1500
 
 def evidence(req_id: str, graph, index=None) -> dict:
     """What the model gets to judge a requirement, without a model: {"id", "official",
-    "linked", "passages": [{"source", "text"}], "values_differ"} or {"error"}."""
+    "linked", "passages": [{"source", "text"}], "values_differ", "local_only": the local-only
+    documents left out, "local": whether the requirement itself is local-only} or {"error"}.
+    `graph` is the one a model may see (KnowledgeGraph.for_model)."""
     t = graph.trace(req_id)
     if "error" in t:
         return t
     linked = [{"id": x["id"], "type": x["type"], "text": graph.G.nodes[x["id"]].get("text", "")}
               for x in t["links_out"] + t["links_in"]]
-    passages, seen = [], set()
+    passages, seen, held = [], set(), []
 
     def add(source: str, text: str) -> None:
         key = " ".join(text.split())[:200]
@@ -73,16 +79,24 @@ def evidence(req_id: str, graph, index=None) -> dict:
             hits += index.search(f"{t['id']} {t.get('text', '')}", k=6)
         except Exception as e:                # no embeddings server: the statements are enough
             log.warning("verify %s: no search in the documents (%s)", t["id"], e)
+        local = index.local_filter() if hasattr(index, "local_filter") else (lambda doc: False)
         for h in hits:
             if not h["doc"].startswith(DOORS_PREFIX) and (h["kind"] == "requirement" or t["id"] in h["text"]):
-                add(cite(h), h["text"])
+                if not local(h["doc"]):
+                    add(cite(h), h["text"])
+                elif h["doc_name"] not in held:
+                    held.append(h["doc_name"])
     for x in t["documents"]:                  # the sections of the graph, if the index had nothing
-        add(f"{x['document']} › {x['title']}", x.get("text", ""))
+        if not x.get("local_only"):
+            add(f"{x['document']} › {x['title']}", x.get("text", ""))
+        elif x["document"] not in held:
+            held.append(x["document"])
     differ = [{"source": f"{x['document']} › {x['title']}", **x["values_differ"]}
               for x in t["documents"] if "values_differ" in x]
     return {"id": t["id"], "in_doors": t.get("in_doors", True),
             "official": {k: t[k] for k in ("module", "text", "attributes", "parent") if t.get(k)},
-            "linked": linked, "passages": passages, "values_differ": differ}
+            "linked": linked, "passages": passages, "values_differ": differ, "local_only": held,
+            "local": bool(graph.G.nodes[t["id"]].get("local_only"))}
 
 
 def _prompt(ev: dict) -> str:
@@ -122,11 +136,12 @@ class Verifier:
     def __init__(self, cfg: Config, llm: Any = None, graph=None, index=None):
         from atlas.agents.runtime import agent_service, definition
         from atlas.graph import KnowledgeGraph
+        from atlas.outbound import LocalOnly
         self.cfg = cfg
         self.agent: AgentDef = definition("requirement_verifier", cfg)
         self.service = agent_service(self.agent, cfg)
         self._llm = llm
-        self.graph = graph or KnowledgeGraph.from_config(cfg)
+        self.graph = (graph or KnowledgeGraph.from_config(cfg)).for_model(LocalOnly.from_config(cfg))
         self.index = index
         self.cache_path = cfg.workspace / "reports" / ".verify_cache.json"
         try:
@@ -148,7 +163,13 @@ class Verifier:
         if "error" in ev:
             return {"id": req_id, **ev}
         base = {"id": ev["id"], "official": ev["official"].get("text", ""),
-                "sources": [p["source"] for p in ev["passages"]], "values_differ": ev["values_differ"]}
+                "sources": [p["source"] for p in ev["passages"]], "values_differ": ev["values_differ"],
+                **({"local_only": ev["local_only"]} if ev["local_only"] else {})}
+        if ev["local"] or (not ev["passages"] and ev["local_only"]):
+            return {**base, "verdict": "local_only", "issues": [],
+                    "summary": "Not verified: " + ("the requirement is of a local-only DOORS module" if ev["local"]
+                                                   else "only local-only documents state it")
+                               + ", and its text does not go to the model."}
         if not ev["passages"]:
             return {**base, "verdict": "no_documentation", "issues": [],
                     "summary": "No document states or describes this requirement."}
@@ -175,6 +196,13 @@ def verify(req_id: str, cfg: Config, llm: Any = None, graph=None, index=None) ->
     return res
 
 
+def _counts(results: list[dict]) -> dict[str, int]:
+    """By verdict; local_only only when some requirement was not sent to the model."""
+    counts = {x: sum(r.get("verdict") == x for r in results) for x in VERDICTS}
+    held = sum(r.get("verdict") == "local_only" for r in results)
+    return {**counts, **({"local_only": held} if held else {})}
+
+
 def _report(target: str, results: list[dict]) -> str:
     count = {v: sum(r.get("verdict") == v for r in results) for v in VERDICTS}
     md = [f"# Verification of requirements: {target}", "",
@@ -191,6 +219,9 @@ def _report(target: str, results: list[dict]) -> str:
     missing = [r["id"] for r in results if r.get("verdict") == "no_documentation"]
     md += ["## Consistent", "", ", ".join(consistent) or "-", ""]
     md += ["## Without documentation", "", ", ".join(missing) or "-"]
+    held = [r["id"] for r in results if r.get("verdict") == "local_only"]
+    if held:
+        md += ["", "## Not verified: local-only sources", "", ", ".join(held)]
     return "\n".join(md) + "\n"
 
 
@@ -215,6 +246,5 @@ def verify_all(target: str, cfg: Config, llm: Any = None, graph=None, index=None
     files = [folder / f"verify-{name}.json", folder / f"verify-{name}.md"]
     atomic_write(files[0], json.dumps(results, ensure_ascii=False, indent=1))
     atomic_write(files[1], _report(target, results))
-    return {"target": target, "results": results, "counts": {x: sum(r.get("verdict") == x for r in results)
-                                                              for x in VERDICTS},
+    return {"target": target, "results": results, "counts": _counts(results),
             "asked": v.asked, "files": [str(f) for f in files]}

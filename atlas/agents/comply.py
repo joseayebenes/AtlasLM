@@ -15,7 +15,9 @@ Two steps, as the verification against the documentation:
 
 A requirement without code is "no_code", without asking the model. The judgements are kept
 in <workspace>/reports/.comply_cache.json by the hash of the evidence, the instructions and
-the model.
+the model. A requirement of a local-only DOORS module, or whose code is local-only
+([sources.code] model = "none"), is "local_only", also without asking: its text or its code
+does not go to the model.
 
     res = comply("SRS-0004", cfg)          # {"id", "verdict", "obligations", "code", ...}
     report = comply_all("SRS_TMS", cfg)     # every requirement of a module that has code
@@ -70,7 +72,9 @@ def evidence(req_id: str, graph) -> dict:
                      "source": listing[:MAX_CODE_CHARS] + ("\n…" if len(listing) > MAX_CODE_CHARS else ""),
                      "calls": calls})
     tests = sorted({x["id"] for x in t.get("verified_by", [])})
-    return {"id": t["id"], "text": text, "source": source, "code": code, "tests": tests}
+    held = [n for n in graph._code_of(t["id"]) if graph.G.nodes[n].get("local_only")]
+    return {"id": t["id"], "text": text, "source": source, "code": [c for c in code if c["id"] not in held],
+            "tests": tests, "local_only": held, "local": bool(graph.G.nodes[t["id"]].get("local_only"))}
 
 
 def _prompt(ev: dict) -> str:
@@ -106,11 +110,12 @@ class Checker:
     def __init__(self, cfg: Config, llm: Any = None, graph=None):
         from atlas.agents.runtime import agent_service, definition
         from atlas.graph import KnowledgeGraph
+        from atlas.outbound import LocalOnly
         self.cfg = cfg
         self.agent: AgentDef = definition("compliance_checker", cfg)
         self.service = agent_service(self.agent, cfg)
         self._llm = llm
-        self.graph = graph or KnowledgeGraph.from_config(cfg)
+        self.graph = (graph or KnowledgeGraph.from_config(cfg)).for_model(LocalOnly.from_config(cfg))
         self.cache_path = cfg.workspace / "reports" / ".comply_cache.json"
         try:
             self.cache = json.loads(self.cache_path.read_text(encoding="utf-8"))
@@ -130,7 +135,12 @@ class Checker:
         ev = evidence(req_id, self.graph)
         if "error" in ev:
             return {"id": req_id, **ev}
-        base = {"id": ev["id"], "text": ev["text"], "code": [c["id"] for c in ev["code"]], "tests": ev["tests"]}
+        base = {"id": ev["id"], "text": ev["text"], "code": [c["id"] for c in ev["code"]] + ev["local_only"],
+                "tests": ev["tests"], **({"local_only": ev["local_only"]} if ev["local_only"] else {})}
+        if ev["local"] or ev["local_only"]:
+            return {**base, "verdict": "local_only", "obligations": [],
+                    "summary": "Not checked: " + ("the requirement is of a local-only DOORS module" if ev["local"]
+                                                  else "its code is local-only") + ", and it does not go to the model."}
         if not ev["code"]:
             return {**base, "verdict": "no_code", "obligations": [],
                     "summary": "No code cites this requirement: there is nothing to check."}
@@ -166,13 +176,16 @@ def _report(target: str, results: list[dict]) -> str:
           "proof. Timing, performance and behaviour of code that is not shown are left to the tests.", ""]
     mark = {"met": "✓", "not_met": "✗", "partial": "◐", "cannot_tell": "?"}
     for r in results:
-        if r.get("verdict") in ("no_code", None):
+        if r.get("verdict") in ("no_code", "local_only", None):
             continue
         md += [f"## {r['id']}: {r['verdict']}", "", r.get("text", ""), "",
                f"Code: {', '.join(r['code'])}. Tests: {', '.join(r['tests']) or 'none'}.", "", r.get("summary", ""), ""]
         md += [f"- {mark[o['status']]} {o['text']}: {o['evidence']}" for o in r["obligations"]]
         md.append("")
     md += ["## Without code", "", ", ".join(r["id"] for r in results if r.get("verdict") == "no_code") or "-"]
+    held = [r["id"] for r in results if r.get("verdict") == "local_only"]
+    if held:
+        md += ["", "## Not checked: local-only sources", "", ", ".join(held)]
     return "\n".join(md) + "\n"
 
 
@@ -198,6 +211,8 @@ def comply_all(target: str, cfg: Config, llm: Any = None, graph=None, workers: i
     files = [folder / f"comply-{name}.json", folder / f"comply-{name}.md"]
     atomic_write(files[0], json.dumps(results, ensure_ascii=False, indent=1))
     atomic_write(files[1], _report(target, results))
+    held = sum(r.get("verdict") == "local_only" for r in results)
     return {"target": target, "results": results,
-            "counts": {v: sum(r.get("verdict") == v for r in results) for v in VERDICTS},
+            "counts": {**{v: sum(r.get("verdict") == v for r in results) for v in VERDICTS},
+                       **({"local_only": held} if held else {})},
             "asked": checker.asked, "files": [str(f) for f in files]}

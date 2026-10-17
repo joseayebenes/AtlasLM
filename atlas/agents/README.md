@@ -294,6 +294,19 @@ Con `gemma4:12b`, `atlas verify SRS-0001` encuentra que DOORS dice 499 ms y la
 especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log` tarda
 37 s y `atlas coverage SRS_TMS`, 46 s.
 
+## Fuentes locales
+
+Todo lo que una herramienta devuelve a un agente va al modelo. Con fuentes locales
+(`model = "none"`, ver [configuración](../../docs/configuracion.md#fuentes-locales-model--none)),
+las herramientas de un agente reciben su propio contexto (`model_context`, `for_model`):
+las del grafo ven el grafo sin el texto de esas fuentes (`KnowledgeGraph.for_model`: los
+IDs y los enlaces se quedan; el texto de los requisitos, los títulos, lo que dicen las
+secciones, los comentarios y el código fuente, no), y las de documentos omiten sus pasajes
+y dicen cuáles en `local_only`. `verify`, `comply`, `link`, `impact` y `coverage` usan el
+mismo grafo; un requisito de un módulo local, o cuyo código es local, queda `local_only`
+sin preguntar al modelo. Si el código es local, un agente con herramientas que lo leen o lo
+compilan (`read_file`, `grep`, `check_code`...) no arranca.
+
 ## Evaluación
 
 `atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.

@@ -287,9 +287,11 @@ def index_step(ctx) -> Step:
     texts of all the documents to index are embedded first, together, in full batches."""
     from atlas.index import Index, build_records
     from atlas.llm import from_config
+    from atlas.outbound import LocalOnly
     options = index_options(ctx)
     workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
+    local = LocalOnly.from_config(ctx.cfg)
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
 
@@ -306,7 +308,8 @@ def index_step(ctx) -> Step:
         return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
 
     def fingerprint(ctx, unit: str) -> str:
-        return f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return (f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+                + ("|local" if local.index_doc(unit) else ""))
 
     def run(ctx, unit: str):
         d = ctx.store.document(unit)
@@ -314,14 +317,14 @@ def index_step(ctx) -> Step:
         if any(x["name"] == name and x["doc"] != unit for x in index().documents()):
             name = d["path"]
         res = index().add_document(json.loads(structure(unit).read_text(encoding="utf-8")), doc=unit,
-                                   name=name, out_dir=d["out_dir"], **options)
+                                   name=name, out_dir=d["out_dir"], local=local.index_doc(unit), **options)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, units: list[str]) -> None:
-        texts = [r["embed_text"] for unit in units for r in build_records(
+        texts = [r["embed_text"] for unit in units if not local.index_doc(unit) for r in build_records(
             json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
             options["chunk_overlap"], options["kinds"])]
         index().embed_missing(texts, workers)
@@ -337,6 +340,8 @@ def index_requirements_step(ctx) -> Step:
     index.documents, the texts of all the modules to index are embedded first, together."""
     from atlas.index import DOORS_PREFIX, Index, requirement_records
     from atlas.llm import from_config
+    from atlas.outbound import LocalOnly
+    local = LocalOnly.from_config(ctx.cfg)
     kinds = index_options(ctx)["kinds"]
     workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
@@ -354,17 +359,18 @@ def index_requirements_step(ctx) -> Step:
 
     def fingerprint(ctx, module: str) -> str:
         rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return (f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+                + ("|local" if local.module(module) else ""))
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        res = index().add_module(module, ctx.store.requirements(module), kinds, local=local.module(module))
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, modules: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for m in modules
+        index().embed_missing([r["embed_text"] for m in modules if not local.module(m)
                                for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
@@ -384,6 +390,7 @@ def index_code_step(ctx) -> Step | None:
     from atlas.graph.build import is_test_file
     from atlas.index import CODE_PREFIX, Index, code_records
     from atlas.llm import from_config
+    local = sc.get("model") == "none"           # [sources.code] model: nothing of the code is embedded
     workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     test_patterns = sc.get("test_patterns", [])
@@ -416,18 +423,20 @@ def index_code_step(ctx) -> Step | None:
     def fingerprint(ctx, unit: str) -> str:
         files = [[p, sha256_file(p["file"]) if Path(p["file"]).exists() else ""] for p in parts(unit)]
         return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{ctx.cfg.fingerprint('index')}|"
-                f"{embed_model}|{INDEX_VERSION}")
+                f"{embed_model}|{INDEX_VERSION}" + ("|local" if local else ""))
 
     def run(ctx, unit: str):
         tests = [p["file"] for p in parts(unit) if is_test_file(p["file"], test_patterns)]
-        res = index().add_code(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"])
+        res = index().add_code(unit, parts(unit), sources(unit), tests, options["chunk_chars"], options["kinds"],
+                               local=local)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, pending: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for unit in pending for r in records(unit)], workers)
+        if not local:
+            index().embed_missing([r["embed_text"] for unit in pending for r in records(unit)], workers)
 
     return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit), prepare=prepare,
@@ -739,6 +748,12 @@ def matrix(cfg: Config, module: str) -> int:
     return 0
 
 
+def _held(counts: dict) -> str:
+    """What a summary says of the requirements that were not sent to the model."""
+    n = counts.get("local_only", 0)
+    return f"; {n} not sent to the model: local-only sources (model = \"none\")" if n else ""
+
+
 def verify(cfg: Config, target: str) -> int:
     """Each requirement against the documentation: the inconsistencies on the screen, and the
     report in <workspace>/reports."""
@@ -752,7 +767,8 @@ def verify(cfg: Config, target: str) -> int:
         return 1
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['inconsistent']} inconsistent, {c['consistent']} consistent, "
-          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)")
+          f"{c['no_documentation']} without documentation ({res['asked']} asked to the model, the rest from the cache)"
+          + _held(c))
     for r in res["results"]:
         if r.get("verdict") == "inconsistent":
             print(f"\n{r['id']}: {r.get('summary', '')}")
@@ -773,7 +789,7 @@ def comply(cfg: Config, target: str) -> int:
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['complies']} comply, {c['does_not_comply']} do not, "
           f"{c['cannot_tell']} cannot be decided by reading the code, {c['no_code']} without code "
-          f"({res['asked']} asked to the model, the rest from the cache)")
+          f"({res['asked']} asked to the model, the rest from the cache)" + _held(c))
     mark = {"met": "ok ", "not_met": "NO ", "partial": "1/2", "cannot_tell": " ? "}
     for r in res["results"]:
         if r.get("verdict") in ("does_not_comply", "cannot_tell"):
@@ -800,7 +816,7 @@ def link(cfg: Config, target: str) -> int:
     c = res["counts"]
     print(f"{len(res['results'])} requirements: {c['proposed']} with a proposal, {c['none']} without a convincing "
           f"candidate, {c['no_candidates']} without candidates ({res['asked']} asked to the model, the rest from "
-          f"the cache)")
+          f"the cache)" + _held(c))
     for r in res["results"]:
         for x in r.get("links", []):
             print(f"\n{r['id']} -> {x['code']} ({x['confidence']}): {x['reason']}\n  add `{x['tag']}` at {x['tag_at']}")
@@ -910,7 +926,10 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
     if res["sources"]:
         print("\nSources:")
     for s in res["sources"]:
-        print(f"  [{s['n']}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+        mark = "local" if s.get("local_only") else s["n"]
+        print(f"  [{mark}] {s['cite']}" + (f"\n       {s['file']}" if s["file"] else ""))
+    if any(s.get("local_only") for s in res["sources"]):
+        print("\n[local]: of a local-only source (model = \"none\"), found but not sent to the model")
     if res["scope"] == "whole":
         print(f"\nRead whole: {', '.join(res['documents'])} ({res['requests']} requests to the model)")
     return 0

@@ -56,6 +56,22 @@ embeber documento a documento: en el proyecto grande, 189 en vez de 207 para 12 
 con lotes de 64. Un lote que falla no para los demás; lo que falta se embebe en la
 siguiente ejecución.
 
+## Fuentes locales
+
+Un documento de una fuente con `model = "none"` (un módulo de DOORS de `local_only`, o el
+código con `[sources.code] model = "none"`) se indexa sin vectores: ninguno de sus textos
+va al modelo de embeddings, y la tabla `index_local` lo marca como local. La lista
+densa de una búsqueda no lo ve; la de IDs y la léxica, sí. Así sigue saliendo en
+`atlas search` y en la herramienta `search` por sus IDs y sus palabras.
+
+`answer` lo deja fuera de todo lo que manda al modelo: los pasajes, los documentos que lee
+enteros y la lista de documentos que ve la reescritura. Lo encontrado de él vuelve en
+`sources` con `local_only` y `n` = 0, sin extracto: la persona sabe que hay más y dónde.
+Si todo lo encontrado es local, no hay petición de respuesta (`LOCAL_ONLY_ANSWER`).
+`DocTools` lo da entero al editor; en el contexto de un agente (`for_model`), cuyos
+resultados van al modelo, lo omite y dice qué omitió. Cambiar `model` de una fuente
+reindexa sus documentos.
+
 ## Búsqueda
 
 Una búsqueda combina tres listas con Reciprocal Rank Fusion:
@@ -132,5 +148,5 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
 documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas amplias
-en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
+en una petición y por partes, documentos locales), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

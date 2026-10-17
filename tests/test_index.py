@@ -301,3 +301,49 @@ def test_records_of_a_code_unit(samples):
     assert {r["text"].split(" (")[1].split(",")[0] for r in code_records("tracks", parts, sources, tests=[str(files[1])])
             if "tracks.adb" in r["text"]} == {"test"}
     assert code_records("tracks", parts, sources, kinds=["chunk"]) == []
+
+
+def test_a_local_only_document_never_goes_to_a_model(docs, tmp_path, fake_llm, fake_embeddings, fake_stats):
+    """A document of a source with model = "none": indexed without vectors, found by its IDs
+    and words, and left out of what an answer sends to the model."""
+    from atlas.index import DocTools
+    from atlas.index.search import LOCAL_ONLY_ANSWER
+    from atlas.store import Store
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    before = fake_stats()["emb_texts"]
+    res = idx.add_document(docs["hmi_manual.md"], doc="client:hmi_manual.md", name="hmi_manual.md",
+                           out_dir=docs["hmi_manual.md"]["out_dir"], local=True)
+    assert res["local"] and res["missing"] == 0 and res["records"] > 5
+    assert fake_stats()["emb_texts"] == before                          # nothing embedded
+    assert idx.store.local_documents() == {"client:hmi_manual.md"} and idx.is_local("client:hmi_manual.md")
+    assert idx.store.counts()["local_documents"] == 1
+    assert idx.search("SRS-0103 keep logs", k=3)[0]["doc_name"] == "hmi_manual.md"    # IDs and words
+    ids, _ = idx.store._load_matrix(fake_embeddings.model)
+    assert not set(ids.tolist()) & {h["id"] for h in idx.store.document_records("client:hmi_manual.md")}
+
+    res = idx.answer("How long does the HMI keep logs?", document="hmi_manual.md")
+    assert res["answer"] == LOCAL_ONLY_ANSWER and res["requests"] == 1          # only the rewriting
+    held = [s for s in res["sources"] if s.get("local_only")]
+    assert held and all(s["n"] == 0 and "excerpt" not in s for s in held) and held[0]["doc"] == "hmi_manual.md"
+    res = idx.answer("Summarise everything hmi_manual.md says", document="hmi_manual.md", scope="whole")
+    assert res["requests"] == 1 and res["sources"] == [{"n": 0, "local_only": True, "cite": "hmi_manual.md (whole document)",
+                                                        "doc": "hmi_manual.md", "section": "", "file": "",
+                                                        "kind": "document", "ref": ""}]
+    res = idx.answer("Which requirements talk about tracks and logs?", scope="passages")
+    assert res["requests"] == 2 and {s["doc"] for s in res["sources"] if not s.get("local_only")} \
+        == {"spec_with_bookmarks.pdf"}
+
+    # the tools give it whole to the editor, and leave it out for an agent
+    editor, agent = DocTools(idx, Store(tmp_path)), DocTools(idx, Store(tmp_path), for_model=True)
+    assert "keep logs" in str(editor.search("SRS-0103")["results"])
+    found = agent.search("SRS-0103 keep logs")
+    assert "keep logs" not in str(found["results"]) and found["local_only"][0]["document"] == "hmi_manual.md"
+    assert "markdown" in editor.get_section("hmi_manual.md", "3") and agent.get_section("hmi_manual.md", "3")["local_only"]
+    listed = {d["name"]: d for d in agent.list_documents()["documents"]}
+    assert listed["hmi_manual.md"]["local_only"] and listed["hmi_manual.md"]["title"] == ""
+    req = agent.get_requirement("SRS-0103")                         # the specification states it too
+    assert {d["document"] for d in req["documents"]} == {"spec_with_bookmarks.pdf"}
+    assert req["local_only"] == [{"document": "hmi_manual.md", "section": "004"}] and "30 days" not in str(req)
+    asked = agent.ask_docs("How long does the HMI keep logs?", document="hmi_manual.md")
+    assert asked["sources"] and all(set(s) == {"n", "local_only", "doc", "section", "kind", "ref"} for s in asked["sources"])

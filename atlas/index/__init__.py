@@ -14,6 +14,10 @@
     res = idx.answer("How long does a track take to be deleted?")
     print(res["answer"], [s["cite"] for s in res["sources"]])
     idx.answer("Summarise the track management requirements", scope="whole")   # whole documents
+
+A local-only document (`local=True`, a source with model = "none") is indexed without
+vectors: none of its texts goes to the embeddings model. Search finds it by IDs and BM25,
+and answer leaves it out of what it sends to the model (see search.answer).
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
+from atlas.outbound import LocalOnly
 from atlas.pipeline import FatalError
 
 __all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
@@ -45,20 +50,21 @@ log = logging.getLogger(__name__)
 
 def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, name: str, out_dir: str = "",
                    chunk_chars: int = 1200, chunk_overlap: int = 200,
-                   kinds: Iterable[str] | None = None) -> dict:
+                   kinds: Iterable[str] | None = None, local: bool = False) -> dict:
     """Embeds the records of a document (structure.json of atlas.docs) in batches, from the
     cache when possible, and replaces the document in the index. A failed batch does not
     stop the others: what has a vector is indexed and the result says what is missing.
-    A connection error raises FatalError (what was embedded stays in the cache)."""
+    A connection error raises FatalError (what was embedded stays in the cache). A
+    local-only document (`local`) is indexed without vectors: nothing is embedded."""
     if not data["sections"] or "body" not in data["sections"][0]:
         raise ValueError(f"{name}: structure.json without the text of the sections")
     return _index_records(store, embedder, build_records(data, chunk_chars, chunk_overlap, kinds),
                           {"doc": doc, "name": name, "title": data["title"], "out_dir": out_dir,
-                           "overview": data.get("overview", {})})
+                           "overview": data.get("overview", {})}, local)
 
 
 def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
-                 kinds: Iterable[str] | None = None) -> dict:
+                 kinds: Iterable[str] | None = None, local: bool = False) -> dict:
     """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
     "doors:<module>", named after the module. Same batches, cache and result as
     index_document."""
@@ -66,18 +72,19 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": f"{module} (DOORS)", "out_dir": "",
-                                                     "overview": {"summary": summary}})
+                                                     "overview": {"summary": summary}}, local)
 
 
 def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dict], sources: dict[str, str],
-               tests: Iterable[str] = (), chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+               tests: Iterable[str] = (), chunk_chars: int = 1200, kinds: Iterable[str] | None = None,
+               local: bool = False) -> dict:
     """Indexes a code unit (its files, as code.parse leaves them; see code_records) as one
     more document, "code:<unit>". Same batches, cache and result as index_document."""
     records = code_records(unit, parts, sources, tests, chunk_chars, kinds)
     files = ", ".join(sorted(p["file"] for p in parts))
     return _index_records(store, embedder, records, {"doc": CODE_PREFIX + unit, "name": unit,
                                                      "title": f"{unit} (code)", "out_dir": "",
-                                                     "overview": {"summary": f"code unit {unit}: {files}"}})
+                                                     "overview": {"summary": f"code unit {unit}: {files}"}}, local)
 
 
 def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
@@ -121,8 +128,14 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
     return out
 
 
-def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
+def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict,
+                   local: bool = False) -> dict:
     name = doc["name"]
+    if local:                                # nothing of it goes to the embeddings model
+        store.replace_document({**doc, "embed_model": "", "local": True}, records, None)
+        kinds = dict(Counter(r["kind"] for r in records))
+        log.info("indexed '%s' as local-only, without vectors: %s", name, kinds)
+        return {"records": len(records), "missing": 0, "failed_batches": [], "kinds": kinds, "local": True}
     keys = [embedder.key(r["embed_text"]) for r in records]
     vectors = store.cache_get(keys)
     missing = [i for i, k in enumerate(keys) if k not in vectors]
@@ -161,9 +174,11 @@ class Index:
     scope_chars); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
+                 local: LocalOnly | None = None):
         from atlas.config import DEFAULTS
         self.store = IndexStore(db)
+        self.local_only = local or LocalOnly()
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
@@ -171,10 +186,20 @@ class Index:
     @classmethod
     def from_config(cls, cfg) -> "Index":
         """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
-        atlas.toml."""
+        atlas.toml, and its local-only sources."""
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"), LocalOnly.from_config(cfg))
+
+    def is_local(self, doc: str) -> bool:
+        """Whether a document of the index (its key) is local-only: indexed as such, or of a
+        source that the configuration keeps local now."""
+        return self.local_only.index_doc(doc) or doc in self.store.local_documents()
+
+    def local_filter(self):
+        """is_local for many documents: the indexed ones are read once."""
+        indexed = self.store.local_documents()
+        return lambda doc: doc in indexed or self.local_only.index_doc(doc)
 
     @property
     def llm(self) -> JsonLlm:
@@ -185,17 +210,18 @@ class Index:
         return self._llm
 
     def add_document(self, data: dict, doc: str, name: str, out_dir: str = "", **options) -> dict:
-        """See index_document (options: chunk_chars, chunk_overlap, kinds)."""
+        """See index_document (options: chunk_chars, chunk_overlap, kinds, local)."""
         return index_document(self.store, self.embedder, data, doc, name, out_dir, **options)
 
-    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
+    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None,
+                   local: bool = False) -> dict:
         """See index_module."""
-        return index_module(self.store, self.embedder, module, requirements, kinds)
+        return index_module(self.store, self.embedder, module, requirements, kinds, local)
 
     def add_code(self, unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
-                 chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
+                 chunk_chars: int = 1200, kinds: Iterable[str] | None = None, local: bool = False) -> dict:
         """See index_code."""
-        return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds)
+        return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds, local)
 
     def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
         """See embed_missing."""
@@ -219,7 +245,8 @@ class Index:
         """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+                      self.local_filter())
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

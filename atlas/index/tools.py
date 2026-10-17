@@ -18,6 +18,12 @@ the agent can correct itself or tell the user.
     tools.get_requirement("SRS-0102")
 
 They are registered as "tool" plugins with these names, for [agents.*] tools and [mcp] tools.
+
+The text of the local-only sources (model = "none") is given whole to the editor (MCP) and
+the command line, which do not send it anywhere. In the context of an agent (`for_model`),
+whose tool results go to the model, it is left out: search lists what it left out by its
+document, section and ref, get_section and get_requirement refuse or omit it, and ask_docs
+leaves it out as every answer does.
 """
 from __future__ import annotations
 
@@ -75,23 +81,24 @@ def _asks_for(wanted: str, title: str) -> bool:
 
 
 class DocTools:
-    def __init__(self, index: "Index", store: Store | None = None, cfg=None):
+    def __init__(self, index: "Index", store: Store | None = None, cfg=None, for_model: bool = False):
         self.index = index
         self.store = store          # the requirements read from DOORS (atlas.db)
         self.cfg = cfg              # for the variables it lacks, when the model fails
+        self.for_model = for_model  # the answers go to a model: without the local-only text
 
     @classmethod
-    def from_config(cls, cfg, store: Store | None = None) -> "DocTools":
+    def from_config(cls, cfg, store: Store | None = None, for_model: bool = False) -> "DocTools":
         """Over the atlas.db of the workspace, with the [embeddings] and [llm] of atlas.toml."""
         from atlas.index import Index
-        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg)
+        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg, for_model)
 
     @classmethod
     def for_context(cls, context: Any) -> "DocTools":
         """One instance per context, shared by every tool plugin."""
         tools = getattr(context, "_doc_tools", None)
         if tools is None:
-            tools = cls.from_config(context.cfg, getattr(context, "store", None))
+            tools = cls.from_config(context.cfg, getattr(context, "store", None), getattr(context, "for_model", False))
             setattr(context, "_doc_tools", tools)
         return tools
 
@@ -99,13 +106,16 @@ class DocTools:
         """The indexed documents and DOORS modules: name (what `document` takes in search
         and get_section), title, source (document | DOORS), number of indexed passages and
         summary."""
-        docs = self.index.documents()
-        return {"count": len(docs),
-                "documents": [{"name": d["name"], "title": d["title"],
-                               "source": "DOORS" if d["doc"].startswith(DOORS_PREFIX) else "document",
-                               "records": d["records"],
-                               "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
-                              for d in docs]}
+        docs, local = self.index.documents(), self.index.local_filter()
+        out = []
+        for d in docs:
+            hidden = self.for_model and local(d["doc"])
+            out.append({"name": d["name"], "title": "" if hidden else d["title"],
+                        "source": "DOORS" if d["doc"].startswith(DOORS_PREFIX) else "document",
+                        "records": d["records"],
+                        "summary": "" if hidden else str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS],
+                        **({"local_only": True} if local(d["doc"]) else {})})
+        return {"count": len(docs), "documents": out}
 
     def search(self, query: str, k: int = 0, document: str = "", kind: str = "") -> dict:
         """Hybrid search in the documents, in the requirements of DOORS and in the code:
@@ -124,8 +134,15 @@ class DocTools:
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        held = []
+        if self.for_model:
+            local = self.index.local_filter()
+            held = [{"document": h["doc_name"], "section": h["section_id"], "kind": h["kind"], "ref": h.get("ref", "")}
+                    for h in hits if local(h["doc"])]
+            hits = [h for h in hits if not local(h["doc"])]
         return {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
-                             "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
+                             "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits],
+                **({"local_only": held} if held else {})}
 
     def get_section(self, document: str, section: str) -> dict:
         """The whole Markdown of a section (summary, requirements and its original text).
@@ -140,6 +157,8 @@ class DocTools:
         if len(found) > 1:
             return {"error": f"'{document}' is ambiguous", "documents": [d["name"] for d in found]}
         d = found[0]
+        if self.for_model and self.index.is_local(d["doc"]):
+            return {"error": f"{d['name']} is a local-only document: its text does not go to the model", "local_only": True}
         if d["doc"].startswith(DOORS_PREFIX):
             return {"error": f"{d['name']} is a DOORS module, not a document: get_requirement gives a "
                              f"requirement of it by its ID"}
@@ -163,15 +182,24 @@ class DocTools:
         state it, with their citation."""
         official = self.store.requirement(req_id.strip()) if self.store else None
         in_docs = [h for h in self.index.requirement(req_id) if not h["doc"].startswith(DOORS_PREFIX)]
+        held = []
+        if self.for_model:
+            local = self.index.local_filter()
+            held = [{"document": h["doc_name"], "section": h["section_id"]} for h in in_docs if local(h["doc"])]
+            in_docs = [h for h in in_docs if not local(h["doc"])]
+            if official and self.index.local_only.module(official["module"]):
+                official = {**official, "text": "", "attributes": {}, "local_only": True}
         if not official and not in_docs:
             return {"error": f"requirement '{req_id}' not found",
                     "similar": self.store.requirement_ids(req_id) if self.store else []}
         out: dict[str, Any] = {"id": official["id"] if official else in_docs[0]["ref"]}
         if official:
             out["official"] = {k: official[k] for k in ("module", "text", "parent", "attributes", "links_out",
-                                                         "links_in")}
+                                                         "links_in", "local_only") if k in official}
         out["documents"] = [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
                              "text": h["text"]} for h in in_docs]
+        if held:
+            out["local_only"] = held
         return out
 
     def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
@@ -182,9 +210,13 @@ class DocTools:
         whole instead of the best passages, in parts if they are long; `whole` = true makes
         it read them whole always (`scope` in the answer says how it was read)."""
         try:
-            return self.index.answer(question, document=document, scope="whole" if whole else "")
+            res = self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        if self.for_model:      # where the local-only sources are, without their titles
+            res["sources"] = [{k: s[k] for k in ("n", "local_only", "doc", "section", "kind", "ref")}
+                              if s.get("local_only") else s for s in res["sources"]]
+        return res
 
 
 register_methods(DocTools, TOOL_NAMES)

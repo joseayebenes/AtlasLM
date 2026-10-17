@@ -6,6 +6,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Fuentes locales: `model = "none"` en una `[[sources.docs]]`, en `[sources.doors]` (o los
+  módulos de `local_only`) y en `[sources.code]`. Ningún texto de esa fuente va a un modelo:
+  sus documentos se analizan con `regex`, sus registros se indexan sin vectores (los
+  encuentran las búsquedas por IDs y por palabras), y `ask`, `ask_docs`, `ask_atlas`,
+  `atlas agent`, `verify`, `comply`, `link`, `impact` y `coverage` los dejan fuera del
+  prompt y dicen qué dejaron (`local_only`). `search`, `trace` y las herramientas MCP que no
+  llaman al modelo los siguen dando enteros. Un agente con herramientas que leen el código
+  no arranca si el código es local.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

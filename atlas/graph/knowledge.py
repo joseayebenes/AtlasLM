@@ -79,6 +79,7 @@ class KnowledgeGraph:
         self.doors = any(d.get("kind") == "module" for _, d in G.nodes(data=True))
         self._covering: dict[str, set[str]] | None = None
         self._groups: list[set[str]] | None = None
+        self.local_files: set[Path] = set()     # files of local-only code: not read (see for_model)
 
     @classmethod
     def open(cls, db: str | Path, root: str | Path = ".") -> "KnowledgeGraph":
@@ -90,6 +91,40 @@ class KnowledgeGraph:
         """The graph of <workspace>/atlas.db; file paths from the current directory, as the
         code roots of atlas.toml."""
         return cls.open(cfg.workspace / "atlas.db")
+
+    def for_model(self, local) -> "KnowledgeGraph":
+        """This graph as what is sent to a model may see it, given the local-only sources
+        (atlas.outbound.LocalOnly): their nodes keep their identifiers and links but lose their
+        text (requirement text and attributes, document and section titles, what the sections
+        state, code comments and source), carry `local_only`, and the source files of local
+        code cannot be read. Without local-only sources, this same graph."""
+        if not local:
+            return self
+        G = self.G.copy()
+        files: set[Path] = set()
+        for n, d in G.nodes(data=True):
+            if not local.node(self.G, n):
+                continue
+            d["local_only"] = True
+            kind = d.get("kind")
+            if kind in REQUIREMENT_KINDS:
+                for k in ("text", "attributes", "heading"):
+                    d.pop(k, None)
+            elif kind == "document":
+                d["title"] = ""
+            elif kind == "section":
+                d.update(name="", path=[], requirements=[{"id": r["id"], "text": ""} for r in d.get("requirements", [])])
+            else:
+                for k in ("doc", "source"):
+                    d.pop(k, None)
+                files.update(Path(f) for f in [d.get("file"), *d.get("files", [])] if f)
+        view = KnowledgeGraph(G, self.root, self.build_stats)
+        view.local_files = {self._absolute(f) for f in files}
+        return view
+
+    def _absolute(self, file: str | Path) -> Path:
+        path = Path(file)
+        return (path if path.is_absolute() else self.root / path).resolve()
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
@@ -199,6 +234,8 @@ class KnowledgeGraph:
     def _section(self, s: str, requirement: str = "") -> dict:
         d = self.G.nodes[s]
         out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name")}
+        if d.get("local_only"):
+            out["local_only"] = True
         if requirement:
             text = next((x["text"] for x in d.get("requirements", []) if x["id"] == requirement), "")
             official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
@@ -232,6 +269,9 @@ class KnowledgeGraph:
             path = self.root / path
         if not path.exists():
             return {"error": f"file {path} not found; is the root ({self.root}) right?"}
+        if self.local_files and path.resolve() in self.local_files:
+            return {"error": f"{file} is local-only code ([sources.code] model = \"none\"): its source does not go "
+                             "to the model", "local_only": True}
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         start, end = max(1, start), min(len(lines), end)
         truncated = end - start + 1 > MAX_LINES
@@ -370,6 +410,9 @@ class KnowledgeGraph:
         if err:
             return err
         d = self.G.nodes[n]
+        if d.get("local_only"):
+            return {"error": f"{n} is local-only ({d.get('kind')}): its source does not go to the model",
+                    "local_only": True}
         if d.get("kind") == "subprogram" and d.get("start_line"):
             return self._lines(d["file"], d["start_line"] - context, d["end_line"] + context)
         if d.get("source"):

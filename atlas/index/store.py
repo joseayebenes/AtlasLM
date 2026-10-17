@@ -23,7 +23,9 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["IndexStore"]
+from atlas.db import connect
+
+__all__ = ["IndexStore", "recreate_fts"]
 
 log = logging.getLogger(__name__)
 
@@ -39,21 +41,34 @@ CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
 """
 
+FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
+       "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
+
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
                   "r.ref, r.seq, r.text, r.embed_text"
+
+
+def recreate_fts(db: sqlite3.Connection) -> None:
+    """index_fts dropped, created again with FTS and filled from index_records: how a schema
+    migration (atlas.db) changes it, since an FTS5 table cannot be altered. Inside the
+    caller's transaction; without FTS5 in this SQLite, only the drop."""
+    if "index_records" not in {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}:
+        return
+    db.execute("DROP TABLE IF EXISTS index_fts")
+    try:
+        db.execute(FTS)
+    except sqlite3.OperationalError:
+        return
+    db.execute("INSERT INTO index_fts (rowid, embed_text, ref) SELECT id, embed_text, ref FROM index_records")
 
 
 class IndexStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA busy_timeout=30000")
+        self.db = connect(self.path)
         self.db.executescript(SCHEMA)
         try:
-            self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
-                            "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
+            self.db.execute(FTS)
             self.fts = True
         except sqlite3.OperationalError:
             log.warning("this SQLite has no FTS5: vector search only")

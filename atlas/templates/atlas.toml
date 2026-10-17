@@ -8,8 +8,8 @@
 # da un valor por defecto. atlas rechaza una clave de API escrita tal cual para un
 # servidor que no sea local, y una contraseña en la URL del proxy o en el DSN de ODBC.
 #
-# Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas; la del
-# workspace, a la de este fichero.
+# Las rutas relativas (el workspace, las fuentes, tool_path...) lo son a la carpeta de este
+# fichero, se lance atlas desde donde se lance.
 
 [project]
 name = "mi-proyecto"

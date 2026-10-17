@@ -115,9 +115,7 @@ def load_definitions(cfg=None) -> dict[str, AgentDef]:
     found: dict[str, AgentDef] = {}
     folders = [BUILTIN]
     if cfg is not None:
-        for d in cfg["agents"].get("dirs", []):
-            folder = Path(d).expanduser()
-            folders.append(folder if folder.is_absolute() else cfg.path.parent / folder)
+        folders += [cfg.resolve(d) for d in cfg["agents"].get("dirs", [])]
     for folder in folders:
         seen: dict[str, Path] = {}
         for f in _files(folder):

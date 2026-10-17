@@ -12,7 +12,7 @@
 
 Every path must be inside [sources.code] roots and outside its `exclude` patterns; ".."
 or a symbolic link that leaves them is refused. Paths are given and shown relative to the
-working directory, like the file paths of the code graph. The files of its `protected`
+folder of atlas.toml, like the file paths of the code graph, wherever atlas runs from. The files of its `protected`
 patterns can be read but not edited or written: the tests, so that the agent that writes the
 code cannot change what judges it (both gemma-4-26b and devstral, asked to fix a failing test,
 changed what it expected instead of the code).
@@ -111,11 +111,12 @@ class CodeTools:
 
     @classmethod
     def from_config(cls, cfg, read_only: bool = False, base: str | Path | None = None) -> "CodeTools":
-        """Over the roots and exclude patterns of [sources.code]; paths from the working
-        directory, or from `base`, a copy of it (a parallel attempt of atlas develop)."""
+        """Over the roots and exclude patterns of [sources.code]; paths from the folder of
+        atlas.toml (the working folder), or from `base`, a copy of it (a parallel attempt of
+        atlas develop)."""
         sc = cfg["sources"].get("code") or {}
-        roots = sc.get("roots", []) if base is None else [rebased(r, base) for r in sc.get("roots", [])]
-        return cls(roots, sc.get("exclude", []), base=base or ".", read_only=read_only,
+        roots = [str(cfg.resolve(r)) if base is None else rebased(r, base, cfg.home) for r in sc.get("roots", [])]
+        return cls(roots, sc.get("exclude", []), base=cfg.home if base is None else base, read_only=read_only,
                    protected=sc.get("protected", []), requirements=requirement_pattern(sc))
 
     @classmethod
@@ -609,15 +610,15 @@ class CodeTools:
                 **self._checked(p)}
 
 
-def rebased(path: str, base: str | Path) -> str:
-    """A path of the configuration in `base`, a copy of the working folder: a relative one
-    stays as it is (it is relative to base now), an absolute one inside the working folder
-    moves into base; one outside it is the same for every copy."""
+def rebased(path: str, base: str | Path, home: str | Path) -> str:
+    """A path of the configuration in `base`, a copy of the working folder `home` (the folder
+    of atlas.toml): a relative one is relative to base now, an absolute one inside home moves
+    into base; one outside it is the same for every copy."""
     p = Path(path).expanduser()
     if not p.is_absolute():
-        return path
+        return str(Path(base) / p)
     try:
-        return str(Path(base) / p.resolve().relative_to(Path.cwd().resolve()))
+        return str(Path(base) / p.resolve().relative_to(Path(home).resolve()))
     except ValueError:
         return path
 

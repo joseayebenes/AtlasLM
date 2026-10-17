@@ -10,6 +10,8 @@
   password in a proxy URL or in an ODBC DSN, written as is in the file is an error.
 - `Config.unset` names the ${VAR} that expanded to nothing, because this process does not
   have them: a program that starts atlas (an MCP client) may not pass the terminal's.
+- Every path of the file is relative to the folder of the file (`Config.resolve`), wherever
+  atlas runs from; the engine names the files of the sources from there (`Config.relative`).
 """
 
 from __future__ import annotations
@@ -207,8 +209,27 @@ class Config:
 
     @property
     def workspace(self) -> Path:
-        ws = Path(self.data["project"]["workspace"])
-        return ws if ws.is_absolute() else (self.path.parent / ws).resolve()
+        ws = self.resolve(self.data["project"]["workspace"])
+        return ws if Path(self.data["project"]["workspace"]).expanduser().is_absolute() else ws.resolve()
+
+    @property
+    def home(self) -> Path:
+        """The folder of atlas.toml: the relative paths of the configuration start here."""
+        return self.path.parent
+
+    def resolve(self, path: str | Path) -> Path:
+        """A path of the configuration (a file, a folder or a glob pattern): an absolute one
+        as it is, a relative one from the folder of atlas.toml, whatever folder atlas runs in."""
+        p = Path(path).expanduser()
+        return p if p.is_absolute() else Path(os.path.normpath(self.home / p))
+
+    def relative(self, path: str | Path) -> str:
+        """How the engine names a file of the sources (units, code files of the graph):
+        relative to the folder of atlas.toml if it is inside it, absolute otherwise. The
+        same name from any folder, and the one of the versions that ran from the folder of
+        atlas.toml, so a workspace does not reprocess everything."""
+        p = Path(os.path.abspath(self.resolve(path)))
+        return os.path.relpath(p, self.home) if p.is_relative_to(self.home) else str(p)
 
     def fingerprint(self, *sections: str) -> str:
         """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings'), without

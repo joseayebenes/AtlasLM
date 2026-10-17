@@ -132,6 +132,9 @@ text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PO
 advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
 ```
 
+Las rutas del plan (`check`, `tests`, `advances`) son relativas a la carpeta de `atlas.toml`,
+como las de `[sources.code]`, se lance atlas desde donde se lance.
+
 Sale de lo que fue mal cuando `gemma-4-26b` y `devstral` escribieron un servidor sin ayuda
 (experimento de 2026-10-13, en `atlas-socket-demo`): código que compilaba y no funcionaba,
 tests cambiados para que pasaran, el mismo fallo intentado seis veces del mismo modo y
@@ -171,12 +174,13 @@ cambios que rompían lo que ya iba.
    herramientas en las mismas vueltas. Con el mismo modelo en los dos papeles, GPT-4o-mini
    pasó del 55,6 al 60,2 % en su banco de pruebas.
 6. Con `attempts` mayor que 1, cada encargo (y su reintento) y cada ronda van a esos intentos
-   **a la vez**, cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las
-   raíces del código, los scripts del proyecto y su propia carpeta de compilación), con sus
-   arreglos de compilación y sus vueltas de `advances`. De los que no rompen nada gana el que
-   deja más tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la
-   carpeta de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo
-   que tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
+   **a la vez**, cada uno en su copia de la carpeta de trabajo, la de `atlas.toml`
+   (`<workspace>/attempts/<n>`: las raíces del código, los scripts del proyecto y su propia
+   carpeta de compilación), con sus arreglos de compilación y sus vueltas de `advances`. De los
+   que no rompen nada gana el que deja más tests pasando, y luego el que llega más lejos en los
+   demás; sus ficheros pasan a la carpeta de trabajo y las copias se borran. Un modelo pequeño
+   acierta una de tres más a menudo que tres seguidas (Agentless, S*), y el cupo da para ello:
+   una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
 7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo

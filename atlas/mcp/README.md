@@ -93,8 +93,10 @@ El servidor responde con lo que hay en el workspace. Puedes lanzar `atlas run` c
 servidor arrancado: el grafo y los vectores se vuelven a leer cuando cambian, sin
 reiniciarlo.
 
-Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas, así que el
-cliente tiene que arrancar el servidor en la carpeta del proyecto (`cwd`). El servidor
+Las rutas de `atlas.toml` son relativas a su carpeta, así que el servidor encuentra las
+fuentes aunque el cliente lo arranque en otra; las rutas de las herramientas de ficheros
+también parten de ella. Aun así conviene arrancarlo en la carpeta del proyecto (`cwd`):
+`atlas.toml` se busca desde ahí si no se da su ruta completa. El servidor
 arranca en medio segundo y escribe su registro por stderr, porque stdout es el canal del
 protocolo.
 

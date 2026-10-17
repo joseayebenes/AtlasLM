@@ -75,7 +75,7 @@ INSTRUCTIONS = {
               "model whether a requirement and the documents agree; `link_requirement` proposes the code that "
               "may implement a requirement, without changing anything; `check_compliance` judges whether the code "
               "of a requirement does all it asks, obligation by obligation.",
-    "files": "Code files: paths are relative to the folder where the server runs, and only the code roots "
+    "files": "Code files: paths are relative to the folder of atlas.toml (the project), and only the code roots "
              "can be read.",
     "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
             "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",

@@ -145,8 +145,9 @@ donde se quedó. Una segunda ejecución sin cambios no hace ninguna petición al
 
 ## 5. Conectar el editor
 
-`atlas serve atlas.toml` es un servidor MCP por stdio. El editor lo arranca en la carpeta
-del proyecto.
+`atlas serve atlas.toml` es un servidor MCP por stdio. Conviene que el editor lo arranque en
+la carpeta del proyecto (`cwd`), para que encuentre `atlas.toml`; las rutas de dentro del
+fichero son relativas a él, así que con su ruta completa funciona desde cualquier carpeta.
 
 OpenCode (`opencode.json` en la carpeta del proyecto):
 

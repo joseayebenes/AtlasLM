@@ -72,7 +72,7 @@ def doors_step(ctx) -> Step | None:
     sd = ctx.cfg["sources"].get("doors")
     if not sd or not sd.get("enabled", True):
         return None
-    adapter = plugins.get("requirements", sd.get("adapter", "database"), ctx.disabled)(sd)
+    adapter = plugins.get("requirements", sd.get("adapter", "database"), ctx.disabled)(doors_section(ctx.cfg, sd))
     from atlas.doors import hash_requirement
 
     def run(ctx, module: str):
@@ -96,38 +96,53 @@ def doors_step(ctx) -> Step | None:
     )
 
 
+def doors_section(cfg: Config, sd: dict) -> dict:
+    """[sources.doors] for its adapter, with the paths of its SQLite databases resolved from
+    the folder of atlas.toml."""
+    sd = dict(sd)
+    for table in ("database", "exchange"):
+        if isinstance(sd.get(table), dict) and sd[table].get("path"):
+            sd[table] = {**sd[table], "path": str(cfg.resolve(sd[table]["path"]))}
+    return sd
+
+
 def code_step(ctx) -> Step | None:
     sc = ctx.cfg["sources"].get("code")
     if not sc or not sc.get("enabled", True):
         return None
     analyzers = {}
+    resolved = {**sc, "roots": [str(ctx.cfg.resolve(r)) for r in sc.get("roots", [])]}
     for lang in sc.get("languages", ["ada"]):
         try:
-            analyzers[lang] = plugins.get("code_analyzer", lang, ctx.disabled)(sc)
+            analyzers[lang] = plugins.get("code_analyzer", lang, ctx.disabled)(resolved)
         except LookupError as e:
             raise ConfigError(str(e)) from None
     by_ext = {ext: a for a in analyzers.values() for ext in a.extensions}
     exclude = sc.get("exclude", [])
 
     def files(ctx) -> list[str]:
+        """The code files, named from the folder of atlas.toml (Config.relative)."""
         out = []
         for root in sc.get("roots", []):
-            for p in sorted(Path(root).rglob("*")):
+            for p in sorted(ctx.cfg.resolve(root).rglob("*")):
+                f = ctx.cfg.relative(p)
                 if p.is_file() and p.suffix.lower() in by_ext and \
-                        not any(fnmatch.fnmatch(str(p).replace("\\", "/"), pat) for pat in exclude):
-                    out.append(str(p))
+                        not any(fnmatch.fnmatch(f.replace("\\", "/"), pat) for pat in exclude):
+                    out.append(f)
         return out
 
     def run(ctx, f: str):
         a = by_ext[Path(f).suffix.lower()]
-        unit = a.analyze_file(Path(f), Path(f).read_bytes())
+        path = ctx.cfg.resolve(f)
+        unit = a.analyze_file(path, path.read_bytes())
+        unit.file = f                   # the name of the unit, not where this process found it
         ctx.store.put_code_unit(unit)
         return {"unit": unit.unit, "subprograms": len(unit.subprograms)}
 
     return Step(
         name="code.parse",
         units=files,
-        fingerprint=lambda ctx, f: f"{sha256_file(f)}|{by_ext[Path(f).suffix.lower()].version()}|"
+        fingerprint=lambda ctx, f: f"{sha256_file(ctx.cfg.resolve(f))}|{by_ext[Path(f).suffix.lower()].version()}|"
                                    f"{ctx.cfg.fingerprint('sources.code')}",
         run=run,
         prune=lambda ctx, f: ctx.store.delete_code_unit(f),
@@ -161,14 +176,14 @@ def doc_sources(ctx) -> list[tuple[dict, "DocsOptions"]]:
 
 def doc_files(ctx, source: dict) -> list[Path]:
     """Files of a docs source: its paths (files, or folders searched recursively with its
-    patterns), without anything inside the workspace."""
+    patterns, from the folder of atlas.toml), without anything inside the workspace."""
     from atlas.docs import extractor_for
     patterns = source.get("patterns") or [
         f"*{ext}" for name in plugins.available("extractor") if f"extractor:{name}" not in ctx.disabled
         for ext in plugins.get("extractor", name).extensions]
     found: set[Path] = set()
     for root in source["paths"]:
-        p = Path(root)
+        p = ctx.cfg.resolve(root)
         if p.is_file():
             found.add(p)
         elif p.is_dir():
@@ -212,13 +227,14 @@ def docs_step(ctx) -> Step | None:
                 shared["llm"] = JsonLlm(from_config(ctx.cfg).llm, concurrency=workers)
         return shared["llm"]
 
-    def units(ctx) -> list[str]:
-        return [f"{d['name']}:{f}" for d, _ in sources for f in doc_files(ctx, d)]
+    def units(ctx) -> list[str]:          # <source>:<file named from the folder of atlas.toml>
+        return [f"{d['name']}:{ctx.cfg.relative(f)}" for d, _ in sources for f in doc_files(ctx, d)]
 
     def fingerprint(ctx, unit: str) -> str:
         # the extractor too: another one gives another text (and other sections)
         name, f = unit.split(":", 1)
         d, options = by_name[name]
+        f = ctx.cfg.resolve(f)
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
                 f"{extractor_for(f, ctx.disabled).name}|"
                 + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else ""))
@@ -241,7 +257,7 @@ def docs_step(ctx) -> Step | None:
         name, f = unit.split(":", 1)
         d, options = by_name[name]
         out = out_dir(ctx, unit)
-        data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
+        data = process_document(ctx.cfg.resolve(f), out, options, llm=llm() if options.analysis == "llm" else None,
                                 cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
                                 stop=ctx.stopping)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
@@ -402,7 +418,8 @@ def index_code_step(ctx) -> Step | None:
         return shared["units"][unit]
 
     def sources(unit: str) -> dict[str, str]:
-        return {p["file"]: Path(p["file"]).read_text(encoding="utf-8", errors="replace") for p in parts(unit)}
+        return {p["file"]: ctx.cfg.resolve(p["file"]).read_text(encoding="utf-8", errors="replace")
+                for p in parts(unit)}
 
     def records(unit: str) -> list[dict]:
         tests = [p["file"] for p in parts(unit) if is_test_file(p["file"], test_patterns)]
@@ -416,7 +433,8 @@ def index_code_step(ctx) -> Step | None:
         return sorted(grouped)
 
     def fingerprint(ctx, unit: str) -> str:
-        files = [[p, sha256_file(p["file"]) if Path(p["file"]).exists() else ""] for p in parts(unit)]
+        files = [[p, sha256_file(ctx.cfg.resolve(p["file"])) if ctx.cfg.resolve(p["file"]).exists() else ""]
+                 for p in parts(unit)]
         return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{ctx.cfg.fingerprint('index')}|"
                 f"{embed_model}|{INDEX_VERSION}")
 
@@ -688,7 +706,7 @@ def graph(cfg: Config) -> int:
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
-    gaps = KnowledgeGraph.open(ctx.store.path).gaps()
+    gaps = KnowledgeGraph.open(ctx.store.path, cfg.home).gaps()
     print("\ntraceability gaps (atlas matrix MODULE for the detail):")
     for key, value in gaps.items():
         if isinstance(value, dict):
@@ -700,7 +718,7 @@ def graph(cfg: Config) -> int:
 def trace(cfg: Config, req_id: str) -> int:
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
-    res = KnowledgeGraph.open(ctx.store.path).trace(req_id)
+    res = KnowledgeGraph.open(ctx.store.path, cfg.home).trace(req_id)
     print(json.dumps(res, ensure_ascii=False, indent=1))
     return 1 if "error" in res else 0
 
@@ -712,7 +730,7 @@ def matrix(cfg: Config, module: str) -> int:
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
     module = "" if module == "*" else module
-    res = KnowledgeGraph.open(ctx.store.path).matrix(module, limit=10**9)
+    res = KnowledgeGraph.open(ctx.store.path, cfg.home).matrix(module, limit=10**9)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
@@ -815,7 +833,8 @@ def tests(cfg: Config, target: str) -> int:
     from atlas.code.procedures import generate_tests
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
-    res = generate_tests(KnowledgeGraph.open(ctx.store.path), "" if target == "*" else target, cfg["tests"])
+    res = generate_tests(KnowledgeGraph.open(ctx.store.path, cfg.home), "" if target == "*" else target, cfg["tests"],
+                         cfg.home)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1

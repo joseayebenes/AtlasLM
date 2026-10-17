@@ -53,7 +53,7 @@ time is up the whole group is killed (SIGTERM, a second, SIGKILL; `taskkill /T` 
 killing only the command left alive what a wrapper like with_server had started.
 
 `tool_path` goes before PATH for these commands (globs allowed; a relative folder is relative
-to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
+to atlas.toml, like the code roots), so the toolchain and the project's own scripts are
 used without touching the shell. A project with a GPR file would use gprbuild instead. The commands
 have the trust of atlas.toml itself; run_test runs code, so it is only offered when asked for.
 
@@ -188,12 +188,6 @@ def hint_for(hints: list[tuple[re.Pattern, str]], message: str, details: Iterabl
     return ""
 
 
-def _relative(cfg, path: str) -> Path:
-    """A path of [sources.code] that names a file of the project: relative to atlas.toml."""
-    p = Path(path).expanduser()
-    return p if p.is_absolute() else cfg.path.parent / p
-
-
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
@@ -240,19 +234,17 @@ class BuildTools:
         atlas develop): its own build folder, and the folders of tool_path in the copy (the
         scripts of the project build what is in it); the manuals and the library are shared."""
         sc = cfg["sources"].get("code") or {}
-        tool_path = sc.get("tool_path", [])
+        tool_path = [str(cfg.resolve(p)) if base is None else rebased(p, base, cfg.home)
+                     for p in sc.get("tool_path", [])]
         timeout = int(sc.get("command_timeout", 120))
-        build_dir = cfg.workspace / "build"
-        if base is not None:
-            tool_path = [rebased(p, base) if Path(p).expanduser().is_absolute() else str(Path(base) / p)
-                         for p in tool_path]          # relative ones are relative to where atlas runs: the copy
-            build_dir = Path(base) / ".atlas" / "build"
+        build_dir = cfg.workspace / "build" if base is None else Path(base) / ".atlas" / "build"
         return cls(files or CodeTools.from_config(cfg, base=base), build_dir, sc.get("check_command", []),
                    sc.get("test_command", []), tool_path, timeout,
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
-                   load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []),
-                   sc.get("reference", []), cfg.workspace / "reference.db",
+                   load_hints([*(cfg.resolve(h) for h in sc.get("hints", [])), HINTS]),
+                   [str(cfg.resolve(p)) for p in sc.get("library", [])],
+                   [str(cfg.resolve(p)) for p in sc.get("reference", [])], cfg.workspace / "reference.db",
                    {kind: sc.get(key, timeout) for kind, key in TIMEOUT_KEYS.items()})
 
     @classmethod
@@ -431,10 +423,9 @@ class BuildTools:
             return {"error": f"search_reference needs tree-sitter-ada for the library: {e}"}
 
     def _shown(self, p: Path) -> str:
-        """A spec as an answer shows it: from the working folder if it is in the project, else
+        """A spec as an answer shows it: as read_file takes it if it is in the code roots, else
         its name (the runtime of the compiler cannot be read with read_file)."""
-        shown = self.files._show(p)
-        return shown if not Path(shown).is_absolute() else p.name
+        return self.files._show(p) if self.files._resolve(str(p))[1] is None else p.name
 
     def code_at(self, output: str) -> list[dict]:
         """The lines around the places of the code that `output` cites, in the files that an

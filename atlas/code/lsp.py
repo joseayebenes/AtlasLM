@@ -176,11 +176,11 @@ class LanguageTools:
 
     @classmethod
     def from_config(cls, cfg, build=None) -> "LanguageTools":
-        from atlas.code.build import BuildTools, _relative
+        from atlas.code.build import BuildTools
         sc = cfg["sources"].get("code") or {}
         project = sc.get("language_server_project", "")
         return cls(build or BuildTools.from_config(cfg), sc.get("language_server", []),
-                   str(_relative(cfg, project)) if project else "")
+                   str(cfg.resolve(project)) if project else "")
 
     @classmethod
     def for_context(cls, context: Any) -> "LanguageTools":

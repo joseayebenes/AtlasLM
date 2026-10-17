@@ -122,3 +122,26 @@ def test_check_masks_the_credentials_of_urls():
     text = describe(ServiceConfig(base_url="https://jane:Secret1@gateway/v1", model="m", api_key="sk-0123456789",
                                   net=NetConfig(proxy="http://jane:Secret1@proxy:8080", no_proxy="")))
     assert "Secret1" not in text and "sk-0123456789" not in text and "gateway/v1" in text
+
+
+def test_paths_are_relative_to_the_toml_wherever_atlas_runs(tmp_path, monkeypatch):
+    """Config.resolve: a relative path from the folder of atlas.toml, an absolute one as it
+    is. Config.relative: the name of a file for the engine, relative to that folder when it
+    is inside it (what the versions that ran there stored) and absolute when it is not."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = project / "atlas.toml"
+    p.write_text('[project]\nworkspace = "ws"\n', encoding="utf-8")
+    cfg = load_config(p)
+    home = p.resolve().parent
+    assert cfg.home == home and cfg.workspace == home / "ws"
+    assert cfg.resolve("docs") == home / "docs" and cfg.resolve("./src/../docs") == home / "docs"
+    assert cfg.resolve(tmp_path / "x") == tmp_path / "x" and cfg.resolve("~/x") == tmp_path / "x"
+    assert cfg.resolve("tools/*/bin") == home / "tools" / "*" / "bin"            # a glob stays a glob
+    assert cfg.relative("docs/a.pdf") == os.path.join("docs", "a.pdf")
+    assert cfg.relative(home / "docs" / "a.pdf") == os.path.join("docs", "a.pdf")
+    outside = os.path.abspath(home.parent / "other" / "a.pdf")
+    assert cfg.relative("../other/a.pdf") == outside and cfg.relative(outside) == outside

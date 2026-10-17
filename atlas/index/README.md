@@ -45,7 +45,11 @@ que cambian.
 ## Embeddings
 
 Todo va en `atlas.db`: registros, vectores, índice de texto y una caché de vectores por
-modelo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
+modelo y texto, que evita embeber dos veces el mismo texto. La clave de la caché es un hash
+del modelo, su prefijo y el texto, y cada fila guarda además su modelo, para exportarla a
+otros puestos (`atlas cache export`, ver [atlas/cache.py](../cache.py)). Con
+`[project] shared_cache`, lo que la caché local no tiene se busca en la carpeta compartida y
+se copia a la local. Un documento reanalizado solo
 embebe sus textos nuevos. Cambiar `[embeddings] model` reindexa todo sin volver al LLM, y
 la búsqueda nunca mezcla vectores de dos modelos.
 

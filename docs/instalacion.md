@@ -207,6 +207,70 @@ WARNING atlas.mcp: HTTPS_PROXY of atlas.toml not set in the environment of atlas
 Las herramientas que usan el modelo (`search`, `ask_docs`, `ask_atlas`...) añaden esas
 variables al error que devuelven, y `atlas check` también las nombra.
 
+## 6. Varios puestos: cachés compartidas
+
+«Procesar una vez» vale por workspace: sin más, cada puesto que hace su primer `atlas run`
+sobre el proyecto vuelve a pedir al gateway el análisis de cada sección y el vector de cada
+texto. En el proyecto real son unas 2000 secciones y 20 000 textos: horas por puesto con 28
+peticiones por minuto. Las dos cachés no dependen del puesto ni de las rutas: un análisis se
+guarda por el texto de la sección, el modelo de chat, el idioma y la versión del prompt, y un
+vector por el modelo de embeddings y el texto. Lo que calculó un puesto sirve a todos.
+
+Un workspace (`atlas.db`) **nunca se comparte** entre puestos: es de un solo proceso. Lo que
+se comparte es una caché exportada.
+
+### Un puesto procesa, los demás importan
+
+1. Un puesto (o un servidor) procesa el proyecto, por ejemplo de noche, y exporta su caché:
+
+   ```powershell
+   atlas run atlas.toml
+   atlas cache export \\servidor\atlas\tms-cache\tms-2026-10-17.sqlite atlas.toml
+   ```
+
+   `--with-judgements` añade las cachés de juicios de `atlas verify`, `comply` y `link`.
+2. Cada puesto importa la caché antes de su primer `atlas run`, con el mismo `atlas.toml`
+   (los mismos modelos) y su propio workspace:
+
+   ```powershell
+   atlas cache import \\servidor\atlas\tms-cache\tms-2026-10-17.sqlite atlas.toml
+   atlas run atlas.toml
+   ```
+
+   `import` solo añade lo que falta y nunca sustituye nada; dice cuántos vectores y análisis
+   entraron. Se puede repetir con una caché más nueva.
+
+El `atlas run` siguiente solo pide al modelo lo que no estaba en la caché: las secciones y
+los textos que hayan cambiado desde la exportación. Para eso hace falta el mismo modelo de
+chat, el mismo de embeddings y la misma versión de atlas (que fija la versión del prompt); las
+rutas de las fuentes pueden ser otras. `import` rechaza una caché de otro modelo de
+embeddings (sus vectores nunca casarían) y avisa si los análisis son de otro modelo de chat.
+
+### La carpeta compartida, sin importar
+
+Con `[project] shared_cache` apuntando a la carpeta de las cachés exportadas, cada puesto la
+consulta solo:
+
+```toml
+[project]
+workspace = "C:/atlas/tms"
+shared_cache = "//servidor/atlas/tms-cache"
+```
+
+Lo que el workspace no tiene se busca en los `*.sqlite` de la carpeta, del más nuevo al más
+viejo, y se copia al workspace: la carpeta solo se lee y `atlas run` nunca escribe en ella.
+La rellena un administrador con `atlas cache export`. Si la carpeta no está accesible (sin
+red, sin permisos), atlas sigue sin ella y lo avisa una vez.
+
+Los ficheros de la carpeta se abren sin bloqueos, como inmutables: no se reescribe uno que
+pueda estar en uso. Cada exportación va a un fichero nuevo (con la fecha en el nombre) y los
+viejos se borran cuando nadie procesa. En Windows tampoco se puede sustituir un fichero
+abierto por otro proceso.
+
+La caché exportada contiene texto de los documentos (los requisitos, literales; los
+resúmenes de cada sección) y sus vectores: la carpeta necesita
+los mismos permisos que el workspace (ver [seguridad](seguridad.md#qué-se-guarda)).
+
 ## Actualizar y desinstalar
 
 - **Actualizar**: el mismo `pip install` con el wheelhouse o la versión nueva y

@@ -68,7 +68,9 @@ reciben carpetas distintas, también cuando se procesan a la vez.
 Los análisis de sección se guardan en `<workspace>/docs/.cache`, por texto de la sección,
 modelo, idioma y versión del prompt: un documento modificado solo vuelve al modelo con las
 secciones cuyo texto ha cambiado. La caché se escribe de forma atómica, y un fichero dañado
-se vuelve a analizar. Si falla alguna sección, el documento se escribe igual y queda en
+se vuelve a analizar. Como no depende de rutas, sirve a otros puestos: `atlas cache export`
+la lleva a un fichero, e `import` o `[project] shared_cache` la usan en otro workspace
+(`process_document(..., shared_cache=...)` busca ahí lo que la local no tiene). Si falla alguna sección, el documento se escribe igual y queda en
 error para reintentarla en la siguiente ejecución.
 
 ## En `atlas run`

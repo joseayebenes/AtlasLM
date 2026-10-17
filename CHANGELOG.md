@@ -6,6 +6,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas cache export FICHERO` e `import FICHERO` (la librería, `atlas.cache.pack` y `unpack`):
+  lo que un puesto pidió a los modelos, para los demás. El fichero es un SQLite con los vectores
+  de la caché de embeddings, los análisis de sección de `docs/.cache` y, con
+  `--with-judgements`, las cachés de juicios de `verify`, `comply` y `link`; la cabecera dice la
+  versión de atlas, el proyecto, los modelos, la fecha y los recuentos. `import` solo añade lo
+  que falta, nunca sustituye, y dice cuánto entró. Rechaza los vectores de otro modelo de
+  embeddings: la clave de un vector lleva el modelo dentro del hash y nunca casarían. Sobre
+  las muestras, un workspace nuevo con la caché importada procesa todo sin ninguna petición
+  de chat ni de embeddings. En el proyecto real, cada puesto se ahorra las ~2000 secciones y
+  ~20 000 embeddings de su primer `atlas run` (horas con 28 peticiones por minuto).
+- `[project] shared_cache`: una carpeta de red con cachés exportadas, como caché secundaria de
+  solo lectura. Lo que el workspace no tiene se busca ahí y se copia al workspace; `atlas run`
+  nunca escribe en ella. Si no se puede leer, se sigue sin ella con un aviso. Nunca se
+  comparte un `atlas.db`.
+
+### Al actualizar
+- La caché de embeddings de `atlas.db` gana la columna `model`. Los vectores de un workspace de
+  la 0.2.0 no la tienen: `atlas cache export` se la pone a los de los textos del índice; los
+  demás (textos que ya no están en el índice) no se exportan. No se reprocesa nada.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

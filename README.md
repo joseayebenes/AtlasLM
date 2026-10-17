@@ -110,6 +110,8 @@ atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes 
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
+atlas cache export tms-cache.sqlite atlas.toml   # los análisis y vectores de este workspace, para otros puestos
+atlas cache import tms-cache.sqlite atlas.toml   # añade lo que falta (antes del primer run de un puesto)
 atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
 atlas --version
 ```
@@ -145,6 +147,7 @@ atlas/
 ├── config.py       carga y validación de atlas.toml, ${VAR}, secretos, huellas por sección
 ├── plugins.py      interfaces (CodeAnalyzer, RequirementsAdapter, DocumentExtractor, Tool) y registro
 ├── store.py        atlas.db: requisitos, enlaces, unidades de código, documentos
+├── cache.py        cachés entre puestos: atlas cache export/import y [project] shared_cache
 ├── pipeline/       motor incremental: Step, Ledger, Runner; paralelismo y perfiles de tiempo
 ├── llm/            clientes OpenAI con proxy, TLS, límites y reintentos; respuestas JSON
 ├── doors/          requisitos: base de intercambio y adaptadores "exchange" y "database"

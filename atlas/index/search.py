@@ -30,6 +30,7 @@ from pathlib import Path
 from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import IndexStore
+from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
 
 __all__ = ["answer", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search", "section_file",
@@ -252,7 +253,9 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
                  max_chars: int = SCOPE_CHARS) -> dict:
     """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them."""
+    if not, notes from each part and a last request that combines them. A part that fails
+    leaves a note ("part 2 of 4 failed: ...") at the end of the answer, and the answer is
+    written with the others."""
     sources = [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
@@ -262,15 +265,28 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     parts = _parts(blocks, max_chars)
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
+    failed: list[str] = []
     if len(parts) == 1:
         text = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}")
         requests, truncated = _requests(text), _truncated(text)
     else:
         with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
-            notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}"),
-                                  parts))
-        requests, truncated = sum(_requests(n) for n in notes), any(_truncated(n) for n in notes)
-        notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
+            futures = [pool.submit(llm.ask_text, NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}")
+                       for part in parts]
+        notes, requests, truncated, first_error = [], 0, False, None
+        for i, future in enumerate(futures, 1):
+            try:
+                note = future.result()
+            except Exception as e:
+                log.warning("part %d of %d of %s failed: %s", i, len(parts), ", ".join(names), e)
+                failed.append(f"part {i} of {len(parts)} failed: {diagnose(e)}")
+                first_error, requests = first_error or e, requests + 1
+                continue
+            requests, truncated = requests + _requests(note), truncated or _truncated(note)
+            if note.strip() and note.strip().rstrip(".").upper() != "NOTHING":
+                notes.append(note)
+        if first_error is not None and len(failed) == len(parts):
+            raise first_error
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
@@ -278,9 +294,10 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
             text = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}")
             requests, truncated = requests + _requests(text), truncated or _truncated(text)
     cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-    return {"answer": str(text), "scope": "whole", "documents": names, "requests": requests,
+    answer_text = str(text) + "".join(f"\n\n({note})" for note in failed)
+    return {"answer": answer_text, "scope": "whole", "documents": names, "requests": requests,
             "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
-            **({"truncated": True} if truncated else {})}
+            **({"truncated": True} if truncated else {}), **({"failed_parts": failed} if failed else {})}
 
 
 def _requests(text: str) -> int:
@@ -319,7 +336,8 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model},
-    plus "truncated": True if the answer is cut by max_tokens.
+    plus "truncated": True if the answer is cut by max_tokens and "failed_parts" with the
+    notes of the parts of whole documents that failed.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
     the question is broad."""

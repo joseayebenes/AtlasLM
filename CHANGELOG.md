@@ -20,6 +20,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Una respuesta de texto cortada por `max_tokens` (o vacía, con un modelo que razona) llegaba
   al usuario sin aviso. Ahora se pregunta otra vez con el doble de presupuesto y, si sigue
   cortada, la respuesta de `atlas ask` y `ask_docs` lleva `truncated` y `atlas ask` lo avisa.
+- Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
+  Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
+  `failed_parts`) y la respuesta se escribe con las demás, con sus fuentes y peticiones bien
+  contadas.
 
 ## [0.2.0] — 2026-10-16
 

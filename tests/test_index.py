@@ -301,3 +301,55 @@ def test_records_of_a_code_unit(samples):
     assert {r["text"].split(" (")[1].split(",")[0] for r in code_records("tracks", parts, sources, tests=[str(files[1])])
             if "tracks.adb" in r["text"]} == {"test"}
     assert code_records("tracks", parts, sources, kinds=["chunk"]) == []
+
+
+def test_the_tokenizer_of_the_full_text_index(docs, tmp_path, fake_embeddings, fake_stats):
+    """With porter, "deleting" finds "Deleted tracks" and "log" finds "logs"; changing the
+    tokenizer rebuilds only the full-text table, embedding nothing."""
+    from atlas.index import IndexStore
+    db = tmp_path / "atlas.db"
+    idx = Index(db, fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    lexical = lambda i, q: [h["text"] for h in i.search(q, k=10, dense=False)]
+    assert not any("Deleted tracks" in t for t in lexical(idx, "deleting"))
+    assert not any("logs" in t for t in lexical(idx, "log retention"))
+    before = fake_stats()["emb_texts"]
+    porter = Index(db, fake_embeddings, fts_tokenizer="porter unicode61 remove_diacritics 2")
+    assert "porter" in porter.store.db.execute("SELECT sql FROM sqlite_master WHERE name = 'index_fts'").fetchone()[0]
+    assert any("Deleted tracks" in t for t in lexical(porter, "deleting"))
+    assert any("logs" in t for t in lexical(porter, "log retention"))
+    assert fake_stats()["emb_texts"] == before                  # nothing embedded again
+    assert porter.search("SRS-0102", k=1, dense=False)[0]["ref"] == "SRS-0102"
+    _add(porter, docs["hmi_manual.md"])                          # replacing a document keeps it in step
+    assert any("logs" in t for t in lexical(porter, "log retention"))
+    back = Index(db, fake_embeddings)                            # and back to the default
+    assert not any("Deleted tracks" in t for t in lexical(back, "deleting"))
+    assert any("Deleted tracks" in t for t in lexical(back, "deleted"))
+    with pytest.raises(ValueError, match="fts_tokenizer 'bogus'"):
+        IndexStore(db, "bogus")
+    assert any("Deleted tracks" in t for t in lexical(Index(db, fake_embeddings), "deleted"))   # untouched
+
+
+def test_synonyms_and_acronyms(docs, tmp_path, fake_embeddings):
+    from atlas.index.search import acronyms, expand_synonyms
+    groups = [["track", "traza", "pista"], ["log", "registro"], ["track loss", "pérdida de traza"]]
+    assert expand_synonyms("Alarma cuando se pierde una Traza", groups) == \
+        "Alarma cuando se pierde una Traza track pista"
+    assert expand_synonyms("registros de la HMI", groups) == "registros de la HMI log"     # plural, any case
+    assert expand_synonyms("perdida de trazas", groups) == "perdida de trazas track pista track loss"
+    assert expand_synonyms("nothing here", groups) == ""
+    assert acronyms("What is the TMF of the HMI? See SRS-0004 or the SRS") == ["TMF", "HMI", "SRS"]
+
+    path = tmp_path / "synonyms.toml"
+    path.write_text('[[groups]]\nterms = ["track", "traza", "pista"]\n', encoding="utf-8")
+    data = {**docs["hmi_manual.md"], "glossary": [{"term": "TMF", "definitions": ["Track Management Function"],
+                                                   "sections": ["002"]}]}
+    plain = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(plain, data)
+    assert plain.search("alarma traza", k=3, dense=False) == []
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, settings={"synonyms": str(path)})
+    assert idx.synonyms == [["track", "traza", "pista"]]
+    assert any("track is lost" in h["text"] for h in idx.search("alarma traza", k=3, dense=False))
+    hit = idx.search("what does the TMF do", k=3, dense=False)[0]
+    assert (hit["kind"], hit["ref"]) == ("definition", "TMF")

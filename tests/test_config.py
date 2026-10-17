@@ -122,3 +122,22 @@ def test_check_masks_the_credentials_of_urls():
     text = describe(ServiceConfig(base_url="https://jane:Secret1@gateway/v1", model="m", api_key="sk-0123456789",
                                   net=NetConfig(proxy="http://jane:Secret1@proxy:8080", no_proxy="")))
     assert "Secret1" not in text and "sk-0123456789" not in text and "gateway/v1" in text
+
+
+def test_the_synonyms_file_is_checked(tmp_path):
+    from atlas.config import ConfigError, load_config
+    toml = tmp_path / "atlas.toml"
+    toml.write_text('[search]\nsynonyms = "synonyms.toml"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="cannot read"):
+        load_config(toml)
+    syn = tmp_path / "synonyms.toml"
+    syn.write_text('[[groups]]\nterms = ["track"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="group 1 of synonyms.toml needs terms"):
+        load_config(toml)
+    syn.write_text('[[groups]]\nterms = ["track", "traza"]\n', encoding="utf-8")
+    cfg = load_config(toml)                                     # relative to atlas.toml
+    assert cfg["search"]["synonyms"] == str(syn.resolve())
+    assert cfg["index"]["fts_tokenizer"] == "unicode61 remove_diacritics 2"
+    toml.write_text('[index]\nfts_tokenizer = " "\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="fts_tokenizer"):
+        load_config(toml)

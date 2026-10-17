@@ -4,7 +4,9 @@ same records, and the embeddings cache.
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
     index_records     the records (see records.py) with their vector
-    index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
+    index_fts         full-text index of embed_text and ref (if SQLite has FTS5), with the
+                      tokenizer of [index] fts_tokenizer: when it changes, the table is
+                      rebuilt from index_records on opening (seconds, nothing is embedded)
     embed_cache       vector by key (model + prefix + text): what has been embedded once
                       is never embedded again, whatever document it comes from
 
@@ -23,7 +25,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["IndexStore"]
+__all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore"]
 
 log = logging.getLogger(__name__)
 
@@ -39,27 +41,61 @@ CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
 """
 
+DEFAULT_FTS_TOKENIZER = "unicode61 remove_diacritics 2"
+_TOKENIZE = re.compile(r"tokenize\s*=\s*'((?:[^']|'')*)'", re.I)
+
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
                   "r.ref, r.seq, r.text, r.embed_text"
 
 
+def _tokenizer(sql: str) -> str:
+    """The tokenizer of a CREATE VIRTUAL TABLE ... fts5(...), with its spaces normalised."""
+    m = _TOKENIZE.search(sql or "")
+    return " ".join(m.group(1).replace("''", "'").split()) if m else "unicode61"
+
+
 class IndexStore:
-    def __init__(self, path: str | Path):
+    """`fts_tokenizer` is the FTS5 tokenizer of the lexical search ([index] fts_tokenizer),
+    e.g. "porter unicode61 remove_diacritics 2" for English stemming."""
+
+    def __init__(self, path: str | Path, fts_tokenizer: str = DEFAULT_FTS_TOKENIZER):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.executescript(SCHEMA)
-        try:
-            self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
-                            "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
-            self.fts = True
-        except sqlite3.OperationalError:
-            log.warning("this SQLite has no FTS5: vector search only")
-            self.fts = False
+        self.fts_tokenizer = " ".join((fts_tokenizer or DEFAULT_FTS_TOKENIZER).split())
+        self.fts = self._open_fts()
         self.lock = threading.RLock()     # one connection shared by the Runner's threads
         self._matrix: tuple[str, int, np.ndarray, np.ndarray] | None = None
+
+    def _open_fts(self) -> bool:
+        """Creates index_fts with the tokenizer asked for or, if it has another one, rebuilds
+        it from index_records in one transaction. False if this SQLite has no FTS5."""
+        tokenize = self.fts_tokenizer.replace("'", "''")
+        create = f"CREATE VIRTUAL TABLE index_fts USING fts5(embed_text, ref, tokenize='{tokenize}')"
+        row = self.db.execute("SELECT sql FROM sqlite_master WHERE name = 'index_fts'").fetchone()
+        if row is not None and _tokenizer(row[0]) == self.fts_tokenizer:
+            return True
+        try:
+            self.db.execute("BEGIN")
+            if row is not None:
+                self.db.execute("DROP TABLE index_fts")
+            self.db.execute(create)
+            if row is not None:
+                n = self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) "
+                                    "SELECT id, embed_text, ref FROM index_records").rowcount
+                log.info("full-text index rebuilt with the tokenizer '%s' (it had '%s'): %d records",
+                         self.fts_tokenizer, _tokenizer(row[0]), n)
+            self.db.execute("COMMIT")
+            return True
+        except sqlite3.OperationalError as e:
+            self.db.execute("ROLLBACK")
+            if "fts5" in str(e).lower() and "module" in str(e).lower():
+                log.warning("this SQLite has no FTS5: vector search only")
+                return False
+            raise ValueError(f"[index] fts_tokenizer '{self.fts_tokenizer}': {e}") from None
 
     def _query(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
         with self.lock:
@@ -182,6 +218,14 @@ class IndexStore:
         except sqlite3.OperationalError:
             return []
         return [r[0] for r in rows if allowed is None or r[0] in allowed][:n]
+
+    def definitions(self, terms: list[str], allowed: set[int] | None) -> list[int]:
+        """The glossary definitions of some terms (any case)."""
+        if not terms:
+            return []
+        rows = self._query(f"SELECT id FROM index_records WHERE kind = 'definition' AND UPPER(ref) IN "
+                           f"({','.join('?' * len(terms))})", [t.upper() for t in terms])
+        return [r[0] for r in rows if allowed is None or r[0] in allowed]
 
     def by_ref(self, query: str, allowed: set[int] | None) -> list[int]:
         """Exact match of the IDs (requirements, terms) mentioned in the query."""

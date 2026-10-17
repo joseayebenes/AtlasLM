@@ -59,9 +59,27 @@ siguiente ejecución.
 ## Búsqueda
 
 Una búsqueda combina tres listas con Reciprocal Rank Fusion:
-- los IDs exactos que aparecen en la consulta;
+- los IDs exactos que aparecen en la consulta, y las definiciones del glosario de sus siglas
+  (de 2 a 6 mayúsculas: «TMF»);
 - la similitud de los vectores;
 - BM25 sobre el mismo texto (FTS5 de SQLite).
+
+### Léxico
+
+BM25 busca cada palabra tal cual. Con el tokenizador de serie, «deleting» no encuentra
+«Deleted tracks» ni «log», «logs». `[index] fts_tokenizer = "porter unicode61
+remove_diacritics 2"` reduce cada palabra inglesa a su raíz (no casa «verifies» con
+«verification»). Al abrir el índice, `IndexStore` compara el tokenizador de la tabla
+`index_fts` con el pedido y, si difiere, la rehace desde `index_records` en una transacción:
+segundos, sin embeber nada. `porter` es solo inglés y los resúmenes de sección siguen el
+`lang` de su fuente: conviene con documentos en inglés, medido con `atlas eval` antes y
+después (en las muestras, la léxica pasa del 60 % al 75 % de acierto@1, y la híbrida del 75 %
+al 90 %; ver la [guía](../../docs/configuracion.md#index)).
+
+`[search] synonyms` añade grupos de términos equivalentes del proyecto (`examples/synonyms.toml`):
+una consulta con un término de un grupo hace una búsqueda léxica más, con los demás términos
+del grupo, que entra en la fusión como una lista más. Es la búsqueda que queda cuando el
+servidor de embeddings no responde.
 
 Una búsqueda en todos los documentos da como mucho `[search] per_document` resultados (3)
 de cada documento, módulo de DOORS o unidad de código mientras otros tengan alguno; si no

@@ -6,6 +6,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[index] fts_tokenizer`: el tokenizador de FTS5 de la búsqueda léxica. Con `"porter unicode61
+  remove_diacritics 2"`, «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo rehace
+  solo la tabla de texto al abrir el índice, en segundos y sin embeber. El valor por defecto no
+  cambia; en las muestras, `porter` sube la léxica del 60 % al 75 % de acierto@1 y la híbrida del
+  75 % al 90 %. Es solo inglés: conviene con documentos en inglés y medido con `atlas eval`.
+- `[search] synonyms`: un fichero de grupos de términos equivalentes (`examples/synonyms.toml`);
+  una consulta con uno de ellos hace una búsqueda léxica más con los demás, que entra en la
+  fusión. Las siglas de la pregunta (de 2 a 6 mayúsculas) se buscan entre las definiciones del
+  glosario, con los IDs exactos.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

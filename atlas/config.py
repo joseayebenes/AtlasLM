@@ -86,8 +86,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "plugins": {"modules": list, "disabled": list},
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
-    "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
-    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
+    "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list, "fts_tokenizer": str},
+    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int,
+               "synonyms": str},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -119,9 +120,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     "graph": {"exports": ["graphml", "json"], "communities": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
-                        "code_doc"]},
+                        "code_doc"],
+              "fts_tokenizer": "unicode61 remove_diacritics 2"},    # changing it rebuilds only index_fts
     # what search and ask take from the index; changing it reprocesses nothing
-    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
+    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000,
+               "synonyms": ""},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
     "tests": {"languages": {}, "steps": []},
@@ -175,12 +178,54 @@ def _validate_tests(tests: dict) -> None:
             raise ConfigError(f"[{where}] the code of each language must be a string")
 
 
-def _validate_search(search: dict) -> None:
+def read_synonyms(path: str | Path) -> list[list[str]]:
+    """The groups of equivalent terms of a synonyms file ([search] synonyms):
+
+        [[groups]]
+        terms = ["track", "traza", "pista"]
+
+    Each group has at least two terms; a term can have several words."""
+    path = Path(path)
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except OSError as e:
+        raise ConfigError(f"[search] synonyms: cannot read {path}: {e.strerror or e}") from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"[search] synonyms: TOML syntax in {path}: {e}") from None
+    unknown = sorted(set(data) - {"groups"})
+    groups = data.get("groups", [])
+    if unknown or not isinstance(groups, list):
+        raise ConfigError(f"[search] synonyms: {path.name} has only [[groups]] tables, each with terms")
+    out = []
+    for i, g in enumerate(groups, 1):
+        terms = g.get("terms") if isinstance(g, dict) else None
+        if (not isinstance(terms, list) or set(g) != {"terms"} or len(terms) < 2
+                or not all(isinstance(t, str) and t.strip() for t in terms)):
+            raise ConfigError(f"[search] synonyms: group {i} of {path.name} needs terms, a list of at least "
+                              f"two texts")
+        out.append([" ".join(t.split()) for t in terms])
+    return out
+
+
+def _validate_search(search: dict, base: Path) -> None:
+    """[search]; `synonyms` is resolved against `base`, the folder of atlas.toml."""
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
     for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
+    if search.get("synonyms"):
+        path = Path(search["synonyms"]).expanduser()
+        search["synonyms"] = str(path if path.is_absolute() else (base / path).resolve())
+        read_synonyms(search["synonyms"])
+
+
+def _validate_index(index: dict) -> None:
+    tokenizer = index.get("fts_tokenizer")
+    if tokenizer is not None and (not tokenizer.strip() or "\x00" in tokenizer):
+        raise ConfigError("[index] fts_tokenizer must name an FTS5 tokenizer, e.g. "
+                          "\"porter unicode61 remove_diacritics 2\"")
 
 
 @dataclass
@@ -203,14 +248,16 @@ class Config:
         ws = Path(self.data["project"]["workspace"])
         return ws if ws.is_absolute() else (self.path.parent / ws).resolve()
 
-    def fingerprint(self, *sections: str) -> str:
+    def fingerprint(self, *sections: str, without: tuple[str, ...] = ()) -> str:
         """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings'), without
-        their secrets (see redact)."""
+        their secrets (see redact) and without the keys of `without`."""
         parts = []
         for s in sections:
             d: Any = self.data
             for piece in s.split("."):
                 d = d.get(piece, None) if isinstance(d, dict) else None
+            if isinstance(d, dict) and without:
+                d = {k: v for k, v in d.items() if k not in without}
             parts.append(json.dumps(redact(d), sort_keys=True, ensure_ascii=False, default=str))
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
@@ -289,7 +336,8 @@ def load_config(path: str | Path) -> Config:
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
-    _validate_search(data.get("search", {}))
+    _validate_search(data.get("search", {}), path.parent)
+    _validate_index(data.get("index", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

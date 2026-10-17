@@ -30,7 +30,7 @@ from atlas.index.embeddings import Embedder
 from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
                                   requirement_records)
 from atlas.index.search import answer, answer_whole, build_context, cite, search
-from atlas.index.store import IndexStore
+from atlas.index.store import DEFAULT_FTS_TOKENIZER, IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
@@ -158,23 +158,27 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    scope_chars, synonyms: the path of a synonyms file); what is not given takes its
+    default. `fts_tokenizer` is that of [index]."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
-        from atlas.config import DEFAULTS
-        self.store = IndexStore(db)
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
+                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER):
+        from atlas.config import DEFAULTS, read_synonyms
+        self.store = IndexStore(db, fts_tokenizer)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
+        self.synonyms = read_synonyms(self.settings["synonyms"]) if self.settings["synonyms"] else []
 
     @classmethod
     def from_config(cls, cfg) -> "Index":
-        """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
-        atlas.toml."""
+        """The index of <workspace>/atlas.db with the [embeddings], [llm], [search] and
+        [index] fts_tokenizer of atlas.toml."""
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"),
+                   (cfg.get("index") or {}).get("fts_tokenizer") or DEFAULT_FTS_TOKENIZER)
 
     @property
     def llm(self) -> JsonLlm:
@@ -212,14 +216,14 @@ class Index:
         """k = 0 and per_document = None: those of the settings."""
         per = self.settings["per_document"] if per_document is None else per_document
         return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per)
+                      self.llm if rewrite else None, dense, per, synonyms=self.synonyms)
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "") -> dict:
         """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], self.synonyms)
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

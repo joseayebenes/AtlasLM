@@ -3,9 +3,12 @@
 A search merges several rankings with Reciprocal Rank Fusion, which needs no calibration
 between scores of different kinds:
 
-- exact IDs (requirements, terms) mentioned in the query, matched against `ref`;
+- exact IDs (requirements, terms) mentioned in the query, matched against `ref`, and the
+  glossary definitions of its acronyms (2 to 6 capitals: "TMF");
 - dense: cosine similarity with the vectors of the current embeddings model;
-- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase.
+- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase; with
+  [search] synonyms, a query that has a term of a group adds one more lexical ranking,
+  of the query with the other terms of the group.
 
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
@@ -23,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -32,8 +36,8 @@ from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import IndexStore
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search", "section_file",
-           "whole_sources"]
+__all__ = ["acronyms", "answer", "build_context", "cite", "diverse", "expand_synonyms", "rewrite_question", "rrf",
+           "search", "section_file", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +103,33 @@ def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
     return sorted(score, key=lambda r: -score[r])
 
 
+_ACRONYM = re.compile(r"(?<![\w\-.])[A-Z]{2,6}(?![\w\-])")
+
+
+def acronyms(text: str) -> list[str]:
+    """The acronyms of a text: words of 2 to 6 capitals ("TMF", "HMI"), not part of an ID
+    ("SRS-0004")."""
+    return list(dict.fromkeys(_ACRONYM.findall(text)))
+
+
+def _words(text: str) -> list[str]:
+    """The words of a text in lower case, without accents and without a plural "s"."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(c))
+    return [w.removesuffix("s") if len(w) > 3 else w for w in re.findall(r"\w+", plain)]
+
+
+def expand_synonyms(query: str, groups: list[list[str]]) -> str:
+    """The query with the other terms of every group ([search] synonyms) that has one of its
+    terms in it (any case, accent or plural "s"); "" if no group has any."""
+    words, added = _words(query), []
+    for group in groups:
+        found = [t for t in group if (tw := _words(t)) and any(words[i:i + len(tw)] == tw
+                                                                for i in range(len(words) - len(tw) + 1))]
+        if found:
+            added += [t for t in group if t not in found and t not in added]
+    return f"{query} {' '.join(added)}" if added else ""
+
+
 def rewrite_question(llm: JsonLlm, question: str, documents: list[dict] = ()) -> dict:
     """The question as search queries and exact keywords, whether it is broad and the
     documents it is about, among `documents` ({name, title}). If the model fails, the
@@ -139,23 +170,30 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
 
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
-           per_document: int = 0, rewritten: dict | None = None) -> list[dict]:
+           per_document: int = 0, rewritten: dict | None = None,
+           synonyms: list[list[str]] = ()) -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
     its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
     no limit) is the most hits of one document while others have some. With `llm`, the
     query is rewritten first (or `rewritten` gives it already). With dense=False there are
-    no vectors (IDs and BM25 only): no request to any model."""
+    no vectors (IDs and BM25 only): no request to any model. `synonyms`: groups of
+    equivalent terms (config.read_synonyms)."""
     allowed = store.allowed(document, kinds)
     if rewritten is None and llm is not None:
         rewritten = rewrite_question(llm, query)
     queries = [query] + (rewritten["queries"] if rewritten else [])
     keywords = rewritten["keywords"] if rewritten else []
     n = max(k * 3, 20)
-    rankings = [store.by_ref(" ".join([query] + keywords), allowed)]
+    exact = " ".join([query] + keywords)
+    ids = store.by_ref(exact, allowed)
+    rankings = [ids + [i for i in store.definitions(acronyms(exact), allowed) if i not in ids]]
     for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
         if dense:
             rankings.append(store.dense(qvec, embedder.model, n, allowed))
         rankings.append(store.lexical(q, n, allowed))
+        expanded = expand_synonyms(q, synonyms) if synonyms else ""
+        if expanded:
+            rankings.append(store.lexical(expanded, n, allowed))
     if keywords:
         rankings.append(store.lexical(" ".join(keywords), n, allowed))
     ranked = rrf([r for r in rankings if r])
@@ -303,7 +341,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
-           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
+           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
+           synonyms: list[list[str]] = ()) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
@@ -315,12 +354,14 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, rewritten=rewritten)
+                                                   per_document=per_document, rewritten=rewritten,
+                                                   synonyms=synonyms)
         docs = _scope_documents(store, document, named, hits)
         if docs:
             res = answer_whole(store, llm, question, docs, scope_chars)
             return {**res, "requests": res["requests"] + requests}
-    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
+    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
+                  synonyms=synonyms)
     sources = build_context(store, hits, context_chars)
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",

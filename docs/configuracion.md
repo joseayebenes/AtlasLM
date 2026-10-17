@@ -39,6 +39,7 @@ de ella:
 | `[llm] model` | los documentos con `analysis = "llm"` |
 | `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
+| `[index] fts_tokenizer` | solo la tabla de texto, al abrir el índice, sin embeber |
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
@@ -252,6 +253,21 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
 | `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+| `fts_tokenizer` | texto | `"unicode61 remove_diacritics 2"` | el tokenizador de FTS5 de la búsqueda léxica. `"porter unicode61 remove_diacritics 2"` reduce cada palabra inglesa a su raíz: «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo no reindexa nada: al abrir el índice, la tabla de texto se rehace desde los registros en segundos, sin embeber |
+
+`porter` solo conoce el inglés. Conviene si los documentos están en inglés; los resúmenes de
+sección siguen el `lang` de su fuente (español por defecto en la plantilla), y sobre texto
+español las raíces de `porter` no son las del español. Antes de cambiarlo, mide con `atlas
+eval` antes y después sobre un conjunto del proyecto. En las muestras (documentos en inglés,
+resúmenes del manual en español), con `embeddinggemma` en Ollama:
+
+| | léxica acierto@1 | léxica MRR | híbrida acierto@1 | híbrida MRR |
+|---|---|---|---|---|
+| `unicode61` (por defecto) | 60 % | 0,66 | 75 % | 0,83 |
+| `porter unicode61` | 75 % | 0,79 | 90 % | 0,93 |
+| `porter` y `examples/synonyms.toml` | 80 % | 0,86 | 90 % | 0,93 |
+
+Las dos preguntas en español no empeoran con `porter`: buscan en documentos en inglés.
 
 ## [search]
 
@@ -265,6 +281,24 @@ Cambiarlo no reprocesa nada.
 | `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `synonyms` | ruta | `""` | un fichero TOML de grupos de términos equivalentes del proyecto, relativo a este fichero (abajo) |
+
+`synonyms` apunta a un fichero como `examples/synonyms.toml`:
+
+```toml
+[[groups]]
+terms = ["track", "traza", "pista"]
+```
+
+Una consulta que trae un término de un grupo (en cualquier caso, con o sin tildes ni la «s»
+del plural) hace una búsqueda léxica más, con los demás términos del grupo añadidos, que
+entra en la fusión como una lista más. Sirve para el vocabulario del proyecto y para las
+preguntas en español sobre documentos en inglés: en las muestras, con él, «alarma cuando se
+pierde una traza» encuentra el requisito también sin vectores. `atlas check` y `atlas run`
+rechazan un fichero que no existe o un grupo con menos de dos términos.
+
+Las siglas de la pregunta (de 2 a 6 mayúsculas: «TMF») se buscan siempre entre las
+definiciones del glosario, que entran con los IDs exactos.
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
 tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos

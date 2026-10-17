@@ -269,6 +269,12 @@ class IndexIncomplete(RuntimeError):
 INDEX_VERSION = "index-1"   # change it when the records or the index tables change
 
 
+def index_fingerprint(ctx) -> str:
+    """What the records of the index depend on in [index]: not fts_tokenizer, since the
+    full-text table is rebuilt from the records when it changes (IndexStore)."""
+    return ctx.cfg.fingerprint("index", without=("fts_tokenizer",))
+
+
 def index_options(ctx) -> dict:
     """The validated [index] options for index_document."""
     from atlas.index import KINDS
@@ -306,7 +312,7 @@ def index_step(ctx) -> Step:
         return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
 
     def fingerprint(ctx, unit: str) -> str:
-        return f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return f"{sha256_file(structure(unit))}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, unit: str):
         d = ctx.store.document(unit)
@@ -354,7 +360,7 @@ def index_requirements_step(ctx) -> Step:
 
     def fingerprint(ctx, module: str) -> str:
         rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, module: str):
         res = index().add_module(module, ctx.store.requirements(module), kinds)
@@ -415,7 +421,7 @@ def index_code_step(ctx) -> Step | None:
 
     def fingerprint(ctx, unit: str) -> str:
         files = [[p, sha256_file(p["file"]) if Path(p["file"]).exists() else ""] for p in parts(unit)]
-        return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{ctx.cfg.fingerprint('index')}|"
+        return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{index_fingerprint(ctx)}|"
                 f"{embed_model}|{INDEX_VERSION}")
 
     def run(ctx, unit: str):
@@ -601,7 +607,7 @@ def status(cfg: Config) -> int:
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
     print("graph:", GraphStore(ctx.store.path).counts())
-    print("index:", IndexStore(ctx.store.path).counts())
+    print("index:", IndexStore(ctx.store.path, ctx.cfg["index"]["fts_tokenizer"]).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
     pending = ledger.pending()
     for p in pending[:30]:

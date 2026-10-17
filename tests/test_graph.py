@@ -103,6 +103,62 @@ def test_overloads_tasks_and_operators_in_the_graph(tmp_path):
     assert "probe.adb:30-37, 38-41" in record["text"] and record["text"].count("procedure Run") == 2
 
 
+USES_AND_ALIASES = {
+    "store.ads": "package Store is\n   procedure Put (X : Integer);\n   procedure Write (X : Integer) renames Put;\n"
+                 "end Store;\n",
+    "store.adb": "package body Store is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Store;\n",
+    "other.adb": "package body Other is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Other;\n",
+    "stacks.adb": "package body Stacks is\n   procedure Push (X : Integer) is\n   begin\n      null;\n"
+                  "   end Push;\nend Stacks;\n",
+    "client.adb": """with Store; with Other; with Stacks; with Ada.Text_IO;
+use Store;
+package body Client is
+   procedure Log (S : String) renames Ada.Text_IO.Put_Line;
+   package Int_Stack is new Stacks (Integer);
+   package TIO renames Ada.Text_IO;
+   procedure Show (X : Integer) renames Other.Put;
+   procedure Run is
+   begin
+      Put (1);
+      Log ("x");
+      Int_Stack.Push (2);
+      Show (3);
+      Store.Write (4);
+      TIO.New_Line;
+   end Run;
+end Client;
+""",
+}
+
+
+def test_use_clauses_and_aliases_in_the_resolution(tmp_path):
+    for name, text in USES_AND_ALIASES.items():
+        (tmp_path / name).write_text(text)
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    calls = {v for u, v in _edges(G, "calls") if u == "client.run"}
+    assert calls == {"store.put", "ada.text_io.put_line", "stacks.push", "other.put", "ada.text_io.new_line"}
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"], stats["calls_through_aliases"]) == (0, 1, 5)
+    assert dict(stats["top_unresolved"]) == {"ada.text_io.new_line": 1, "ada.text_io.put_line": 1}
+    assert "log" not in G and "int_stack.push" not in G and "tio.new_line" not in G
+
+    # without the `use` clause, Put is in two units that Client imports: both
+    (tmp_path / "client.adb").write_text(USES_AND_ALIASES["client.adb"].replace("use Store;\n", ""))
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert {("client.run", "store.put"), ("client.run", "other.put")} <= _edges(G, "calls")
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"]) == (1, 0)
+
+    # a name of the unit itself wins over a subprogram of another unit with the same name
+    (tmp_path / "speeds.adb").write_text("package body Speeds is\n   subtype Knots is Integer range 0 .. 900;\n"
+                                         "   procedure Set (I : Integer) is\n      K : Knots;\n   begin\n"
+                                         "      K := Knots (I);\n   end Set;\nend Speeds;\n")
+    (tmp_path / "units.adb").write_text("package body Units is\n   procedure Knots (X : Integer) is\n   begin\n"
+                                        "      null;\n   end Knots;\nend Units;\n")
+    G, _ = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert ("speeds.set", "speeds.knots") in _edges(G, "converts") and ("speeds.set", "units.knots") not in G.edges
+
+
 def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
     G, stats = sample_graph
     store = GraphStore(tmp_path / "atlas.db")

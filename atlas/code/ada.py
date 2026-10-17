@@ -1,6 +1,7 @@
 """Ada analyzer with tree-sitter-ada, one file at a time (the analysis of legacy/ada_graph.py).
 
-For each file: the `with` clauses, the subprogram declarations of the spec (their header
+For each file: the `with` and `use` clauses, the renamings and generic instances (as
+aliases: name -> what it stands for), the subprogram declarations of the spec (their header
 comment is the documentation), the bodies (lines, own calls, header comment and the
 requirement IDs in their comments), the package-level types and subtypes (with their
 source: for a record, its fields) and the package-level variables and constants.
@@ -60,6 +61,12 @@ PATTERNS = {
     "with_clause": [
         "(with_clause (identifier) @with)",
         "(with_clause (selected_component) @with)",
+    ],
+    "use_clause": ["(use_clause) @use"],     # `use type` is left out: it only makes operators visible
+    "alias": [        # Log renames Ada.Text_IO.Put_Line; TIO renames Ada.Text_IO; Int_IO is new Integer_IO
+        "(subprogram_renaming_declaration) @alias",
+        "(package_renaming_declaration) @alias",
+        "(generic_instantiation) @alias",
     ],
     "comment": ["(comment) @c"],
     "type": [         # types and subtypes (the name is the first identifier child)
@@ -236,6 +243,41 @@ def _first_identifier(node):
     return next((c for c in node.children if c.type == "identifier"), None)
 
 
+def _uses(root, src: bytes) -> list[str]:
+    """The packages of the `use` clauses of a file, in order (not `use type`)."""
+    q = _grammar().use_clause
+    out: list[str] = []
+    for clause in (_captures(q, root).get("use", []) if q else []):
+        if clause.child_by_field_name("is_type") is not None:
+            continue
+        out += [_norm(_text(c, src)) for c in clause.named_children if c.type in ("identifier", "selected_component")]
+    return list(dict.fromkeys(out))
+
+
+def _aliases(root, src: bytes) -> dict[str, str]:
+    """Name -> what it stands for: the renamings of subprograms and packages and the generic
+    instances (`package Int_IO is new Ada.Text_IO.Integer_IO (Integer)` -> int_io:
+    ada.text_io.integer_io). The first one of a name stays."""
+    q = _grammar().alias
+    out: dict[str, str] = {}
+    for node in (_captures(q, root).get("alias", []) if q else []):
+        name = target = None
+        if node.type == "subprogram_renaming_declaration":
+            spec = next((c for c in node.children if c.type in ("procedure_specification", "function_specification")),
+                        None)
+            name = spec.child_by_field_name("name") if spec is not None else None
+            target = node.child_by_field_name("callable_entity_name")
+        elif node.type == "package_renaming_declaration":
+            name, target = node.child_by_field_name("name"), node.child_by_field_name("package_name")
+        else:
+            name, target = node.child_by_field_name("name"), node.child_by_field_name("generic_name")
+            if target is not None and target.type == "function_call":       # with its actual parameters
+                target = target.child_by_field_name("name")
+        if name is not None and target is not None:
+            out.setdefault(_norm(_text(name, src)), _norm(_text(target, src)))
+    return out
+
+
 def unit_name(path: Path) -> str:
     """Compilation unit of a file by the GNAT convention: tracks-db.ads -> tracks.db."""
     return path.stem.lower().replace("-", ".")
@@ -321,7 +363,8 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern, req_ids: re.Pat
                             "reqs": extract_requirements(doc + "\n" + inner, req_pattern, req_ids)})
 
     return {"file": str(path), "unit": unit_name(path), "withs": withs, "declarations": declarations,
-            "subprograms": subprograms, "types": types, "variables": variables}
+            "subprograms": subprograms, "types": types, "variables": variables, "uses": _uses(root, src),
+            "aliases": _aliases(root, src)}
 
 
 class AdaAnalyzer(CodeAnalyzer):
@@ -338,7 +381,7 @@ class AdaAnalyzer(CodeAnalyzer):
         return CodeUnit(file=str(path), unit=a["unit"], language="ada", imports=a["withs"],
                         declarations=a["declarations"], subprograms=a["subprograms"],
                         types=[{k: v for k, v in t.items() if k != "local"} for t in a["types"] if not t["local"]],
-                        variables=a["variables"])
+                        variables=a["variables"], uses=a["uses"], aliases=a["aliases"])
 
     def version(self) -> str:
-        return "ada-2"        # tasks, entries, protected bodies and operators; kind; attributes are not calls
+        return "ada-3"        # 2: tasks, entries, protected bodies, operators, kind, attributes; 3: uses, aliases

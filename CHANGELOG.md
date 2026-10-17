@@ -31,6 +31,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   operator, task, entry o protected) en el `CodeUnit` y en el nodo (`subprogram_kind`), y
   `atlas graph` los cuenta. Las etiquetas de las entradas y subprogramas de un cuerpo
   protegido son suyas, no del cuerpo protegido.
+- La resolución de llamadas del grafo de código sigue las cláusulas `use` (la lista `uses`
+  del `CodeUnit`), los renombramientos (`procedure Log renames Ada.Text_IO.Put_Line`,
+  `package TIO renames Ada.Text_IO`) y las instancias genéricas (`package Int_Stack is new
+  Stacks (Integer)`), que el analizador Ada guarda como `aliases` (nombre → destino). Un
+  nombre se busca en la propia unidad, después como lo que nombra su alias, después en los
+  paquetes de sus `use` y por último en todas. `Put` con `use Store` y `with` de dos paquetes
+  que lo tienen era una llamada ambigua a los dos; ahora va a `store.put`. Un alias de algo de
+  fuera es una llamada externa por su nombre completo (`ada.text_io.put_line`, no `log`).
+  `atlas graph` cuenta las llamadas resueltas por cada camino.
 
 ### Corregido
 - Dos subprogramas con el mismo nombre en un paquete (sobrecargas) eran un nodo con las
@@ -39,11 +48,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   líneas de cada uno; `read_source` los lee todos y el índice tiene el código de todos. Los
   identificadores no cambian.
 - `T'Image (X)`, `T'Write (S, X)` y los demás atributos ya no cuentan `T` como una llamada.
+- Un nombre que declara la propia unidad (un tipo, una variable) va a ese elemento aunque
+  otra unidad tenga un subprograma con el mismo nombre; antes ganaba el subprograma de fuera.
 
 ### Al actualizar
-- El código se vuelve a analizar entero (`ada-2`, `python-2`) y el grafo se reconstruye
-  (`graph-3`), sin modelo. Pueden aparecer subprogramas nuevos (tareas, entradas,
-  operadores) con sus requisitos, y desaparecer llamadas falsas a tipos con atributos.
+- El código se vuelve a analizar entero (`ada-3`, `python-2`) y el grafo se reconstruye
+  (`graph-4`), sin modelo. Pueden aparecer subprogramas nuevos (tareas, entradas,
+  operadores) con sus requisitos, desaparecer llamadas falsas a tipos con atributos y
+  dejar de ser ambiguas las llamadas que un `use` o un alias deciden.
   `index.code` vuelve a embeber el código.
 - Con `id_pattern` (o `id_regex`) en `[sources.doors.convention]`, el código y los documentos
   con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los

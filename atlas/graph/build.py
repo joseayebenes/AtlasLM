@@ -19,10 +19,14 @@ requirements by their ID normalised like those of DOORS (upper case by default),
 the code, DOORS and the documents meet in the same node.
 
 Every `Name (...)` of a body is classified by what Name is: subprogram -> calls, type ->
-converts, variable -> uses, predefined type -> ignored, unknown -> external call. A name
-without a package is looked for first in the caller's own unit, then in every unit; if
-several units have it, the ones the caller imports with `with` are preferred, and if it is
-still ambiguous the edge goes to all of them (an impact analysis must not miss any).
+converts, variable -> uses, predefined type -> ignored, unknown -> external call. A name is
+looked for first as written (with its package) and in the caller's own unit; then, if it is
+an alias of the unit (a renaming or a generic instance: `Log` renames Ada.Text_IO.Put_Line,
+`Int_IO.Put` with Int_IO an instance of Ada.Text_IO.Integer_IO), as what it stands for; a
+name without a package, then in the units of the caller's `use` clauses; and last in every
+unit. If several units have it, the ones the caller imports with `with` are preferred, and
+if it is still ambiguous the edge goes to all of them (an impact analysis must not miss
+any). An alias of something outside the project is an external call by its full name.
 """
 from __future__ import annotations
 
@@ -85,11 +89,16 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
     # Pass 1: what is defined (units, types, variables, subprograms)
     index: dict[str, dict[str, list[str]]] = {k: defaultdict(list) for k in DECLARED}   # kind -> name -> ids
     imports: dict[str, set[str]] = defaultdict(set)
+    uses: dict[str, list[str]] = defaultdict(list)          # the spec's clauses count in the body too
+    aliases: dict[str, dict[str, str]] = defaultdict(dict)
     for u in units:
         if u.unit not in G:
             G.add_node(u.unit, kind="unit", name=u.unit, files=[])
         G.nodes[u.unit]["files"].append(u.file)
         imports[u.unit].update(u.imports)
+        uses[u.unit] += [x for x in u.uses if x not in uses[u.unit]]
+        for name, target in u.aliases.items():
+            aliases[u.unit].setdefault(name, target)
         for t in u.types:
             tid = f"{u.unit}.{t['name']}"
             if tid in G:
@@ -145,24 +154,61 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         G.add_edge(unit, sid, kind="defines")
         cites(sid, reqs)
 
-    def resolve(call: str, unit: str) -> tuple[list[str], str]:
+    def own(call: str, unit: str) -> tuple[list[str], str] | None:
+        """The element a name is in its own scope: qualified, or of the unit itself."""
         prefix, _, simple = call.rpartition(".")
         for kind in DECLARED:
-            ids = index[kind]
-            if prefix and f"{prefix}.{simple}" in ids.get(simple, []):
+            ids = index[kind].get(simple, [])
+            if prefix and f"{prefix}.{simple}" in ids:
                 return [f"{prefix}.{simple}"], EDGE_FOR[kind]
-            if f"{unit}.{simple}" in ids.get(simple, []):
+            if f"{unit}.{simple}" in ids:
                 return [f"{unit}.{simple}"], EDGE_FOR[kind]
-            found = ids.get(simple, [])
+        return None
+
+    def unalias(call: str, unit: str) -> tuple[str, str] | None:
+        """(what an alias stands for, the unit where it is read) or None: `Log` renaming
+        Ada.Text_IO.Put_Line, `Int_IO.Put` with Int_IO an instance of Ada.Text_IO.Integer_IO,
+        `Pkg.Log` with Log a renaming of Pkg."""
+        prefix, _, simple = call.rpartition(".")
+        if not prefix and simple in aliases[unit]:
+            return aliases[unit][simple], unit
+        head, _, rest = call.partition(".")
+        if prefix and head in aliases[unit]:
+            return f"{aliases[unit][head]}.{rest}", unit
+        if prefix and simple in aliases.get(prefix, {}):
+            return aliases[prefix][simple], prefix
+        return None
+
+    def resolve(call: str, unit: str, depth: int = 0) -> tuple[list[str], str, str]:
+        """(targets, edge kind, how: "", "alias" or "use")."""
+        found = own(call, unit)
+        if found:
+            return (*found, "")
+        alias = unalias(call, unit) if depth < 5 else None
+        if alias:
+            targets, kind, _ = resolve(*alias, depth + 1)
+            return targets, kind, "alias"
+        prefix, _, simple = call.rpartition(".")
+        if not prefix:                          # the packages of its `use` clauses, then everyone
+            for kind in DECLARED:
+                ids = index[kind].get(simple, [])
+                used = [f"{x}.{simple}" for x in uses[unit] if f"{x}.{simple}" in ids]
+                if used:
+                    return used, EDGE_FOR[kind], "use"
+        for kind in DECLARED:
+            found = index[kind].get(simple, [])
             if found:
                 visible = [i for i in found if G.nodes[i]["unit"] in imports[unit]]
-                return (visible or found), EDGE_FOR[kind]
-        return [], "predefined" if simple in PREDEFINED_TYPES else "external"
+                return (visible or found), EDGE_FOR[kind], ""
+        if simple in PREDEFINED_TYPES:
+            return [], "predefined", ""
+        return [], "external:" + call if depth else "external", ""   # an alias of something outside: its name
 
     # Pass 2: edges
     counts = {"calls": 0, "converts": 0, "uses": 0, "predefined": 0}
     unresolved: dict[str, int] = defaultdict(int)
     ambiguous = 0
+    through = {"alias": 0, "use": 0}            # calls resolved through an alias or a `use` clause
     for u in units:
         for w in u.imports:
             if w not in G:
@@ -171,15 +217,18 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         for s in u.subprograms:
             sid = f"{u.unit}.{s['name']}"
             for call in s["calls"]:
-                targets, kind = resolve(call, u.unit)
+                targets, kind, how = resolve(call, u.unit)
+                if how:
+                    through[how] += 1
                 if kind == "predefined":
                     counts["predefined"] += 1
                     continue
-                if kind == "external":
-                    if call not in G:
-                        G.add_node(call, kind="external", name=call)
-                    unresolved[call] += 1
-                    targets, kind = [call], "calls"
+                if kind.startswith("external"):
+                    name = kind.partition(":")[2] or call         # an alias: what it stands for
+                    if name not in G:
+                        G.add_node(name, kind="external", name=name)
+                    unresolved[name] += 1
+                    targets, kind = [name], "calls"
                 elif len(targets) > 1:
                     ambiguous += 1
                 for t in targets:
@@ -205,6 +254,8 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         "requirements": len(nodes_of("requirement")),
         "edges_by_kind": counts,
         "ambiguous_calls": ambiguous,
+        "calls_through_aliases": through["alias"],
+        "calls_through_uses": through["use"],
         "subprograms_without_doc": sum(1 for _, d in subs if not d.get("doc")),
         "subprograms_without_requirement": sum(1 for _, d in subs if not d.get("requirements")),
         "unresolved_calls": sum(unresolved.values()),

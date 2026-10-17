@@ -159,7 +159,32 @@ def test_ada_tasks_entries_protected_bodies_operators_and_attributes():
                                         b'   function "+" (A, B : Vector) return Vector;\n   procedure Run;\nend Probe;\n')
     assert [(d["name"], d["kind"], d["doc"]) for d in spec.declarations] == [('"+"', "operator", "Adds."),
                                                                             ("run", "procedure", "")]
-    assert AdaAnalyzer({}).version() == "ada-2"
+    assert AdaAnalyzer({}).version() == "ada-3"
+
+
+def test_ada_use_clauses_and_aliases():
+    src = b"""with Ada.Text_IO; use Ada.Text_IO;
+package body P is
+   package TIO renames Ada.Text_IO;
+   use type Store.Count;
+   use all type Store.Kind;
+   use Store, Other.Pkg;
+   procedure Q (X : Integer) renames Store.Put;
+   function "-" (A, B : T) return T renames Sub;
+   package Int_Stack is new Stacks (Integer);
+   procedure P2 is new Gen_P;
+   procedure Run is
+      use Inner;
+   begin
+      Q (1);
+   end Run;
+end P;
+"""
+    unit = AdaAnalyzer({}).analyze_file(Path("p.adb"), src)
+    assert unit.uses == ["ada.text_io", "store", "other.pkg", "inner"]        # not the `use type` ones
+    assert unit.aliases == {"tio": "ada.text_io", "q": "store.put", '"-"': "sub", "int_stack": "stacks",
+                            "p2": "gen_p"}
+    assert unit.subprograms[0]["calls"] == ["q"]                  # the graph resolves the alias
 
 
 def test_spec_declarations_types_and_variables(samples):

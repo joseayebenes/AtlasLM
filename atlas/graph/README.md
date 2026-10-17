@@ -37,10 +37,19 @@ función. Cada `Nombre (...)` de un cuerpo se clasifica según lo que es `Nombre
 - un tipo predefinido: se ignora;
 - algo desconocido: es una llamada externa.
 
-Un nombre sin paquete se busca primero en la propia unidad y luego en las demás,
-prefiriendo las que se importan con `with`. Si aún hay varias, la arista va a todas, para
-que el análisis de impacto no se deje ninguna; `atlas graph` las cuenta como llamadas
-ambiguas.
+Un nombre se busca, por este orden:
+1. como está escrito (con su paquete) y en la propia unidad;
+2. si es un alias de la unidad (un renombramiento o una instancia genérica), como lo que
+   nombra: `Log` que renombra `Ada.Text_IO.Put_Line`, `Int_Stack.Push` con `Int_Stack`
+   instancia de `Stacks`, o `Store.Write` si `Write` renombra un subprograma de `Store`;
+3. sin paquete, en los paquetes de las cláusulas `use` de la unidad (las de su
+   especificación también valen en el cuerpo);
+4. en todas las unidades, prefiriendo las que se importan con `with`.
+
+Si aún hay varias, la arista va a todas, para que el análisis de impacto no se deje
+ninguna; `atlas graph` las cuenta como llamadas ambiguas, y cuenta también las resueltas
+por un alias o por un `use`. Un alias de algo de fuera del proyecto es una llamada externa
+con su nombre completo (`ada.text_io.put_line`).
 
 Los ficheros que casan con `[sources.code] test_patterns` son pruebas: sus subprogramas son
 nodos `test`. Un elemento que cita un requisito lo implementa (`implements`); una prueba
@@ -132,6 +141,6 @@ consultas.
 ## Pruebas
 
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
-paquetes, sobrecargas, tareas y operadores, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
+paquetes, sobrecargas, tareas y operadores, `use` y alias, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
 `neighbors`, comunidades y mismo grafo que `ada_graph.py`. `tests/test_cli.py`: el paso
 `graph.build` incremental por origen, `atlas trace` y `atlas matrix`.

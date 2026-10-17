@@ -32,6 +32,10 @@ subprogramas). El prefijo de un atributo (`T` en `T'Image (X)`) no es una llamad
 subprogramas con el mismo nombre en un fichero salen dos veces; el grafo los junta en un
 nodo. En Python, todo es `function`.
 
+El analizador Ada guarda también los paquetes de las cláusulas `use` (`uses`, sin los `use
+type`) y los alias (`aliases`, nombre → destino): los renombramientos de subprogramas y de
+paquetes y las instancias genéricas. El grafo los usa para resolver las llamadas.
+
 Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
 otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los IDs de una etiqueta son los
 que casan con la expresión de un ID de `[sources.doors.convention]` (`id_regex`, o

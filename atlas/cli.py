@@ -458,7 +458,7 @@ def index_code_step(ctx) -> Step | None:
                 depends_on=["code.parse"])
 
 
-GRAPH_VERSION = "graph-3"   # change it when the building of the graph changes (3: overloads in one node)
+GRAPH_VERSION = "graph-4"   # change it when the building of the graph changes (3: overloads, 4: uses, aliases)
 GRAPH_EXPORTS = ("graphml", "json")
 
 
@@ -706,7 +706,9 @@ def graph(cfg: Config) -> int:
                   + (f" | overloaded names (one node each): {s['overloaded']}" if s.get("overloaded") else ""))
         c = s["edges_by_kind"]
         print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
-              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}"
+              + (f" | resolved through aliases: {s['calls_through_aliases']}, through use clauses: "
+                 f"{s['calls_through_uses']}" if "calls_through_aliases" in s else ""))
         print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
               f"without a requirement: {s['subprograms_without_requirement']} | "
               f"unresolved calls: {s['unresolved_calls']}"

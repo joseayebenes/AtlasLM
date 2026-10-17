@@ -22,7 +22,6 @@ They are registered as "tool" plugins with these names, for [agents.*] tools and
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 

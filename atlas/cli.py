@@ -910,7 +910,7 @@ def _plan(res: dict) -> str:
                 f"({res['passages_requests']} requests to the model).")
     minutes = f", at least {plan['minutes']} min of the quota" if "minutes" in plan else ""
     section = f" › {plan['section']}" if plan.get("section") else ""
-    lines = [f"Plan, without asking the model (if the question is broad, or with --whole or --section):",
+    lines = ["Plan, without asking the model (if the question is broad, or with --whole or --section):",
              f"  read whole: {', '.join(plan['documents'])}{section}",
              f"  sections: {plan['sections']}, characters: {plan['chars']}, parts: {plan['parts']}",
              f"  requests to the model: at least {plan['requests']}{minutes}"]

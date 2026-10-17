@@ -346,7 +346,7 @@ def test_notes_that_do_not_fit_are_combined_in_levels(docs, tmp_path, fake, fake
     control.write_text(json.dumps({"chat_fail_if": ["› 2.2 Function group 2.2"]}))
     res = idx.answer(question)
     assert res["failed_parts"] and len(res["failed_parts"]) < parts
-    assert all(f.startswith(f"part ") and f" of {parts} failed: " in f for f in res["failed_parts"])
+    assert all(f.startswith("part ") and f" of {parts} failed: " in f for f in res["failed_parts"])
     assert res["answer"].endswith(f"({res['failed_parts'][-1]})") and 0 < len(res["sources"]) < cited
     control.write_text(json.dumps({"chat_fail_if": ["Sources:"]}))   # all of them: the error
     with pytest.raises(Exception, match="400"):

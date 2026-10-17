@@ -87,7 +87,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
-    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
+    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int,
+               "max_parts": int, "scope_documents": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -121,7 +122,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
     # what search and ask take from the index; changing it reprocesses nothing
-    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
+    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000,
+               "max_parts": 12, "scope_documents": 3},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": []},
     "tests": {"languages": {}, "steps": []},
@@ -178,7 +180,8 @@ def _validate_tests(tests: dict) -> None:
 def _validate_search(search: dict) -> None:
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
-    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000)):
+    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000),
+                       ("max_parts", 1), ("scope_documents", 1)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
 

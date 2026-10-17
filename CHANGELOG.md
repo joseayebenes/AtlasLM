@@ -6,6 +6,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Plan previo de las preguntas amplias: antes de pedir nada, `atlas ask` y `ask_docs`
+  calculan cuántas secciones, caracteres, partes y peticiones costará leer enteros los
+  documentos (y los minutos del cupo, si hay `[network] requests_per_minute`). Con más de
+  `[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
+  capítulos de los documentos, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
+  sin preguntar al modelo. `[search] scope_documents` (3) sustituye a la constante fija.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

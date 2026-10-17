@@ -158,7 +158,7 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    scope_chars, max_parts, scope_documents); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
@@ -214,12 +214,20 @@ class Index:
         return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
                       self.llm if rewrite else None, dense, per)
 
+    @property
+    def requests_per_minute(self) -> int:
+        """The limit of requests per minute of the model ([network]), 0 = none."""
+        cfg = self._llm.cfg if isinstance(self._llm, JsonLlm) else self._llm
+        return cfg.net.requests_per_minute if isinstance(cfg, ServiceConfig) else 0
+
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
-               kinds: list[str] | None = None, scope: str = "") -> dict:
-        """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
+               kinds: list[str] | None = None, scope: str = "", dry_run: bool = False) -> dict:
+        """scope: passages | whole | auto ("" = that of the settings); dry_run: only the plan,
+        without any request; see search.answer."""
         s = self.settings
-        return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+        return answer(self.store, self.embedder, None if dry_run else self.llm, question, k or s["results"], document,
+                      rewrite, kinds, s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+                      s["max_parts"], s["scope_documents"], self.requests_per_minute, dry_run)
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

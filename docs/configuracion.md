@@ -265,6 +265,8 @@ Cambiarlo no reprocesa nada.
 | `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `max_parts` | entero | `12` | partes de documentos enteros que se leen como mucho para una pregunta. Antes de pedir nada, `atlas ask` calcula el plan (documentos, secciones, caracteres, partes y peticiones; y minutos del cupo si hay `[network] requests_per_minute`); con más partes no lee nada y pide acotar la pregunta a un documento. `atlas ask --dry-run` imprime el plan sin preguntar al modelo |
+| `scope_documents` | entero | `3` | documentos que lee enteros, como mucho, una pregunta amplia que no nombra ninguno |
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
 tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos

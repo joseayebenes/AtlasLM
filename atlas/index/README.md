@@ -93,6 +93,13 @@ nunca unidades de código:
   que importa a la pregunta, con sus citas, y una última petición las junta en la
   respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones.
 
+Antes de pedir nada se calcula el plan: documentos, secciones, caracteres, partes y
+peticiones (y minutos del cupo si hay `[network] requests_per_minute`). Con más de
+`[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
+capítulos de cada documento, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
+sin ninguna petición: elige los documentos sin el modelo (`--document`, los que la pregunta
+nombra o una búsqueda léxica).
+
 Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se leyó
 (`passages` o `whole`). `--whole` (o `whole` en `ask_docs`) lee enteros los documentos aunque
 la pregunta no parezca amplia, y `[search] scope = "passages"` no los lee nunca.

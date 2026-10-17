@@ -180,7 +180,9 @@ class DocTools:
         passages. `document` limits it to one document or DOORS module. A broad question (a
         summary, a whole function, every requirement about a topic) reads its documents
         whole instead of the best passages, in parts if they are long; `whole` = true makes
-        it read them whole always (`scope` in the answer says how it was read)."""
+        it read them whole always (`scope` in the answer says how it was read). If that takes
+        more parts than allowed, the answer is an `error` with the plan and the chapters of
+        the documents: ask again with a `document`."""
         try:
             return self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:

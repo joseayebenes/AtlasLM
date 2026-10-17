@@ -19,6 +19,7 @@
                    [--k N] [--kind KIND] [--document NAME]
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
+                   [--dry-run]   only the plan of reading them whole, without asking the model
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -851,7 +852,7 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--dry-run": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -866,16 +867,16 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
         if name not in allowed:
             sys.exit(f"atlas {action}: unknown option {name}"
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
-        kind = allowed[name]
+        kind, key = allowed[name], name[2:].replace("-", "_")
         if kind is bool:
-            options[name[2:]] = True
+            options[key] = True
             continue
         if not has_value:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
         try:
-            options[name[2:]] = kind(value)
+            options[key] = kind(value)
         except ValueError:
             sys.exit(f"atlas {action}: {name} must be {'an integer' if kind is int else 'a text'}")
     return positional, options
@@ -900,12 +901,41 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
     return 0
 
 
-def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
+def _plan(res: dict) -> str:
+    """The plan of a dry run of ask, for a person."""
+    plan = res["plan"]
+    if not plan:
+        return (f"No document to read whole: the question would be answered from passages "
+                f"({res['passages_requests']} requests to the model).")
+    minutes = f", at least {plan['minutes']} min of the quota" if "minutes" in plan else ""
+    lines = [f"Plan, without asking the model (if the question is broad, or with --whole):",
+             f"  read whole: {', '.join(plan['documents'])}",
+             f"  sections: {plan['sections']}, characters: {plan['chars']}, parts: {plan['parts']}",
+             f"  requests to the model: {plan['requests']}{minutes}"]
+    if plan["parts"] > res["max_parts"]:
+        lines.append(f"More than [search] max_parts = {res['max_parts']}: it would not be read; narrow it "
+                     f"with --document.")
+    lines.append(f"Not broad: from passages, {res['passages_requests']} requests to the model.")
+    return "\n".join(lines)
+
+
+def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False,
+        dry_run: bool = False) -> int:
     from atlas.index import Index
     kinds = _kinds(kind)
     _context(cfg)
     res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
-                                        scope="whole" if whole else "")
+                                        scope="whole" if whole else "", dry_run=dry_run)
+    if dry_run:
+        print(_plan(res))
+        return 0
+    if "error" in res:
+        print(res["error"])
+        if res.get("chapters"):
+            print("\nSections (characters):")
+        for c in res.get("chapters", []):
+            print(f"  {c['document']} › {c['section']} ({c['chars']})")
+        return 1
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")

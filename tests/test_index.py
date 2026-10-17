@@ -268,13 +268,34 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert idx.answer("Explain the alarms", scope="passages")["scope"] == "passages"
 
     # too long for one request: notes of each part, combined by a last request
-    small = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500})
+    small = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500, "max_parts": 50})
     before = fake_chats()
     res = small.answer("Summarise everything spec_with_bookmarks.pdf says")
     parts = res["requests"] - 2
     assert res["documents"] == ["spec_with_bookmarks.pdf"] and parts > 2 and fake_chats() - before == parts + 2
     assert res["answer"].startswith("Answer combined from the notes [1]") and len(res["sources"]) > 2
     assert [s["n"] for s in res["sources"]] == sorted(s["n"] for s in res["sources"])
+
+
+def test_the_plan_of_a_broad_question_and_too_many_parts(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    idx.add_module("SRS_TMS", MODULE)
+    before = fake_chats()
+    dry = idx.answer("Summarise all the requirements of SRS_TMS", dry_run=True)       # no request at all
+    assert fake_chats() == before and dry["documents"] == ["SRS_TMS"]
+    assert {k: dry["plan"][k] for k in ("documents", "sections", "parts", "requests")} == \
+        {"documents": ["SRS_TMS"], "sections": 2, "parts": 1, "requests": 2}
+    res = idx.answer("Summarise all the requirements of SRS_TMS")
+    assert res["requests"] == dry["plan"]["requests"] == fake_chats() - before
+
+    small = Index(tmp_path / "atlas.db", replace(fake_embeddings), fake_llm[0], {"scope_chars": 1000, "max_parts": 2})
+    plan = small.answer("Summarise spec_with_bookmarks.pdf", dry_run=True)["plan"]
+    assert plan["parts"] > 2 and plan["requests"] == plan["parts"] + 2 and "minutes" not in plan
+    before = fake_chats()
+    res = small.answer("Summarise spec_with_bookmarks.pdf")
+    assert "max_parts = 2" in res["error"] and res["plan"]["parts"] == plan["parts"] and res["chapters"]
+    assert fake_chats() - before == 1                                         # only the rewriting
 
 
 def test_records_of_a_code_unit(samples):

@@ -69,6 +69,7 @@ results = 8                            # resultados de atlas search y pasajes de
 per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
 scope = "auto"                         # auto: una pregunta amplia lee sus documentos enteros; passages: nunca
 scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
+max_parts = 12                         # más partes: no se lee y se pide acotar (atlas ask --dry-run da el plan)
 
 # --- Agentes y servidor MCP ------------------------------------------------------------
 [agents]

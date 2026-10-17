@@ -404,7 +404,8 @@ communities = true
     assert set(res["builds"]) == {"code", "doors", "docs"} and res["gaps"]["requirements_without_code"]["count"] > 0
     res = as_json("status")
     assert res["data"]["requirements"] > 0 and res["graph"]["nodes"] > 0 and res["runs"][0]["report"]["processed"] == {}
-    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs", "doors_exports", "sent"}
+    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs", "doors_exports", "sent",
+                        "schema_version"}
     res = as_json("sections")
     assert [(d["source"], Path(d["file"]).name) for d in res["documents"]] == [("manuals", "hmi_manual.md")]
 

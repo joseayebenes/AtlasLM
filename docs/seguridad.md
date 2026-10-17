@@ -110,6 +110,7 @@ Todo en el workspace del proyecto (`[project] workspace`):
 | Dónde | Qué |
 |---|---|
 | `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro, perfiles de las ejecuciones, registro de lo enviado a cada modelo y registro de uso (tabla `usage`) |
+| `atlas.db.bak-<n>` | la copia de `atlas.db` (y `reference.db.bak-<n>`, la de `reference.db`) que se hace antes de migrar su esquema al actualizar atlas ([instalación](instalacion.md#al-actualizar)): los mismos datos; se puede borrar cuando la versión nueva funcione |
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
 | `reports/` | verificaciones, propuestas de enlaces, juicios de cumplimiento, informes y evaluaciones |

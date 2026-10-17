@@ -84,6 +84,7 @@ from typing import TYPE_CHECKING
 
 from atlas import plugins
 from atlas.config import GRAPH_BUILD_KEYS, Config, ConfigError, load_config
+from atlas.db import schema_version
 from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, Stopping, clock, sha256_file, sha256_text
 from atlas.store import Store
 
@@ -1056,10 +1057,14 @@ def status(cfg: Config, as_json: bool = False) -> int:
         _print_json({"workspace": str(cfg.workspace), "data": ctx.store.counts(),
                      "graph": GraphStore(ctx.store.path).counts(), "index": IndexStore(ctx.store.path).counts(),
                      "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6),
-                     "doors_exports": ctx.store.modules_info(), "sent": sent_summary(ctx.store.path)})
+                     "doors_exports": ctx.store.modules_info(), "sent": sent_summary(ctx.store.path),
+                     "schema_version": schema_version(ctx.store.db)})
         return 0
     from atlas.logs import log_file
+    runs = ledger.runs(6)
     print(f"workspace: {cfg.workspace}")
+    print(f"schema: version {schema_version(ctx.store.db)}; "
+          + (f"last run with atlas {runs[0]['version'] or '?'}" if runs else "no runs yet"))
     print(f"log: {log_file(cfg) or 'off ([project] log_dir is empty)'}")
     print("data:", ctx.store.counts())
     exports = ctx.store.modules_info()
@@ -1084,7 +1089,6 @@ def status(cfg: Config, as_json: bool = False) -> int:
     except Exception as e:                          # e.g. the DOORS database is not reachable
         print(f"to do now: unknown ({e})")
     print_sent(cfg, ctx.store.path)
-    runs = ledger.runs(6)
     if runs:
         from atlas.llm import from_config
         conn = from_config(cfg)

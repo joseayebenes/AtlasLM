@@ -32,9 +32,10 @@ from pathlib import Path
 
 import numpy as np
 
+from atlas.db import connect
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX, asks_for
 
-__all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore", "REF_PATTERN"]
+__all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore", "REF_PATTERN", "recreate_fts"]
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB, model
 
 DEFAULT_FTS_TOKENIZER = "unicode61 remove_diacritics 2"
 _TOKENIZE = re.compile(r"tokenize\s*=\s*'((?:[^']|'')*)'", re.I)
+FTS = ("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
+       "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
 
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
                   "r.ref, r.seq, r.text, r.embed_text, r.meta"
@@ -81,6 +84,20 @@ def _canon(text: str) -> str:
     return " ".join(re.findall(r"\w+", text.lower()))
 
 
+def recreate_fts(db: sqlite3.Connection) -> None:
+    """index_fts dropped, created again with FTS and filled from index_records: how a schema
+    migration (atlas.db) changes it, since an FTS5 table cannot be altered. Inside the
+    caller's transaction; without FTS5 in this SQLite, only the drop."""
+    if "index_records" not in {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}:
+        return
+    db.execute("DROP TABLE IF EXISTS index_fts")
+    try:
+        db.execute(FTS)
+    except sqlite3.OperationalError:
+        return
+    db.execute("INSERT INTO index_fts (rowid, embed_text, ref) SELECT id, embed_text, ref FROM index_records")
+
+
 class IndexStore:
     """`fts_tokenizer` is the FTS5 tokenizer of the lexical search ([index] fts_tokenizer),
     e.g. "porter unicode61 remove_diacritics 2" for English stemming. `shared`: a read-only
@@ -90,15 +107,8 @@ class IndexStore:
     def __init__(self, path: str | Path, fts_tokenizer: str = DEFAULT_FTS_TOKENIZER, shared=None):
         self.path = Path(path)
         self.shared = shared
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA busy_timeout=30000")
+        self.db = connect(self.path)
         self.db.executescript(SCHEMA)
-        if "meta" not in {r["name"] for r in self.db.execute("PRAGMA table_info(index_records)")}:
-            self.db.execute("ALTER TABLE index_records ADD COLUMN meta TEXT")   # an index of before 0.3
-        if "model" not in {r[1] for r in self.db.execute("PRAGMA table_info(embed_cache)")}:
-            self.db.execute("ALTER TABLE embed_cache ADD COLUMN model TEXT")    # atlas 0.2: without it
         self.db.create_function("atlas_chapter_is", 2, _chapter_is, deterministic=True)
         self.fts_tokenizer = " ".join((fts_tokenizer or DEFAULT_FTS_TOKENIZER).split())
         self.fts = self._open_fts()

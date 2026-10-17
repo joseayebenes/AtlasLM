@@ -371,10 +371,43 @@ los mismos permisos que el workspace (ver [seguridad](seguridad.md#qué-se-guard
 ## Actualizar y desinstalar
 
 - **Actualizar**: el mismo `pip install` con el wheelhouse o la versión nueva y
-  `--upgrade`. El workspace sirve: atlas añade lo que le falte a `atlas.db` al abrirlo. Si
-  la versión nueva cambia cómo se procesa algo, lo reprocesa solo (lo dice el CHANGELOG).
+  `--upgrade`. El workspace sirve: atlas pone `atlas.db` al día al abrirlo (ver «Al
+  actualizar»). Si la versión nueva cambia cómo se procesa algo, lo reprocesa solo (lo dice
+  el CHANGELOG).
 - **Desinstalar**: borrar la carpeta del entorno (`C:\atlas\venv`). Los datos están en el
   workspace de cada proyecto.
+
+### Al actualizar
+
+`atlas.db` lleva el número de versión de su esquema (sus tablas y columnas); `atlas status`
+lo muestra junto a la versión de atlas de la última ejecución:
+
+```
+schema: version 2; last run with atlas 0.2.0
+```
+
+La primera orden que abre un workspace de un atlas anterior (`atlas run`, `status`,
+`serve`...) lo migra:
+
+1. Copia `atlas.db` en `atlas.db.bak-<n>`, en la misma carpeta; `<n>` es la versión de la
+   que viene (0 para los workspaces de la 0.1 y la 0.2).
+2. Aplica los cambios en una sola transacción: si algo falla, `atlas.db` queda como estaba,
+   la orden termina con el error y la siguiente lo vuelve a intentar.
+3. Lo anota en el registro: `INFO atlas.db: ... schema migrated from version 0 to 2; the
+   previous one is in ...atlas.db.bak-0`.
+
+Si otro proceso abre el workspace a la vez, espera a que termine. `reference.db` se migra
+igual, con su `reference.db.bak-<n>`. Un workspace nuevo nace con la versión actual y sin
+copia.
+
+La copia ocupa lo mismo que `atlas.db` y se puede borrar cuando la versión nueva funcione.
+Para volver a la versión anterior de atlas: instalarla y poner la copia en su sitio
+(renombrar `atlas.db.bak-<n>` a `atlas.db`); lo procesado con la versión nueva se pierde y
+la siguiente ejecución lo repite.
+
+Un workspace de un atlas más nuevo no se abre: «this workspace is from a newer atlas:
+update atlas or use another workspace». Pasa si dos puestos con versiones distintas
+comparten workspace: hay que actualizar el atrasado.
 
 ## Preparar la entrega
 

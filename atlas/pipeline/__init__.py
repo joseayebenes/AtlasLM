@@ -45,6 +45,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from atlas.db import connect
+
 log = logging.getLogger(__name__)
 
 
@@ -143,10 +145,7 @@ class Ledger:
 
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA busy_timeout=30000")
+        self.db = connect(self.path)
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS ledger (
                 step TEXT NOT NULL, unit TEXT NOT NULL, fingerprint TEXT, status TEXT,
@@ -156,9 +155,6 @@ class Ledger:
             CREATE TABLE IF NOT EXISTS runs (
                 id INTEGER PRIMARY KEY, started TEXT, seconds REAL, version TEXT, report TEXT);
         """)
-        if "seconds" not in {r["name"] for r in self.db.execute("PRAGMA table_info(ledger)")}:
-            self.db.execute("ALTER TABLE ledger ADD COLUMN seconds REAL")      # ledgers before 0.1.0
-            self.db.commit()
         # The connection is shared by the Runner's worker threads, and the sqlite3 module
         # does not serialise them: every read and write goes through this lock. Re-entrant
         # because mark() reads the previous row while holding it.

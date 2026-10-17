@@ -8,6 +8,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+from atlas.db import connect
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS requirements (
     id TEXT PRIMARY KEY, module TEXT, text TEXT, parent TEXT, attributes TEXT, hash TEXT, raw_id TEXT);
@@ -28,9 +30,7 @@ class Store:
         self.workspace = Path(workspace)
         self.workspace.mkdir(parents=True, exist_ok=True)
         self.path = self.workspace / "atlas.db"
-        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.db.row_factory = sqlite3.Row
-        self.db.execute("PRAGMA busy_timeout=30000")
+        self.db = connect(self.path)
         self.db.executescript(SCHEMA)
         # Steps write from the Runner's worker threads through this one connection, and the
         # sqlite3 module does not serialise them: every read and transaction takes the lock.

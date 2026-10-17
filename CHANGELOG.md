@@ -422,6 +422,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   borra, antes de juzgar el encargo, los nuevos que casan con `[sources.code] test_patterns` y no
   con `protected`: en la tanda 4 el agente dejó en `src` un fichero suyo de prueba. Por defecto,
   `stray = "report"`.
+- `atlas.db` tiene versión de esquema (`PRAGMA user_version`, hoy 2) y migraciones: al abrir
+  un workspace de un atlas anterior, atlas hace una copia (`atlas.db.bak-<n>`), aplica los
+  cambios en una sola transacción y lo anota en el registro. Un workspace de un atlas más
+  nuevo no se abre. `atlas status` muestra la versión del esquema junto a la de atlas de la
+  última ejecución. Antes cada tabla se creaba si faltaba y nada comprobaba que el resto
+  sirviera.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -629,6 +635,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `%LOCALAPPDATA%\atlas\limits`). Dos procesos contra el mismo gateway ya no suman sus límites:
   si alguien subió `requests_per_minute` contando con eso, que lo baje al del gateway.
   `shared_limit = false` vuelve a lo de antes.
+- La primera orden que abre un workspace de la 0.2.0 o anterior copia `atlas.db` en
+  `atlas.db.bak-0` (y `reference.db` en `reference.db.bak-0`) y le pone la versión 2: la 1
+  añade los segundos de cada unidad al libro de registro y la 2 el `meta` de los registros del
+  índice y el modelo de cada vector de la caché. Los datos no cambian; el índice se rehace en el
+  siguiente `atlas run` (`INDEX_VERSION`). La copia ocupa lo mismo que `atlas.db`: se puede
+  borrar cuando todo funcione. Ver «Al actualizar» en `docs/instalacion.md`.
+- Con la 0.2.0 o anterior instalada en otro puesto, ese puesto sigue abriendo el workspace
+  (no mira la versión); las versiones siguientes ya no abren uno de un atlas más nuevo.
 
 ## [0.2.0] — 2026-10-16
 

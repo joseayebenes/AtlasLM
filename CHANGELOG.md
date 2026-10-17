@@ -15,6 +15,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   (ejemplos, proyecto grande, `kill -9`, esperas, compilador, servidor de lenguaje y Ollama) y
   `make test-fast`, que las deja fuera. El servidor falso es uno por sesión: cada prueba lo
   encuentra sin fallos y con los contadores a cero (`POST /reset`).
+- `docs/contribuir.md`: ramas (gitflow), mensajes de commit, cómo pasar las pruebas y la
+  lista de cada versión. El README dice cuántas pruebas hay (249 sin modelo) y cuánto tardan.
 
 ### Cambiado
 - `atlas.llm` ya no termina el proceso: un certificado de CA que no existe, `ca_cert =

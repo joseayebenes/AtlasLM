@@ -408,6 +408,44 @@ Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el mode
 la búsqueda híbrida sí necesita el de embeddings. Los vectores de las consultas quedan en la
 caché del índice: una segunda pasada no hace ninguna petición a los embeddings.
 
+### Un conjunto generado para el proyecto real
+
+Para el proyecto real nadie ha escrito casos todavía. `atlas eval --generate` los saca del
+`atlas.db` y del grafo del workspace, sin modelo, y da la medida de regresión desde el primer
+día:
+
+```bash
+atlas run atlas.toml
+atlas eval --generate examples/eval/tms.yaml --n 50 atlas.toml
+```
+
+Escribe hasta `--n` casos (50 por defecto) de cuatro tipos, por turnos:
+
+| Tag | Caso | Espera |
+|---|---|---|
+| `id` | `search` con el ID exacto de un requisito al azar | el ID |
+| `section` | `search` con el título de una sección (uno que no tenga otra) | `section:<documento>#<id>` |
+| `trace` | `trace` de un requisito que tiene código | el requisito, su código y sus tests (10 de cada como mucho) |
+| `impact` | `impact` de un subprograma que tiene llamadores | sus llamadores (10 como mucho) |
+
+Todos llevan además el tag `generated`. La semilla es fija: con los mismos datos sale el
+mismo fichero, así que dos versiones de atlas se comparan con `atlas eval --compare`. Son
+solo casos de recuperación y del grafo, sin agentes: miden si la búsqueda encuentra lo que
+el proyecto tiene y si el grafo lo enlaza, no si el modelo responde bien. El fichero se
+reescribe entero cada vez (su primera línea dice que es generado); uno escrito a mano no se
+sobrescribe nunca, y los casos a mano van en otro conjunto. Se añade a `[agents.eval] sets`
+como cualquier otro:
+
+```toml
+[agents.eval]
+sets = ["examples/eval/tms.yaml"]
+```
+
+Sobre las muestras, con el servidor falso, 50 casos (22 `id`, 21 `section`, 5 `trace` y 2
+`impact`): los IDs salen todos primeros, las secciones entre las diez primeras, y el grafo
+acierta 7 de 7. Al regenerar después de cambiar los datos, cambian los casos: para comparar
+versiones, se compara con el mismo fichero.
+
 ## Con Ollama
 
 ```bash

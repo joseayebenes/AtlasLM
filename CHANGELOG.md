@@ -22,6 +22,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - El informe de `atlas eval` guarda los tokens y el coste de cada respuesta de un agente, y
   una cabecera `meta` con el modelo, su `reasoning_effort` y `provider`, el modelo de
   embeddings, la versión, la fecha, `runs` y el hash del YAML.
+- `atlas eval --generate FICHERO --n 50`: un conjunto de casos deterministas sacados del
+  `atlas.db` y del grafo, sin modelo (búsqueda por el ID exacto de requisitos al azar y por
+  el título de secciones, `trace` de requisitos con código, `impact` de subprogramas con
+  llamadores), con semilla fija. La medida de regresión del proyecto real desde el primer
+  día; no sobrescribe un conjunto escrito a mano.
 - `tools/compare_models.py` añade tokens por caso, dólares en total y por acierto, y el
   acierto@3 y el MRR de la búsqueda; escribe `reports/compare-<fecha>.md` y `.json`.
 

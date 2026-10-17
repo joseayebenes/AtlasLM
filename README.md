@@ -108,6 +108,7 @@ atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas eval --compare atlas.dev.toml   # y cada caso contra el último informe de otra versión
+atlas eval --generate examples/eval/tms.yaml --n 50 atlas.toml   # casos de búsqueda y grafo desde el workspace
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)

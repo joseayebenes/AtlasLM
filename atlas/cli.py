@@ -26,6 +26,8 @@
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
                    [--compare]      and each case against the last report of another version of atlas
+                   [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
+                                    graph of the workspace, the same each time (instead of evaluating)
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
                                     whether the server uses the reasoning that the agents give back
@@ -853,7 +855,7 @@ def coverage(cfg: Config, module: str) -> int:
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
-           "eval": {"--compare": bool}}
+           "eval": {"--compare": bool, "--generate": str, "--n": int}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -1005,9 +1007,30 @@ def _print_comparison(cmp: dict) -> None:
     print(f"  regressions: {', '.join(cmp['regressions']) if cmp['regressions'] else 'none'}")
 
 
-def evaluate(cfg: Config, compare: bool = False) -> int:
+def generate_set(cfg: Config, path: str, n: int) -> int:
+    """atlas eval --generate: a set of search and graph cases from the workspace."""
+    from atlas.agents.evaluate import GENERATE_KINDS, generate_cases, write_cases
+    cases = generate_cases(cfg, n)
+    if not cases:
+        print("nothing to generate cases from: no requirement, section or subprogram with callers in "
+              f"{cfg.workspace / 'atlas.db'} (has `atlas run` processed the sources?)", file=sys.stderr)
+        return 1
+    written = write_cases(path, cases, cfg)
+    kinds = {k: sum(1 for c in cases if c["tags"][1] == k) for k in GENERATE_KINDS}
+    print(f"written {written}: {len(cases)} cases (" + ", ".join(f"{v} {k}" for k, v in kinds.items()) + ")")
+    print(f"add it to [agents.eval] sets of {cfg.path.name} and run `atlas eval {cfg.path.name}`")
+    return 0
+
+
+def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0) -> int:
     from atlas import __version__
     from atlas.agents.evaluate import SEARCH_MODES, evaluate_sets, previous_report
+    if n and not generate:
+        sys.exit("atlas eval: --n goes with --generate FILE")
+    if generate:
+        if n < 0 or compare:
+            sys.exit("atlas eval: --generate takes --n (how many cases, 50 by default), not --compare")
+        return generate_set(cfg, generate, n or 50)
 
     def show(r: dict) -> None:
         if r.get("kind") == "search":

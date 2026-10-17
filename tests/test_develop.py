@@ -946,3 +946,196 @@ def test_requirements_that_are_not_in_the_graph(anchored):
     cfg["project"]["workspace"] = str(base / "empty")                    # no atlas run
     with pytest.raises(ConfigError, match="has no graph with requirements: atlas run first"):
         Developer(load_plan(base / "plan.toml"), cfg)
+
+
+class TaskClient:
+    """Scripted turns for tasks at the same time: each new conversation takes the next script
+    of the task its prompt starts with, and its tool calls carry its number. `together`: the
+    tasks whose first turns wait for each other, which they can only do if they run at once."""
+
+    def __init__(self, scripts: dict[str, list[list]], together: tuple[str, ...] = ()):
+        import threading
+        self.scripts = {task: [list(s) for s in conversations] for task, conversations in scripts.items()}
+        self.turns: dict[str, list] = {}
+        self.lock, self.prompts = threading.Lock(), []
+        self.barrier = threading.Barrier(len(together)) if together else None
+        self.together, self.started = together, set()
+        self.chat = SimpleNamespace(completions=self)
+
+    def create(self, **kwargs):
+        called = [m for m in kwargs["messages"] if m.get("tool_calls")]
+        first = None
+        with self.lock:
+            if called:
+                tag = called[-1]["tool_calls"][0]["id"].split("-")[0]
+            else:
+                prompt = kwargs["messages"][1]["content"]
+                self.prompts.append(prompt)
+                task = next(task for task in self.scripts if prompt.startswith(task))
+                first = task if task in self.together and task not in self.started else None
+                self.started.add(task)
+                tag = f"k{len(self.turns)}"
+                self.turns[tag] = self.scripts[task].pop(0)
+            turn = self.turns[tag].pop(0)
+        if isinstance(turn, BaseException):                 # Ctrl+C
+            raise turn
+        if first:                                    # the first turn of its first conversation
+            self.barrier.wait(timeout=20)            # broken, and the test fails, if the other one is not running
+        if isinstance(turn, dict):
+            calls = [SimpleNamespace(id=f"{tag}-{i}", type="function", function=SimpleNamespace(name=n, arguments=json.dumps(a)))
+                     for i, (n, a) in enumerate(turn.items())]
+            message, finish = SimpleNamespace(content=None, tool_calls=calls), "tool_calls"
+        else:
+            message, finish = SimpleNamespace(content=turn, tool_calls=None), "stop"
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)],
+                               usage=SimpleNamespace(prompt_tokens=50, completion_tokens=5, total_tokens=55))
+
+
+def write_to(path, content):
+    """A run of the agent that reads `path`, writes `content` in it and says so."""
+    return [{"read_file": {"path": path}}, {"write_file": {"path": path, "content": content}}, "Done."]
+
+
+MODULE_TEST = '''import pathlib, sys
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+import NAME
+if NAME.value() != 1:
+    print(f"Step 1: expected 1, received {NAME.value()}")
+    sys.exit(1)
+'''
+INDEPENDENT = '''agent = "implementer"
+check = ["src/*.py"]
+tests = ["tests/test_*.py"]
+progress = 'Step (\\\\d+)'
+fix_rounds = 0
+parallel = PARALLEL
+''' + "".join(f'\n[[tasks]]\nid = "{n}"\ntext = "Implement {n}."\nafter = []\n' for n in "abc")
+
+
+def independent(base):
+    """Three modules, each with its test, and nothing else."""
+    (base / "src" / "calc.py").unlink()
+    (base / "tests" / "test_calc.py").unlink()
+    for name in "abc":
+        (base / "src" / f"{name}.py").write_text("def value():\n    return 0\n")
+        (base / "tests" / f"test_{name}.py").write_text(MODULE_TEST.replace("NAME", name))
+
+
+def test_independent_tasks_at_once_end_as_one_after_another(project):
+    """parallel: three tasks without `after` go at once (at most 2 until the request limit is
+    shared), each in its copy; the tests that pass at the end are those of the tasks one by one."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    independent(base)
+    one = "def value():\n    return 1\n"
+    (base / "parallel.toml").write_text(INDEPENDENT.replace("PARALLEL", "3"))
+    client = TaskClient({f"Implement {n}.": [write_to(f"src/{n}.py", one)] for n in "abc"},
+                        together=("Implement a.", "Implement b."))
+    report = develop(base / "parallel.toml", cfg, client=client)
+    assert report["final"]["tests_passed"] == 3 and report["final"]["check_errors"] == []
+    assert sorted((s["task"], s["outcome"]) for s in report["steps"]) == [("a", "kept"), ("b", "kept"), ("c", "kept")]
+    assert all(s["patch"] == f"develop-parallel/{s['task']}.patch" for s in report["steps"])
+    parallel = {n: (base / "src" / f"{n}.py").read_text() for n in "abc"}
+    assert report["schedule"]["parallel"] == 2 and report["schedule"]["conflicts"] == 0
+    assert report["warnings"] == ["parallel = 3 goes as 2: the request limit is not shared yet with the other "
+                                  "processes of atlas (serve, run), and more agents at once would take it from them"]
+    assert not (cfg.workspace / "tasks").exists()                    # the copies go away
+    md = (cfg.workspace / "reports" / "develop-parallel.md").read_text()
+    assert "Tasks at most 2 at once: " in md and "x as fast." in md and "Warning: parallel = 3 goes as 2" in md
+
+    for name in "abc":                                                      # the same plan, one by one
+        (base / "src" / f"{name}.py").write_text("def value():\n    return 0\n")
+    (base / "serial.toml").write_text(INDEPENDENT.replace("PARALLEL", "1"))
+    serial = develop(base / "serial.toml", cfg, client=StubClient(
+        [turn for n in "abc" for turn in write_to(f"src/{n}.py", one)]))
+    assert [(s["task"], s["outcome"]) for s in serial["steps"]] == [("a", "kept"), ("b", "kept"), ("c", "kept")]
+    assert serial["final"]["tests_passed"] == report["final"]["tests_passed"]
+    assert {n: (base / "src" / f"{n}.py").read_text() for n in "abc"} == parallel
+    assert "schedule" not in serial and "warnings" not in serial
+
+
+def test_ctrl_c_with_tasks_at_once_and_resume(project):
+    """Ctrl+C in one task leaves the working folder with only the tasks brought to it; one that
+    ended in its copy and was not brought goes again with --resume."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    independent(base)
+    one = "def value():\n    return 1\n"
+    (base / "plan.toml").write_text(INDEPENDENT.replace("PARALLEL", "2"))
+    client = TaskClient({"Implement a.": [[{"read_file": {"path": "src/a.py"}}, KeyboardInterrupt()]],
+                         "Implement b.": [write_to("src/b.py", one)], "Implement c.": [write_to("src/c.py", one)]},
+                        together=("Implement a.", "Implement b."))
+    interrupted(lambda: develop(base / "plan.toml", cfg, client=client))
+    report = json.loads((cfg.workspace / "reports" / "develop-plan.json").read_text())
+    outcomes = {s["task"]: s["outcome"] for s in report["steps"]}
+    assert outcomes["a"] == "interrupted"
+    for name in "bc":                         # brought to the working folder, or interrupted and not there
+        changed = (base / "src" / f"{name}.py").read_text() == one
+        assert outcomes.get(name, "interrupted") == ("kept" if changed else "interrupted")
+    assert not (cfg.workspace / "tasks").exists()
+    client = TaskClient({f"Implement {n}.": [write_to(f"src/{n}.py", one)] for n in "abc"})
+    report = develop(base / "plan.toml", cfg, client=client, resume=True)
+    assert report["final"]["tests_passed"] == 3
+    assert sorted(client.prompts) == [f"Implement {n}." for n in "abc" if outcomes.get(n) != "kept"]
+
+
+def test_two_tasks_at_once_that_change_the_same_file(project):
+    """The second one to end finds the file changed by the first: it is undone, and goes again
+    alone on the code that the first one left."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
+                                                                        '.resolve().parent.parent / "src")'))
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + "parallel = 2\n" + "".join(
+        f'\n[[tasks]]\nid = "{n}"\ntext = "Implement {n}."\nafter = []\n' for n in ("add", "mul")))
+    mul_alone = "def add(a, b):\n    return 0\n\n\ndef mul(a, b):\n    return a * b\n"
+    client = TaskClient({"Implement add.": [write(ADD), write(MUL)], "Implement mul.": [write(mul_alone), write(MUL)]},
+                        together=("Implement add.", "Implement mul."))
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    (conflict,) = [s for s in report["steps"] if s["outcome"] == "conflict"]
+    first = "mul" if conflict["task"] == "add" else "add"
+    assert conflict["conflict"] == {"files": ["src/calc.py"], "with": [first]} and "patch" not in conflict
+    assert [(s["task"], s["outcome"]) for s in report["steps"]][-1] == (conflict["task"], "kept")
+    assert sum(s["outcome"] == "kept" for s in report["steps"]) == 2
+    assert client.prompts[-1] == f"Implement {conflict['task']}."             # again, on the code of now
+    assert report["schedule"]["conflicts"] == 1
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert f"conflict (src/calc.py, with {first}; done again alone)" in md
+    assert "1 undone for a conflict and done again alone" in md
+
+
+def test_after_names_tasks_of_the_plan_without_a_cycle(project):
+    from atlas.agents.develop import load_plan
+    base, _ = project
+    head = 'tests = ["tests/test_*.py"]\n'
+    (base / "p.toml").write_text(head + '[[tasks]]\ntext = "x"\n[[tasks]]\ntext = "y"\n'
+                                        '[[tasks]]\nid = "z"\ntext = "z"\nafter = ["T01"]\n')
+    assert [t["after"] for t in load_plan(base / "p.toml").tasks] == [[], ["T01"], ["T01"]]   # the one before
+    for tasks, error in (
+            ('[[tasks]]\nid = "a"\ntext = "x"\nafter = ["b"]\n[[tasks]]\nid = "b"\ntext = "y"\n',
+             "the tasks wait for each other: a after b after a"),
+            ('[[tasks]]\nid = "a"\ntext = "x"\nafter = ["a"]\n', "the tasks wait for each other: a after a"),
+            ('[[tasks]]\nid = "a"\ntext = "x"\nafter = ["nobody"]\n', "task a is after nobody, which is not a task"),
+            ('[[tasks]]\nid = "a"\ntext = "x"\n[[tasks]]\nid = "a"\ntext = "y"\n', "two tasks have the id a"),
+            ('[[tasks]]\ntext = "x"\nafter = "T01"\n', "after \\(a list of tasks\\)"),
+            ('parallel = 0\n', "parallel is a whole number, 1 or more")):
+        (base / "p.toml").write_text(head + tasks)
+        with pytest.raises(ConfigError, match=error):
+            load_plan(base / "p.toml")
+
+
+def test_the_agents_at_once_against_the_request_limit(project):
+    """parallel x attempts agents, a turn every 30 s each: against [network] requests_per_minute."""
+    from atlas.agents.develop import Developer, load_plan
+    base, cfg = project
+    head = PLAN.split("[[tasks]]")[0]
+    (base / "p.toml").write_text(head + "parallel = 2\nattempts = 2\n")
+    cfg.data["network"] = {"requests_per_minute": 6}
+    found = Developer(load_plan(base / "p.toml"), cfg).check()
+    assert found["warnings"] == ["4 agents at once (parallel 2 x attempts 2) ask for about 8 requests per minute, a "
+                                 "turn every 30 s, more than [network] requests_per_minute = 6: they will wait for "
+                                 "each other, and atlas serve or atlas run here get fewer"]
+    cfg.data["network"] = {"requests_per_minute": 28}
+    assert Developer(load_plan(base / "p.toml"), cfg).check()["warnings"] == []

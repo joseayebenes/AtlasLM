@@ -17,6 +17,7 @@ The plan is a TOML file:
     stuck_rounds = 2                         # rounds without progress before a test goes to a person
     restarts = 1                             # fresh starts of a run that stopped (max_steps, stall_steps)
     attempts = 1                             # parallel attempts at each task, each in a copy: the tests choose
+    parallel = 1                             # tasks at once, those whose `after` are finished, each in a copy
     planner = "planner"                      # optional: an agent that reads and says how to do each task
     task_calls = 0                           # budget of an attempt at a task: tool calls (0: no limit)
     task_seconds = 0                         # ... seconds
@@ -34,6 +35,7 @@ The plan is a TOML file:
     text = "Create the package Controller of SRS-0191 ..."
     requirements = ["SRS-0191"]              # optional: the requirements it implements, in the graph
     advances = ["tests/python/test_stp_0101.py"]   # optional: the tests it makes get further
+    after = ["T01"]                          # optional: the tasks it needs finished (default: the one before)
 
 The paths of the plan (check, tests, advances) are relative to the folder of atlas.toml, like
 those of [sources.code], wherever atlas runs from.
@@ -136,6 +138,20 @@ task that match [sources.code] test_patterns, and not its protected ones, are de
 task is judged (`deleted`): a test of the agent outside tests/. Only those: a new package of the
 code is never deleted. `protected` already keeps the agent out of the tests themselves.
 
+With parallel > 1, the tasks whose `after` are finished (a task without it is after the one
+before it: one by one, as without parallel) go at once, at most `parallel`, each in its own copy
+of the working folder (<workspace>/tasks/<id>) with all the machinery of a task: its planner,
+its attempts, its build fixes, its turns of `advances` and its retry. When one ends, only the
+files it changed come to the working folder, and the tests run again there. If a task that
+ended first had changed one of those files, or if together they break what worked, the one
+that comes second is undone (`conflict` in its step, with the files and the tasks it met) and
+goes again alone, on the code as it is now, once those running end; the tasks after it wait.
+A task that is the only one that can go runs in the working folder, as without parallel. The
+report says how much faster the tasks went (`schedule`: their time one after another, and the
+wall time). Each agent at once asks for a turn every ~30 s: parallel x attempts of them are
+checked against [network] requests_per_minute, with a warning when they would fill it. Until
+the request limit is shared between processes, parallel is at most 2.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 
@@ -167,7 +183,7 @@ import re
 import shutil
 import subprocess
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import time
 import tomllib
 from collections import Counter
@@ -194,6 +210,8 @@ SHOWN_SECTIONS = 2         # sections that state a requirement, in front of a ta
 SHOWN_CODE = 5             # code elements that cite a requirement, in front of a task
 SIMILAR = 2                # requirements like it already implemented, when atlas has similar_requirements
 STRAY = ("report", "delete")   # what to do with the tests an agent leaves among the code
+MAX_PARALLEL = 2           # tasks at once, until the request limit is shared between processes (serve, run)
+TURN_SECONDS = 30          # a turn of an agent (gemma-4-26b), until develop has measured one
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -284,6 +302,7 @@ class Plan:
     stuck_rounds: int = 2
     restarts: int = 1
     attempts: int = 1
+    parallel: int = 1
     planner: str = ""
     task_calls: int = 0
     task_seconds: int = 0
@@ -312,17 +331,24 @@ def load_plan(path: str | Path) -> Plan:
         raise ConfigError(f"plan {path}: each [[tasks]] needs its text")
     strings = lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)
     for t in tasks:
-        unknown = sorted(set(t) - {"id", "text", "advances", "requirements"})
-        if unknown or not strings(t.get("advances", [])) or not strings(t.get("requirements", [])):
-            raise ConfigError(f"plan {path}: a task has id, text, requirements (a list of IDs) and advances "
-                              f"(a list of tests)" + (f", not {unknown}" if unknown else ""))
-    tasks = [{"id": str(t.get("id") or f"T{i:02d}"), "text": t["text"], "advances": t.get("advances", []),
-              "requirements": t.get("requirements", [])} for i, t in enumerate(tasks, 1)]
+        unknown = sorted(set(t) - {"id", "text", "advances", "requirements", "after"})
+        if unknown or not all(strings(t.get(key, [])) for key in ("advances", "requirements", "after")):
+            raise ConfigError(f"plan {path}: a task has id, text, requirements (a list of IDs), advances (a list "
+                              "of tests) and after (a list of tasks)" + (f", not {unknown}" if unknown else ""))
+    ids = [str(t.get("id") or f"T{i:02d}") for i, t in enumerate(tasks, 1)]
+    tasks = [{"id": ids[i], "text": t["text"], "advances": t.get("advances", []),
+              "requirements": t.get("requirements", []),
+              "after": list(dict.fromkeys(t["after"])) if "after" in t else ids[i - 1:i]}
+             for i, t in enumerate(tasks)]
+    _check_after(path, tasks)
     if data.get("progress"):
         try:
             re.compile(data["progress"])
         except re.error as e:
             raise ConfigError(f"plan {path}: progress is not a valid regular expression: {e}") from None
+    parallel = data.get("parallel", 1)
+    if isinstance(parallel, bool) or not isinstance(parallel, int) or parallel < 1:
+        raise ConfigError(f"plan {path}: parallel is a whole number, 1 or more (1: one task at a time)")
     for key in ("task_calls", "task_seconds", "task_cost"):
         value = data.get(key, 0)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
@@ -344,6 +370,34 @@ def load_plan(path: str | Path) -> Plan:
     if not plan.tests:
         raise ConfigError(f"plan {path}: no tests: they are what says whether the code works")
     return plan
+
+
+def _check_after(path: Path, tasks: list[dict]) -> None:
+    """The ids of the tasks are unique, and their `after` name tasks of the plan without a cycle."""
+    ids = [t["id"] for t in tasks]
+    twice = sorted({i for i in ids if ids.count(i) > 1})
+    if twice:
+        raise ConfigError(f"plan {path}: two tasks have the id {twice[0]}")
+    for t in tasks:
+        unknown = [a for a in t["after"] if a not in ids]
+        if unknown:
+            raise ConfigError(f"plan {path}: task {t['id']} is after {unknown[0]}, which is not a task of the plan")
+    after = {t["id"]: t["after"] for t in tasks}
+    state: dict[str, int] = {}                # 1: being visited, 2: done
+
+    def visit(task: str, trail: list[str]) -> None:
+        if state.get(task) == 2:
+            return
+        if state.get(task) == 1:
+            cycle = trail[trail.index(task):] + [task]
+            raise ConfigError(f"plan {path}: the tasks wait for each other: {' after '.join(cycle)}")
+        state[task] = 1
+        for a in after[task]:
+            visit(a, trail + [task])
+        state[task] = 2
+
+    for t in ids:
+        visit(t, [])
 
 
 class _Files:
@@ -480,9 +534,9 @@ class Developer:
                                   "the prompts of develop tell it to check every file it changes"
                                   + (" and to run the failing test" if "run_test" in missing else ""))
         outside = [r for r in self.code.roots if self.code.base not in (r, *r.parents)]
-        if plan.attempts > 1 and outside:
-            raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder of {cfg.path.name}, "
-                              f"to copy them (not {self.code._show(outside[0])})")
+        if (plan.attempts > 1 or plan.parallel > 1) and outside:
+            raise ConfigError(f"plan {plan.name}: attempts and parallel need the code roots inside the folder of "
+                              f"{cfg.path.name}, to copy them (not {self.code._show(outside[0])})")
         if not self.tests:
             raise ConfigError(f"plan {plan.name}: no file matches its tests {plan.tests}")
         for t in self.tests:
@@ -532,6 +586,29 @@ class Developer:
         self._answers: dict[int, str] = {}     # the whole answer of each step (the report keeps its start)
         self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
         self._started, self._wall_before = time.time(), 0     # the wall time of this run, and of earlier ones
+        self.parallel = min(plan.parallel, MAX_PARALLEL)
+        self.warnings = [f"parallel = {plan.parallel} goes as {MAX_PARALLEL}: the request limit is not shared yet "
+                         "with the other processes of atlas (serve, run), and more agents at once would take it "
+                         "from them"] * (plan.parallel > MAX_PARALLEL)
+
+    def load(self) -> str:
+        """A warning if the agents at once (parallel x attempts) would fill [network]
+        requests_per_minute, each asking for a turn every TURN_SECONDS (or as often as the runs
+        of the report took, with --resume); "" if not, or with no limit."""
+        from atlas.llm import from_config
+        rpm = from_config(self.cfg).llm.net.requests_per_minute
+        agents = self.parallel * max(1, self.plan.attempts)
+        if not rpm or agents <= 1:
+            return ""
+        runs = [s for s in self.report["steps"] if s.get("calls") and s.get("seconds")]
+        turn = sum(s["seconds"] for s in runs) / sum(s["calls"] + 1 for s in runs) if runs else TURN_SECONDS
+        wanted = agents * 60 / max(turn, 1)
+        if wanted <= rpm:
+            return ""
+        return (f"{agents} agents at once (parallel {self.parallel} x attempts {self.plan.attempts}) ask for about "
+                f"{wanted:.0f} requests per minute, a turn every {turn:.0f} s"
+                + (" (measured)" if runs else "") + f", more than [network] requests_per_minute = {rpm}: they "
+                "will wait for each other, and atlas serve or atlas run here get fewer")
 
     # --- the requirements of the tasks ------------------------------------------------------
     def _graph(self):
@@ -607,10 +684,12 @@ class Developer:
     def _tag(self) -> str:
         return ((self.cfg["sources"].get("code") or {}).get("req_tag") or "Req:").strip()
 
-    def untagged(self, requirements: list[str], before: dict[Path, bytes]) -> list[str]:
+    def untagged(self, requirements: list[str], before: dict[Path, bytes], ws: _Workspace | None = None) -> list[str]:
         """Those of `requirements` that no subprogram (or declaration) changed since `before`
-        cites, with the analyzers of [sources.code] languages, without the pipeline. A
-        declaration in a spec counts when its subprogram changed in the body."""
+        cites (in the working folder, or in `ws`), with the analyzers of [sources.code]
+        languages, without the pipeline. A declaration in a spec counts when its subprogram
+        changed in the body."""
+        ws = ws or self.main
         from atlas import plugins
         sc = self.cfg["sources"].get("code") or {}
         by_ext = {}
@@ -620,14 +699,14 @@ class Developer:
             except LookupError:
                 continue
             by_ext.update({ext: analyzer for ext in analyzer.extensions})
-        now, units = self.files.snapshot(), []
+        now, units = ws.files.snapshot(), []
         for p in sorted(set(before) | set(now)):
             if p not in now or before.get(p) == now[p] or p.suffix.lower() not in by_ext:
                 continue
             try:
-                unit = by_ext[p.suffix.lower()].analyze_file(Path(self.code._show(p)), now[p])
+                unit = by_ext[p.suffix.lower()].analyze_file(Path(ws.code._show(p)), now[p])
             except Exception as e:               # an analyzer that cannot read it: nothing cited there
-                log.warning("develop: %s not analysed: %s", self.code._show(p), e)
+                log.warning("develop: %s not analysed: %s", ws.code._show(p), e)
                 continue
             units.append((unit, _changed_lines(before.get(p, b""), now[p])))
         elements = lambda unit: [*unit.subprograms, *unit.declarations]
@@ -950,14 +1029,17 @@ class Developer:
         return deleted
 
     def attempts(self, agent: str, prompt: str, kind: str, task: str, before: dict,
-                 advances: list[str] = ()) -> tuple[dict, dict, list]:
+                 advances: list[str] = (), home: _Workspace | None = None) -> tuple[dict, dict, list]:
         """attempt(), or with plan.attempts > 1 that many at once, each in a copy of the working
-        folder; the best one that breaks nothing wins and its files come to the working folder
-        (see the module). The others end "not chosen", or "undone" if they broke something."""
+        folder (or of `home`, the copy of a task with parallel); the best one that breaks nothing
+        wins and its files come to that folder (see the module). The others end "not chosen", or
+        "undone" if they broke something."""
+        home = home or self.main
         if self.plan.attempts <= 1:
-            return self.attempt(agent, prompt, kind, task, before, advances)
-        copies = [self._copy(n) for n in range(1, self.plan.attempts + 1)]
-        snapshot, t0, since = self.main.files.snapshot(), time.time(), len(self.report["steps"])
+            return self.attempt(agent, prompt, kind, task, before, advances, home)
+        prefix = "" if home is self.main else f"{home.base.name}-"
+        copies = [self._copy(f"{prefix}{n}", n, home) for n in range(1, self.plan.attempts + 1)]
+        snapshot, t0, since = home.files.snapshot(), time.time(), len(self.report["steps"])
         try:
             with ThreadPoolExecutor(max_workers=len(copies)) as pool:
                 results = list(pool.map(lambda ws: self.attempt(agent, prompt, kind, task, before, advances, ws),
@@ -970,23 +1052,25 @@ class Developer:
             if best is None:                                 # every one broke something: as one undone
                 return results[0]
             winner = copies[best]
-            self.main.files.restore({self.code.base / p.relative_to(winner.code.base): data
-                                     for p, data in winner.files.snapshot().items()})
-            after = self.evaluate()
+            home.files.restore({home.code.base / p.relative_to(winner.code.base): data
+                                for p, data in winner.files.snapshot().items()})
+            after = self.evaluate(home)
             step = results[best][0]
             step["chosen"] = f"{best + 1} of {len(copies)}"
             return step, after, self.broken(before, after)
         except BaseException as e:               # Ctrl+C, here after the runs in progress end
-            self._interrupted(agent, kind, task, self.main, snapshot, t0, since, e, copies=True)
+            self._interrupted(agent, kind, task, home, snapshot, t0, since, e, copies=True)
             raise
         finally:
             for ws in copies:
                 shutil.rmtree(ws.base, ignore_errors=True)
 
-    def _copy(self, number: int) -> _Workspace:
-        """A copy of the working folder for a parallel attempt, without .git, the workspace and
-        __pycache__."""
-        source, target = self.code.base, self.cfg.workspace / "attempts" / str(number)
+    def _copy(self, name: str, number: int = 0, home: _Workspace | None = None,
+              folder: str = "attempts") -> _Workspace:
+        """A copy of the working folder (or of `home`) in <workspace>/<folder>/<name>, without
+        .git, the workspace and __pycache__: for a parallel attempt (its `number`), or for a
+        task with parallel."""
+        source, target = (home or self.main).code.base, self.cfg.workspace / folder / name
         shutil.rmtree(target, ignore_errors=True)
         workspace = self.cfg.workspace.resolve()
 
@@ -1032,7 +1116,7 @@ class Developer:
                                  for f, errors in state["check"].items()},
                 "warnings": [f"task {t['id']} has {len(t['text'])} characters, more than {MAX_TASK_CHARS}: a small "
                              "model does better with smaller tasks" for t in self.plan.tasks
-                             if len(t["text"]) > MAX_TASK_CHARS]}
+                             if len(t["text"]) > MAX_TASK_CHARS] + self.warnings + [w for w in [self.load()] if w]}
 
     @staticmethod
     def _outcome(step: dict, broken: list) -> str:
@@ -1041,33 +1125,154 @@ class Developer:
         return "undone" if broken else "error" if step.get("error") else "kept"
 
     def tasks(self, state: dict, done: set[str] = frozenset()) -> dict:
-        """The tasks of the plan, but those of `done` (finished in an earlier run, --resume);
-        what each one leaves in the code goes to its patch."""
-        for task in self.plan.tasks:
-            if task["id"] in done:
-                continue
-            before = self.main.files.snapshot()
-            text = self.planned(task, state)
-            step, state, broken = self.attempts(self.plan.agent, text, "task", task["id"], state,
-                                                task["advances"])
-            step["outcome"] = self._outcome(step, broken)
-            if broken:
-                self._done(step, state)
-                step, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
-                    broken=data_block("\n".join(f"- {b}" for b in broken), "the tests")), "task-retry", task["id"],
-                    state, task["advances"])
-                step["outcome"] = self._outcome(step, broken)
-            if step["outcome"] == "kept" and task["requirements"]:
-                step["untagged"] = self.untagged(task["requirements"], before)
-            if step.get("untagged") and self.plan.require_tags:
-                self._done(step, state)
-                state = self.tag_fix(task, step["untagged"], before, state)
-                self._patched(step, before, task["id"])          # the tags too
-                self.save()
-            else:
-                self._patched(step, before, task["id"])
-                self._done(step, state)
+        """The tasks of the plan, but those of `done` (finished in an earlier run, --resume),
+        each once those of its `after` are finished: in the working folder one by one, or with
+        parallel those that can at once, each in a copy (see the module). What each one leaves
+        in the code goes to its patch."""
+        pending = [t for t in self.plan.tasks if t["id"] not in done]
+        finished = {t["id"] for t in self.plan.tasks} - {t["id"] for t in pending}
+        again: list[dict] = []          # undone when they came to the working folder: alone, on the code of now
+        running: dict = {}              # future -> (task, its copy, its files then, merges then, steps then)
+        merged: list[tuple[str, set]] = []          # (task, files) of each one brought from its copy
+        started, spent, conflicts = time.time(), 0.0, 0
+        pool = ThreadPoolExecutor(max_workers=self.parallel) if self.parallel > 1 else None
+        try:
+            while pending or running or again:
+                ready = [t for t in pending if all(a in finished for a in t["after"])]
+                if not running and (again or len(ready) <= 1 or pool is None):
+                    task = again.pop(0) if again else ready[0]
+                    if task in pending:
+                        pending.remove(task)
+                    t0, before = time.time(), self.main.files.snapshot()
+                    step, state = self._task(task, state)
+                    self._patched(step, before, task["id"])          # with the tags of its tag-fix
+                    if step.get("untagged") and self.plan.require_tags:
+                        self.save()                      # shown before its tag-fix (_task)
+                    else:
+                        self._done(step, state)
+                    finished.add(task["id"])
+                    spent += time.time() - t0
+                    continue
+                while not again and ready and len(running) < self.parallel:
+                    task = ready.pop(0)
+                    pending.remove(task)
+                    ws = self._copy(re.sub(r"[^\w.-]", "_", task["id"]), home=self.main, folder="tasks")
+                    with self._lock:
+                        since = len(self.report["steps"])
+                    running[pool.submit(self._timed, task, state, ws)] = (task, ws, self._relative(ws),
+                                                                          len(merged), since)
+                ended, _ = wait(running, return_when=FIRST_COMPLETED)
+                for future in [f for f in running if f in ended]:
+                    step, _, seconds = future.result()
+                    task, ws, base, at, _ = running.pop(future)
+                    state, brought = self._merge(task, ws, base, step, state, merged[at:])
+                    shutil.rmtree(ws.base, ignore_errors=True)
+                    if brought is None:                 # its time is not that of the task: it goes again
+                        conflicts += 1
+                        again.append(task)
+                    else:
+                        spent += seconds
+                        merged.append((task["id"], brought))
+                        finished.add(task["id"])
+        except BaseException:                    # Ctrl+C: what the copies did is not brought, and goes again
+            if pool is not None:
+                pool.shutdown(wait=True, cancel_futures=True)
+            self._unmerged([(task["id"], since) for task, _, _, _, since in running.values()])
+            raise
+        finally:
+            if pool is not None:
+                pool.shutdown(wait=True)
+                shutil.rmtree(self.cfg.workspace / "tasks", ignore_errors=True)
+        if self.plan.parallel > 1:
+            wall = time.time() - started
+            self.report["schedule"] = {"parallel": self.parallel, "tasks_seconds": round(spent),
+                                       "wall_seconds": round(wall), "speedup": round(spent / wall, 2) if wall else 1.0,
+                                       "conflicts": conflicts}
+            self.save()
         return state
+
+    def _task(self, task: dict, state: dict, ws: _Workspace | None = None) -> tuple[dict, dict]:
+        """A task in the working folder (or in `ws`, its copy): its plan, its attempts, its
+        retry if it broke something and, kept with requirements, which of them no changed
+        subprogram cites (and its tag-fix with require_tags). (its last step, with its
+        outcome, the state after it)."""
+        before = (ws or self.main).files.snapshot()
+        text = self.planned(task, state, ws)
+        step, state, broken = self.attempts(self.plan.agent, text, "task", task["id"], state, task["advances"], ws)
+        step["outcome"] = self._outcome(step, broken)
+        if broken:
+            self._done(step, state)
+            step, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
+                broken=data_block("\n".join(f"- {b}" for b in broken), "the tests")), "task-retry", task["id"],
+                state, task["advances"], ws)
+            step["outcome"] = self._outcome(step, broken)
+        if step["outcome"] == "kept" and task["requirements"]:
+            step["untagged"] = self.untagged(task["requirements"], before, ws)
+        if step.get("untagged") and self.plan.require_tags:
+            self._done(step, state)
+            state = self.tag_fix(task, step["untagged"], before, state, ws)
+        return step, state
+
+    def _timed(self, task: dict, state: dict, ws: _Workspace) -> tuple[dict, dict, float]:
+        """_task in its copy, with its time."""
+        t0 = time.time()
+        step, state = self._task(task, state, ws)
+        return step, state, time.time() - t0
+
+    @staticmethod
+    def _relative(ws: _Workspace) -> dict[Path, bytes]:
+        """The files an agent can change in a folder, by their path relative to it."""
+        return {p.relative_to(ws.code.base): data for p, data in ws.files.snapshot().items()}
+
+    def _merge(self, task: dict, ws: _Workspace, base: dict, step: dict, state: dict,
+               since: list[tuple[str, set]]) -> tuple[dict, set | None]:
+        """The files that a task changed in its copy (`ws`, from `base`) brought to the working
+        folder, and the tests run there: (the state now, the files brought). None instead of
+        the files when it cannot be: a task of `since` (those brought after it started) changed
+        one of them, or together they break what worked; the step says so, and the working
+        folder stays as it was."""
+        final = self._relative(ws)
+        changed = {p for p in set(base) | set(final) if base.get(p) != final.get(p)}
+        before = self.main.files.snapshot()
+        now = {p.relative_to(self.code.base): data for p, data in before.items()}
+        clash = sorted(p.as_posix() for p in changed if now.get(p) != base.get(p))
+        broke: list[str] = []
+        if changed and not clash:
+            try:
+                files = {p: data for p, data in now.items() if p not in changed}
+                files.update({p: final[p] for p in changed if p in final})
+                self.main.files.restore({self.code.base / p: data for p, data in files.items()})
+                after = self.evaluate()
+                broke = self.broken(state, after)
+            except BaseException:
+                self.main.files.restore(before)
+                raise
+            if not broke:
+                self._patched(step, before, task["id"])
+                self._done(step, after)
+                return after, changed
+            self.main.files.restore(before)
+        elif not changed:
+            self._done(step, state)
+            return state, changed
+        others = sorted({t for t, files in since if not clash or {p.as_posix() for p in files} & set(clash)})
+        step.update(outcome="conflict", conflict={"files": clash or sorted(p.as_posix() for p in changed),
+                                                  "with": others}, **({"broke": broke} if broke else {}))
+        self._done(step, state)
+        return state, None
+
+    def _unmerged(self, tasks: list[tuple[str, int]]) -> None:
+        """The tasks whose copies were not brought to the working folder (Ctrl+C): their steps
+        since they started that were kept, or had no outcome yet, are `interrupted`, for
+        --resume to do them again."""
+        with self._lock:
+            cut = [s for task, since in tasks for s in self.report["steps"][since:]
+                   if s["task"] == task and s.get("outcome") in (None, "kept")]
+            for s in cut:
+                s["outcome"] = "interrupted"
+        self.save()
+        for s in cut:
+            self.on_step(s)
 
     def finished(self, task: str) -> bool:
         """Whether the steps of the report say that a task was finished: kept, or undone after
@@ -1077,30 +1282,32 @@ class Developer:
         return any(s.get("outcome") == "kept" and not s.get("error") for s in ends) or \
             any(s.get("outcome") == "undone" and s["kind"].startswith("task-retry") for s in ends)
 
-    def tag_fix(self, task: dict, missing: list[str], before: dict[Path, bytes], state: dict) -> dict:
+    def tag_fix(self, task: dict, missing: list[str], before: dict[Path, bytes], state: dict,
+                ws: _Workspace | None = None) -> dict:
         """The turn that tags the requirements of a kept task that no changed subprogram cites
-        (require_tags), as one more attempt (its budget, undone if it breaks something): the
-        state after it, or `state` if it broke something."""
+        (require_tags), as one more attempt (its budget, undone if it breaks something), in the
+        working folder or in `ws`: the state after it, or `state` if it broke something."""
         fix, after, broken = self.attempt(self.plan.agent, TAGS_PROMPT.format(missing=", ".join(missing),
                                                                              tag=self._tag(), first=missing[0]),
-                                          "tag-fix", task["id"], state)
+                                          "tag-fix", task["id"], state, ws=ws)
         if broken:
             fix["outcome"] = "undone"
             self._done(fix, state)
             return state
-        fix["untagged"] = self.untagged(task["requirements"], before)
+        fix["untagged"] = self.untagged(task["requirements"], before, ws)
         fix["outcome"] = "untagged" if fix["untagged"] else "tagged"
         self._done(fix, after)
         return after
 
-    def planned(self, task: dict, state: dict) -> str:
+    def planned(self, task: dict, state: dict, ws: _Workspace | None = None) -> str:
         """The text of a task for the agent, with its requirements in front: with the plan of
         the planner, if the plan has one and it answered."""
         text = self.task_text(task)
         if not self.plan.planner:
             return text
-        self.main.budget = _Budget(self.plan)
-        step = self.run(self.plan.planner, text, "plan", task["id"])
+        ws = ws or self.main
+        ws.budget = _Budget(self.plan)
+        step = self.run(self.plan.planner, text, "plan", task["id"], ws)
         step["outcome"] = "planned" if step.get("answer") else "no plan"
         self._done(step, state)
         plan = self._answers.get(step["n"], "")
@@ -1173,6 +1380,9 @@ class Developer:
         if not resume:
             Path(f"{self.path}.calls.jsonl").unlink(missing_ok=True)
             shutil.rmtree(self.path, ignore_errors=True)               # the patches of an earlier run
+        warnings = self.warnings + [w for w in [self.load()] if w]
+        if warnings:
+            self.report["warnings"] = warnings
         state = self.evaluate()
         self.report.setdefault("at_start", {"tests_passed": self.passing(state),
                                             "check_errors": sorted(state["check"])})
@@ -1201,7 +1411,7 @@ class Developer:
             raise ConfigError(f"--resume: cannot read {path}: {e}") from None
         self.errors = {_shape(e["message"]): e for e in old.pop("compiler_errors", [])}
         self._wall_before = (old.get("totals") or {}).get("wall_seconds", 0)
-        for key in ("final", "finished", "totals"):
+        for key in ("final", "finished", "totals", "schedule", "warnings"):
             old.pop(key, None)
         old["resumed"] = old.get("resumed", []) + [time.strftime("%Y-%m-%d %H:%M:%S")]
         self.report = {**self.report, **old, "tests": self.tests}
@@ -1414,8 +1624,16 @@ def markdown(report: dict) -> str:
         all_patches = patches[0].split("/")[0] + "/all.patch"
         out += [f"What the tasks and rounds left in the code: a patch in each step, and all of them in "
                 f"[{all_patches}]({all_patches}) (`git apply`, or `patch -p1`)."]
+    schedule = report.get("schedule")
+    if schedule:
+        out += [f"Tasks at most {schedule['parallel']} at once: {schedule['tasks_seconds'] / 60:.1f} min of tasks one "
+                f"after another in {schedule['wall_seconds'] / 60:.1f} min of wall time, "
+                f"{schedule['speedup']:g}x as fast"
+                + (f"; {schedule['conflicts']} undone for a conflict and done again alone" if schedule["conflicts"]
+                   else "") + "."]
     if report.get("resumed"):
         out += [f"Resumed {', '.join(report['resumed'])}."]
+    out += [f"Warning: {w}" for w in report.get("warnings", [])]
     out += ["", "| # | kind | task or test | agent | min | calls | edits (failed) | compilations (errors) | outcome | "
                 "tests passing |", "|---|---|---|---|---|---|---|---|---|---|"]
     for s in report["steps"]:
@@ -1424,6 +1642,10 @@ def markdown(report: dict) -> str:
             outcome = f"{outcome} (error: {s['error'][:80]})"
         if s.get("budget_exceeded"):
             outcome = f"{outcome} (budget spent: {s['budget_exceeded']})"
+        if s.get("conflict"):
+            c = s["conflict"]
+            met = f", with {', '.join(c['with'])}" if c["with"] else ""
+            outcome = f"{outcome} ({', '.join(c['files'])}{met}; done again alone)"
         if s.get("patch"):
             outcome = f"{outcome} ([patch]({s['patch']}))"
         e, c = s.get("edits") or {}, s.get("compiles") or {}

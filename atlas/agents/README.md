@@ -175,6 +175,7 @@ fix_rounds = 12                          # rondas para arreglar tests, tras los 
 stuck_rounds = 2                         # rondas sin avanzar antes de dejar un test a una persona
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
+parallel = 1                             # encargos a la vez, los que ya tienen hechos los de su after
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
 task_calls = 0                           # presupuesto de cada intento: llamadas (0 = sin límite)
 task_seconds = 0                         # ... segundos
@@ -190,6 +191,7 @@ id = "ping-bye"
 text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PONG ..."
 requirements = ["SRS-0113", "SRS-0114"]  # opcional: los requisitos que implementa, del grafo
 advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
+after = ["T01"]                          # opcional: los encargos que necesita hechos (por defecto, el anterior)
 ```
 
 Las rutas del plan (`check`, `tests`, `advances`) son relativas a la carpeta de `atlas.toml`,
@@ -261,11 +263,35 @@ cambios que rompían lo que ya iba.
    `[sources.code] test_patterns` y no con `protected`: un test del agente fuera de `tests/`. Se
    dicen en `deleted`. Nunca se borra un fichero nuevo que no sea un test, ni una carpeta. No
    hace falta limitar dónde escribe cada agente: `protected` ya se aplica a los ficheros nuevos.
-9. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+9. Con `parallel` mayor que 1, los encargos cuyos `after` ya están hechos van **a la vez**,
+   como mucho `parallel`, cada uno en su copia de la carpeta de trabajo
+   (`<workspace>/tasks/<id>`) con toda la maquinaria de un encargo: su planificador, sus
+   intentos, sus arreglos de compilación, sus vueltas de `advances` y su reintento. Un encargo
+   sin `after` va después del anterior, así que un plan sin `after` sigue yendo de uno en uno,
+   como hoy; para que dos vayan a la vez, `after = []` (o `after = ["T01"]` los dos). Al acabar
+   uno, a la carpeta de trabajo pasan **solo los ficheros que cambió** frente a su copia, y los
+   tests se pasan otra vez allí. Si otro encargo que acabó antes ya había cambiado alguno de
+   esos ficheros, o si juntos rompen lo que iba, el segundo en llegar **se deshace** (`conflict`
+   en su paso, con los ficheros y los encargos con los que chocó) y vuelve a hacerse solo, sobre
+   el código de ahora, cuando acaban los que están en marcha; los que van después de él lo
+   esperan. Si solo un encargo puede ir, va en la carpeta de trabajo, sin copia. Un `after` que
+   nombra un encargo que no existe, o encargos que se esperan entre sí, son un error al leer el
+   plan.
+
+   Cada agente a la vez pide una vuelta cada unos 30 s: los `parallel` × `attempts` agentes se
+   comparan con `[network] requests_per_minute` (con la duración de las vueltas medida en el
+   informe, si se reanuda), y se avisa si van a llenarlo. Mientras el cupo no se comparta entre
+   procesos (`atlas serve` y `atlas run` creen tener las 28 peticiones para ellos), `parallel`
+   es como mucho 2, y el informe lo dice. El beneficio depende de que el plan tenga cadenas
+   independientes, y no está medido todavía con el gateway.
+10. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. El tiempo de las ejecuciones (`seconds`, sumado) y el de pared de la
-   tanda (`wall_seconds`: con los tests, y con los intentos a la vez contados una vez). Al final, los errores del compilador de toda la tanda, los más
+   tanda (`wall_seconds`: con los tests, y con los intentos a la vez contados una vez). Con
+   `parallel`, `schedule`: el tiempo de los encargos uno tras otro, el de pared y la
+   aceleración, en una línea del Markdown, y los avisos del cupo en `warnings`. Al final, los
+   errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
    lecciones que añadir antes de la siguiente, y van como borradores en
    `reports/hints-<plan>.toml` (ver «Borradores de pistas»). Los avisos de instrucciones dentro

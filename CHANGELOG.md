@@ -14,8 +14,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas eval` guarda una copia de cada informe, `reports/eval-<conjunto>-<versión>-<fecha>.json`,
   con una cabecera `meta`, y `atlas eval --compare` compara cada caso con el último informe
   de otra versión: rango anterior y nuevo, y las regresiones (código 1 si hay alguna).
+- Casos `ask` en los conjuntos de evaluación: la pregunta va a `Index.answer` (con
+  `document`, `scope` y `section` si los tiene) y pasa si la respuesta contiene lo esperado
+  y, con `cited: true`, si cada texto esperado está en lo que se leyó de una fuente citada.
+  Guarda peticiones, `scope` y segundos. Cuatro casos nuevos en
+  `examples/eval/assistant.yaml`.
+- El informe de `atlas eval` guarda los tokens y el coste de cada respuesta de un agente, y
+  una cabecera `meta` con el modelo, su `reasoning_effort` y `provider`, el modelo de
+  embeddings, la versión, la fecha, `runs` y el hash del YAML.
+- `tools/compare_models.py` añade tokens por caso, dólares en total y por acierto, y el
+  acierto@3 y el MRR de la búsqueda; escribe `reports/compare-<fecha>.md` y `.json`.
 
 ### Cambiado
+- Cada fuente de `Index.answer` trae `context`, el texto que leyó el modelo; `ask_docs` no
+  lo devuelve al agente (tiene `excerpt` y `get_section`).
 - Los vectores de las consultas de búsqueda quedan en la caché de vectores del índice: la
   misma consulta otra vez no pide nada a los embeddings (antes, cada búsqueda híbrida la
   embebía; una pasada de `retrieval.yaml` eran 20 peticiones, y la segunda ya ninguna).

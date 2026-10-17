@@ -301,9 +301,10 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
 
 
 def _source(n: int, s: dict) -> dict:
+    """A source of an answer; `context` is the whole text the model read from it."""
     return {"n": n, "cite": cite(s), "doc": s["doc_name"], "section": s["section_id"], "file": section_file(s),
             "kind": s["kind"], "ref": s.get("ref", ""),
-            "excerpt": (s["context"] if s["kind"] == "section" else s["text"])[:300]}
+            "excerpt": (s["context"] if s["kind"] == "section" else s["text"])[:300], "context": s["context"]}
 
 
 def _scope_documents(store: IndexStore, document: str, named: list[str], hits: list[dict]) -> list[dict]:
@@ -324,7 +325,7 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
-    """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
+    """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt, context}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says

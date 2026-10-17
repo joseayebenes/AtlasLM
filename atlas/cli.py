@@ -1020,6 +1020,12 @@ def evaluate(cfg: Config, compare: bool = False) -> int:
             print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']}  {r['query']}"
                   + (f"  missing: {', '.join(r['missing'])}" if r["missing"] else "")
                   + (f"  {r['error']}" if r.get("error") else ""), flush=True)
+        elif r.get("kind") == "ask":
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+                  f"[{r['scope'] or '-'}, {r['requests']} requests]"
+                  + (f"  missing: {', '.join(r['missing'])}" if r["missing"] else "")
+                  + (f"  not in a cited source: {', '.join(r['uncited'])}" if r["uncited"] else "")
+                  + (f"  {r['error']}" if r.get("error") else ""), flush=True)
         else:
             missing = r["missing"] + [f"tool {t}" for t in r["missing_tools"]] + (["max_steps"] if r["stopped"] else [])
             print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
@@ -1045,9 +1051,19 @@ def evaluate(cfg: Config, compare: bool = False) -> int:
             print(f"  graph: {g['passed']} of {g['total']} right ({g['rate']:.0%})")
             for tag, t in g.get("tags", {}).items():
                 print(f"    {tag}: {t['passed']} of {t['total']}")
+        if "answers" in res:
+            a = res["answers"]
+            print(f"  answers: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median "
+                  f"{a['median_seconds']:.0f} s, {a['requests']} requests to the model")
         if "agents" in res:
             a = res["agents"]
-            print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s")
+            tokens = a.get("tokens") or {}
+            print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s"
+                  + (f", {tokens['prompt']} + {tokens['completion']} tokens" if tokens.get("prompt") else "")
+                  + (f", ${a['cost']:.4f}" if "cost" in a else ""))
+        for section in ("answers", "agents"):
+            for tag, t in res.get(section, {}).get("tags", {}).items():
+                print(f"    {section} {tag}: {t['passed']} of {t['total']}")
         if compare:
             old = previous_report(cfg, name, __version__)
             if old is None:

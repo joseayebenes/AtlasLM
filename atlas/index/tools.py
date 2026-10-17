@@ -182,9 +182,11 @@ class DocTools:
         whole instead of the best passages, in parts if they are long; `whole` = true makes
         it read them whole always (`scope` in the answer says how it was read)."""
         try:
-            return self.index.answer(question, document=document, scope="whole" if whole else "")
+            res = self.index.answer(question, document=document, scope="whole" if whole else "")
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        # the text read from each source is for the model; the agent has the excerpt and get_section
+        return {**res, "sources": [{k: v for k, v in s.items() if k != "context"} for s in res["sources"]]}
 
 
 register_methods(DocTools, TOOL_NAMES)

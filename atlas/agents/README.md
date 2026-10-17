@@ -297,7 +297,7 @@ especificación 301 ms, y cita las dos fuentes (35 s). `atlas impact Logger.Log`
 ## Evaluación
 
 `atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.
-Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
+Un conjunto mezcla cuatro tipos de caso, según la clave que lleva la pregunta:
 
 ```yaml
 - id: trace-srs-0004                 # un agente: necesita el modelo y el extra [agents]
@@ -312,11 +312,18 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
 - id: graph-impact-log               # una consulta del grafo, sin modelo
   impact: Logger.Log                 # trace, trace_code, impact, find_symbol, search_code_docs
   expect: [tracks.delete_track, SRS-0004]
+- id: ask-days-of-logs               # una respuesta de los documentos (atlas ask): el modelo, sin ADK
+  ask: How many days must the HMI keep its logs?
+  expect: ["30"]
+  cited: true                        # opcional: cada texto esperado, en una fuente citada
+  document: hmi_manual.md            # opcional, como scope (auto, passages, whole) y section
 ```
 
 - **Agentes.** Un caso está bien si la respuesta contiene los textos esperados (IDs,
   identificadores, valores) y el agente ha llamado a las herramientas esperadas sin llegar a
-  `max_steps`. `examples/eval/assistant.yaml` tiene 24 casos sobre las muestras. Con
+  `max_steps`. Cada resultado guarda sus tokens y, si el servidor lo dice (OpenRouter), su
+  coste; el informe, la suma. `examples/eval/assistant.yaml` tiene 24 casos sobre las
+  muestras (y cuatro de `ask`). Con
   `gemma4:12b` sin razonamiento, el asistente acertó 23 de 24 (96 %), con una mediana de 9
   a 11 s por pregunta. El fallo dice bien qué falta por definir en las alarmas, pero contesta
   en español y sin el literal «TBD» que pide el caso.
@@ -331,6 +338,14 @@ Un conjunto mezcla tres tipos de caso, según la clave que lleva la pregunta:
   qué aportan los vectores.
 - **Grafo.** Un caso está bien si el resultado de la consulta contiene lo esperado. El grafo
   no ordena ni varía: o está o no está.
+- **Respuestas (`ask`).** La pregunta va a `Index.answer`, como `atlas ask` y la herramienta
+  `ask_docs`, con su `document`, `scope` y `section` si los tiene (`section` solo si la
+  versión de `Index.answer` lo admite; si no, el caso falla con ese error). Está bien si la
+  respuesta contiene cada texto esperado y, con `cited: true`, si cada uno está además en el
+  texto que el modelo leyó de una fuente que la respuesta cita (`[n]`): el valor correcto
+  sacado de la fuente equivocada no vale. Guarda las peticiones al modelo, el `scope` con el
+  que se leyó, los segundos y las fuentes citadas (y `status` y `unsupported` cuando la
+  respuesta los trae). Es lo más caro y lo que más cambia entre versiones.
 
 `tags` agrupa los casos por tipo: el informe y la salida de `atlas eval` dan las cifras de
 la búsqueda (acierto@k y MRR, híbrida y léxica) y del grafo de cada tag, además de las del
@@ -356,11 +371,13 @@ el proyecto real.
 ```toml
 [agents.eval]
 sets = ["examples/eval/assistant.yaml", "examples/eval/retrieval.yaml"]
-runs = 3                   # veces que se hace cada pregunta a un agente: los modelos no responden siempre igual
+runs = 3                   # veces que se hace cada pregunta (agentes y ask): los modelos no responden siempre igual
 ```
 
-Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `agents` y `retrieval`,
-con una cabecera `meta` (conjunto, versión de atlas, fecha). Ese fichero se sobrescribe; una
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `retrieval`, `answers` y
+`agents`, con una cabecera `meta` que dice qué se midió: el modelo de los agentes y el de
+`[llm]`, su `reasoning_effort`, el `provider` de `[llm.extra_body]`, el modelo de
+embeddings, la versión de atlas, la fecha, `runs` y el hash del YAML. Ese fichero se sobrescribe; una
 copia queda en `eval-<conjunto>-<versión>-<fecha>.json`. `atlas eval --compare` compara cada
 caso con el del último informe de otra versión de atlas: el rango anterior y el nuevo de
 cada búsqueda (híbrida y léxica), si cada consulta o pregunta pasaba y pasa, y al final las

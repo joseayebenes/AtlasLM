@@ -56,15 +56,54 @@ def test_cases_of_three_kinds(tmp_path):
     assert cases["graph-impact-log"]["kind"] == "graph" and cases["graph-impact-log"]["query"] == "impact"
     assert cases["search-spanish-logs"]["tags"] == ["paraphrase", "spanish"] and cases["graph-impact-log"]["tags"] == ["impact"]
     bad = tmp_path / "bad.yaml"
-    bad.write_text("- id: a\n  search: x\n  expect: x\n  tags: paraphrase\n")
-    with pytest.raises(ConfigError, match="tags is a list of words"):
-        load_cases(bad)
     for text in ("- id: a\n  expect: x\n",                                     # nothing to ask
                  "- id: a\n  search: x\n  trace: SRS-0001\n  expect: x\n",     # two things
                  "- id: a\n  matrix: SRS_TMS\n  expect: x\n"):                 # not a query of the set
         bad.write_text(text)
-        with pytest.raises(ConfigError, match="one of question, search or a query of the graph"):
+        with pytest.raises(ConfigError, match="one of question, search, ask or a query of the graph"):
             load_cases(bad)
+    bad.write_text("- id: a\n  search: x\n  expect: x\n  tags: paraphrase\n")
+    with pytest.raises(ConfigError, match="tags is a list of words"):
+        load_cases(bad)
+    for text, error in (("- id: a\n  ask: x\n  expect: x\n  scope: all\n", "scope is one of auto, passages, whole"),
+                        ("- id: a\n  ask: x\n  expect: x\n  cited: yes please\n", "cited is true or false")):
+        bad.write_text(text)
+        with pytest.raises(ConfigError, match=error):
+            load_cases(bad)
+    asks = {c["id"]: c for c in load_cases(SET.parent / "assistant.yaml") if c["kind"] == "ask"}
+    assert len(asks) == 4 and asks["ask-whole-alarms"]["scope"] == "whole" and asks["ask-days-of-logs"]["cited"]
+
+
+def test_ask_cases_check_the_answer_and_its_citations():
+    """Each expected text in the answer and, with cited, in what a cited source read."""
+    from atlas.agents.evaluate import evaluate_answers
+
+    class FakeIndex:
+        def answer(self, question, document="", scope=""):
+            if question == "broken":
+                raise RuntimeError("the model is down")
+            sources = [{"n": 1, "cite": "hmi_manual.md › 2 Alarms", "context": "raise an alarm"},
+                       {"n": 2, "cite": "hmi_manual.md › 3 Logging", "context": "keep logs for 30 days"}]
+            n = 2 if "right" in question else 1
+            return {"answer": f"30 days [{n}].", "sources": sources, "scope": scope or "passages",
+                    "documents": [], "requests": 2, "status": "answered"}
+
+    cases = [{"id": "right", "kind": "ask", "ask": "right source", "expect": ["30"], "cited": True, "tags": ["t"]},
+             {"id": "wrong", "kind": "ask", "ask": "wrong source", "expect": ["30"], "cited": True},
+             {"id": "uncited", "kind": "ask", "ask": "wrong source", "expect": ["30 days"], "scope": "whole"},
+             {"id": "section", "kind": "ask", "ask": "x", "expect": ["30"], "section": "3"},
+             {"id": "broken", "kind": "ask", "ask": "broken", "expect": ["30"]},
+             {"id": "agent", "kind": "agent", "question": "x", "expect": ["30"]}]
+    seen = []
+    res = evaluate_answers(cases, None, runs=2, index=FakeIndex(), on_result=seen.append)
+    by = {r["id"]: r for r in res["results"] if r["run"] == 1}
+    assert (res["passed"], res["total"], res["requests"]) == (4, 10, 12) and len(seen) == 10
+    assert by["right"]["passed"] and by["right"]["cited"] == ["hmi_manual.md › 3 Logging"]
+    assert by["right"]["status"] == "answered" and res["tags"] == {"t": {"passed": 2, "total": 2, "rate": 1.0}}
+    assert not by["wrong"]["passed"] and by["wrong"]["uncited"] == ["30"] and by["wrong"]["missing"] == []
+    assert by["uncited"]["passed"] and by["uncited"]["scope"] == "whole"
+    assert "takes no section" in by["section"]["error"] and "the model is down" in by["broken"]["error"]
+    assert res["by_case"] == {"right": "2/2", "wrong": "0/2", "uncited": "2/2", "section": "0/2", "broken": "0/2"}
 
 
 def test_search_and_graph_are_scored_without_a_model(indexed, fake_stats):
@@ -126,6 +165,25 @@ def test_atlas_eval_with_only_retrieval_needs_no_agent(indexed, monkeypatch, cap
     assert report["meta"]["set"] == "retrieval" and report["meta"]["version"] == __version__
     kept = list((indexed.workspace / "reports").glob(f"eval-retrieval-{__version__}-*.json"))
     assert len(kept) == 1 and json.loads(kept[0].read_text()) == report
+
+
+def test_an_ask_case_with_the_fake_api_and_the_meta_of_the_report(indexed, tmp_path, monkeypatch, capsys):
+    from atlas.cli import evaluate
+    cases = tmp_path / "answers.yaml"
+    cases.write_text("- id: whole\n  ask: When does the HMI raise an alarm?\n  document: hmi_manual.md\n"
+                     "  scope: whole\n  expect: [answer]\n  tags: [whole]\n"
+                     "- id: cited\n  ask: When does the HMI raise an alarm?\n  expect: [answer]\n  cited: true\n")
+    monkeypatch.setitem(indexed["agents"], "eval", {"sets": [str(cases)], "runs": 1})
+    assert evaluate(indexed) == 0
+    out = capsys.readouterr().out
+    assert "ok   whole #1" in out and "[whole, 2 requests]" in out          # the rewriting and the answer
+    assert "FAIL cited #1" in out and "not in a cited source: answer" in out
+    assert "answers: 1 of 2 right (50%)" in out and "answers whole: 1 of 1" in out
+    report = json.loads((indexed.workspace / "reports" / "eval-answers.json").read_text())
+    assert set(report) == {"meta", "answers"} and report["answers"]["requests"] == 4
+    meta = report["meta"]
+    assert (meta["model"], meta["embeddings_model"], meta["runs"], meta["provider"]) == ("fake", "embeddinggemma", 1, None)
+    assert len(meta["yaml_sha256"]) == 16 and meta["set"] == "answers" and "reasoning_effort" in meta
 
 
 def test_compare_with_the_report_of_another_version(indexed, monkeypatch, capsys):

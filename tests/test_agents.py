@@ -566,6 +566,8 @@ def test_evaluation_scores_the_answers_without_a_model(workspace, tmp_path, monk
     assert (res["passed"], res["total"], res["rate"], res["by_case"]) == (1, 2, 0.5, {"trace": "1/1", "wrong": "0/1"})
     assert res["results"][1]["missing"] == ["SRS-0002"] and res["results"][1]["missing_tools"] == []
     assert res["results"][0]["calls"] == ["trace"]
+    assert res["results"][0]["tokens"] == {"prompt": 200, "completion": 20}       # two turns of StubClient
+    assert res["tokens"] == {"prompt": 300, "completion": 30}
 
     bad = tmp_path / "bad.yaml"
     bad.write_text("- id: a\n  question: q\n")

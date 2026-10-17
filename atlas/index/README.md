@@ -127,6 +127,7 @@ from atlas.index import Index
 idx = Index.from_config(load_config("atlas.dev.toml"))
 hits = idx.search("alarm latency", k=8, kinds=["requirement"])
 res = idx.answer("When does the HMI raise an alarm?")      # {"answer", "sources", "scope", ...}
+                                                           # cada fuente: cite, excerpt y context (lo leído)
 res = idx.answer("Summarise SRS_TMS", scope="whole")       # el módulo entero, por partes si no cabe
 idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lotes llenos
 ```

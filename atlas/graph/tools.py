@@ -61,7 +61,7 @@ class GraphTools:
         tools = getattr(context, "_graph_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg)
-            setattr(context, "_graph_tools", tools)
+            context._graph_tools = tools
         return tools
 
     def graph(self) -> KnowledgeGraph | None:

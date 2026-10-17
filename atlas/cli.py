@@ -46,11 +46,15 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 from atlas import plugins
 from atlas.config import Config, ConfigError, load_config
 from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
 from atlas.store import Store
+
+if TYPE_CHECKING:
+    from atlas.docs import DocsOptions
 
 log = logging.getLogger("atlas")
 
@@ -964,7 +968,7 @@ def agent(cfg: Config, name: str, question: str) -> int:
         sys.exit(str(e))
     print(res["answer"] or "(no answer)")
     if res["stopped"]:
-        print(f"\n(stopped after the most calls to the model of the agent, max_steps)")
+        print("\n(stopped after the most calls to the model of the agent, max_steps)")
     if res["calls"]:
         print("\nTools called:")
     for c in res["calls"]:

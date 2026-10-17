@@ -81,6 +81,7 @@ import ast
 import glob
 import os
 import re
+import shutil
 import signal
 import subprocess
 import time
@@ -188,6 +189,15 @@ def hint_for(hints: list[tuple[re.Pattern, str]], message: str, details: Iterabl
     return ""
 
 
+def on_path(args: list[str], path: str) -> list[str]:
+    """`args` with its program looked up in `path` (tool_path, then PATH). Windows looks for it in
+    the PATH of atlas, not in the one given to the process, and would not see tool_path; there
+    `which` also finds the .exe, .cmd or .bat of a name."""
+    if os.name != "nt" or not args or os.path.dirname(args[0]):
+        return args
+    return [shutil.which(args[0], path=path) or args[0], *args[1:]]
+
+
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
@@ -254,7 +264,7 @@ class BuildTools:
         tools = getattr(context, "_build_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg, CodeTools.for_context(context))
-            setattr(context, "_build_tools", tools)
+            context._build_tools = tools
             tools.hook()
         return tools
 
@@ -336,8 +346,8 @@ class BuildTools:
                  else {"start_new_session": True})
         timeout = self.timeouts.get(kind, self.timeout)
         try:
-            proc = subprocess.Popen(args, cwd=self.build_dir, env=env, text=True, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE,
+            proc = subprocess.Popen(on_path(args, env["PATH"]), cwd=self.build_dir, env=env, text=True,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL, **group)
         except FileNotFoundError:
             return {"error": f"{args[0]} not found: install it or set [sources.code] tool_path"}

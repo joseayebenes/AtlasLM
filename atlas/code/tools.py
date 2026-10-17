@@ -127,7 +127,7 @@ class CodeTools:
         tools = getattr(context, "_code_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg)
-            setattr(context, "_code_tools", tools)
+            context._code_tools = tools
             from atlas.code.build import BuildTools
             BuildTools.for_context(context)
         return tools

@@ -27,7 +27,6 @@ import queue
 import re
 import subprocess
 import threading
-import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
@@ -188,7 +187,7 @@ class LanguageTools:
         if tools is None:
             from atlas.code.build import BuildTools
             tools = cls.from_config(context.cfg, BuildTools.for_context(context))
-            setattr(context, "_language_tools", tools)
+            context._language_tools = tools
         return tools
 
     # --- the server ---------------------------------------------------------------------------
@@ -213,8 +212,9 @@ class LanguageTools:
         with _servers_lock:
             server = _servers.get(key)
             if server is None or server.proc is None or server.proc.poll() is not None:
+                from atlas.code.build import on_path
                 env = {**os.environ, "PATH": os.pathsep.join([*self.build.tool_path, os.environ.get("PATH", "")])}
-                server = LanguageServer(self.command, root, {"ada": {"projectFile": self._gpr()}}, env)
+                server = LanguageServer(on_path(self.command, env["PATH"]), root, {"ada": {"projectFile": self._gpr()}}, env)
                 server.start()
                 _servers[key] = server
         return server

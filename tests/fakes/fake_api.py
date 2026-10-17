@@ -23,7 +23,7 @@ notes ("Notes: ...") one that cites every source of the notes. The rewriting of 
 calls it broad if it says all, every, explain or summarise, and gives the listed documents
 it names.
 """
-import argparse, json, re, hashlib, os
+import argparse, json, re, hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _ap = argparse.ArgumentParser(); _ap.add_argument("--port", type=int, default=8770); _ap.add_argument("--control", default="faults.json")
 ARGS = _ap.parse_args()

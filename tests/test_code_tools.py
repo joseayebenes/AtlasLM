@@ -52,7 +52,11 @@ def test_list_grep_and_read(project):
 @pytest.mark.parametrize("path", ["secret.txt", "src/../secret.txt", "/etc/hosts", "src/build/tracks.ali",
                                   "src/link.txt"])
 def test_nothing_outside_the_roots(project, tmp_path, path):
-    (tmp_path / "src" / "link.txt").symlink_to(tmp_path / "secret.txt")      # a link that leaves the root
+    try:
+        (tmp_path / "src" / "link.txt").symlink_to(tmp_path / "secret.txt")      # a link that leaves the root
+    except OSError:                                 # Windows: a symbolic link needs a privilege
+        if path == "src/link.txt":
+            pytest.skip("cannot create a symbolic link here")
     assert "error" in project.read_file(path)
     assert "error" in project.write_file(path, "x")
     assert "secret.txt" not in str(project.grep("password"))
@@ -115,11 +119,11 @@ def test_backslashes_at_the_end_of_every_new_line_are_removed(project, tmp_path)
 def test_encoding_line_endings_and_permissions(project, tmp_path):
     crlf = tmp_path / "src" / "legacy.adb"
     crlf.write_bytes("-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   null;\r\nend Run;\r\n".encode("latin-1"))
-    crlf.chmod(0o750)
+    crlf.chmod(0o750)                               # on Windows, chmod only sets or clears read-only
     project.read_file("src/legacy.adb")
     assert "replacements" in project.edit_file("src/legacy.adb", "begin\n   null;", "begin\n   Go;")
     assert crlf.read_bytes() == "-- Módulo de pistas\r\nprocedure Run is\r\nbegin\r\n   Go;\r\nend Run;\r\n".encode("latin-1")
-    assert stat.S_IMODE(crlf.stat().st_mode) == 0o750
+    assert os.name == "nt" or stat.S_IMODE(crlf.stat().st_mode) == 0o750
     assert "cannot hold" in project.edit_file("src/legacy.adb", "Go;", "Go;  -- 漢字")["error"]
     assert not list((tmp_path / "src").glob(".*atlas-tmp"))
 

@@ -28,6 +28,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   clave de `ATLAS_API_KEY`, como la plantilla y la guía de instalación (antes, `GW_KEY`).
 
 ### Corregido
+- Con Python 3.13, un certificado sin Authority Key Identifier, como los de algunos proxies que
+  inspeccionan TLS, ya no se rechaza cuando `ca_cert` no es `"system"`: 3.13 enciende
+  `VERIFY_X509_STRICT` y atlas la quita en su contexto propio (la cadena y el nombre se siguen
+  verificando, como en 3.12). Si el error sale, `atlas check` recomienda `ca_cert = "system"`
+  o Python 3.12 en vez de pedir la CA corporativa.
 - Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
   `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.
 

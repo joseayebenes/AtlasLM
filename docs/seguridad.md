@@ -90,6 +90,14 @@ Además:
   desactiva solo para diagnosticar, y `atlas check` lo avisa.
 - `ca_cert = "system"` usa el almacén de certificados del sistema (truststore), donde está
   la raíz corporativa; también se puede dar un PEM.
+- Con Python 3.13 y sin `ca_cert = "system"`, atlas quita del contexto TLS la bandera
+  `VERIFY_X509_STRICT`, que 3.13 enciende por defecto. Esa bandera rechaza certificados a los
+  que les falta una extensión (el Authority Key Identifier, por ejemplo), como los que firman
+  algunos proxies que inspeccionan TLS, aunque su cadena sea de confianza. Sin ella se
+  comprueba lo mismo que en 3.12: que la cadena llega a una raíz de confianza, las fechas y el
+  nombre del servidor. Con `"system"` decide el sistema, que no la aplica. Si aun así sale
+  «Missing Authority Key Identifier», `atlas check` recomienda `ca_cert = "system"` o
+  Python 3.12.
 - El proxy es el de `[network] proxy`. Si no se dice, el de `HTTPS_PROXY` o `HTTP_PROXY`,
   como pip o curl; `no_proxy` (o `NO_PROXY`) dice qué servidores van directos. Del mismo
   modo, sin `ca_cert` se añade el PEM de `SSL_CERT_FILE` si existe.

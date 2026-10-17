@@ -125,3 +125,20 @@ def test_extra_body_goes_as_is_in_every_chat_request(fake, fake_stats, capsys, t
         "summary": {"type": "string"}}}, "overview")
     last = fake_stats()["last_chat"]
     assert last["provider"] == provider and last["response_format"]["type"] == "json_schema"
+
+
+def test_the_own_tls_context_is_not_strict_on_python_3_13():
+    import ssl
+    import sys
+    from atlas.llm import NetConfig, diagnose
+    from atlas.llm.connection import ssl_context
+    ctx = ssl_context(NetConfig(ca_cert="", insecure=False))
+    assert ctx.verify_mode == ssl.CERT_REQUIRED and ctx.check_hostname       # the chain and the name, verified
+    if sys.version_info >= (3, 13):
+        assert not ctx.verify_flags & ssl.VERIFY_X509_STRICT
+    strict = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                                             "Missing Authority Key Identifier (_ssl.c:1028)")
+    assert 'ca_cert = "system"' in diagnose(strict) and "Python 3.12" in diagnose(strict)
+    other = ssl.SSLCertVerificationError(1, "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+                                            "unable to get local issuer certificate")
+    assert "corporate root CA" in diagnose(other)

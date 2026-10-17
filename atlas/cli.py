@@ -29,7 +29,8 @@
                    [--module MODULE] [--chapter CHAPTER] [--attribute NAME=VALUE]
                    [--section S]   reads whole only a section (its number, title or ID)
                    [--dry-run]   only the plan of reading them whole, without asking the model
-    atlas plugins  [atlas.toml]     available plugins
+    atlas plugins  [atlas.toml]     available plugins, and the code roots and how many Ada files they have
+                                    (those of the GPR of [sources.code] project, if any)
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
@@ -243,10 +244,31 @@ def doors_section(cfg: Config, sd: dict) -> dict:
     return sd
 
 
+def code_files(cfg: Config, sc: dict, extensions, warn: bool = False) -> list[str]:
+    """The files of the code roots with these extensions, without the excluded ones, named
+    from the folder of atlas.toml (Config.relative); `warn`: a warning for a root that is not
+    there."""
+    exclude, out = sc.get("exclude", []), []
+    for root in sc.get("roots", []):
+        base = cfg.resolve(root)
+        if not base.is_dir():
+            if warn:
+                log.warning("[sources.code] roots: %s does not exist", root)
+            continue
+        for p in sorted(base.rglob("*")):
+            f = cfg.relative(p)
+            if p.is_file() and p.suffix.lower() in extensions and \
+                    not any(fnmatch.fnmatch(f.replace("\\", "/"), pat) for pat in exclude):
+                out.append(f)
+    return out
+
+
 def code_step(ctx) -> Step | None:
+    from atlas.code.gpr import code_config
     sc = ctx.cfg["sources"].get("code")
     if not sc or not sc.get("enabled", True):
         return None
+    sc = code_config(ctx.cfg)          # with a GPR project: its source folders and object folders
     ids = id_regex(ctx)                                          # the IDs inside a tag
     analyzers = {}
     resolved = {**sc, "roots": [str(ctx.cfg.resolve(r)) for r in sc.get("roots", [])]}
@@ -256,22 +278,10 @@ def code_step(ctx) -> Step | None:
         except LookupError as e:
             raise ConfigError(str(e)) from None
     by_ext = {ext: a for a in analyzers.values() for ext in a.extensions}
-    exclude = sc.get("exclude", [])
 
     def files(ctx) -> list[str]:
         """The code files, named from the folder of atlas.toml (Config.relative)."""
-        out = []
-        for root in sc.get("roots", []):
-            base = ctx.cfg.resolve(root)
-            if not base.is_dir():
-                log.warning("[sources.code] roots: %s does not exist", root)
-                continue
-            for p in sorted(base.rglob("*")):
-                f = ctx.cfg.relative(p)
-                if p.is_file() and p.suffix.lower() in by_ext and \
-                        not any(fnmatch.fnmatch(f.replace("\\", "/"), pat) for pat in exclude):
-                    out.append(f)
-        return out
+        return code_files(ctx.cfg, sc, by_ext, warn=True)
 
     def run(ctx, f: str):
         a = by_ext[Path(f).suffix.lower()]
@@ -1596,6 +1606,22 @@ def list_plugins(cfg: Config) -> int:
                 cls = plugins.get("extractor", name)
                 off = " (disabled)" if f"extractor:{name}" in ctx.disabled else ""
                 print(f"  {name:14s} {' '.join(cls.extensions)}  license: {cls.license or 'no third-party library'}{off}")
+    if cfg["sources"].get("code"):
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
+        project = sc.get("_project")
+        if project:
+            scenario = ", ".join(f"{k}={v}" for k, v in project["externals"].items())
+            print(f"\n{'code project':16s} {project['path']}" + (f" ({scenario})" if scenario else ""))
+            for label, key in (("  imports", "withs"), ("  object dirs", "object_dirs")):
+                if project[key]:
+                    print(f"{label:16s} {', '.join(project[key])}")
+        else:
+            print()
+        given = "" if project is None or (cfg["sources"]["code"].get("roots")) else " (from the project)"
+        print(f"{'code roots':16s} {', '.join(sc.get('roots', [])) or '-'}{given}")
+        ada = code_files(cfg, sc, (".ads", ".adb"))
+        print(f"{'code files':16s} {len(ada)} .ads/.adb ({sum(f.lower().endswith('.ads') for f in ada)} .ads)")
     return 0
 
 

@@ -8,6 +8,8 @@
     build.py    BuildTools: check_code and run_test, the compiler and the tests of the project
     lsp.py      LanguageTools: find_definition, find_references and describe_symbol, from a
                 language server (the Ada Language Server)
+    gpr.py      read_project: the source and object folders of a GPR project ([sources.code]
+                project), for the roots, exclude and the gprbuild commands
 
 The traceability tag is `req_tag` of [sources.code] ("Req:" by default), or `req_regex`
 for full control (group 1 = the list of IDs). To add another language: a CodeAnalyzer

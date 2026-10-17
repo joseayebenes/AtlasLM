@@ -511,6 +511,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `DocumentExtractor.read(path)`: el texto y lo que el extractor sabe del fichero (páginas,
   páginas sin texto, metadatos del PDF). Un extractor de un plugin puede seguir implementando
   solo `extract`.
+- `[sources.code] project = "tms.gpr"` y `[sources.code.project_vars]`: el proyecto GPR del
+  código Ada da las raíces (las carpetas de fuentes suyas y de los proyectos que importa, con
+  `**`), añade a `exclude` las de objetos, ejecutables y bibliotecas, y, si no se dan, los
+  comandos de gprbuild (`gprbuild -P {project} -X... -c -u -f {file}`, `-gnatc` para una
+  especificación sola, y el de las pruebas). El servidor de lenguaje abre ese proyecto con sus
+  variables en vez del mínimo que escribía atlas. El lector (`atlas/code/gpr.py`) es propio y
+  sin dependencias, y avisa con fichero y línea de lo que no entiende. `{project}` vale en
+  cualquier comando.
+- `atlas plugins` dice qué raíces de código hay (y si salen del proyecto), qué se excluye y
+  cuántos ficheros `.ads` y `.adb` ven.
+- `examples/samples/ada/samples.gpr` (`make_samples.py`), con una variable de escenario.
+- `tools/reqif_import/reqif_to_exchange.py`: la base de intercambio desde ficheros ReqIF
+  (`.reqif` y `.reqifz`), el segundo camino junto a `tools/doors_export`, en cualquier equipo y
+  sin dependencias (`xml.etree`). `SPECIFICATION` → módulo, `SPEC-HIERARCHY` → padre, orden,
+  nivel y numeración, `SPEC-OBJECT` → requisito, `SPEC-RELATION` → enlace del tipo de su
+  `SPEC-RELATION-TYPE`, con el `mapping.toml` de `publish.py` (`[fields]`, `[attributes]`,
+  `[modules]`, `[link_types]`, `[kinds]`; `Object Text` encuentra también `ReqIF.Text`) y sus
+  avisos: IDs repetidos o sin ID, enlaces a objetos de ningún fichero y, con `--id-pattern`,
+  IDs fuera de la convención. Varios ficheros se leen juntos, así que los enlaces entre sus
+  módulos se resuelven. `make_samples.py` escribe `examples/samples/requirements.reqif`, que da
+  las mismas filas que `requirements.sqlite`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,

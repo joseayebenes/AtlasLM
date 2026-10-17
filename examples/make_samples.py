@@ -9,11 +9,14 @@ documents, code or DOORS:
   samples/tables/interface_tables.pdf       requirements in a table with borders, a caption, a list
                                             and numbered steps
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
+  samples/ada/samples.gpr                   its GPR project: a scenario variable, src and tests
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
                                             (atlas.doors.exchange), with headings and hierarchy, and
                                             a module of test procedures (STP_TMS) that verify some
                                             and a note (an information object) after SRS-0004
+  samples/requirements.reqif                those of requirements.sqlite as a ReqIF file, for
+                                            tools/reqif_import (with its mapping.example.toml)
 
 Requires: pip install pymupdf
 """
@@ -208,6 +211,24 @@ begin
    Tracks.Delete_Track (1);
 end Test_Tracks;
 """, encoding="utf-8")
+    (ROOT / "ada" / "samples.gpr").write_text("""-- The GPR project of the samples ([sources.code] project in the tests).
+project Samples is
+   type Build_Type is ("debug", "release");
+   Build : Build_Type := external ("BUILD", "debug");
+
+   for Source_Dirs use ("src", "tests");
+   for Object_Dir use "obj/" & Build;
+
+   package Compiler is
+      case Build is
+         when "debug" =>
+            for Default_Switches ("Ada") use ("-g", "-gnata");
+         when others =>
+            for Default_Switches ("Ada") use ("-O2");
+      end case;
+   end Compiler;
+end Samples;
+""", encoding="utf-8")
     print("created", ROOT / "ada")
 
 
@@ -294,10 +315,135 @@ def exchange() -> None:
     print("created", path)
 
 
+def reqif(path: Path | None = None) -> Path:
+    """The modules of requirements.sqlite as one ReqIF file: a SPECIFICATION per module, the
+    hierarchy of the parents, the text as XHTML, Status as an enumeration and the links as
+    SPEC-RELATIONs, typed by their name. Each kind of object has its SPEC-OBJECT-TYPE, with
+    the attributes it has: the headings, without Status and Verification Method; the test
+    procedures (STP_TMS), with their title and without Verification Method; the notes, only
+    their text. "Object Type" says which are requirements (mapping.example.toml)."""
+    import json
+    import xml.etree.ElementTree as ET
+    ns = "http://www.omg.org/spec/ReqIF/20110401/reqif.xsd"
+    xhtml = "http://www.w3.org/1999/xhtml"
+    ET.register_namespace("", ns)
+    ET.register_namespace("xhtml", xhtml)
+    q = lambda tag: f"{{{ns}}}{tag}"
+
+    def el(parent, tag, text=None, **attrs):
+        e = ET.SubElement(parent, q(tag), {k.replace("_", "-"): v for k, v in attrs.items()})
+        if text is not None:
+            e.text = text
+        return e
+
+    def ref(parent, holder, kind, target):
+        el(el(parent, holder), f"{kind}-REF", target)
+
+    source = sqlite3.connect(ROOT / "requirements.sqlite")
+    source.row_factory = sqlite3.Row
+    rows = source.execute("SELECT * FROM exchange_requirements ORDER BY module, position").fetchall()
+    links = source.execute("SELECT * FROM exchange_links ORDER BY module, source, target").fetchall()
+    modules = [r[0] for r in source.execute("SELECT module FROM exchange_modules ORDER BY module")]
+    source.close()
+    statuses = sorted({json.loads(r["attributes"]).get("status") for r in rows} - {None})
+
+    root = ET.Element(q("REQ-IF"))
+    header = el(el(root, "THE-HEADER"), "REQ-IF-HEADER", IDENTIFIER="header")
+    for tag, text in (("CREATION-TIME", "2026-10-17T00:00:00Z"), ("REQ-IF-TOOL-ID", "examples/make_samples.py"),
+                      ("REQ-IF-VERSION", "1.0"), ("SOURCE-TOOL-ID", "examples/make_samples.py"),
+                      ("TITLE", "AtlasLM samples")):
+        el(header, tag, text)
+    content = el(el(root, "CORE-CONTENT"), "REQ-IF-CONTENT")
+    types = el(content, "DATATYPES")
+    el(types, "DATATYPE-DEFINITION-STRING", IDENTIFIER="dt-string", LONG_NAME="String", MAX_LENGTH="10000")
+    el(types, "DATATYPE-DEFINITION-XHTML", IDENTIFIER="dt-xhtml", LONG_NAME="XHTML")
+    values = el(el(types, "DATATYPE-DEFINITION-ENUMERATION", IDENTIFIER="dt-status", LONG_NAME="Status"),
+                "SPECIFIED-VALUES")
+    for n, status in enumerate(statuses):
+        el(el(el(values, "ENUM-VALUE", IDENTIFIER=f"status-{status.lower()}", LONG_NAME=status), "PROPERTIES"),
+           "EMBEDDED-VALUE", KEY=str(n), OTHER_CONTENT="")
+    spec_types = el(content, "SPEC-TYPES")
+    for ident, name, attributes in (("type-heading", "Heading", ("id", "heading")),
+                                    ("type-requirement", "Requirement", ("id", "type", "text", "status", "verification")),
+                                    ("type-procedure", "Test procedure", ("id", "type", "heading", "text", "status")),
+                                    ("type-information", "Information", ("id", "text"))):
+        defined = el(el(spec_types, "SPEC-OBJECT-TYPE", IDENTIFIER=ident, LONG_NAME=name), "SPEC-ATTRIBUTES")
+        for a in attributes:
+            kind, long_name, datatype = {"id": ("STRING", "Requirement ID", "dt-string"),
+                                         "type": ("STRING", "Object Type", "dt-string"),
+                                         "heading": ("STRING", "ReqIF.ChapterName", "dt-string"),
+                                         "text": ("XHTML", "ReqIF.Text", "dt-xhtml"),
+                                         "status": ("ENUMERATION", "Status", "dt-status"),
+                                         "verification": ("STRING", "Verification Method", "dt-string")}[a]
+            d = el(defined, f"ATTRIBUTE-DEFINITION-{kind}", IDENTIFIER=f"{ident}-{a}", LONG_NAME=long_name,
+                   **({"MULTI_VALUED": "false"} if kind == "ENUMERATION" else {}))
+            ref(d, "TYPE", f"DATATYPE-DEFINITION-{kind}", datatype)
+    for kind in sorted({l["type"] for l in links}):
+        el(spec_types, "SPEC-RELATION-TYPE", IDENTIFIER=f"rel-{kind}", LONG_NAME=kind)
+    el(spec_types, "SPECIFICATION-TYPE", IDENTIFIER="type-module", LONG_NAME="Module")
+
+    objects = el(content, "SPEC-OBJECTS")
+    key = lambda rid: f"obj-{rid}"
+    for r in rows:
+        attributes = json.loads(r["attributes"])
+        kind = r["kind"] if r["kind"] in ("heading", "information") else \
+            "requirement" if "verification" in attributes else "procedure"
+        o = el(objects, "SPEC-OBJECT", IDENTIFIER=key(r["id"]), LAST_CHANGE="2026-10-17T00:00:00Z")
+        ref(o, "TYPE", "SPEC-OBJECT-TYPE", f"type-{kind}")
+        vals = el(o, "VALUES")
+        string = lambda attribute, value, vals=vals, kind=kind: ref(
+            el(vals, "ATTRIBUTE-VALUE-STRING", THE_VALUE=value), "DEFINITION", "ATTRIBUTE-DEFINITION-STRING",
+            f"type-{kind}-{attribute}")
+        string("id", r["id"])
+        if kind in ("requirement", "procedure"):
+            string("type", "Requirement")
+        if r["heading"] and kind in ("heading", "procedure"):
+            string("heading", r["heading"])
+        if kind == "heading":
+            continue
+        v = el(vals, "ATTRIBUTE-VALUE-XHTML")
+        ref(v, "DEFINITION", "ATTRIBUTE-DEFINITION-XHTML", f"type-{kind}-text")
+        ET.SubElement(el(v, "THE-VALUE"), f"{{{xhtml}}}div").text = r["text"]
+        if attributes.get("status"):
+            v = el(vals, "ATTRIBUTE-VALUE-ENUMERATION")
+            ref(v, "DEFINITION", "ATTRIBUTE-DEFINITION-ENUMERATION", f"type-{kind}-status")
+            el(el(v, "VALUES"), "ENUM-VALUE-REF", f"status-{attributes['status'].lower()}")
+        if attributes.get("verification"):
+            string("verification", attributes["verification"])
+    relations = el(content, "SPEC-RELATIONS")
+    for n, l in enumerate(links, 1):
+        r = el(relations, "SPEC-RELATION", IDENTIFIER=f"link-{n}", LAST_CHANGE="2026-10-17T00:00:00Z")
+        ref(r, "TYPE", "SPEC-RELATION-TYPE", f"rel-{l['type']}")
+        ref(r, "SOURCE", "SPEC-OBJECT", key(l["source"]))
+        ref(r, "TARGET", "SPEC-OBJECT", key(l["target"]))
+    specifications = el(content, "SPECIFICATIONS")
+    for module in modules:
+        spec = el(specifications, "SPECIFICATION", IDENTIFIER=f"spec-{module}", LONG_NAME=module,
+                  LAST_CHANGE="2026-10-17T00:00:00Z")
+        ref(spec, "TYPE", "SPECIFICATION-TYPE", "type-module")
+        holders = {None: el(spec, "CHILDREN")}
+        for r in (r for r in rows if r["module"] == module):       # in order: a parent comes before its children
+            h = el(holders[r["parent"]], "SPEC-HIERARCHY", IDENTIFIER=f"h-{r['id']}",
+                   LAST_CHANGE="2026-10-17T00:00:00Z")
+            ref(h, "OBJECT", "SPEC-OBJECT", key(r["id"]))
+            holders[r["id"]] = el(h, "CHILDREN")
+        for holder in holders.values():                             # no empty CHILDREN
+            for h in list(holder):
+                children = h.find(q("CHILDREN"))
+                if children is not None and not len(children):
+                    h.remove(children)
+    path = path or ROOT / "requirements.reqif"
+    ET.indent(root)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
+    print("created", path)
+    return path
+
+
 if __name__ == "__main__":
     ada()
     doors()
     exchange()
+    reqif()
     try:
         pdfs()
         scanned()

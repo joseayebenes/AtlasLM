@@ -117,10 +117,11 @@ class CodeTools:
 
     @classmethod
     def from_config(cls, cfg, read_only: bool = False, base: str | Path | None = None) -> "CodeTools":
-        """Over the roots and exclude patterns of [sources.code]; paths from the folder of
-        atlas.toml (the working folder), or from `base`, a copy of it (a parallel attempt of
-        atlas develop)."""
-        sc = cfg["sources"].get("code") or {}
+        """Over the roots and exclude patterns of [sources.code] (with a GPR project, those it
+        says); paths from the folder of atlas.toml (the working folder), or from `base`, a copy
+        of it (a parallel attempt of atlas develop)."""
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
         roots = [str(cfg.resolve(r)) if base is None else rebased(r, base, cfg.home) for r in sc.get("roots", [])]
         return cls(roots, sc.get("exclude", []), base=cfg.home if base is None else base, read_only=read_only,
                    protected=sc.get("protected", []), requirements=requirement_pattern(sc))

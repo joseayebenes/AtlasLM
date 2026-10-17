@@ -70,7 +70,7 @@ id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
 
 [sources.code]
-roots = ["src"]
+roots = ["src"]                        # o, con un proyecto GPR, sin roots: project = "tms.gpr" (sus carpetas)
 languages = ["ada"]
 exclude = ["**/obj/**", "**/build/**"]
 test_patterns = ["**/tests/**"]        # sus subprogramas son pruebas

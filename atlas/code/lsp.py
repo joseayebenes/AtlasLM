@@ -6,8 +6,9 @@
 
 [sources.code] language_server is the command of the server, with globs: the Ada Language
 Server of the Ada extension of VS Code, ["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"].
-For Ada, atlas writes a GPR project in <workspace>/build with the folders of the code roots
-that hold Ada sources (or uses language_server_project), and the server finds the runtime of
+For Ada, the server opens the GPR of [sources.code] project, with its project_vars as scenario
+variables; without one, atlas writes a GPR project in <workspace>/build with the folders of the
+code roots that hold Ada sources (or uses language_server_project), and the server finds the runtime of
 GNAT through the tool_path of the project. The model gives a line and a name; the column is
 looked for in that line. A server starts on the first call and stays up while the process
 runs: the first answer of the ALS takes about a second, the next ones milliseconds.
@@ -167,19 +168,21 @@ def _command(patterns: list[str]) -> list[str]:
 
 
 class LanguageTools:
-    def __init__(self, build, command: list[str], project: str = ""):
+    def __init__(self, build, command: list[str], project: str = "", scenario: dict | None = None):
         self.build = build                       # BuildTools: the files and their confinement, tool_path, build folder
         self.files = build.files
         self.command = _command(command)
         self.project = project
+        self.scenario = dict(scenario or {})     # the scenario variables of the project (project_vars)
 
     @classmethod
     def from_config(cls, cfg, build=None) -> "LanguageTools":
         from atlas.code.build import BuildTools
-        sc = cfg["sources"].get("code") or {}
+        from atlas.code.gpr import code_config
+        sc = code_config(cfg)
         project = sc.get("language_server_project", "")
         return cls(build or BuildTools.from_config(cfg), sc.get("language_server", []),
-                   str(cfg.resolve(project)) if project else "")
+                   str(cfg.resolve(project)) if project else "", sc.get("project_vars", {}))
 
     @classmethod
     def for_context(cls, context: Any) -> "LanguageTools":
@@ -214,7 +217,8 @@ class LanguageTools:
             if server is None or server.proc is None or server.proc.poll() is not None:
                 from atlas.code.build import on_path
                 env = {**os.environ, "PATH": os.pathsep.join([*self.build.tool_path, os.environ.get("PATH", "")])}
-                server = LanguageServer(on_path(self.command, env["PATH"]), root, {"ada": {"projectFile": self._gpr()}}, env)
+                settings = {"projectFile": self._gpr(), **({"scenarioVariables": self.scenario} if self.scenario else {})}
+                server = LanguageServer(on_path(self.command, env["PATH"]), root, {"ada": settings}, env)
                 server.start()
                 _servers[key] = server
         return server

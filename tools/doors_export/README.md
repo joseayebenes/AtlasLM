@@ -17,6 +17,11 @@ DOORS ──(1) doors_download.py──► doors_raw.sqlite ──(2) publish.py
 2. **Publicación** (`publish.py`). Aplica `mapping.toml` y escribe la base de intercambio.
    No necesita DOORS: si cambias la correspondencia, solo vuelves a publicar.
 
+Si no se puede ejecutar DXL por COM y la administración de DOORS solo entrega ReqIF,
+[tools/reqif_import](../reqif_import/README.md) rellena la misma base desde los ficheros
+ReqIF, con el mismo `mapping.toml` (su clase `Mapping`, la clasificación por `[kinds]` y los
+avisos de `publish.py`).
+
 Viene del script de dos ficheros del proyecto doors_kb (`legacy/doors_kb/`: `scripts/descargar_requisitos.py`
 y `scripts/modelo_sqlite.py`). Está traducido al inglés y además lee la jerarquía y los
 enlaces, guarda la definición de los atributos y tiene versión de esquema. Una base de

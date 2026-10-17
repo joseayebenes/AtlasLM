@@ -1,0 +1,34 @@
+# mapping.toml para reqif_to_exchange.py — la misma correspondencia que la de
+# tools/doors_export (ver su mapping.example.toml), con los nombres del ReqIF a la derecha:
+# el LONG-NAME de las definiciones de atributos, de las SPECIFICATION y de los
+# SPEC-RELATION-TYPE. Esta vale para examples/samples/requirements.reqif (make_samples.py).
+
+[fields]
+id = "Requirement ID"       # un atributo con el ID de documentos y código; o "identifier" (el IDENTIFIER
+                            # del SPEC-OBJECT, interno en un ReqIF de DOORS), "absolute_number"
+                            # (ReqIF.ForeignID) o "module_number" (módulo en atlas + ese número)
+text = "ReqIF.Text"         # "Object Text" también encuentra ReqIF.Text
+heading = "ReqIF.ChapterName"   # "Object Heading" también encuentra ReqIF.ChapterName
+
+[attributes]                # atributo en atlas = atributo del ReqIF; solo en los objetos cuyo tipo lo define
+status = "Status"
+verification = "Verification Method"
+
+[modules]                   # nombre en atlas = SPECIFICATION del ReqIF; sin entrada, el mismo nombre
+# SRS_TMS = "Software Requirements"
+
+[link_types]                # tipo de enlace en atlas = SPEC-RELATION-TYPE del ReqIF
+# satisfies = ["Satisfies", "Satisfaction"]
+
+[links]
+default_type = ""           # tipo de los demás; vacío = el nombre del SPEC-RELATION-TYPE en minúsculas
+
+# [kinds] como en tools/doors_export: sin la sección, un objeto con texto es "requirement", uno
+# con título y sin texto es "heading" y el resto "information". En las muestras, "Object Type"
+# dice cuáles son requisitos (los procedimientos de prueba también, con su título); los demás,
+# por su contenido: una nota, con texto y sin título, es "information".
+[kinds]
+attribute = "Object Type"
+others = "heading_or_information"
+[kinds.values]
+requirement = "Requirement"

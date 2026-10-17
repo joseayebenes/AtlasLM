@@ -346,15 +346,17 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `roots` | lista | `[]` | carpetas del código (se recorren enteras); también las únicas que pueden leer y editar las herramientas de ficheros |
+| `project` | texto | `""` | el proyecto GPR del código Ada (`"tms.gpr"`), relativo a `atlas.toml`: da las raíces, lo que se excluye, los comandos de GNAT y el proyecto del servidor de lenguaje que no se den (ver «El proyecto GPR», abajo) |
+| `project_vars` | tabla | `{}` | las variables de escenario del proyecto, `{ BUILD = "debug" }`: el valor de cada `external ("BUILD", ...)` del GPR y un `-XBUILD=debug` en los comandos de gprbuild. Una variable que no está toma el valor del entorno y, si no, el suyo por defecto, como gprbuild |
+| `roots` | lista | `[]` | carpetas del código (se recorren enteras); también las únicas que pueden leer y editar las herramientas de ficheros. Con `project` y sin `roots`, las carpetas de fuentes del proyecto y de los que importa |
 | `languages` | lista | `["ada"]` | analizadores (plugins `code_analyzer`): `"ada"` y `"python"` |
-| `exclude` | lista | `[]` | patrones que no se analizan ni se dejan leer: `["**/obj/**"]` |
+| `exclude` | lista | `[]` | patrones que no se analizan ni se dejan leer: `["**/obj/**"]`. Con `project`, se añaden las carpetas de objetos, ejecutables y bibliotecas del proyecto |
 | `req_tag` | texto | `"Req:"` | la etiqueta de trazabilidad en los comentarios |
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |
 | `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos. Con `stray = "delete"` en el plan de `atlas develop`, un fichero nuevo de un encargo que casa con ellos y no con `protected` (un test del agente entre el código) se borra |
-| `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
+| `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código, `{build}` la carpeta `<workspace>/build` y `{project}` el fichero de `project`. Vacía: sin `check_code`. Con `project` y sin esta clave, `["gprbuild", "-P", "{project}", "-X...", "--autoconf={build}/gprbuild.cgpr", "--relocate-build-tree={build}/check", "--root-dir=...", "-c", "-u", "-f", "{file}"]`, y las `.ads` con `-cargs -gnatc` en `check_commands`: las comprobaciones compilan en un árbol aparte, para que el `.ali` de una especificación comprobada con `-gnatc` no deje sin enlazar la siguiente prueba |
 | `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
-| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza: en `run_command`, el que exista de `<build>/<nombre>` y `<build>/<nombre>.exe` (GNAT le añade `.exe` en Windows) |
+| `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza: en `run_command`, el que exista de `<build>/<nombre>` y `<build>/<nombre>.exe` (GNAT le añade `.exe` en Windows). Con `project` y sin esta clave, `["gprbuild", "-P", "{project}", "-X...", "--autoconf=...", "{file}", "-o", "{exe}"]`: la prueba tiene que estar en las carpetas de fuentes del proyecto |
 | `run_command` | lista | `["{exe}"]` | cómo se ejecuta lo que construyó `test_command`. Un envoltorio puede arrancar antes lo que la prueba necesita: `["with_server", "{exe}"]` |
 | `test_commands` | tabla | `{}` | pruebas que no se construyen, por extensión: el comando que las ejecuta tal cual, `{ py = ["python3", "{file}"] }` |
 | `program_command` | lista | `[]` | lo que ejecuta la herramienta `run_program`, con las líneas que le da el agente en su entrada estándar: el programa, o un cliente que se las pasa, `["with_server", "session"]`. Vacía: sin `run_program` |
@@ -365,7 +367,7 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | `library` | lista | `[]` | carpetas de especificaciones (`.ads`) de bibliotecas que el proyecto usa, con comodines: el runtime de GNAT, `["~/.local/share/alire/toolchains/gnat_native_*/lib/gcc/*/*/adainclude"]` (`gcc -print-file-name=adainclude` dice cuál). Para la herramienta `library_spec` y para los errores que nombran algo que no existe; las especificaciones de las raíces del código van siempre |
 | `reference` | lista | `[]` | manuales para la herramienta `search_reference` (y `atlas reference`), con comodines; una carpeta, todos los suyos: `.info` (los de GNAT, `~/.local/share/alire/toolchains/gnat_native_*/share/info/gnat_rm.info` y `gnat_ugn.info`), `.md`, `.txt` y `.html`. Van con las declaraciones de `library` en `<workspace>/reference.db`, no en el índice del proyecto |
 | `language_server` | lista | `[]` | el servidor de lenguaje de las herramientas `find_definition`, `find_references` y `describe_symbol`, con comodines en el programa: el Ada Language Server de la extensión de VS Code, `["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]` |
-| `language_server_project` | texto | `""` | el proyecto GPR que lee el servidor, relativo a `atlas.toml`; vacío: atlas escribe uno con las carpetas de las raíces que tienen fuentes Ada |
+| `language_server_project` | texto | `""` | el proyecto GPR que lee el servidor, relativo a `atlas.toml`; vacío: el de `project`, con `project_vars` como variables de escenario, y sin `project`, atlas escribe uno con las carpetas de las raíces que tienen fuentes Ada |
 | `check_on_edit` | sí/no | `true` | cada cambio de las herramientas de ficheros devuelve en `check` lo que dice `check_code` del fichero (si hay compilador para su extensión): una vuelta menos, y el agente no puede decir que compila sin verlo |
 | `tool_path` | lista | `[]` | carpetas que van antes del `PATH` para esos comandos, con comodines: `["~/.local/share/alire/toolchains/gnat_native_*/bin"]`. Una relativa lo es a `atlas.toml`, como las raíces del código |
 | `command_timeout` | entero | `120` | segundos como mucho para cada comando: compilar, construir o ejecutar una prueba, ejecutar el programa. Al acabarse, se mata el comando con todo lo que arrancó (su grupo de procesos): un envoltorio como `with_server` ya no deja vivo el servidor |
@@ -374,6 +376,43 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | `program_timeout` | entero | `command_timeout` | en vez de `command_timeout`, para `run_program` |
 | `model` | texto | `"full"` | `"none"`: nada del código sale del puesto (ver [Fuentes locales](#fuentes-locales-model--none)); los agentes con herramientas que leen o compilan el código no arrancan |
 | `enabled` | sí/no | `true` | `false` lo deja fuera |
+
+### El proyecto GPR
+
+Un proyecto Ada ya dice en sus `.gpr` dónde están sus fuentes, dónde deja el compilador lo que
+produce y qué otros proyectos usa. Con `project`, atlas lo lee en vez de pedirlo otra vez:
+
+```toml
+[sources.code]
+project = "tms.gpr"
+tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin",
+             "~/.local/share/alire/toolchains/gprbuild_*/bin"]
+[sources.code.project_vars]
+BUILD = "debug"
+```
+
+- `roots`, si no se dan: las carpetas de `Source_Dirs` del proyecto y de los que importa con
+  `with` (también `extends` y los `Project_Files` de un proyecto agregado), una vez cada una;
+  `src/**` es esa carpeta y todas las de debajo.
+- `exclude`: se le añaden `Object_Dir`, `Exec_Dir` y las carpetas de biblioteca de esos
+  proyectos, salvo las que tienen fuentes (el `Object_Dir` por defecto es la carpeta del
+  proyecto).
+- `check_command`, `check_commands` y `test_command`, si no se dan: gprbuild sobre el
+  proyecto, con un `-X` por variable de `project_vars`. `--autoconf` guarda en
+  `<workspace>/build/gprbuild.cgpr` la configuración de los compiladores que gprbuild busca en
+  cada llamada (la mitad de tiempo por comprobación); se borra si cambia el compilador.
+- El servidor de lenguaje abre ese proyecto con esas variables.
+
+`atlas plugins` dice qué raíces salen del proyecto, qué carpetas se excluyen y cuántos
+ficheros `.ads` y `.adb` ve. El lector es propio y sin dependencias: entiende lo habitual
+(`with`, tipos, variables, `external`, `case`, listas, `&`, `for ... use`, `Proyecto'Atributo`)
+y salta los paquetes (`Compiler`, `Builder`, `Naming`...). Lo que no entiende es un aviso con
+su fichero y su línea, y lo demás se sigue leyendo; tampoco usa `Source_Files` ni
+`Source_List_File` (lee todos los ficheros de las carpetas) ni un `with` que no esté junto al
+proyecto que lo importa (una biblioteca instalada, que gprbuild busca en `GPR_PROJECT_PATH`).
+Las raíces se recorren enteras: una carpeta de `Source_Dirs` sin `**` incluye también sus
+subcarpetas.
+
 
 ## Fuentes locales (`model = "none"`)
 

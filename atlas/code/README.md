@@ -15,6 +15,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
 | `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
+| `gpr.py` | `read_project`: las carpetas de fuentes y de objetos de un proyecto GPR y de los que importa (`[sources.code] project`), para las raíces, `exclude` y los comandos de gprbuild |
 | `hints.toml` | las pistas de serie para los mensajes de GNAT |
 | `rules.toml` | las reglas de serie para el texto nuevo de un cambio (Ada y Python) |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
@@ -319,7 +320,8 @@ tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 
 `{include}` se convierte en un `-I` por cada carpeta de código, `{build}` es
 `<workspace>/build`, donde el compilador deja lo que produce, y `tool_path` va antes del
-`PATH` solo para estos comandos. Un proyecto con fichero GPR usaría `gprbuild -P`.
+`PATH` solo para estos comandos. Un proyecto con fichero GPR lo da en `project` (ver «El
+proyecto GPR», abajo).
 `gnatmake` decide qué recompilar por las fechas de los ficheros: un cambio un instante después
 de compilar puede no verse. Si pasa, `-f` en `test_command` recompila todo lo que usa la
 prueba.
@@ -391,6 +393,58 @@ Las herramientas hacen su parte: los errores que cometió el modelo (`Delete_Tra
 nombres repetidos) los detecta `check_code` con GNAT, como comprueban las pruebas. Para que un
 agente los corrija hace falta un modelo que siga las instrucciones en tareas de varios pasos.
 
+## El proyecto GPR
+
+Un proyecto Ada real dice en sus `.gpr` dónde están sus fuentes (`Source_Dirs`), dónde deja
+el compilador lo que produce (`Object_Dir`), qué otros proyectos usa (`with`) y entre qué
+compilaciones se elige (las variables de escenario, `external`). Con `[sources.code] project`
+atlas lo lee:
+
+```toml
+[sources.code]
+project = "tms.gpr"                       # relativo a atlas.toml
+tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin",
+             "~/.local/share/alire/toolchains/gprbuild_*/bin"]
+[sources.code.project_vars]
+BUILD = "debug"
+```
+
+`read_project(path, vars)` devuelve las carpetas de fuentes (con `**` expandido) y de objetos
+(`Object_Dir`, `Exec_Dir`, las de biblioteca) del proyecto y de los que importa, recursivamente,
+los proyectos importados, su `Main`, el valor que tomó cada `external` y los avisos. Con eso:
+
+| Clave | Sin darla, con `project` |
+|---|---|
+| `roots` | las carpetas de fuentes, sin las que están dentro de otra |
+| `exclude` | lo que se dé, más las carpetas de objetos que no tienen fuentes |
+| `check_command` | `["gprbuild", "-P", "{project}", "-XBUILD=debug", "--autoconf={build}/gprbuild.cgpr", "-c", "-u", "-f", "{file}"]` |
+| `check_commands` | `ads`: lo mismo con `-cargs -gnatc` (GNAT no genera código para una especificación sola) |
+| `test_command` | `["gprbuild", "-P", "{project}", "-XBUILD=debug", "--autoconf=...", "{file}", "-o", "{exe}"]` |
+| `language_server_project` | el proyecto, con `project_vars` como `scenarioVariables` del servidor |
+
+Un `external` toma su valor de `project_vars`, después del entorno (como gprbuild) y después
+el suyo por defecto. gprbuild compila en el `Object_Dir` del proyecto, como en una compilación
+normal; por eso esas carpetas se excluyen. `--autoconf` guarda la configuración de los
+compiladores, que gprbuild busca en cada llamada: con las muestras, cada comprobación tarda la
+mitad. Con GNAT 16.1 y gprbuild 26 sobre `examples/samples/ada/samples.gpr`, `check_code` de un
+cuerpo y de una especificación, el error de un nombre que no existe con su línea y `run_test`
+de `test_tracks.adb` funcionan como con `gcc` y `gnatmake`, y el Ada Language Server encuentra
+las declaraciones a través del proyecto.
+
+El lector no usa gprbuild ni dependencias: entiende `with` y `limited with`, `project X
+[extends "b.gpr"] is ... end X;` (también `abstract`, `library` y `aggregate`), tipos,
+variables con o sin tipo, `external` y `external_as_list`, listas, `&`, `case` con `when "a" |
+"b"` y `others`, `for Atributo [("índice")] use ...;` y referencias a variables (`V`,
+`Otro.V`) y atributos (`Project'Project_Dir`, `Otro'Object_Dir`). Salta los paquetes. Lo que no
+entiende es un aviso con su fichero y su línea (en el registro y en `atlas plugins`), y se
+sigue leyendo; un error de sintaxis deja sin leer el resto de ese fichero. No usa
+`Source_Files` ni `Source_List_File` (lee todos los ficheros de las carpetas), ni un `with` que
+no esté junto al proyecto que lo importa: una biblioteca instalada, que gprbuild encuentra en
+`GPR_PROJECT_PATH` o en el compilador, no es código del proyecto.
+
+`atlas plugins` imprime el proyecto, las variables, los proyectos importados, las carpetas
+excluidas, las raíces y cuántos ficheros `.ads` y `.adb` ve.
+
 ## Tests desde los procedimientos de prueba
 
 `atlas tests MÓDULO|ID` escribe un test por procedimiento de prueba (los de un módulo de DOORS,
@@ -446,7 +500,8 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 
 `tests/test_code.py` (etiquetas y los IDs de la convención, análisis, el fichero de la sonda con
 tareas, entradas, cuerpos protegidos, operadores, sobrecargas y atributos, mismo resultado que
-`ada_graph.py`),
+`ada_graph.py`; el proyecto GPR con proyectos de pega —variables, `with`, `**`— y con GNAT,
+gprbuild y el Ada Language Server si están instalados),
 `tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
 Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,

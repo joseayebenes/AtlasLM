@@ -6,6 +6,22 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas.db` tiene versión de esquema (`PRAGMA user_version`, hoy 1) y migraciones: al abrir
+  un workspace de un atlas anterior, atlas hace una copia (`atlas.db.bak-<n>`), aplica los
+  cambios en una sola transacción y lo anota en el registro. Un workspace de un atlas más
+  nuevo no se abre. `atlas status` muestra la versión del esquema junto a la de atlas de la
+  última ejecución. Antes cada tabla se creaba si faltaba y nada comprobaba que el resto
+  sirviera.
+
+### Al actualizar
+- La primera orden que abre un workspace de la 0.2.0 o anterior copia `atlas.db` en
+  `atlas.db.bak-0` (y `reference.db` en `reference.db.bak-0`) y le pone la versión 1. Los
+  datos no cambian y nada se reprocesa. La copia ocupa lo mismo que `atlas.db`: se puede
+  borrar cuando todo funcione. Ver «Al actualizar» en `docs/instalacion.md`.
+- Con la 0.2.0 o anterior instalada en otro puesto, ese puesto sigue abriendo el workspace
+  (no mira la versión); las versiones siguientes ya no abren uno de un atlas más nuevo.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -144,6 +144,7 @@ procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/RE
 atlas/
 ├── config.py       carga y validación de atlas.toml, ${VAR}, secretos, huellas por sección
 ├── plugins.py      interfaces (CodeAnalyzer, RequirementsAdapter, DocumentExtractor, Tool) y registro
+├── db.py           conexión a atlas.db, versión del esquema y migraciones
 ├── store.py        atlas.db: requisitos, enlaces, unidades de código, documentos
 ├── pipeline/       motor incremental: Step, Ledger, Runner; paralelismo y perfiles de tiempo
 ├── llm/            clientes OpenAI con proxy, TLS, límites y reintentos; respuestas JSON

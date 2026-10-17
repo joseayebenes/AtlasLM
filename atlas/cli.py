@@ -1,6 +1,7 @@
 """Minimal command line: the configuration lives in the TOML file.
 
-    atlas run      [atlas.toml]     incremental, resumable processing
+    atlas run      [atlas.toml]     incremental, resumable processing; with a budget it stops cleanly
+                   [--until HH:MM] [--max-minutes N] [--max-requests N]   (exit 3) and goes on next time
     atlas estimate [atlas.toml]     what `atlas run` would do now: units, requests to the APIs and time,
                    [--latency S]    with the seconds per request of the last run (or S)
     atlas status   [atlas.toml]     state of the ledger and of the data, and what is left to do
@@ -45,12 +46,13 @@ import math
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 from atlas import plugins
 from atlas.config import Config, ConfigError, load_config
-from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, clock, sha256_file, sha256_text
+from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, Stopping, clock, sha256_file, sha256_text
 from atlas.store import Store
 
 log = logging.getLogger("atlas")
@@ -62,7 +64,8 @@ def _context(cfg: Config) -> SimpleNamespace:
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
     return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
-                           stopping=threading.Event(),     # set by the Runner when the run is interrupted
+                           stopping=Stopping(),            # set by the Runner when the run is interrupted
+                                                           # or its budget is spent
                            latency=None)                   # seconds per request for the estimates; None = measured
 
 
@@ -695,13 +698,45 @@ def estimate(cfg: Config, latency: float = 0.0) -> int:
     return 0
 
 
-def run(cfg: Config) -> int:
+def deadline(until: str = "", minutes: int = 0, now: float | None = None) -> float | None:
+    """The instant (time.time()) after which `atlas run` starts no more units: the earliest
+    of `until` ("HH:MM", today or, if that time has passed, tomorrow) and `minutes` from
+    now; None without either."""
+    from datetime import datetime, timedelta
+    now = time.time() if now is None else now
+    out = [now + minutes * 60] if minutes > 0 else []
+    if until:
+        try:
+            hh, mm = (int(x) for x in until.split(":"))
+            at = datetime.fromtimestamp(now).replace(hour=hh, minute=mm, second=0, microsecond=0)
+        except ValueError:
+            raise ConfigError(f"--until must be a time HH:MM, not '{until}'") from None
+        if at.timestamp() <= now:
+            at += timedelta(days=1)
+        out.append(at.timestamp())
+    return min(out) if out else None
+
+
+def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 0) -> int:
+    """Exit code: 0 all done; 1 some unit failed (retried on the next run); 2 a fatal error
+    stopped it; 3 the budget (--until, --max-minutes, max_requests) stopped it. With 2 and 3
+    the state is saved and running it again goes on."""
+    pc = cfg["pipeline"]
+    for key, value in (("max_minutes", max_minutes or pc["max_minutes"]),
+                       ("max_requests", max_requests or pc["max_requests"])):
+        if value < 0:
+            raise ConfigError(f"[pipeline] {key} must be 0 (no limit) or more, not {value}")
     ctx = _context(cfg)
-    rep = _runner(ctx).run()
+    rep = _runner(ctx, deadline=deadline(until, max_minutes or pc["max_minutes"]),
+                  max_requests=max_requests or pc["max_requests"],
+                  progress=lambda line: print(line, file=sys.stderr, flush=True)).run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
+    if rep.stopped_by == "budget":
+        print("budget reached; the state is saved: run `atlas run` again", file=sys.stderr)
+        return 3
     return 1 if rep.errors or rep.quarantined else 0
 
 
@@ -717,7 +752,8 @@ def print_profile(run: dict) -> None:
     """The time profile of a run (Ledger.runs): one line per step."""
     rep = run["report"]
     print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
-          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else ""))
+          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else "")
+          + (", stopped by the budget: run `atlas run` again to go on" if rep.get("stopped_by") == "budget" else ""))
     print(f"  {'step':20s} {'seconds':>8s} {'scan':>6s} {'units':>6s} {'ran':>6s}  slowest unit; API")
     for step, p in rep.get("profile", {}).items():
         slowest = p.get("slowest", [])
@@ -993,7 +1029,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"estimate": {"--latency": float},
+OPTIONS = {"run": {"--until": str, "--max-minutes": int, "--max-requests": int},
+           "estimate": {"--latency": float},
            "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
 
@@ -1012,14 +1049,14 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
         kind = allowed[name]
         if kind is bool:
-            options[name[2:]] = True
+            options[name[2:].replace("-", "_")] = True
             continue
         if not has_value:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
         try:
-            options[name[2:]] = kind(value)
+            options[name[2:].replace("-", "_")] = kind(value)
         except ValueError:
             sys.exit(f"atlas {action}: {name} must be "
                      + {int: "an integer", float: "a number"}.get(kind, "a text"))

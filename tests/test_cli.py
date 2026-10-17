@@ -439,3 +439,69 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_estimate_then_a_run_with_a_budget_that_goes_on_next_time(toml, tmp_path, fake, fake_chats, capsys):
+    """With the slow fake model: atlas estimate says the requests the run will make; a run
+    with a small max_requests stops with exit 3 and the state saved; the next run finishes
+    without asking again what was done (in all, the requests of the estimate)."""
+    import time
+    import pytest
+    from atlas.cli import estimate, main
+    from atlas.pipeline import Ledger
+    url, control = fake
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for d in range(4):
+        (docs / f"manual_{d}.md").write_text(f"# Manual {d}\n\n" + "".join(
+            f"{k} Part {k}\n\nReq: SRS-0{d}{k}0 The unit {d} shall do the task {k} of manual {d}.\n\n"
+            for k in range(1, 4)), encoding="utf-8")
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[network]
+proxy = ""
+no_proxy = "*"
+requests_per_minute = 600
+[pipeline]
+steps = ["docs"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+min_chars = 10
+'''))
+    assert estimate(cfg) == 0
+    out = capsys.readouterr().out
+    assert "docs.process: 4 units, 20 chat requests, under 1 min at 600/min" in out    # 4 sections (the title too) + overview
+
+    control.write_text(json.dumps({"slow": 0.05}))
+    t0 = time.time()
+    assert run(cfg, max_requests=6) == 3
+    captured = capsys.readouterr()
+    rep = json.loads(captured.out)
+    assert rep["stopped_by"] == "budget" and "budget reached" in captured.err
+    assert 6 <= fake_chats() < 20 and rep["processed"].get("docs.process", 0) < 4
+    ledger = Ledger(cfg.workspace / "atlas.db")
+    assert ledger.runs()[0]["report"]["stopped_by"] == "budget"
+    left = sum(r["status"] != "ok" for r in ledger.units("docs.process").values()) + 4 - len(ledger.units("docs.process"))
+    with pytest.raises(SystemExit) as e:
+        main(["run", str(cfg.path)])
+    rep = json.loads(capsys.readouterr().out)
+    assert e.value.code == 0 and rep["processed"] == {"docs.process": left} and fake_chats() == 20
+
+    with pytest.raises(SystemExit) as e:
+        main(["run", str(cfg.path), "--until", "25:00"])
+    assert "--until must be a time HH:MM" in str(e.value.code)
+    assert time.time() - t0 < 60
+
+
+def test_the_deadline_of_until_and_max_minutes():
+    from datetime import datetime
+    from atlas.cli import deadline
+    now = datetime(2026, 10, 17, 22, 30).timestamp()
+    assert deadline(now=now) is None
+    assert deadline(minutes=90, now=now) == now + 5400
+    assert datetime.fromtimestamp(deadline("07:00", now=now)) == datetime(2026, 10, 18, 7, 0)    # tomorrow
+    assert datetime.fromtimestamp(deadline("23:00", now=now)) == datetime(2026, 10, 17, 23, 0)   # today
+    assert deadline("23:59", minutes=10, now=now) == now + 600                                  # the earliest

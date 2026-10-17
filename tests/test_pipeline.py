@@ -276,3 +276,78 @@ def test_dry_run_finds_the_pending_units_and_their_estimate_without_touching_any
     fingerprints["c"] = "2"
     rep = Runner(ledger, [_step("p", ["a", "b", "c"], fingerprints, lambda ctx, u: None, estimate=broken)]).run()
     assert rep.processed == {"p": 1} and rep.estimate == {}             # without an estimate, it goes on
+
+
+def test_a_budget_of_requests_stops_cleanly_and_the_next_run_goes_on(tmp_path):
+    meter, done = {"chat": 0}, []
+
+    def run(ctx, u):
+        meter["chat"] += 1                    # one request per unit
+        done.append(u)
+
+    units = [f"u{i}" for i in range(10)]
+    first = _step("p", units, {u: "1" for u in units}, run, parallel=False)
+    second = _step("q", ["x"], {"x": "1"}, run, depends_on=["p"])
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [first, second], meters=lambda: dict(meter), max_requests=3).run()
+    assert rep.stopped_by == "budget" and rep.processed == {"p": 3} and "q" not in rep.profile
+    assert ledger.runs()[0]["report"]["stopped_by"] == "budget" and ledger.get("p", "u3") is None
+    rep = Runner(ledger, [first, second], meters=lambda: dict(meter)).run()
+    assert rep.stopped_by is None and rep.processed == {"p": 7, "q": 1} and rep.skipped == {"p": 3}
+    assert done == units + ["x"]                                         # nothing repeated
+
+    rep = Runner(ledger, [_step("r", ["a"], {"a": "1"}, run)], deadline=0).run()   # already past
+    assert rep.stopped_by == "budget" and rep.processed == {} and ledger.get("r", "a") is None
+
+
+def test_a_unit_stopped_halfway_by_the_budget_stays_running_and_is_done_again(tmp_path):
+    """A long unit that watches `stopping` (a document between its sections) stops when the
+    budget is spent while it runs, also with a single worker: Stopping looks at the budget
+    whenever it is asked."""
+    import time
+    from atlas.pipeline import Interrupted, Stopping
+    meter, parts, behaviour = {"chat": 0}, [], {"budget": True}
+    stopping = Stopping()
+
+    def run(ctx, u):
+        for k in range(5):
+            if stopping.is_set():
+                raise Interrupted(f"{u} interrupted")
+            meter["chat"] += 1
+            parts.append((u, k))
+
+    step = _step("p", ["a", "b"], {"a": "1", "b": "1"}, run, parallel=False)
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [step], meters=lambda: dict(meter), max_requests=7, stopping=stopping).run()
+    assert rep.stopped_by == "budget" and rep.processed == {"p": 1} and rep.profile["p"]["interrupted"] == 1
+    assert ledger.get("p", "b")["status"] == "running" and parts[-1] == ("b", 1)     # stopped at 7 requests
+    assert stopping.check is None                     # the budget does not outlive the run
+    rep = Runner(ledger, [step], meters=lambda: dict(meter), stopping=stopping).run()
+    assert rep.processed == {"p": 1} and rep.skipped == {"p": 1} and ledger.get("p", "b")["status"] == "ok"
+
+    # a deadline that passes while the unit runs
+    def slow(ctx, u):
+        for _ in range(100):
+            if stopping.is_set():
+                raise Interrupted(u)
+            time.sleep(0.01)
+
+    step = _step("s", ["a"], {"a": "1"}, slow)
+    t0 = time.time()
+    rep = Runner(ledger, [step], deadline=time.time() + 0.1, stopping=stopping).run()
+    assert rep.stopped_by == "budget" and time.time() - t0 < 0.8 and ledger.get("s", "a")["status"] == "running"
+
+
+def test_progress_lines_with_the_time_left(tmp_path):
+    lines, meter = [], {"chat": 0}
+
+    def run(ctx, u):
+        meter["chat"] += 2
+
+    units = [f"u{i:02d}" for i in range(12)]
+    step = _step("p", units, {u: "1" for u in units}, run, parallel=False,
+                 estimate=lambda ctx, pending: {"requests": {"chat": 2 * len(pending)}})
+    runner = Runner(Ledger(tmp_path / "db"), [step], meters=lambda: dict(meter), progress=lines.append)
+    runner.PROGRESS_UNITS = 5
+    runner.run()
+    assert lines == ["p 5/12 units, under 1 min, under 1 min left", "p 10/12 units, under 1 min, under 1 min left"]

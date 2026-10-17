@@ -116,11 +116,14 @@ los límites.
 | `max_attempts` | entero | `3` | intentos de una unidad antes de dejarla en cuarentena |
 | `retry_quarantined` | sí/no | `false` | `true` vuelve a intentar las unidades en cuarentena |
 | `prune_missing` | sí/no | `true` | borra del índice y del grafo lo que ya no está en las fuentes |
+| `max_minutes` | entero | `0` | `atlas run` no empieza ninguna unidad más pasados estos minutos y sale con el código 3; la siguiente ejecución sigue. `0` = sin límite. `--max-minutes N` y `--until HH:MM` en la línea de comandos |
+| `max_requests` | entero | `0` | lo mismo tras tantas peticiones a las API (chat, embeddings y otras) en la ejecución. `0` = sin límite; `--max-requests N` |
 
 Con un gateway limitado por minuto, `workers` (o `step_workers.docs`) es lo que mantiene
 llena la cuota: con respuestas de 10 s y 28 peticiones por minuto hacen falta unas 5 a la
-vez. `atlas status` muestra, por paso, el tiempo, las peticiones y cuánto se esperó al
-limitador.
+vez. `atlas estimate` dice cuántas peticiones y cuánto tiempo queda antes de empezar, y
+`atlas status` muestra, por paso, el tiempo, las peticiones y cuánto se esperó al
+limitador. Programar la ingesta de noche: [instalación](instalacion.md#de-noche-con-un-límite).
 
 ## [plugins]
 

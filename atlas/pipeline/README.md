@@ -31,6 +31,65 @@ unidades que desaparecen se podan.
 - **Ctrl+C con varios hilos.** Las unidades que no han empezado se cancelan; las que están
   en marcha reciben el aviso (`Runner.stopping`) y las largas, como un documento, no
   empiezan más peticiones. El bloqueo no se suelta hasta que terminan.
+- **Presupuesto.** `Runner(deadline=<instante>, max_requests=N)` para la ejecución limpia:
+  ver más abajo.
+
+## Estimación: `dry_run` y `Step.estimate`
+
+`Runner(..., dry_run=True).run()` recorre las unidades y las huellas de cada paso como una
+ejecución, pero sin tomar el bloqueo (puede mirar mientras otro proceso trabaja), sin
+procesar ni podar nada y sin guardar la ejecución. El informe dice, por paso, `pending`
+(unidades por procesar) y `estimate`, lo que devuelve el `estimate` del paso con esas
+unidades:
+
+```python
+Step(..., estimate=lambda ctx, units: {"requests": {"chat": 2 * len(units)}, "seconds": [60, 66],
+                                       "text": "40 chat requests, about 1 min at 28/min"})
+```
+
+Todas las claves son opcionales. Un paso cuyas dependencias tienen unidades pendientes
+lleva `after` con ellas: no se puede estimar lo que aún no han producido. En una ejecución
+normal el `Runner` también lo pide al empezar cada paso, lo escribe en el registro y lo deja
+en el informe; si falla, el paso sigue sin estimación.
+
+En atlas (`atlas estimate`, `atlas status` y el principio de cada paso de `atlas run`):
+
+| Paso | Peticiones |
+|---|---|
+| `docs.process` | las secciones cuyo análisis no está en la caché (`pending_requests`, con las mismas secciones que `preview`), más el resumen de cada documento al que le falte; hasta un 10 % más por las secciones que se dividen |
+| `index.*` | los lotes de `[embeddings] batch` de los textos sin vector en la caché (`embed_missing(dry_run=True)`) |
+
+Tiempo = máx(peticiones / `requests_per_minute`, peticiones × latencia / peticiones a la
+vez), con la latencia del último perfil del paso en la tabla `runs` (`api_seconds` entre
+sus peticiones) o la de `atlas estimate --latency S`. En el proyecto grande, con todo por
+hacer, la estimación da las 540 peticiones de chat medidas; con los documentos, DOORS y el
+código ya procesados, las 103 + 86 + 48 = 237 de embeddings.
+
+## Presupuesto y progreso
+
+`Runner(deadline=time.time() + 3600, max_requests=1000)`: antes de empezar cada unidad, y
+cada vez que una unidad larga mira `stopping` (un `Stopping`, el `Event` que consulta el
+presupuesto al preguntarle), el `Runner` comprueba si pasó el instante o si los contadores
+de peticiones de `meters` (`chat`, `embeddings`, `other`) crecieron `max_requests` desde el
+principio. No hay hilo temporizador. Al llegar al límite:
+- las unidades que no han empezado se quedan para la próxima vez;
+- un documento a medias deja de pedir secciones y acaba con `Interrupted`, que el `Runner`
+  absorbe: la unidad queda `running` en el libro, como tras un `kill`, y se rehace (sus
+  secciones ya están en la caché);
+- los pasos siguientes no empiezan;
+- el informe, y la tabla `runs`, dicen `stopped_by = "budget"`, y `atlas run` sale con el
+  código 3.
+
+El trabajo de `prepare` (los embeddings de todo el índice en lotes) no se corta a mitad:
+cuenta para `max_requests`, pero el límite se mira antes y después.
+
+`progress` recibe una línea cada 30 s o cada 25 unidades terminadas de un paso; `atlas run`
+la escribe por stderr. Lo que queda sale de las peticiones que esperaba la estimación y de
+las que ya se han hecho o, si no hay estimación, de las unidades:
+
+```
+docs.process 120/2080 units, 35 min, ~2 h 10 min left
+```
 
 ## Paralelismo
 
@@ -130,5 +189,8 @@ print(ledger.runs(1)[0]["report"]["profile"])
 
 `tests/test_pipeline.py`: reanudación tras un corte y tras `kill -9`, cuarentena, poda,
 dependencias, varios hilos sobre el mismo `atlas.db`, perfiles, `step_workers`, Ctrl+C con
-unidades en otros hilos y `prepare`. `tests/test_large.py`: la segunda ejecución y un PDF
+unidades en otros hilos, `prepare`, `dry_run` y `estimate`, el presupuesto (por peticiones,
+por hora y con una unidad a medias) y las líneas de progreso. `tests/test_cli.py`: `atlas
+estimate` y una ejecución con `max_requests` contra el servidor falso lento, que la
+siguiente termina sin repetir peticiones. `tests/test_large.py`: la segunda ejecución y un PDF
 cambiado sobre una copia pequeña del proyecto grande.

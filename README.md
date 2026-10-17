@@ -47,6 +47,25 @@ python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada
 python -m pytest -q                                # 203 pruebas sin modelo (+7 de agentes con Ollama)
 ```
 
+### Antes de publicar una versión
+
+En la rama `release/<x.y>`, con la versión puesta en `atlas/__init__.py` y el CHANGELOG
+cerrado, antes de fusionarla en `main`:
+
+```bash
+python -m pytest -q          # todas las pruebas
+make audit                   # pip-audit sobre constraints.txt: ninguna vulnerabilidad conocida
+make licenses                # dist/THIRD_PARTY_NOTICES.md y dist/sbom.cdx.json
+make wheelhouse-windows      # la entrega, con el aviso de terceros y el SBOM dentro
+make check-install           # instalación limpia y sin red desde dist/wheelhouse
+```
+
+Si `make audit` encuentra algo, se sube esa dependencia y se regenera `constraints.txt`
+([versiones fijadas](docs/instalacion.md#versiones-fijadas)). Si `make licenses` pone aparte
+un paquete AGPL o GPL nuevo, se decide como con pymupdf ([seguridad](docs/seguridad.md#pymupdf-y-la-agpl-30)).
+Cuando haya CI, `make audit` irá en él como paso propio: necesita red, y una vulnerabilidad
+publicada hoy no debe parar las pruebas de un cambio que no toca dependencias.
+
 ### Niveles de modelo
 
 | Nivel | Para qué | Configuración |

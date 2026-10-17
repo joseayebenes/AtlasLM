@@ -20,6 +20,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   consultar las vulnerabilidades y tarda menos de un minuto. `pip-audit` entra en el extra `dev`.
 - `atlas plugins` dice de cada extractor de documentos sus extensiones, su licencia y si
   está desactivado. Los plugins `DocumentExtractor` tienen un atributo `license`.
+- `docs/seguridad.md` («pymupdf y la AGPL-3.0»): qué supone la AGPL para una herramienta
+  interna, la alternativa MIT (el extractor `markitdown`) y dos opciones: pymupdf por defecto
+  con la nota, o un extra `docs-pymupdf` aparte del `docs`. La elección queda pendiente de la
+  política de la empresa; mientras, sigue pymupdf por defecto.
+- README, «Antes de publicar una versión»: pruebas, `make audit`, `make licenses`, wheelhouse y
+  `make check-install`.
 
 ### Al actualizar
 - `constraints.txt` fija `pip-audit` y sus dependencias, añadidas a mano desde Python 3.13

@@ -10,6 +10,7 @@ desarrollar atlas, ver [Instalación para desarrollo](#instalación-para-desarro
 | `atlaslm-<versión>-py3-none-any.whl` | atlas: código Python puro, el mismo para Windows, macOS y Linux |
 | `wheelhouse-win_amd64-py312/` | el wheel de atlas y todas sus dependencias, para Windows de 64 bits con Python 3.12: se instala sin red |
 | `constraints.txt` | la versión exacta de cada dependencia con la que pasan las pruebas |
+| `THIRD_PARTY_NOTICES.md`, `sbom.cdx.json` | dentro del wheelhouse: la licencia de cada dependencia y el SBOM (CycloneDX) de lo que contiene |
 
 El wheelhouse vale para un sistema y una versión de Python. Se prepara desde cualquier
 equipo con red (ver [Preparar la entrega](#preparar-la-entrega)).
@@ -64,7 +65,7 @@ python3.12 -m venv ~/atlas/venv
 
 | Extra | Para qué | Sin él |
 |---|---|---|
-| `docs` | leer PDF y Office (markitdown, pymupdf) | solo Markdown y texto |
+| `docs` | leer PDF y Office (markitdown, pymupdf; pymupdf es AGPL-3.0, ver [seguridad](seguridad.md#pymupdf-y-la-agpl-30)) | solo Markdown y texto |
 | `code` | analizar Ada y construir el grafo (tree-sitter, networkx) | sin código ni grafo |
 | `mcp` | `atlas serve`, el servidor para OpenCode y VS Code | sin servidor MCP |
 | `agents` | agentes ADK: `atlas agent`, `verify`, `impact`, `coverage`, `eval` (google-adk 2.11) | sin agentes |
@@ -224,7 +225,13 @@ make wheel                         # dist/atlaslm-<versión>-py3-none-any.whl
 make wheelhouse-windows            # dist/wheelhouse-win_amd64-py312/ (WIN_PY=3.11 para otro Python)
 make wheelhouse                    # dist/wheelhouse/ para este sistema y este Python
 make check-install                 # instalación limpia desde dist/wheelhouse, sin red
+make audit                         # vulnerabilidades conocidas en constraints.txt (pip-audit)
+make licenses                      # dist/THIRD_PARTY_NOTICES.md y dist/sbom.cdx.json del entorno instalado
 ```
+
+Cada wheelhouse lleva su `THIRD_PARTY_NOTICES.md` y su `sbom.cdx.json`, sacados de los
+wheels que contiene (`tools/licenses.py --wheelhouse`). La lista completa de pasos de una
+versión está en el [README](../README.md#antes-de-publicar-una-versión).
 
 `make check-install` (`tools/check_install.py`) hace los pasos de esta guía en una carpeta
 nueva: entorno, instalación sin red, `atlas init`, la plantilla apuntando a las muestras y

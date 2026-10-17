@@ -8,7 +8,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 |---|---|
 | `definitions.py` | `AgentDef` y `load_definitions`: los agentes de `builtin/` y de `[agents] dirs`, con los retoques de `[agents.<nombre>]` (sin ADK) |
 | `model.py` | `AtlasLlm`: un modelo de ADK sobre el cliente de `atlas.llm` (proxy, TLS, límites, reintentos) |
-| `runtime.py` | `build_agent` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo |
+| `runtime.py` | `build_agent`, `Conversation` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo por respuesta; una conversación de varias preguntas en la misma sesión de ADK |
 | `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete |
 | `verify.py` | la verificación de los requisitos con la documentación |
 | `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
@@ -77,12 +77,44 @@ y cuesta la mitad (*The Complexity Trap*, 2025). En la tanda 4, las vueltas de u
 llevaban 55 000 tokens de entrada, casi todo lecturas viejas. Por defecto, 0: todo se queda.
 
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
-servidor lo dice (OpenRouter, `usage.cost`), su coste.
+servidor lo dice (OpenRouter, `usage.cost`), su coste; `sources`, las citas que dan los
+resultados de sus herramientas (los pasajes de `search`, las fuentes de `ask_docs`, la sección
+de `get_section` y, de `trace`, el requisito, las secciones que lo enuncian y el código que lo
+implementa, con su fichero y línea); y `stopped`, si la respuesta es parcial porque agotó
+`max_steps`.
 
 ```bash
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml
 ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso, en el navegador
 ```
+
+### Conversaciones: `atlas chat`
+
+`run_agent` crea el agente, su `InMemoryRunner` y una sesión de ADK nuevos por pregunta: la
+segunda no sabe nada de la primera. `Conversation` los crea una vez, y cada `ask(pregunta)` es
+un turno más de la misma sesión, con su propio límite de `max_steps` llamadas al modelo; el
+resultado es el de `run_agent` (que es una conversación de una pregunta). `history()` lee los
+turnos de la sesión (pregunta, respuesta, llamadas y citas), y `markdown()` los escribe. Nada
+de la conversación se guarda fuera de la sesión de ADK.
+
+`atlas chat [--agent NOMBRE] [atlas.toml]` es un bucle fino sobre ella, por la entrada
+estándar, con el asistente por defecto. El agente, el índice y el grafo se cargan una vez. Para
+que la conversación no crezca sin fin, usa el `keep_tool_results` del agente o, si no tiene, 6.
+Tras cada respuesta dice qué herramientas llamó y sus citas. Las órdenes que empiezan por `/`
+no llaman al modelo, sino a las mismas funciones que los comandos:
+
+| Orden | Qué hace |
+|---|---|
+| `/trace ID` | todo sobre un requisito, como `atlas trace` |
+| `/matrix MÓDULO` | la matriz de trazabilidad de un módulo de DOORS (`*`: todos), como `atlas matrix` |
+| `/gaps [MÓDULO]` | lo que le falta a la trazabilidad, con los primeros de cada lista |
+| `/sources` | las citas de la última respuesta, con su fichero |
+| `/save` | la conversación, con sus citas y llamadas, en `<workspace>/reports/chat-<fecha>.md` |
+| `/quit` | termina (también Ctrl+D) |
+
+Para ver las llamadas paso a paso, con sus argumentos y resultados, la alternativa sigue siendo
+`ATLAS_CONFIG=atlas.toml adk web examples/adk`. `atlas chat` no sustituye al editor: para
+trabajar sobre el código, el servidor MCP en OpenCode o VS Code.
 
 ## Flujos fijos
 
@@ -422,13 +454,17 @@ impacto, documentos y una sección.
 ```python
 from atlas.agents.context import build_context
 from atlas.agents.definitions import load_definitions
-from atlas.agents.runtime import run_agent
+from atlas.agents.runtime import Conversation, run_agent
 from atlas.graph import KnowledgeGraph
 
 print(sorted(load_definitions(cfg)))                                  # los agentes, sin ADK
 print(build_context(KnowledgeGraph.from_config(cfg), "SRS-0004")["markdown"])   # sin modelo
 res = run_agent("assistant", "Which tests verify SRS-0004?", cfg)     # con ADK y el modelo
-print(res["answer"], [c["name"] for c in res["calls"]])
+print(res["answer"], [c["name"] for c in res["calls"]], [s["cite"] for s in res["sources"]])
+
+chat = Conversation("assistant", cfg)                                 # varias preguntas, una sesión
+chat.ask("Which tests verify SRS-0004?")
+print(chat.ask("And which code do they call?")["answer"])             # «they»: las de la primera
 ```
 
 ## Pruebas
@@ -437,5 +473,5 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 que se deshacen, arreglos de compilación, rondas y lo que se deja a una persona).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
-agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.
+agentes, `Conversation` y `atlas chat`, y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.
 Con Ollama, `tests/test_agents_ollama.py`.

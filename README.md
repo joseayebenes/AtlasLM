@@ -99,6 +99,8 @@ atlas search "deletion" atlas.dev.toml --kind requirement --k 5   # solo requisi
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente
+atlas chat     atlas.dev.toml # conversación con el asistente (--agent NOMBRE para otro): cada pregunta ve
+                              # las anteriores; /trace, /matrix, /gaps, /sources y /save, sin modelo
 atlas verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación, con el modelo
 atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
 atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
@@ -116,7 +118,9 @@ atlas --version
 ```
 
 Toda la configuración está en el TOML; la línea de comandos solo elige acción y fichero.
-Sin instalar, `python -m atlas.cli` en vez de `atlas`.
+Sin instalar, `python -m atlas.cli` en vez de `atlas`. Para ver las llamadas de un agente
+paso a paso, en el navegador, en vez de `atlas chat`: `ATLAS_CONFIG=atlas.dev.toml adk web
+examples/adk` (ver [atlas.agents](atlas/agents/README.md#conversaciones-atlas-chat)).
 
 Prueba el motor sin modelo:
 

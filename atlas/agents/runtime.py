@@ -2,7 +2,11 @@
 
     agent = build_agent("assistant", cfg)            # an ADK LlmAgent, for adk web or a runner
     res = run_agent("assistant", "Which tests verify SRS-0004?", cfg)
-    res["answer"], res["calls"]
+    res["answer"], res["calls"], res["sources"]
+
+    chat = Conversation("assistant", cfg)            # several questions: each sees the earlier ones
+    chat.ask("Which tests verify SRS-0004?")
+    chat.ask("And which code do they call?")
 
 An agent gets its model from [llm] (with the model, temperature and reasoning of its file or
 of [agents]) through AtlasLlm, and its tools from the "tool" plugins with the names of its
@@ -11,12 +15,19 @@ one answer, and the same tool call repeated REPEATS times in a row is not run ag
 loop_guard). With stall_steps, a run that goes that many tool calls without changing the code
 or making a test pass ends there, `stalled` (see stall_guard): atlas develop starts it again
 with a fresh conversation.
+
+A Conversation makes the agent, its runner and its ADK session once: each ask() is one more
+turn of the same session, with max_steps calls to the model, and keep_tool_results keeps what
+goes back to the model short as the conversation grows. run_agent is a conversation of one
+question. The answer of a turn has the citations of its tool results (`sources`, see sources);
+`stopped` says that it is a partial answer.
 """
 from __future__ import annotations
 
 import asyncio
 import functools
 import json
+import re
 import time
 from dataclasses import replace
 from types import SimpleNamespace
@@ -28,11 +39,13 @@ from atlas.config import Config, ConfigError
 from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
-__all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
-           "recorded", "run_agent", "stall_guard"]
+__all__ = ["Conversation", "agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition",
+           "loop_guard", "recorded", "run_agent", "sources", "stall_guard"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
 CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
+KEEP_IN_CHAT = 6     # the large tool results that atlas chat keeps whole, if the agent does not say
+APP, USER = "atlas", "atlas"     # the names of the ADK app and user of the sessions
 
 
 def context_for(cfg: Config) -> SimpleNamespace:
@@ -148,10 +161,11 @@ def recorded(functions: list, record: list) -> list:
 
 
 def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None,
-                state: dict | None = None):
+                state: dict | None = None, keep_tool_results: int | None = None):
     """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests;
     `record`, a list, gets every tool call with its result (see recorded); `state`, a dict,
-    gets "stalled" when the agent has stall_steps (see stall_guard)."""
+    gets "stalled" when the agent has stall_steps (see stall_guard); `keep_tool_results`
+    replaces that of the agent."""
     try:
         from google.adk.agents import LlmAgent
     except ImportError as e:
@@ -161,7 +175,8 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     text = d.instruction
     tools = agent_tools(d, context or context_for(cfg))
     model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
-                                  keep_tool_results=d.keep_tool_results)
+                                  keep_tool_results=d.keep_tool_results if keep_tool_results is None
+                                  else keep_tool_results)
     guarded = loop_guard(recorded(tools, record) if record is not None else tools)
     if d.stall_steps and state is not None and set(d.tools) & {*CHANGES, "run_test"}:
         guarded = stall_guard(guarded, d.stall_steps, state)    # one that only reads would always look stuck
@@ -170,20 +185,26 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
 
 
 async def ask(agent, question: str, max_steps: int = 8, state: dict | None = None) -> dict:
-    """One question to an ADK agent: {"answer", "calls": [{"name", "args"}], "stopped",
-    "tokens": {"prompt", "completion"}, and "cost" when the server says it (OpenRouter)}.
-    `stopped` says that it reached max_steps calls to the model before answering, or that
-    `state` (of stall_guard) says it stalled: then "stalled" is true too."""
+    """One question to an ADK agent, in a session of its own: {"answer", "calls": [{"name",
+    "args"}], "sources", "stopped", "tokens": {"prompt", "completion"}, and "cost" when the
+    server says it (OpenRouter)}. `stopped` says that it reached max_steps calls to the model
+    before answering, or that `state` (of stall_guard) says it stalled: then "stalled" is true
+    too. `sources`: the citations of its tool results (see sources)."""
+    from google.adk.runners import InMemoryRunner
+    runner = InMemoryRunner(agent=agent, app_name=APP)
+    session = await runner.session_service.create_session(app_name=APP, user_id=USER)
+    return await _turn(runner, session.id, question, max_steps, state)
+
+
+async def _turn(runner, session_id: str, question: str, max_steps: int, state: dict | None) -> dict:
+    """A question in a session of `runner` (see ask)."""
     from google.adk.agents.invocation_context import LlmCallsLimitExceededError
     from google.adk.agents.run_config import RunConfig
-    from google.adk.runners import InMemoryRunner
     from google.genai import types
-    runner = InMemoryRunner(agent=agent, app_name="atlas")
-    session = await runner.session_service.create_session(app_name="atlas", user_id="atlas")
     message = types.Content(role="user", parts=[types.Part(text=question)])
-    calls, answer, stopped = [], "", False
+    calls, results, answer, stopped = [], [], "", False
     tokens, cost = {"prompt": 0, "completion": 0}, None
-    events = runner.run_async(user_id="atlas", session_id=session.id, new_message=message,
+    events = runner.run_async(user_id=USER, session_id=session_id, new_message=message,
                               run_config=RunConfig(max_llm_calls=max_steps))
     try:
         async for event in events:
@@ -195,6 +216,8 @@ async def ask(agent, question: str, max_steps: int = 8, state: dict | None = Non
             for part in (event.content.parts if event.content else None) or []:
                 if part.function_call:
                     calls.append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
+                elif part.function_response:
+                    results.append({"name": part.function_response.name, "result": part.function_response.response})
                 elif part.text and not part.thought and event.is_final_response():
                     answer += part.text
             if state is not None and state.get("stalled") and event.content and \
@@ -205,15 +228,122 @@ async def ask(agent, question: str, max_steps: int = 8, state: dict | None = Non
         stopped = True
     finally:                                  # closed here, in this task: closed later by asyncio, from
         await events.aclose()                 # another context, OpenTelemetry logs errors for each span
-    return {"answer": answer.strip(), "calls": calls, "stopped": stopped, "tokens": tokens,
-            **({"stalled": True} if state is not None and state.get("stalled") else {}),
+    return {"answer": answer.strip(), "calls": calls, "sources": sources(results), "stopped": stopped,
+            "tokens": tokens, **({"stalled": True} if state is not None and state.get("stalled") else {}),
             **({"cost": round(cost, 6)} if cost is not None else {})}
+
+
+def sources(results: list[dict]) -> list[dict]:
+    """The citations in the results of some tool calls ([{"name", "result"}]), without repeats:
+    [{"cite", "file"}] ("file" can be empty, or "path:line" for code). From search, its
+    passages; from ask_docs, its sources; from get_section, the section; from trace, the
+    requirement, the sections that state it and the code that implements it."""
+    found: dict[str, dict] = {}
+
+    def add(cite: Any, file: Any = "") -> None:
+        if cite and str(cite) not in found:
+            found[str(cite)] = {"cite": str(cite), "file": str(file or "")}
+        elif cite and file and not found[str(cite)]["file"]:
+            found[str(cite)]["file"] = str(file)
+
+    section = lambda d: f"{d.get('document')} › {d.get('title') or d.get('section')}"
+    for call in results:
+        res = call.get("result")
+        if not isinstance(res, dict) or "error" in res:
+            continue
+        if call.get("name") == "search":
+            for hit in res.get("results") or []:
+                add(hit.get("cite"))
+        elif call.get("name") == "ask_docs":
+            for s in res.get("sources") or []:
+                add(s.get("cite"), s.get("file"))
+        elif call.get("name") == "get_section" and res.get("document"):
+            add(section(res), res.get("file"))
+        elif call.get("name") == "trace" and res.get("id"):
+            add(f"DOORS {res['module']} › {res['id']}" if res.get("module") else res["id"])
+            for d in res.get("documents") or []:
+                add(section(d))
+            for c in (res.get("implemented_by") or {}).get("items") or []:
+                line = re.match(r"\d+", str(c.get("lines") or c.get("line") or ""))
+                add(c.get("id"), f"{c['file']}:{line.group()}" if c.get("file") and line else c.get("file"))
+    return list(found.values())
+
+
+class Conversation:
+    """A conversation with an agent: the agent, its runner and its ADK session are made once,
+    and each ask() is a turn of that session, which sees the earlier ones (see the module).
+    Nothing of the conversation is kept outside the session: history() reads it from there.
+    `record` and `client` as in build_agent; `keep_tool_results` replaces that of the agent
+    (atlas chat: KEEP_IN_CHAT if the agent has none)."""
+
+    def __init__(self, name: str, cfg: Config, context: Any = None, client: Any = None,
+                 record: list | None = None, keep_tool_results: int | None = None):
+        self.name, self.definition = name, definition(name, cfg)
+        self.context = context or context_for(cfg)
+        self.state: dict = {}                    # of stall_guard
+        self.agent = build_agent(name, cfg, self.context, client, record, self.state, keep_tool_results)
+        self.runner: Any = None                  # made with the session, in the first turn
+        self.session_id = ""
+
+    async def ask_async(self, question: str) -> dict:
+        """A turn of the conversation (see ask)."""
+        if self.runner is None:
+            from google.adk.runners import InMemoryRunner
+            self.runner = InMemoryRunner(agent=self.agent, app_name=APP)
+            self.session_id = (await self.runner.session_service.create_session(app_name=APP, user_id=USER)).id
+        self.state.pop("stalled", None)          # each turn has its own stall_steps
+        return await _turn(self.runner, self.session_id, question, self.definition.max_steps, self.state)
+
+    def ask(self, question: str) -> dict:
+        """A turn of the conversation: the result of ask(), for one more question of the same
+        session."""
+        return asyncio.run(self.ask_async(question))
+
+    def history(self) -> list[dict]:
+        """The turns so far, from the events of the session: [{"question", "answer", "calls",
+        "sources"}]."""
+        if self.runner is None:
+            return []
+        session = asyncio.run(self.runner.session_service.get_session(app_name=APP, user_id=USER,
+                                                                      session_id=self.session_id))
+        turns: list[dict] = []
+        for event in session.events if session else []:
+            parts = (event.content.parts if event.content else None) or []
+            if event.author == "user" and any(p.text for p in parts):
+                turns.append({"question": "".join(p.text or "" for p in parts), "answer": "", "calls": [],
+                              "results": []})
+                continue
+            if not turns:
+                continue
+            turn = turns[-1]
+            for part in parts:
+                if part.function_call:
+                    turn["calls"].append({"name": part.function_call.name, "args": dict(part.function_call.args or {})})
+                elif part.function_response:
+                    turn["results"].append({"name": part.function_response.name,
+                                            "result": part.function_response.response})
+                elif part.text and not part.thought and event.is_final_response():
+                    turn["answer"] += part.text
+        return [{"question": t["question"], "answer": t["answer"].strip(), "calls": t["calls"],
+                 "sources": sources(t["results"])} for t in turns]
+
+    def markdown(self) -> str:
+        """The conversation so far, with the citations of each answer: for a report."""
+        out = [f"# atlas chat with {self.name}", "", f"Written {time.strftime('%Y-%m-%d %H:%M:%S')}.", ""]
+        for i, t in enumerate(self.history(), 1):
+            out += [f"## {i}", "", *[f"> {line}" for line in t["question"].splitlines()], "",
+                    t["answer"] or "(no answer)", ""]
+            if t["sources"]:
+                out += ["Sources:", ""] + [f"- {s['cite']}" + (f" (`{s['file']}`)" if s["file"] else "")
+                                           for s in t["sources"]] + [""]
+            if t["calls"]:
+                out += ["Tools: " + ", ".join(f"`{c['name']}({json.dumps(c['args'], ensure_ascii=False)})`"
+                                              for c in t["calls"]), ""]
+        return "\n".join(out)
 
 
 def run_agent(name: str, question: str, cfg: Config, context: Any = None, client: Any = None,
               record: list | None = None) -> dict:
-    """Builds the agent `name` and asks it `question` (see ask); `record` gets its tool calls
-    with their results."""
-    state: dict = {}
-    agent = build_agent(name, cfg, context, client, record, state)
-    return asyncio.run(ask(agent, question, definition(name, cfg).max_steps, state))
+    """Builds the agent `name` and asks it `question`: a conversation of one turn (see ask);
+    `record` gets its tool calls with their results."""
+    return Conversation(name, cfg, context, client, record).ask(question)

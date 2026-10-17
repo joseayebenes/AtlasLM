@@ -297,7 +297,7 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `temperature` | número | su temperatura |
 | `top_p` | número | su `top_p` (de 0 a 1); sin poner, el del servidor. La ficha de gemma 4 recomienda 0,95 |
 | `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
-| `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos |
+| `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos; `atlas chat` usa 6 si el agente no dice nada |
 | `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `atlas develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
 
 ### [agents.eval]

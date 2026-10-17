@@ -131,9 +131,12 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     monkeypatch.setitem(workspace.data, "llm", {"extra_body": {"provider": {"order": ["deepinfra"]}}})
     client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track."])
     res = run_agent("assistant", "Who implements SRS-0004?", workspace, client=client)
+    sources = res.pop("sources")
     assert res == {"answer": "SRS-0004 is implemented by tracks.delete_track.", "stopped": False,
                    "calls": [{"name": "trace", "args": {"req_id": "SRS-0004"}}],
                    "tokens": {"prompt": 200, "completion": 20}, "cost": 0.0002}    # what each turn used
+    assert sources[0] == {"cite": "DOORS SRS_TMS › SRS-0004", "file": ""}           # what trace gave
+    assert sources[1]["cite"] == "tracks.delete_track" and sources[1]["file"].endswith("tracks.adb:11")
 
     first, second = client.requests
     assert first["model"] == "gemma4" and first["reasoning_effort"] == "none"      # [llm], and the agent's file
@@ -148,6 +151,60 @@ def test_an_agent_answers_with_its_tools_through_atlas_llm(workspace, monkeypatc
     assert call["role"] == "assistant" and call["tool_calls"][0]["function"]["name"] == "trace"
     assert result["role"] == "tool" and result["tool_call_id"] == "call_0"
     assert "tracks.delete_track" in result["content"] and "SSS-0005" in result["content"]
+
+
+def test_a_conversation_sees_its_earlier_turns(workspace, monkeypatch):
+    """Conversation: the agent, its runner and its ADK session once, for several questions."""
+    from atlas.agents.runtime import Conversation
+    monkeypatch.chdir(workspace.path.parent)
+    client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track.",
+                         "That was SRS-0004."])
+    chat = Conversation("assistant", workspace, client=client)
+    assert chat.history() == []
+    first = chat.ask("Who implements SRS-0004?")
+    second = chat.ask("Which requirement was that?")
+    assert second["answer"] == "That was SRS-0004." and second["calls"] == second["sources"] == []
+    messages = client.requests[2]["messages"]                       # the second question sees the first turn
+    assert [m["role"] for m in messages] == ["system", "user", "assistant", "tool", "assistant", "user"]
+    assert messages[1] == {"role": "user", "content": "Who implements SRS-0004?"}
+    assert "tracks.delete_track" in messages[3]["content"]          # the result of trace
+    assert messages[4]["content"] == "SRS-0004 is implemented by tracks.delete_track."
+    assert messages[5] == {"role": "user", "content": "Which requirement was that?"}
+    history = chat.history()                                        # read from the ADK session
+    assert [(t["question"], t["answer"]) for t in history] == [
+        ("Who implements SRS-0004?", "SRS-0004 is implemented by tracks.delete_track."),
+        ("Which requirement was that?", "That was SRS-0004.")]
+    assert history[0]["sources"] == first["sources"] and history[0]["calls"] == first["calls"]
+
+
+def test_atlas_chat(workspace, monkeypatch, capsys):
+    """atlas chat: a loop over a Conversation, with orders that need no model; /save writes it."""
+    import atlas.agents.model
+    from atlas.cli import main
+    monkeypatch.chdir(workspace.path.parent)
+    client = StubClient([{"trace": {"req_id": "SRS-0004"}}, "SRS-0004 is implemented by tracks.delete_track.",
+                         "That was SRS-0004."])
+    monkeypatch.setattr(atlas.agents.model, "create_client", lambda service: (client, None))
+    orders = ["Who implements SRS-0004?", "/sources", "Which requirement was that?", "/sources", "/trace SRS-0004",
+              "/gaps", "/matrix NOPE", "/nothing", "/save", "/quit", "never read"]
+    monkeypatch.setattr("sys.stdin", io.StringIO("\n".join(orders) + "\n"))
+    with pytest.raises(SystemExit) as e:
+        main(["chat", "--agent", "assistant", str(workspace.path)])
+    assert e.value.code == 0
+    out = capsys.readouterr().out
+    assert "SRS-0004 is implemented by tracks.delete_track.\n(tools: trace)\nSources: [1] DOORS SRS_TMS › SRS-0004; " \
+           "[2] tracks.delete_track" in out
+    assert "That was SRS-0004." in out and len(client.requests) == 3     # the orders do not ask the model
+    assert "[2] tracks.delete_track\n    " in out and "tracks.adb:11" in out    # /sources: of the last answer
+    assert "no citations in the last answer" in out                      # the second one cites nothing
+    assert '"id": "SRS-0004"' in out                                      # /trace, as atlas trace
+    assert "traceability gaps of (all):" in out and "requirements without code" in out
+    assert "module 'NOPE' is not in the graph" in out and "/save            the conversation" in out
+    saved = list((workspace.workspace / "reports").glob("chat-*.md"))
+    assert len(saved) == 1
+    text = saved[0].read_text(encoding="utf-8")
+    assert text.startswith("# atlas chat with assistant") and "> Which requirement was that?" in text
+    assert "- DOORS SRS_TMS › SRS-0004" in text and "tracks.adb:11`)" in text and "Tools: `trace(" in text
 
 
 class ThinkingClient(StubClient):

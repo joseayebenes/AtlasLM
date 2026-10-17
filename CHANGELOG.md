@@ -16,6 +16,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   carpeta de trabajo (`<workspace>/attempts/0`, que se queda hasta el siguiente `develop`) y
   la carpeta de trabajo no se toca; el resultado son los parches. `max_copy_mb` (500) limita
   lo que copian `propose` y `attempts`.
+- `atlas chat [--agent NOMBRE] [atlas.toml]`: una conversación con un agente (el asistente por
+  defecto) en la que cada pregunta ve las anteriores. El agente, el índice y el grafo se
+  cargan una vez; `/trace`, `/matrix`, `/gaps`, `/sources` (las citas de la última respuesta)
+  y `/save` (`reports/chat-<fecha>.md`) no llaman al modelo. Usa el `keep_tool_results` del
+  agente o, si no tiene, 6.
+- `atlas.agents.runtime.Conversation`: el agente, su runner y su sesión de ADK una vez, y
+  `ask(pregunta)` por turno; `history()` lee la conversación de la sesión. `run_agent` es una
+  conversación de una pregunta.
+- El resultado de `run_agent` (y de `atlas agent`) trae `sources`: las citas de las llamadas a
+  `search`, `ask_docs`, `get_section` y `trace`.
 
 ### Cambiado
 - Las copias de `attempts` llevan también la carpeta de compilación, y `atlas develop` rechaza

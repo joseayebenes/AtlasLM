@@ -12,7 +12,7 @@ intercambio**: una base SQLite con un esquema fijo y versionado (`exchange.py`).
 
 | Tabla | Qué guarda |
 |---|---|
-| `exchange_modules` | módulos, con una instantánea que cambia con su contenido |
+| `exchange_modules` | módulos, con una instantánea que cambia con su contenido, y cuándo y de dónde se exportaron (`filled_at`, `source`) |
 | `exchange_requirements` | ID, texto, título, tipo (`requirement`, `heading` o `information`), padre, orden, nivel, numeración y atributos |
 | `exchange_links` | enlaces ya tipados |
 
@@ -55,6 +55,28 @@ módulo: un módulo que no cambia no se vuelve a leer. Al leerlo, guarda en `atl
 requisitos y enlaces, y anota cuántos se han añadido, quitado o cambiado. Después, el grafo
 y el índice toman de ahí lo que necesitan.
 
+## La fecha de la exportación
+
+Cada módulo de la base de intercambio lleva cuándo y de dónde se exportó
+(`exchange_modules.filled_at` y `source`, que escribe el relleno). El adaptador lo da con
+`exported_at(módulo)` y `module_info(módulo)` (`{"exported_at", "source"}`); el adaptador
+`database` no lo sabe y devuelve `""`. Un adaptador propio puede dar la suya: los dos métodos
+de `RequirementsAdapter` no son abstractos.
+
+El paso `doors.requirements` la guarda en la tabla `modules` de `atlas.db` (`module`,
+`exported_at`, `source` y `run_started`, cuándo empezó la ejecución que lo leyó). Una
+exportación nueva del mismo contenido también se vuelve a leer, por su fecha; no cuesta
+peticiones. De ahí la toman:
+- `atlas status`: `DOORS: 3 modules, exported 2026-10-14, 9 days ago` (si los módulos tienen
+  fechas distintas, el intervalo y la más antigua);
+- `atlas graph`, junto a la fecha de construcción del grafo, con la fecha y el origen de cada
+  módulo;
+- la cabecera de `atlas matrix` (el `.md`) y una columna `exported_at` del CSV;
+- `trace`, `get_requirement` y `build_context`, en un campo `exported_at`.
+
+Con `[sources.doors] max_age_days = N`, `atlas run` y `atlas serve` avisan en el registro de
+cada módulo exportado hace más de N días.
+
 ## Como librería
 
 ```python
@@ -62,6 +84,7 @@ from atlas.doors import ExchangeAdapter, diff_requirements
 ad = ExchangeAdapter({"exchange": {"path": "requirements.sqlite"}})
 reqs = list(ad.requirements("SRS_TMS"))
 links = list(ad.links("SRS_TMS"))
+ad.module_info("SRS_TMS")      # {"exported_at": "2026-10-14T08:00:00+00:00", "source": "/Proyecto/SRS"}
 print(diff_requirements({"SRS-0001": "old hash"}, reqs))     # añadidos, cambiados, quitados
 ```
 

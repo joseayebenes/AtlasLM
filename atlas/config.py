@@ -99,7 +99,7 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
                "min_chars": int, "enabled": bool}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
-                "modules": list, "attributes": list}
+                "modules": list, "attributes": list, "max_age_days": int}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
                 "temperature": float, "top_p": float, "top_k": int,
                 "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
@@ -203,14 +203,17 @@ class Config:
         ws = Path(self.data["project"]["workspace"])
         return ws if ws.is_absolute() else (self.path.parent / ws).resolve()
 
-    def fingerprint(self, *sections: str) -> str:
+    def fingerprint(self, *sections: str, exclude: tuple[str, ...] = ()) -> str:
         """Stable hash of one or more sections (e.g. 'sources.docs', 'embeddings'), without
-        their secrets (see redact)."""
+        their secrets (see redact) and without the keys of `exclude` (those that only change
+        what is shown, not what is read)."""
         parts = []
         for s in sections:
             d: Any = self.data
             for piece in s.split("."):
                 d = d.get(piece, None) if isinstance(d, dict) else None
+            if isinstance(d, dict) and exclude:
+                d = {k: v for k, v in d.items() if k not in exclude}
             parts.append(json.dumps(redact(d), sort_keys=True, ensure_ascii=False, default=str))
         return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:16]
 
@@ -286,6 +289,8 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError(f"[sources.docs[{i}]] 'name' or 'paths' is missing")
     if "doors" in sources:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
+        if sources["doors"].get("max_age_days", 0) < 0:
+            raise ConfigError("[sources.doors] 'max_age_days' must be 0 (no warning) or more")
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))

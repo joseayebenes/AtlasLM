@@ -20,7 +20,7 @@ cambia aquello de lo que sale:
 | Parte | Sale de | Nodos | Aristas |
 |---|---|---|---|
 | `code` | `code.parse` | unidades, subprogramas, pruebas, tipos, variables, requisitos citados | `defines`, `calls`, `converts`, `uses`, `withs`, `implements`, `verifies` |
-| `doors` | `doors.requirements` | módulos (`module:SRS_TMS`), requisitos, encabezados | `contains` (módulo y jerarquía) y un enlace por cada enlace de DOORS, con su tipo (`satisfies`...) |
+| `doors` | `doors.requirements` | módulos (`module:SRS_TMS`, con `exported_at` y `source`: cuándo y de dónde se exportaron), requisitos, encabezados | `contains` (módulo y jerarquía) y un enlace por cada enlace de DOORS, con su tipo (`satisfies`...) |
 | `docs` | `docs.process` | documentos (`doc:hmi_manual.md`) y secciones (`doc:hmi_manual.md#003`) | `contains`, `declares` (la sección declara el requisito) y `mentions` (la sección nombra un elemento de código) |
 
 **Código.** Los elementos se identifican como `unidad.nombre` (`tracks.update`), así que dos
@@ -59,10 +59,10 @@ Sin modelo:
 
 | Consulta | Devuelve |
 |---|---|
-| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; el código que lo implementa; las pruebas que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código) |
+| `trace(req)` | texto y atributos de DOORS, y la fecha de la exportación de su módulo (`exported_at`); padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; el código que lo implementa; las pruebas que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código) |
 | `trace_code(nombre)` | requisitos, llamadores, llamados, pruebas y secciones de un elemento de código; de una prueba, el código que ejercita y los requisitos que cubre |
 | `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas y secciones afectados, incluidos los requisitos que esos satisfacen en DOORS; de un requisito: los que derivan de él, su código, pruebas y secciones |
-| `matrix(módulo)` | requisito → código → pruebas → documentos, con resumen y huecos |
+| `matrix(módulo)` | requisito → código → pruebas → documentos, con resumen, huecos y `meta`: de qué exportación de DOORS sale |
 | `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
 | `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
 | `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
@@ -72,7 +72,9 @@ implementado a través de ellos: un SSS lo está si lo están los SRS que lo sat
 enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
 
 `atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.csv` (para una
-hoja de cálculo) y `.md`, y muestra el resumen y los huecos; `atlas matrix "*"` la hace con
+hoja de cálculo; la última columna, `exported_at`, es la fecha de la exportación del módulo
+de cada fila) y `.md` (con esa fecha y el origen en la cabecera), y muestra el resumen y los
+huecos; `atlas matrix "*"` la hace con
 todos los requisitos. Con las muestras:
 
 ```

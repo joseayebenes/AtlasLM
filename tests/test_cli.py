@@ -296,6 +296,7 @@ communities = true
     assert graph(cfg) == 0
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
+    assert "DOORS export: export date unknown" in out and "  SRS_TMS: ?" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
     assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
     assert trace(cfg, "SRS-9999") == 1
@@ -303,8 +304,9 @@ communities = true
     assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
     assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
-                                                  "documents"
-    assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+                                                  "documents,exported_at"
+    md = written.with_suffix(".md").read_text()
+    assert "| SRS-0004 |" in md and "- DOORS SRS_TMS: export date unknown" in md    # the database adapter
     assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
     assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()
     capsys.readouterr()

@@ -12,8 +12,9 @@ A requirement, by its ID in any case; a module, document or section, by its iden
 
 Code: find_symbol -> node -> callers / callees / impact -> read_source.
 Traceability, without the model:
-    trace(req)          text and attributes in DOORS, parent, children and links; the
-                        sections that state it (and the values that differ); code; tests
+    trace(req)          text and attributes in DOORS (and the date of its export), parent,
+                        children and links; the sections that state it (and the values that
+                        differ); code; tests
     trace_code(name)    requirements, callers, callees, tests and sections of an element
     impact(name)        what a change of a code element or of a requirement affects
     matrix(module)      requirement -> code -> tests -> documents, and its gaps
@@ -240,6 +241,18 @@ class KnowledgeGraph:
         return {"file": str(path), "start": start, "end": end, "truncated": truncated,
                 "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
 
+    def exports(self) -> dict[str, dict]:
+        """module -> {"exported_at", "source"}: when and from where each DOORS module of the
+        graph was exported ("" if its source does not say)."""
+        return {d["name"]: {"exported_at": d.get("exported_at", ""), "source": d.get("source", "")}
+                for _, d in self.G.nodes(data=True) if d.get("kind") == "module"}
+
+    def exported_at(self, r: str) -> str:
+        """When the DOORS module of a requirement was exported; "" if unknown."""
+        module = self.G.nodes[r].get("module") if r in self.G else None
+        node = f"module:{module}"
+        return self.G.nodes[node].get("exported_at", "") if module and node in self.G else ""
+
     # --- queries --------------------------------------------------------------
     def stats(self) -> dict:
         """Size of the graph by kind of node, and the statistics of its builds."""
@@ -439,6 +452,8 @@ class KnowledgeGraph:
         if self.doors:
             out["in_doors"] = bool(d.get("module"))
         out.update({k: d[k] for k in ("module", "text", "attributes", "outline") if d.get(k)})
+        if self.exported_at(r):
+            out["exported_at"] = self.exported_at(r)
         parents = [p for p in self._tree.predecessors(r)] if r in self._tree else []
         links = lambda edges, end: sorted(({"id": e[end], "type": e[2]["kind"]} for e in edges),
                                           key=lambda x: (_natural(x["id"]), x["type"]))
@@ -502,12 +517,24 @@ class KnowledgeGraph:
         rows = [self._row(r) for r in reqs]
         no_code, no_tests = self._without_code(reqs), self._without_tests(reqs)
         gap = lambda ids: {"count": len(ids), "items": ids[:200], "truncated": len(ids) > 200}
-        return {"module": module or "(all)",
+        return {"module": module or "(all)", "meta": self._matrix_meta(module, reqs),
                 "summary": {"requirements": len(rows), "with_code": len(rows) - len(no_code),
                             "with_tests": len(rows) - len(no_tests),
                             "with_documents": sum(1 for r in rows if r["documents"])},
                 "rows": rows[offset:offset + limit], "offset": offset, "truncated": offset + limit < len(rows),
                 "gaps": {"without_code": gap(no_code), "without_tests": gap(no_tests)}}
+
+    def _matrix_meta(self, module: str, reqs: list[str]) -> dict:
+        """Where a matrix comes from: the DOORS export of its modules (with no module, the
+        oldest one is `exported_at`)."""
+        exports = self.exports()
+        modules = {m: exports[m] for m in sorted({self.G.nodes[r].get("module") for r in reqs} - {None, ""})
+                   if m in exports}
+        dates = [x["exported_at"] for x in modules.values() if x["exported_at"]]
+        one = modules.get(module, {})
+        return {"module": module or "(all)",
+                "exported_at": one.get("exported_at", "") if module else min(dates, default=""),
+                "source": one.get("source", ""), "modules": modules}
 
     def _row(self, r: str) -> dict:
         d = self.G.nodes[r]

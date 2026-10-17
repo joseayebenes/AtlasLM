@@ -180,6 +180,7 @@ LINKS = [
     {"source": "SRS-0003", "target": "SRS-0002", "type": "references"},       # inside the module: no derivation
     {"source": "SRS-0004", "target": "SSS-0005", "type": "references"},       # the same pair again
 ]
+EXPORTS = {"SRS": {"exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS"}}   # SSS: not said
 SPEC = {"title": "Spec", "sections": [
     {"id": "001", "title": "1 Tracks", "path": ["1 Tracks"], "file": "sections/001-1-tracks.md", "page_start": 1,
      "page_end": 1, "body": "Req: SRS-0004 The TMF shall delete a track within 300 ms. Tracks.Delete_Track does "
@@ -199,7 +200,7 @@ def unified(samples, tmp_path):
     units = _units(sorted((samples / "ada").rglob("*.ad?")))
     store = GraphStore(tmp_path / "atlas.db")
     code = build_code_graph(units, test_patterns=["**/tests/**"])
-    doors = build_doors_graph(DOORS, LINKS)
+    doors = build_doors_graph(DOORS, LINKS, EXPORTS)
     docs = build_docs_graph([{"name": "spec.pdf", "path": "docs/spec.pdf", "source": "normas",
                               "out_dir": str(tmp_path / "spec_pdf"), "structure": SPEC}], code_names(units))
     for origin, (G, stats) in (("code", code), ("doors", doors), ("docs", docs)):
@@ -236,6 +237,9 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     assert (stats["docs"]["sections"], stats["docs"]["requirements"], stats["docs"]["mentions"]) == (2, 2, 3)
     assert G.nodes["SSS-0900"]["kind"] == "heading" and ("SSS-0900", "SSS-0005") in _edges(G, "contains")
     assert ("module:SRS", "SRS-0004") in _edges(G, "contains") and G.nodes["SRS-0004"]["outline"] == "2"
+    assert (G.nodes["module:SRS"]["exported_at"], G.nodes["module:SRS"]["source"]) == ("2026-10-14T08:00:00+00:00",
+                                                                                      "/Project/SRS")
+    assert g.exports() == {"SRS": EXPORTS["SRS"], "SSS": {"exported_at": "", "source": ""}}
     assert "heading" not in G.nodes["SSS-0005"] and G.nodes["SSS-0005"]["attributes"] == {"status": "Approved"}
     assert _edges(G, "mentions") == {("doc:spec.pdf#001", "tracks.delete_track"),
                                      ("doc:spec.pdf#001", "tracks.hour_range"), ("doc:spec.pdf#002", "logger.log")}
@@ -260,6 +264,11 @@ def test_trace_and_trace_code(unified):
     _, g, _ = unified
     t = g.trace("srs-0004")
     assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
+    assert t["exported_at"] == "2026-10-14T08:00:00+00:00" and "exported_at" not in g.trace("SSS-0005")
+    from atlas.agents.context import build_context
+    context = build_context(g, "SRS-0004")
+    assert context["exported_at"] == t["exported_at"] and "DOORS export: 2026-10-14" in context["markdown"]
+    assert "exported_at" not in build_context(g, "tracks.delete_track")
     assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
     assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
                                "text": "The TMF shall delete a track within 300 ms.",
@@ -309,6 +318,10 @@ def test_matrix_and_gaps(unified):
                             "tests": ["test_tracks.test_tracks"], "covering_tests": [],
                             "documents": ["spec.pdf §1 Tracks"]}
     assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
+    assert m["meta"] == {"module": "SRS", "exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS",
+                         "modules": {"SRS": EXPORTS["SRS"]}}
+    assert g.matrix()["meta"]["exported_at"] == "2026-10-14T08:00:00+00:00"       # all: the oldest date known
+    assert g.matrix()["meta"]["modules"]["SSS"] == {"exported_at": "", "source": ""}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
     m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
     assert [(r["id"], r["derived"], r["code"]) for r in m["rows"]] == [("SSS-0005", ["SRS-0004"], []),

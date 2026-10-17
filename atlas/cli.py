@@ -66,12 +66,17 @@ def _context(cfg: Config) -> SimpleNamespace:
 # Steps
 # --------------------------------------------------------------------------
 
+DOORS_DISPLAY_KEYS = ("attributes", "max_age_days")     # [sources.doors]: change what is shown, read nothing again
+
+
 def doors_step(ctx) -> Step | None:
     sd = ctx.cfg["sources"].get("doors")
     if not sd or not sd.get("enabled", True):
         return None
     adapter = plugins.get("requirements", sd.get("adapter", "database"), ctx.disabled)(sd)
+    from datetime import datetime
     from atlas.doors import hash_requirement
+    started = datetime.now().isoformat(timespec="seconds")      # the run this step belongs to
 
     def run(ctx, module: str):
         reqs = list(adapter.requirements(module))
@@ -79,15 +84,23 @@ def doors_step(ctx) -> Step | None:
         hashes = {r.id: hash_requirement(r) for r in reqs}
         previous = ctx.store.requirement_hashes(module)
         ctx.store.replace_module(module, reqs, links, hashes)
+        info = adapter.module_info(module)
+        ctx.store.put_module_info(module, info.get("exported_at", ""), info.get("source", ""), started)
         changes = {"added": len(set(hashes) - set(previous)), "removed": len(set(previous) - set(hashes)),
                    "changed": sum(1 for i, h in hashes.items() if i in previous and previous[i] != h)}
         log.info("doors %s: %d requirements, %d links (%s)", module, len(reqs), len(links), changes)
         return {"requirements": len(reqs), "links": len(links), **changes}
 
+    def fingerprint(ctx, module: str) -> str:
+        # a new export of the same content is read again too, for its date (no model involved)
+        exported = adapter.exported_at(module)
+        settings = ctx.cfg.fingerprint("sources.doors", exclude=DOORS_DISPLAY_KEYS)
+        return f"{adapter.snapshot(module)}|{settings}" + (f"|{exported}" if exported else "")
+
     return Step(
         name="doors.requirements",
         units=lambda ctx: adapter.modules(),
-        fingerprint=lambda ctx, m: f"{adapter.snapshot(m)}|{ctx.cfg.fingerprint('sources.doors')}",
+        fingerprint=fingerprint,
         run=run,
         prune=lambda ctx, m: ctx.store.delete_module(m),
         parallel=False,
@@ -434,6 +447,11 @@ def index_code_step(ctx) -> Step | None:
                 depends_on=["code.parse"])
 
 
+def _exports(store: Store) -> dict[str, dict]:
+    """When and from where each DOORS module was exported, without the run that read it."""
+    return {m: {"exported_at": i["exported_at"], "source": i["source"]} for m, i in store.modules_info().items()}
+
+
 GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
@@ -471,7 +489,7 @@ def graph_step(ctx) -> Step:
         if unit == "code":
             data = ctx.store.code_units()
         elif unit == "doors":
-            data = [ctx.store.requirements(), ctx.store.links()]
+            data = [ctx.store.requirements(), ctx.store.links(), _exports(ctx.store)]
         else:
             docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
             data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
@@ -488,7 +506,7 @@ def graph_step(ctx) -> Step:
                 stats["communities"] = len(set(groups.values()))
             return G, stats
         if unit == "doors":
-            return build_doors_graph(ctx.store.requirements(), ctx.store.links())
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), _exports(ctx.store))
         return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
 
     def export(store: GraphStore) -> None:
@@ -565,6 +583,8 @@ def run(cfg: Config) -> int:
                     meters=usage, version=__version__, stopping=ctx.stopping)
     rep = runner.run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
+    from atlas.doors import warn_stale_exports
+    warn_stale_exports(cfg["sources"].get("doors"), ctx.store.modules_info())
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
@@ -598,6 +618,10 @@ def status(cfg: Config) -> int:
     ledger = Ledger(ctx.store.path)
     print(f"workspace: {cfg.workspace}")
     print("data:", ctx.store.counts())
+    exports = ctx.store.modules_info()
+    if exports:
+        from atlas.doors import describe_exports
+        print("DOORS:", describe_exports(exports))
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
     print("graph:", GraphStore(ctx.store.path).counts())
@@ -676,17 +700,22 @@ def graph(cfg: Config) -> int:
                 print(f"\n{title}:")
                 for name, n in s[key]:
                     print(f"  {n:5d}  {name}")
+    g = KnowledgeGraph.open(ctx.store.path)
     s = builds.get("doors")
     if s:
+        from atlas.doors import describe_exports
         print(f"\nDOORS of {s['built_at'][:19]}: {s['modules']} modules, {s['requirements']} requirements, "
               f"{s['headings']} headings; links: "
               + ", ".join(f"{n} {k}" for k, n in s["edges_by_kind"].items() if k != "contains")
               + (f"; {s['linked_outside']} IDs linked from modules that were not read" if s["linked_outside"] else ""))
+        print("DOORS export: " + describe_exports(g.exports()).split(", ", 1)[-1]
+              + "".join(f"\n  {m}: {x['exported_at'][:19] or '?'}" + (f" from {x['source']}" if x["source"] else "")
+                        for m, x in g.exports().items()))
     s = builds.get("docs")
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
-    gaps = KnowledgeGraph.open(ctx.store.path).gaps()
+    gaps = g.gaps()
     print("\ntraceability gaps (atlas matrix MODULE for the detail):")
     for key, value in gaps.items():
         if isinstance(value, dict):
@@ -710,20 +739,25 @@ def matrix(cfg: Config, module: str) -> int:
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
     module = "" if module == "*" else module
-    res = KnowledgeGraph.open(ctx.store.path).matrix(module, limit=10**9)
+    g = KnowledgeGraph.open(ctx.store.path)
+    res = g.matrix(module, limit=10**9)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
     columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
     cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
+    meta = res["meta"]
+    exported = {m: x["exported_at"] for m, x in meta["modules"].items()}
     prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
     prefix.parent.mkdir(parents=True, exist_ok=True)
     with open(prefix.with_suffix(".csv"), "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(columns)
-        w.writerows([cell(row.get(c, "")) for c in columns] for row in res["rows"])
+        w.writerow(columns + ["exported_at"])          # the DOORS export of the row's module
+        w.writerows([cell(row.get(c, "")) for c in columns] + [exported.get(g.G.nodes[row["id"]].get("module"), "")]
+                    for row in res["rows"])
     sm, gaps = res["summary"], res["gaps"]
-    md = [f"# Traceability matrix: {res['module']}", "",
+    header = _matrix_header(meta)
+    md = [f"# Traceability matrix: {res['module']}", "", *header, *([""] if header else []),
           f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
           f"{sm['with_documents']} in documents.", "",
           "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
@@ -731,12 +765,25 @@ def matrix(cfg: Config, module: str) -> int:
     for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
         md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
     prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(md[2])
+    for line in header:
+        print(line.removeprefix("- "))
+    print(next(line for line in md if line.endswith("in documents.")))
     for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
         items = gaps[key]["items"]
         print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
     print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
     return 0
+
+
+def _matrix_header(meta: dict) -> list[str]:
+    """Where a matrix comes from, as Markdown lines: the DOORS export of each module."""
+    from atlas.doors import days_ago, export_age
+    lines = []
+    for m, x in meta["modules"].items():
+        ago = days_ago(export_age(x["exported_at"]))
+        lines.append(f"- DOORS {m}: " + (f"exported {x['exported_at'][:10]} ({ago})" if x["exported_at"]
+                                          else "export date unknown") + (f", from {x['source']}" if x["source"] else ""))
+    return lines
 
 
 def verify(cfg: Config, target: str) -> int:

@@ -6,6 +6,24 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- La fecha de la exportación de DOORS, visible: `RequirementsAdapter.exported_at(módulo)` y
+  `module_info(módulo)` (el adaptador `exchange` las lee de `exchange_modules`; `database`
+  no las sabe). El paso `doors.requirements` las guarda en la tabla `modules` de `atlas.db`,
+  y las enseñan `atlas status` (`DOORS: 3 modules, exported 2026-10-14, 9 days ago`),
+  `atlas graph`, el nodo `module:X` del grafo, la cabecera del Markdown y una columna del CSV
+  de `atlas matrix`, `meta` de `matrix`, y un campo `exported_at` en `trace`,
+  `get_requirement` y `build_context`. Antes nada decía de qué exportación salía la matriz
+  de una revisión.
+- `[sources.doors] max_age_days`: `atlas run` y `atlas serve` avisan de los módulos
+  exportados hace más de esos días (0, por defecto: sin aviso). Cambiarla no vuelve a leer
+  nada. `tools/doors_export/README.md` dice quién exporta y cada cuánto.
+
+### Al actualizar
+- Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
+  lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
+  hay peticiones al modelo ni a los embeddings.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

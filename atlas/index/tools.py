@@ -159,7 +159,7 @@ class DocTools:
 
     def get_requirement(self, req_id: str) -> dict:
         """A requirement by its exact ID: its official text, module, attributes, parent and
-        links in the requirements database (DOORS), and the passages of the documents that
+        links in the requirements database (DOORS), when its module was exported, and the passages of the documents that
         state it, with their citation."""
         official = self.store.requirement(req_id.strip()) if self.store else None
         in_docs = [h for h in self.index.requirement(req_id) if not h["doc"].startswith(DOORS_PREFIX)]
@@ -170,6 +170,9 @@ class DocTools:
         if official:
             out["official"] = {k: official[k] for k in ("module", "text", "parent", "attributes", "links_out",
                                                          "links_in")}
+            exported = self.store.modules_info().get(official["module"], {}).get("exported_at", "")
+            if exported:
+                out["official"]["exported_at"] = exported
         out["documents"] = [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
                              "text": h["text"]} for h in in_docs]
         return out

@@ -164,6 +164,10 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 | `database` | tabla | — | `[sources.doors.database]` |
 | `convention` | tabla | — | `[sources.doors.convention]` |
 | `attributes` | lista | — | reservada: todavía sin efecto (los atributos que pasan los elige el relleno de la base) |
+| `max_age_days` | entero | `0` | días que puede tener la exportación de un módulo antes de que `atlas run` y `atlas serve` avisen en el registro de que los requisitos pueden estar desfasados; 0 = sin aviso. La fecha es la que escribe el relleno de la base de intercambio (`exchange_modules.filled_at`); el adaptador `database` no la tiene |
+
+`attributes` y `max_age_days` solo cambian lo que se enseña: cambiarlas no vuelve a leer los
+módulos.
 
 ### [sources.doors.exchange]
 

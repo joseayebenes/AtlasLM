@@ -171,6 +171,8 @@ def serve(cfg: Config, context: Any = None) -> None:
                     cfg.workspace, cfg.path.name)
     else:
         log.info("data: %s", counts)
+    from atlas.doors import warn_stale_exports
+    warn_stale_exports(cfg["sources"].get("doors"), store.modules_info())
     _log_connection(cfg)
     server.run("stdio")
 

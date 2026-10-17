@@ -24,12 +24,13 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from atlas.docs.structure import tables_in
 from atlas.llm.structured import JsonLlm, TruncatedResponse
 from atlas.pipeline import atomic_write
 
-__all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "analyze_section", "consolidate",
+__all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "add_requirements", "analyze_section", "consolidate",
            "empty_overview", "is_cached", "normalize", "overview", "overview_cache_file", "regex_requirements",
-           "section_cache_file", "verify"]
+           "section_cache_file", "table_requirements", "verify"]
 
 log = logging.getLogger(__name__)
 
@@ -410,6 +411,44 @@ def regex_requirements(body: str, pattern: re.Pattern | str, ids: re.Pattern | s
         if text:
             out.extend({"id": rid, "text": text} for rid in rids)
     return out
+
+
+def table_requirements(body: str, columns: dict) -> list[dict]:
+    """One requirement per row of each Markdown table of the section whose header has the
+    columns of `columns` ({"id": "ID", "text": "Requirement"}, any case): the ID is the
+    first word of its cell, the text the cell of `text`. Rows without text are skipped."""
+    want_id, want_text = (str(columns.get(k, "")).strip().lower() for k in ("id", "text"))
+    out = []
+    for t in tables_in(body):
+        header = [h.lower() for h in t["header"]]
+        if want_id not in header or want_text not in header:
+            continue
+        i, j = header.index(want_id), header.index(want_text)
+        for row in t["rows"]:
+            text = " ".join(row[j].split()) if j < len(row) else ""
+            rid = row[i].split()[0].strip(".,;:()[]") if i < len(row) and row[i].split() else ""
+            if text:
+                out.append({"id": rid, "text": text})
+    return out
+
+
+def add_requirements(analysis: dict, extra: list[dict]) -> dict:
+    """`analysis` with the requirements of `extra` (the rows of the tables) that it does not
+    have: one whose ID it has is skipped, one whose text it has without an ID gives it that
+    ID, and the rest are added."""
+    reqs = [dict(r) for r in analysis["requirements"]]
+    ids = {r["id"].upper() for r in reqs if r["id"]}
+    without_id = {_canon(r["text"]): r for r in reqs if not r["id"]}
+    for r in extra:
+        if r["id"] and r["id"].upper() in ids:
+            continue
+        same = without_id.pop(_canon(r["text"]), None)
+        if same is not None:
+            same["id"] = r["id"]
+        elif r["id"] or _canon(r["text"]) not in {_canon(x["text"]) for x in reqs}:
+            reqs.append(dict(r))
+        ids.add(r["id"].upper())
+    return {**analysis, "requirements": reqs}
 
 
 # --------------------------------------------------------------------------

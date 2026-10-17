@@ -12,7 +12,8 @@ build_doors_graph (origin "doors"): the requirements of every module read by atl
   statistics of the build, so that every reader of the graph takes the same convention.
 
 build_docs_graph (origin "docs"): the documents processed by atlas.docs.
-  Nodes: document ("doc:hmi_manual.md"), section ("doc:hmi_manual.md#003": title, path,
+  Nodes: document ("doc:hmi_manual.md": title, path, source, its doc_id, version and date,
+  and the authority of its source: 1 = normative), section ("doc:hmi_manual.md#003": title, path,
   pages, the file of its Markdown and the requirements it states, with their text) and the
   requirements they state.
   Edges: contains (document -> section), declares (section -> requirement) and mentions
@@ -143,10 +144,12 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
                      normalize: Callable[[str], str] = normalize_id,
                      ids: re.Pattern | None = None) -> tuple[nx.DiGraph, dict]:
     """(graph, statistics) from the processed documents: each one a dict with `name` (as in
-    document_names), `path`, `source`, `out_dir` and `structure` (its structure.json).
-    `names` (code_names) are the code elements a section can mention. With `ids` (the
-    expression of an ID), the ID that the analysis gives a requirement is the IDs it finds in
-    it ("SRS-0004 / SRS-0005" is two, "Req. SRS-0004" is SRS-0004)."""
+    document_names), `path`, `source`, `out_dir`, `structure` (its structure.json) and
+    `authority` (of its source; 0 = none). `names` (code_names) are the code elements a
+    section can mention. With `ids` (the expression of an ID), the ID that the analysis gives
+    a requirement is the IDs it finds in it ("SRS-0004 / SRS-0005" is two, "Req. SRS-0004" is
+    SRS-0004). The statistics say in `superseded` which documents have the same doc_id as
+    another one of a higher version (only a warning: both stay in the graph)."""
     names = names or {}
     G = nx.DiGraph()
     stats = {"documents": 0, "sections": 0, "requirements": 0, "mentions": 0}
@@ -155,7 +158,9 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
         st = d["structure"]
         doc = f"doc:{d['name']}"
         G.add_node(doc, kind="document", name=d["name"], title=st.get("title", ""), path=d["path"],
-                   source=d.get("source", ""), out_dir=d["out_dir"])
+                   source=d.get("source", ""), out_dir=d["out_dir"],
+                   **{k: str(st.get(k) or "") for k in ("doc_id", "version", "date")},
+                   authority=int(d.get("authority") or 0))
         stats["documents"] += 1
         for s in st.get("sections", []):
             sec = f"{doc}#{s['id']}"
@@ -188,4 +193,27 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
                 G.add_edge(sec, code, kind="mentions")
                 stats["mentions"] += 1
     stats["requirements"] = sum(1 for _, d in G.nodes(data=True) if d.get("kind") == "requirement")
-    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats, "id_shapes": id_shapes(raw_ids)}
+    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats, "id_shapes": id_shapes(raw_ids),
+               "superseded": superseded(G)}
+
+
+def _version_key(version: str) -> list:
+    """"1.10" after "1.9", "B" after "A"."""
+    return [(0, int(x), "") if x.isdigit() else (1, 0, x.lower()) for x in re.findall(r"\d+|[A-Za-z]+", version)]
+
+
+def superseded(G: nx.DiGraph) -> list[dict]:
+    """The documents with the same doc_id as another one of a higher version: each one
+    with the newest of them (`by`)."""
+    by_id: dict[str, list[str]] = defaultdict(list)
+    for n, d in G.nodes(data=True):
+        if d.get("kind") == "document" and d.get("doc_id") and d.get("version"):
+            by_id[d["doc_id"]].append(n)
+    out = []
+    for doc_id, docs in sorted(by_id.items()):
+        newest = max(docs, key=lambda n: (_version_key(G.nodes[n]["version"]), n))
+        for n in sorted(docs):
+            if _version_key(G.nodes[n]["version"]) < _version_key(G.nodes[newest]["version"]):
+                out.append({"doc_id": doc_id, "document": G.nodes[n]["name"], "version": G.nodes[n]["version"],
+                            "by": G.nodes[newest]["name"], "by_version": G.nodes[newest]["version"]})
+    return out

@@ -296,7 +296,8 @@ class AnalysisIncomplete(RuntimeError):
     written; the unit stays in error so that the next run retries them."""
 
 
-DOCS_VERSION = "docs-1"     # change it when the processing of documents changes
+DOCS_VERSION = "docs-2"     # change it when the processing of documents changes
+GRAPH_ONLY_KEYS = ("authority",)    # keys of [[sources.docs]] that only the graph uses
 
 
 def doc_sources(ctx) -> list[tuple[dict, "DocsOptions"]]:
@@ -308,6 +309,8 @@ def doc_sources(ctx) -> list[tuple[dict, "DocsOptions"]]:
             continue
         if d["name"] in names:
             raise ConfigError(f"[sources.docs] the name '{d['name']}' is repeated")
+        if d.get("authority", 0) < 0:
+            raise ConfigError(f"[sources.docs] '{d['name']}': authority must be 1 (normative), 2... or 0 (none)")
         names.add(d["name"])
         try:
             out.append((d, DocsOptions.from_source(d)))
@@ -383,6 +386,7 @@ def docs_step(ctx) -> Step | None:
         # the extractor too: another one gives another text (and other sections)
         name, f = unit.split(":", 1)
         d, options = by_name[name]
+        d = {k: v for k, v in d.items() if k not in GRAPH_ONLY_KEYS}
         f = ctx.cfg.resolve(f)
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
                 f"{extractor_for(f, ctx.disabled).name}|"
@@ -409,11 +413,14 @@ def docs_step(ctx) -> Step | None:
         out = out_dir(ctx, unit)
         data = process_document(ctx.cfg.resolve(f), out, options, llm=llm() if options.analysis == "llm" else None,
                                 cache_dir=docs_cache(ctx.cfg), workers=concurrency, disabled=ctx.disabled,
-                                stop=ctx.stopping, shared_cache=analyses)
+                                stop=ctx.stopping, shared_cache=analyses,
+                                ocr_dir=root / ".ocr")
         for kind, n in data["sent"].items():
             record_sent(ctx.store.path, model, {f"docs:{name}": n}, kind)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
-                   "errors": data["errors"], "structure": data["structure_info"]["source"]}
+                   "errors": data["errors"], "structure": data["structure_info"]["source"],
+                   **{k: data["structure_info"][k] for k in ("pages_without_text", "ocr", "tables")
+                      if data["structure_info"].get(k)}}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)
         if data["errors"]:
             raise AnalysisIncomplete(f"{data['errors']} sections (or the overview) could not be analysed; "
@@ -459,7 +466,7 @@ class IndexIncomplete(RuntimeError):
     error so that the next run embeds what is missing."""
 
 
-INDEX_VERSION = "index-2"   # change it when the records or the index tables change (index-2: meta)
+INDEX_VERSION = "index-3"   # change it when the records or the index tables change (2: meta; 3: tables)
 
 
 def index_fingerprint(ctx) -> str:
@@ -748,10 +755,12 @@ def graph_step(ctx) -> Step:
                 f"{test_patterns}|{id_normalize}|{json.dumps(conv.get('id_canonical') or {}, sort_keys=True)}|"
                 f"{ids}|{GRAPH_VERSION}")
 
+    authority = {d["name"]: d.get("authority", 0) for d in ctx.cfg["sources"].get("docs", [])}
+
     def documents(ctx) -> list[dict]:
         docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
         names = document_names(docs)
-        return [{**d, "name": names[d["unit"]],
+        return [{**d, "name": names[d["unit"]], "authority": authority.get(d["source"], 0),
                  "structure": json.loads((Path(d["out_dir"]) / "structure.json").read_text(encoding="utf-8"))}
                 for d in docs]
 
@@ -767,7 +776,8 @@ def graph_step(ctx) -> Step:
             data = [ctx.store.requirements(), ctx.store.links(), graph_convention(conv), _exports(ctx.store)]
         else:
             docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
-            data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
+            data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json"),
+                     authority.get(d["source"], 0)] for d in docs]
             data.append(sorted(code_names(ctx.store.code_units()).items()))    # what the sections can mention
         return f"{sha256_text(json.dumps(data, sort_keys=True, default=str))}|{settings}"
 
@@ -802,6 +812,9 @@ def graph_step(ctx) -> Step:
         store.replace(unit, G, stats)
         export(store)
         log.info("graph %s: %s", unit, ", ".join(f"{v} {k}" for k, v in stats.items() if isinstance(v, int)))
+        for x in stats.get("superseded", []):
+            log.warning("%s (%s v%s) is older than %s (v%s): is it superseded?", x["document"], x["doc_id"],
+                        x["version"], x["by"], x["by_version"])
         return {k: v for k, v in stats.items() if not k.startswith("top_")}
 
     def prune(ctx, unit: str) -> None:
@@ -1119,9 +1132,18 @@ def sections(cfg: Config, as_json: bool = False) -> int:
         return 0
     for d, options in doc_sources(ctx):
         for f in doc_files(ctx, d):
-            p = preview(f, options, ctx.disabled)
+            p = preview(f, options, ctx.disabled, ocr_dir=cfg.workspace / "docs" / ".ocr")
             print(f"\n[{d['name']}] {f} — '{p['title']}': {p['chars']} chars, {len(p['sections'])} sections")
-            print(f"  extractor: {p['extractor']}; structure: {p['structure']}"
+            if any(p[k] for k in ("doc_id", "version", "date")):
+                print("  " + "; ".join(f"{k}: {p[k]}" for k in ("doc_id", "version", "date") if p[k]))
+            if p.get("scanned"):
+                print(f"  ! {p['scanned']}: `atlas run` leaves it in error; give the source an ocr_command "
+                      "or a PDF with text")
+            elif p.get("pages_without_text"):
+                print(f"  ! {p['pages_without_text']} of {p['pages']} pages have no text (scanned?)")
+            print(f"  extractor: {p['extractor']}" + (" (after ocr_command)" if p.get("ocr") else "")
+                  + (f"; {p['tables']} tables as Markdown rows" if p.get("tables") else "")
+                  + f"; structure: {p['structure']}"
                   + (f"; {p['subdivided']} large sections subdivided by their headings" if p["subdivided"] else "")
                   + (f"; {p['removed_lines']} header/footer lines removed" if p["removed_lines"] else ""))
             for s in p["sections"]:
@@ -1198,6 +1220,9 @@ def graph(cfg: Config, as_json: bool = False) -> int:
     if s:
         print(f"\ndocuments of {s['built_at'][:19]}: {s['documents']} documents, {s['sections']} sections, "
               f"{s['requirements']} requirements stated, {s['mentions']} mentions of code elements")
+        for x in s.get("superseded", []):
+            print(f"  ! {x['document']} ({x['doc_id']} v{x['version']}) is older than {x['by']} "
+                  f"(v{x['by_version']}): is it superseded?")
     shapes = {o: b["id_shapes"] for o, b in builds.items() if b.get("id_shapes")}
     if shapes:
         print("\nID shapes as written, by origin (N = a digit; how many times each one is written):")

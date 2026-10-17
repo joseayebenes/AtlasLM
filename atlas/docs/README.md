@@ -28,6 +28,21 @@ En `spec_without_bookmarks.pdf` de las muestras, con pdfminer salían 9 de las 2
 subsecciones, y los requisitos de las otras 18 quedaban en la sección anterior; con pymupdf
 salen todas. Con marcadores, los dos dan las mismas secciones y los mismos requisitos.
 
+Una página con imágenes y sin texto es un escaneo: `preview` y `process_document` cuentan
+esas páginas (`pages_without_text`, con pymupdf). Si son más de la mitad, `process_document`
+lanza `ScannedDocument` («scanned PDF: N of M pages have no text; nothing is sent to the
+model») antes de escribir nada, la unidad de `docs.process` queda en error y `atlas sections`
+lo avisa. Con `ocr_command` en la fuente, esos PDF se leen de una copia pasada por OCR que se
+guarda en `<workspace>/docs/.ocr` por el hash del PDF y de la orden.
+
+Con `tables = true` en la fuente, pymupdf busca las tablas de cada página
+(`page.find_tables()`) y los bloques que caen dentro de una (la mayor parte de su área)
+se sustituyen por sus filas en Markdown, una por línea y con `|---|` tras la cabecera, en
+el lugar del primero. `table_requirements = { id = "ID", text = "Requirement" }` saca un
+requisito de cada fila (`analysis.table_requirements`), sin modelo con `regex` y como
+complemento de lo que saca el modelo con `llm`. Las tablas sin bordes no siempre se
+encuentran: `atlas sections` dice cuántas tablas salieron de cada documento.
+
 Para volver a pdfminer: `[plugins] disabled = ["extractor:pymupdf"]`. El extractor forma
 parte de la huella de `docs.process`, así que al cambiarlo los PDF se vuelven a procesar, y
 como su texto cambia, sus secciones vuelven al modelo. `atlas sections` dice qué extractor
@@ -50,6 +65,11 @@ procesarlos:
 | `heading_regex` | grupo 1 = número, grupo 2 = título | si los títulos tienen un formato que no se reconoce |
 | `max_chars`, `min_chars` | 12000, 300 | tamaño máximo de sección; las más cortas se unen a la anterior |
 | `lang` | `"Spanish"` | idioma de los resúmenes (vacío: el del documento) |
+| `doc_id_regex`, `version_regex`, `date_regex` | `'Doc\.\s+(\S+)'` | código, versión y fecha del documento, de sus cabeceras, sus dos primeras páginas o los metadatos del PDF |
+| `authority` | `1` | autoridad del grupo (1 = normativo); solo la usa el grafo |
+| `tables` | `true` | las tablas de los PDF como filas Markdown (apagado por defecto) |
+| `table_requirements` | `{ id = "ID", text = "Requirement" }` | un requisito por fila de las tablas con esas columnas |
+| `ocr_command` | `["ocrmypdf", "--skip-text", "{file}", "{out}"]` | OCR de los PDF con páginas sin texto, sobre una copia |
 
 La referencia completa está en la [guía de configuración](../../docs/configuracion.md).
 
@@ -59,7 +79,8 @@ Cada documento se escribe en `<workspace>/docs/<fuente>/<nombre>_<extensión>/`:
 - `index.md`, y una página por sección en `sections/`;
 - `requirements.md`, con la verificación de cada requisito contra el texto;
 - `glossary.md`, `entities.md` y `open_issues.md`;
-- `structure.json`, todo junto, para el índice y el grafo.
+- `structure.json`, todo junto, para el índice y el grafo, con `doc_id`, `version` y `date`
+  (vacíos si no se encuentran), `pages` y `pages_without_text`.
 
 La carpeta se escribe en `<salida>.tmp` y sustituye a la anterior al final: un corte nunca
 la deja a medias. Dos documentos con el mismo nombre y extensión en carpetas distintas
@@ -108,5 +129,6 @@ print(data["requirements"][0])
 ## Pruebas
 
 `tests/test_docs_structure.py`, `test_docs_analysis.py`, `test_docs_process.py` (caché,
-reintentos, división de secciones cortadas, Ctrl+C, caché dañada) y `test_docs_legacy.py`
+reintentos, división de secciones cortadas, Ctrl+C, caché dañada, PDF escaneados,
+`ocr_command` y tablas) y `test_docs_legacy.py`
 (mismo resultado que `pdf_struct.py`).

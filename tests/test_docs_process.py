@@ -132,3 +132,92 @@ def test_a_damaged_cache_file_is_analysed_again(docs_samples, tmp_path, fake_llm
     data = process_document(md, tmp_path / "b", DocsOptions(), llm=service, cache_dir=cache)
     assert data["errors"] == 0 and fake_chats() - before == 1
     assert json.loads(damaged.read_text())["summary"] and not list(cache.glob("*.tmp"))
+
+
+FAKE_OCR = '''import sys
+import pymupdf
+doc = pymupdf.open()
+doc.new_page().insert_text((72, 90), "Req: SRS-0201 The TMF shall accept scanned input.")
+doc.save(sys.argv[2])
+'''
+
+
+def test_a_scanned_pdf_is_an_error_and_goes_through_ocr_command(scanned_pdf, docs_samples, tmp_path):
+    import sys
+    from atlas.docs.process import ScannedDocument
+    p = preview(scanned_pdf)
+    assert p["pages"] == 1 and p["pages_without_text"] == 1 and p["sections"] == []
+    assert p["scanned"] == "scanned PDF: 1 of 1 pages have no text; nothing is sent to the model"
+    with pytest.raises(ScannedDocument, match="1 of 1 pages have no text"):
+        process_document(scanned_pdf, tmp_path / "docs" / "scan", DocsOptions(analysis="regex"))
+    assert not (tmp_path / "docs" / "scan").exists()
+
+    # ocr_command runs on a copy, once per version of the PDF
+    script = tmp_path / "fake_ocr.py"
+    script.write_text(FAKE_OCR)
+    log = tmp_path / "calls.txt"
+    wrapper = tmp_path / "ocr.py"
+    wrapper.write_text(f"import runpy, sys\nopen({str(log)!r}, 'a').write(sys.argv[1] + '\\n')\n"
+                       f"runpy.run_path({str(script)!r}, run_name='__main__')\n")
+    opts = DocsOptions(analysis="regex", ocr_command=[sys.executable, str(wrapper), "{file}", "{out}"])
+    data = process_document(scanned_pdf, tmp_path / "docs" / "scan", opts)
+    assert [r["id"] for r in data["requirements"]] == ["SRS-0201"]
+    assert data["structure_info"]["ocr"].startswith(str(tmp_path / "docs" / ".ocr"))
+    assert log.read_text().count("\n") == 1 and str(scanned_pdf) not in log.read_text()
+    process_document(scanned_pdf, tmp_path / "docs" / "scan", opts)
+    assert log.read_text().count("\n") == 1                      # from the cache
+    assert preview(scanned_pdf, opts, ocr_dir=tmp_path / "docs" / ".ocr")["chars"] > 0
+    assert log.read_text().count("\n") == 1
+
+    # a PDF with text never goes through it, and a failing command is an error
+    process_document(docs_samples / "spec_with_bookmarks.pdf", tmp_path / "docs" / "spec", opts)
+    assert log.read_text().count("\n") == 1
+    bad = DocsOptions(analysis="regex", ocr_command=[sys.executable, "-c", "import sys; sys.exit(3)",
+                                                     "{file}", "{out}"])
+    with pytest.raises(RuntimeError, match="exit code 3"):
+        process_document(scanned_pdf, tmp_path / "x", bad)
+    missing = DocsOptions(ocr_command=["no-such-ocr-tool", "{file}", "{out}"])
+    with pytest.raises(RuntimeError, match="'no-such-ocr-tool' not found"):
+        preview(scanned_pdf, missing)
+    with pytest.raises(ValueError, match="ocr_command"):
+        DocsOptions(ocr_command=["ocrmypdf", "{file}"])
+
+
+def test_tables_as_markdown_rows_and_requirements_per_row(tables_pdf, tmp_path, fake_llm, fake_chats):
+    from atlas.docs import read_document
+    rows = ["| ID | Requirement | Verification |", "|---|---|---|",
+            "| ICD-0001 | The TMF shall send track updates every 500 ms. | Test |",
+            "| ICD-0002 | The TMF shall raise an alarm within 2 s. | Analysis |",
+            "| ICD-0003 | The TMF shall log every message. | Inspection |"]
+    text, info = read_document(tables_pdf, config={"tables": True})
+    assert "\n".join(rows) in text and info["tables"] == 1
+    assert "Table 1 - Interface requirements\n\n| ID |" in text                 # the caption stays before it
+    assert "| ID |" not in read_document(tables_pdf)[0]                          # tables = false: as before
+
+    columns = {"id": "ID", "text": "Requirement"}
+    data = process_document(tables_pdf, tmp_path / "regex", DocsOptions(analysis="regex", tables=True,
+                                                                       table_requirements=columns))
+    assert [(r["id"], r["text"], r["status"]) for r in data["requirements"]] == [
+        ("ICD-0001", "The TMF shall send track updates every 500 ms.", "literal"),
+        ("ICD-0002", "The TMF shall raise an alarm within 2 s.", "literal"),
+        ("ICD-0003", "The TMF shall log every message.", "literal")]
+    assert data["structure_info"]["tables"] == 1 and preview(tables_pdf, DocsOptions(tables=True))["tables"] == 1
+    assert process_document(tables_pdf, tmp_path / "none", DocsOptions(analysis="regex"))["requirements"] == []
+
+    # with the model, the rows complete what it found (the fake one gives the "shall" sentences, without IDs)
+    data = process_document(tables_pdf, tmp_path / "llm", DocsOptions(tables=True, table_requirements=columns),
+                            llm=fake_llm[0])
+    assert [r["id"] for r in data["requirements"] if r["id"]] == ["ICD-0001", "ICD-0002", "ICD-0003"]
+    with pytest.raises(ValueError, match="table_requirements"):
+        DocsOptions(table_requirements={"id": "ID"})
+
+
+def test_table_requirements_and_add_requirements():
+    from atlas.docs.analysis import add_requirements, table_requirements
+    body = ("Table 2 - More\n\n| Req. ID | Text | Note |\n|---|---|---|\n| SRS-0010 (new) | The A shall b. | x |\n"
+            "| | | only a note |\n| SRS-0011 | The C shall \\| d. |\n\n| Other | Table |\n|---|---|\n| a | b |")
+    reqs = table_requirements(body, {"id": "req. id", "text": "TEXT"})
+    assert reqs == [{"id": "SRS-0010", "text": "The A shall b."}, {"id": "SRS-0011", "text": "The C shall | d."}]
+    analysis = {"requirements": [{"id": "SRS-0011", "text": "other text"}, {"id": "", "text": "The A shall b."}]}
+    assert add_requirements(analysis, reqs)["requirements"] == [{"id": "SRS-0011", "text": "other text"},
+                                                                {"id": "SRS-0010", "text": "The A shall b."}]

@@ -480,6 +480,37 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   política de la empresa; mientras, sigue pymupdf por defecto.
 - README, «Antes de publicar una versión»: pruebas, `make audit`, `make licenses`, wheelhouse y
   `make check-install`.
+- PDF escaneados: `atlas sections`, `preview` y `process_document` cuentan las páginas con
+  imágenes y sin texto (`pages_without_text`). Si son más de la mitad, el documento no se
+  procesa y su unidad queda en error, reintentable, con «scanned PDF: N of M pages have no
+  text; nothing is sent to the model», visible en `atlas status`. Antes quedaba «ok» con 0
+  secciones útiles.
+- `[[sources.docs]] ocr_command` (`["ocrmypdf", "--skip-text", "{file}", "{out}"]`): los PDF
+  con páginas sin texto pasan por OCR sobre una copia, guardada en `<workspace>/docs/.ocr` por
+  el hash del PDF y de la orden.
+- Versión, fecha y autoridad de los documentos: `[[sources.docs]] doc_id_regex`,
+  `version_regex` y `date_regex` se buscan en las cabeceras repetidas, las dos primeras
+  páginas y los metadatos del PDF (de donde sale también la fecha si no hay otra), y van a
+  `structure.json` y al nodo `document`. Las secciones de `trace`, `trace_code` e `impact`
+  llevan `version` y `page_start`, y la columna `documents` de `matrix` dice
+  `spec.pdf v2 §3.1 Timing p.12`.
+- `[[sources.docs]] authority` (1 = normativo): un requisito que no está en DOORS se compara
+  con la declaración del documento de mayor autoridad (`values_differ` con `against`), y
+  `gaps` añade `documents_disagree`: los requisitos fuera de DOORS que varios documentos
+  declaran con cifras distintas. Dos documentos con el mismo `doc_id` y versión menor dan un
+  aviso en `atlas graph`.
+- Tablas de los PDF: `[[sources.docs]] tables = true` (apagado por defecto) pone cada tabla
+  que encuentra pymupdf (`page.find_tables`) como filas Markdown, una por línea, en vez de una
+  celda por párrafo. `table_requirements = { id = "ID", text = "Requirement" }` saca un
+  requisito por fila, sin modelo con `analysis = "regex"` y como complemento de `"llm"`.
+- `[index] kinds` tiene `table`: cada tabla, con la ruta de su sección y su pie («Table n» o
+  «Tabla n»), es un registro propio y sale de los fragmentos. `chunk_text` no parte una tabla
+  por dentro de una fila y repite la cabecera en cada parte; `reflow` conserva el salto antes
+  de las viñetas, los pasos numerados y las filas de tabla.
+- El `embed_text` de un requisito de documento lleva la ruta de su sección.
+- `DocumentExtractor.read(path)`: el texto y lo que el extractor sabe del fichero (páginas,
+  páginas sin texto, metadatos del PDF). Un extractor de un plugin puede seguir implementando
+  solo `extract`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -714,6 +745,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `constraints.txt` fija `pip-audit` y sus dependencias, añadidas a mano desde Python 3.13
   (`platformdirs` solo desde 3.11: en 3.10 lo resuelve pip). La próxima vez que se genere
   con `tools/constraints.py` saldrán de las instalaciones limpias de cada Python.
+- Todos los documentos se vuelven a procesar una vez (`docs-2`), para que `structure.json`
+  tenga `doc_id`, `version`, `date` y las páginas sin texto. El texto de las secciones no
+  cambia: el análisis sale de la caché y no se pregunta nada al modelo.
+- El índice se reconstruye una vez (`index-2`): cambian los fragmentos con listas o pasos
+  numerados (que ahora conservan sus líneas) y el texto que se embebe de cada requisito.
+  Los textos que no cambian salen de la caché de vectores; el resto se embebe otra vez.
+- `[index] kinds` tiene `table` por defecto. Si tu `atlas.toml` da su propia lista, añade
+  `"table"` para que las tablas tengan registro propio.
+- Encender `tables` en una fuente vuelve a procesar sus documentos, y como el texto de las
+  secciones con tablas cambia, la caché de análisis no les sirve: con `analysis = "llm"`, esas
+  secciones vuelven al modelo una vez. Las demás salen de la caché.
+- Las cadenas de la columna `documents` de `matrix` y de `gaps` llevan versión y página
+  (`spec.pdf §1 Tracks p.1`); las secciones de `trace`, `trace_code` e `impact` tienen dos
+  claves más (`version`, `page_start`).
 
 ## [0.2.0] — 2026-10-16
 

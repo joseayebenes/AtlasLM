@@ -40,6 +40,7 @@ de ella:
 | Cambio | Qué se reprocesa |
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
+| `[[sources.docs]] authority` | el grafo |
 | `[llm] model` | los documentos con `analysis = "llm"` |
 | `[embeddings] model`, `family` o los prefijos | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
@@ -198,10 +199,74 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `min_chars` | entero | `300` | las secciones más cortas se unen a la anterior |
 | `lang` | texto | `""` | idioma de los resúmenes (`"Spanish"`); vacío = el del documento |
 | `model` | texto | `"full"` | `"none"`: ningún texto de estos documentos sale del puesto (ver [Fuentes locales](#fuentes-locales-model--none)). `analysis` pasa a `"regex"` si no se dice, y `"llm"` es un error |
+| `ocr_command` | lista | `[]` | orden que pasa por OCR los PDF con páginas sin texto: `["ocrmypdf", "--skip-text", "{file}", "{out}"]` |
+| `doc_id_regex` | texto | `""` | código del documento (grupo 1): `'Doc\.\s+(\S+)'` |
+| `version_regex` | texto | `""` | su versión (grupo 1): `'\bIssue\s+(\w+)'` |
+| `date_regex` | texto | `""` | su fecha (grupo 1): `'\b(\d{4}-\d{2}-\d{2})\b'`; sin ella, la de los metadatos del PDF |
+| `tables` | sí/no | `false` | las tablas de los PDF como filas Markdown (`page.find_tables` de pymupdf) |
+| `table_requirements` | tabla | `{}` | un requisito por fila de las tablas con esas columnas: `{ id = "ID", text = "Requirement" }` |
+| `authority` | entero | `0` | autoridad del grupo frente a otros: `1` = normativo, `2`..., `0` = ninguna. Solo la usa el grafo |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
 modelo.
+
+### Versión, fecha y autoridad
+
+`doc_id_regex`, `version_regex` y `date_regex` se buscan, en este orden, en las cabeceras y
+pies que se repiten en las páginas, en las dos primeras páginas y en el título, asunto y
+palabras clave de los metadatos del PDF; vale el grupo 1 (o todo, si la expresión no tiene
+grupos). Sin fecha, se toma la de modificación (o creación) del PDF, como `AAAA-MM-DD`. Se
+guardan en `structure.json` (`doc_id`, `version`, `date`) y en el nodo del documento, y
+`atlas sections` los muestra. Para las muestras, cuya portada dice «Doc. TMS-SRS-001  Issue 2»:
+
+```toml
+doc_id_regex = 'Doc\.\s+(\S+)'
+version_regex = '\bIssue\s+(\w+)'
+```
+
+Con `authority`, un requisito que no está en DOORS se compara con lo que declara el
+documento del grupo de menor número: `trace` dice qué cifras difieren y `atlas graph` lista
+en `documents disagree` los requisitos que varios documentos declaran con cifras distintas.
+Dos documentos con el mismo `doc_id` y versiones distintas dan un aviso en `atlas graph`
+(¿está sustituido el más antiguo?). Cambiar `authority` solo reconstruye el grafo.
+
+### Tablas
+
+Con `tables = true`, cada tabla que pymupdf encuentra en un PDF sustituye a los bloques de
+texto que caen dentro de ella por sus filas en Markdown, una por línea (`| ICD-0001 | The
+TMF shall... | Test |`), con la cabecera primero; antes salía cada celda como un párrafo
+suelto. Una línea justo antes o después de la tabla que empieza por «Table n» o «Tabla n»
+es su pie. pymupdf encuentra bien las tablas con bordes; las que no tienen, no siempre:
+compruébalo con `atlas sections`, que dice cuántas tablas encontró, y mirando el
+`_extracted_text.md` del documento.
+
+`table_requirements` saca un requisito de cada fila de las tablas cuya cabecera tiene esas
+dos columnas (sin distinguir mayúsculas): el ID es la primera palabra de su celda. Con
+`analysis = "regex"` se suman a los de `req_regex`; con `"llm"`, completan lo que el modelo
+no sacó (una fila que el modelo dio sin ID recibe el de la tabla). También vale para las
+tablas de los Markdown.
+
+En el índice, cada tabla es un registro de tipo `table` con la ruta de su sección y su pie
+(si `[index] kinds` lo incluye; si no, va en los fragmentos). Una tabla grande se divide por
+filas, y cada parte repite la cabecera; un fragmento nunca parte una fila.
+
+### PDF escaneados
+
+Una página que solo es una imagen (un escaneo sin OCR) no tiene texto. Si son más de la
+mitad de las páginas de un PDF, el documento no se procesa: su unidad queda en error con
+«scanned PDF: N of M pages have no text; nothing is sent to the model», que se ve en
+`atlas status`, y `atlas sections` lo avisa. Se reintenta en cada `atlas run`, hasta la
+cuarentena de `[pipeline] max_attempts`. Con menos páginas así, el documento se procesa y el
+registro avisa de cuántas no tienen texto.
+
+Con `ocr_command`, un PDF con alguna página sin texto pasa antes por esa orden: `{file}` es
+una copia del PDF (el original no se toca) y `{out}` el PDF que debe escribir. El resultado
+se guarda en `<workspace>/docs/.ocr`, por el hash del PDF y de la orden, así que el OCR se
+hace una vez por versión del fichero; la orden forma parte de la huella de la fuente. Los
+PDF con texto en todas las páginas no pasan por ella. [OCRmyPDF](https://ocrmypdf.readthedocs.io)
+con `--skip-text` deja como están las páginas que ya tienen texto; necesita Tesseract y los
+idiomas del documento (`"-l", "spa+eng"`).
 
 ## [sources.doors]
 
@@ -368,7 +433,7 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 |---|---|---|---|
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
-| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+| `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`), `table` (cada tabla de un documento, con la ruta de su sección y su pie; sin él, las tablas van en los fragmentos) |
 | `fts_tokenizer` | texto | `"unicode61 remove_diacritics 2"` | el tokenizador de FTS5 de la búsqueda léxica. `"porter unicode61 remove_diacritics 2"` reduce cada palabra inglesa a su raíz: «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo no reindexa nada: al abrir el índice, la tabla de texto se rehace desde los registros en segundos, sin embeber |
 
 `porter` solo conoce el inglés. Conviene si los documentos están en inglés; los resúmenes de

@@ -122,7 +122,9 @@ def search_budget(context_tokens: int, max_tokens: int = 0) -> int:
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
-               "min_chars": int, "enabled": bool, "model": str}
+               "min_chars": int, "ocr_command": list, "doc_id_regex": str, "version_regex": str,
+               "date_regex": str, "authority": int, "tables": bool, "table_requirements": dict,
+               "enabled": bool, "model": str}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list, "max_age_days": int, "model": str, "local_only": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
@@ -148,7 +150,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "csv_delimiter": ";", "code_revision": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
-                        "code_doc"],
+                        "code_doc", "table"],
               "fts_tokenizer": "unicode61 remove_diacritics 2"},    # changing it rebuilds only index_fts
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",

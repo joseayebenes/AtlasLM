@@ -22,7 +22,8 @@ Traceability, without the model:
     matrix(module)      requirement -> code -> tests -> procedures -> documents, and its gaps
     gaps(module)        requirements without code, tests, test procedure or derivation, code
                         without requirements, IDs that are not in DOORS or that DOORS links
-                        in modules not read, values that differ between DOORS and documents
+                        in modules not read, values that differ between DOORS and documents,
+                        and between documents (documents_disagree)
     neighbors(name)     the subgraph around a node, as JSON or Mermaid
     communities()       groups of code that work together (Louvain)
 
@@ -49,7 +50,7 @@ import networkx as nx
 from atlas.graph.build import CODE_KINDS, find_communities
 from atlas.graph.sources import graph_convention
 from atlas.graph.store import GraphStore, to_mermaid
-from atlas.graph.values import values_differ
+from atlas.graph.values import quantities, values_differ
 
 __all__ = ["KnowledgeGraph"]
 
@@ -62,6 +63,18 @@ DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
 DEFAULT_ATTRIBUTES = ("status", "verification")    # [sources.doors] attributes: what is shown and filtered by
 NODE_FIELDS = ("heading", "outline", "level")      # attributes of the exchange database kept in the node
+
+
+def _cite(x: dict) -> str:
+    """'spec.pdf v2 §3.1 Timing p.12' from a section of _section."""
+    return (x["document"] + (f" v{x['version']}" if x.get("version") else "") + f" §{x['title']}"
+            + (f" p.{x['page_start']}" if x.get("page_start") else ""))
+
+
+def _values(text: str) -> set[str]:
+    """The quantities of a requirement text (deadlines, limits...), each as its value and its
+    unit as atlas.graph.values.quantities reads them ("200 ms")."""
+    return {f"{value:g} {unit}".strip() for value, unit in quantities(text or "")}
 
 
 def _natural(text: str) -> list:
@@ -405,19 +418,45 @@ class KnowledgeGraph:
         return seen
 
     def _section(self, s: str, requirement: str = "") -> dict:
+        """A section, with the version of its document and its first page; for a requirement
+        it states, its text and the values (deadlines, limits) that differ from DOORS or,
+        when the requirement is not in DOORS, from the most authoritative document that
+        states it (`against`)."""
         d = self.G.nodes[s]
-        out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name")}
+        doc = self.G.nodes.get(f"doc:{d.get('document')}", {})
+        out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name"),
+               "version": doc.get("version", ""), "page_start": d.get("page_start") or 0}
         if d.get("local_only"):
             out["local_only"] = True
         if requirement:
-            text = next((x["text"] for x in d.get("requirements", []) if x["id"] == requirement), "")
-            official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
+            text = self._statement(s, requirement)
             if text:
                 out["text"] = text
+            if self.G.nodes[requirement].get("module"):
+                official, against = self.G.nodes[requirement].get("text", ""), "doors"
+            else:
+                ref = self._reference(requirement)
+                official, against = (self._statement(ref, requirement), _cite(self._section(ref))) \
+                    if ref and ref != s else ("", "")
             differ = values_differ(official, text) if text and official else None
             if differ and differ["kind"] == "value":         # a unit or a format apart is not a gap
-                out["values_differ"] = differ
+                out["values_differ"] = differ if against == "doors" else \
+                    {"against": against, "official": differ["doors"], "document": differ["document"],
+                     "kind": differ["kind"]}
         return out
+
+    def _statement(self, s: str, requirement: str) -> str:
+        return next((x["text"] for x in self.G.nodes[s].get("requirements", []) if x["id"] == requirement), "")
+
+    def _authority(self, s: str) -> int:
+        """The authority of the document of a section: 1 = normative, 2..., 0 = none."""
+        return self.G.nodes.get(f"doc:{self.G.nodes[s].get('document')}", {}).get("authority") or 0
+
+    def _reference(self, r: str) -> str | None:
+        """The section of the most authoritative document (lowest authority >= 1) that
+        states `r`, or None if no document that states it has an authority."""
+        ranked = [s for s in self._linked(r, {"declares"}, incoming=True) if self._authority(s) >= 1]
+        return min(ranked, key=lambda s: (self._authority(s), _natural(s))) if ranked else None
 
     def _documents(self, r: str) -> list[dict]:
         return [self._section(s, r) for s in self._linked(r, {"declares"}, incoming=True)]
@@ -678,11 +717,13 @@ class KnowledgeGraph:
         """Everything about a requirement: its text and attributes in DOORS, its parent,
         children and links; the requirements it derives from in other modules, up to the
         system requirement (`ancestors`: up to 5 levels, with the type of each link); the
-        document sections that state it, with their text and the values (deadlines,
-        limits) that differ from DOORS (kind "value" of atlas.graph.values.values_differ: not
-        a unit or a format apart); the code that implements it; the tests of the code that
-        verify it (citing it, "tag") or cover it (calling that code, "calls"); and the test
-        procedures of DOORS that verify it (a link of a verifies type)."""
+        document sections that state it (with the version of their document and their first
+        page), their text and the values (deadlines, limits) that differ from DOORS, or from
+        the most authoritative document when it is not in DOORS (kind "value" of
+        atlas.graph.values.values_differ: not a unit or a format apart); the code that
+        implements it; the tests of the code that verify it (citing it, "tag") or cover it
+        (calling that code, "calls"); and the test procedures of DOORS that verify it (a link
+        of a verifies type)."""
         r, err = self._requirement(req_id)
         if err:
             return err
@@ -809,7 +850,7 @@ class KnowledgeGraph:
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],
                 "procedures": self._procedures_of(r),
-                "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)]}
+                "documents": [_cite(x) for x in self._documents(r)]}
 
     def _without_code(self, reqs: list[str]) -> list[str]:
         return [r for r in reqs if not any(self._code_of(x) for x in self._through(r))]
@@ -827,8 +868,11 @@ class KnowledgeGraph:
         from nothing in another module (by module; neither those of [sources.doors.convention]
         top_modules nor test procedures); the subprograms that cite no requirement; the IDs
         cited in the code or stated in the documents that are not in DOORS, and those that
-        DOORS links in modules that were not read (who links them, with what type); and the
-        requirements whose values (deadlines, limits) differ between DOORS and a document."""
+        DOORS links in modules that were not read (who links them, with what type); the
+        requirements whose values (deadlines, limits) differ between DOORS and a document, or,
+        out of DOORS, from the most authoritative document ([[sources.docs]] authority); and,
+        with no module, the requirements out of DOORS that several documents state with
+        different values."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
@@ -850,7 +894,7 @@ class KnowledgeGraph:
                 [{"id": r, "cited_by": self._linked(r, {"implements", "verifies"}, incoming=True)[:5]}
                  for r in outside if self._linked(r, {"implements", "verifies"}, incoming=True)])
             out["stated_in_documents_not_in_doors"] = part(
-                [{"id": r, "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)][:5]}
+                [{"id": r, "documents": [_cite(x) for x in self._documents(r)][:5]}
                  for r in outside if self._linked(r, {"declares"}, incoming=True)])
             linked = []
             for r in outside:
@@ -864,8 +908,27 @@ class KnowledgeGraph:
         for r in reqs:
             for x in self._documents(r):
                 if "values_differ" in x:
-                    differ.append({"id": r, "section": f"{x['document']} §{x['title']}", **x["values_differ"]})
+                    differ.append({"id": r, "section": _cite(x), **x["values_differ"]})
         out["values_differ"] = part(differ)
+        if not module:
+            out["documents_disagree"] = part(self._disagreements())
+        return out
+
+    def _disagreements(self) -> list[dict]:
+        """The requirements that are not in DOORS and that several sections state with
+        different values: the sections, the values of each one and, if a document has an
+        authority, the section of reference."""
+        out = []
+        for r in sorted((n for n, d in self.G.nodes(data=True) if d.get("kind") == "requirement"
+                         and not d.get("module")), key=_natural):
+            stated = {s: self._statement(s, r) for s in self._linked(r, {"declares"}, incoming=True)}
+            stated = {s: _values(t) for s, t in stated.items() if t}
+            if len({frozenset(v) for v in stated.values()}) < 2:
+                continue
+            ref = self._reference(r)
+            out.append({"id": r, "reference": _cite(self._section(ref)) if ref else "",
+                        "sections": [_cite(self._section(s)) for s in stated],
+                        "values": {_cite(self._section(s)): sorted(v, key=_natural) for s, v in stated.items()}})
         return out
 
     def _derivation_gap(self, reqs: list[str], part) -> dict:

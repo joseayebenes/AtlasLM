@@ -163,7 +163,8 @@ class DocTools:
         at most a few of each document unless `document` is given). `document` limits it to
         one document, DOORS module or code unit (its name or part of its title); `kind` to
         one kind of passage: chunk | section_summary | requirement | definition | open_issue |
-        overview | code_doc (a subprogram, type or variable with its comment and code).
+        overview | code_doc (a subprogram, type or variable with its comment and code) | table
+        (a table of a document, with its caption).
         Filters, combined: `module`, a DOORS module ("SRS_TMS"); `chapter`, a chapter of a
         document or module, by its number or title ("3", "Logging"); `attribute`, values of
         the `meta` of the results, "name=value" and several separated by ";": the DOORS

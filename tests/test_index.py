@@ -797,3 +797,44 @@ def test_a_local_only_document_never_goes_to_a_model(docs, tmp_path, fake_llm, f
     assert req["local_only"] == [{"document": "hmi_manual.md", "section": "004"}] and "30 days" not in str(req)
     asked = agent.ask_docs("How long does the HMI keep logs?", document="hmi_manual.md")
     assert asked["sources"] and all(set(s) == {"n", "local_only", "doc", "section", "kind", "ref"} for s in asked["sources"])
+
+
+def test_reflow_keeps_lists_steps_and_table_rows():
+    from atlas.index.records import reflow
+    text = ("The unit\nshall start:\n- power on\n- wait\n1. Press the key\nand hold it.\n2) Release.\n\n"
+            "Text before\n| A | B |\n|---|---|\n| 1 | 2 |\nafter")
+    assert reflow(text) == ("The unit shall start:\n- power on\n- wait\n1. Press the key and hold it.\n2) Release.\n\n"
+                            "Text before\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nafter")
+    assert reflow("a broken\nline 3.5 s and\n2 ms") == "a broken line 3.5 s and 2 ms"
+
+
+def test_a_table_is_never_split_inside_a_row_and_repeats_its_header():
+    rows = [f"| SRS-{i:04d} | The TMF shall do thing number {i} within {i * 10} ms. |" for i in range(1, 31)]
+    table = "\n".join(["| ID | Requirement |", "|---|---|"] + rows)
+    text = "Intro sentence one. Intro sentence two.\n\n" + table + "\n\nClosing sentence after the table."
+    chunks = chunk_text(text, size=400, overlap=80)
+    pieces = [c for c in chunks if "| SRS-" in c]
+    assert len(pieces) > 3 and all("| ID | Requirement |\n|---|---|\n" in p for p in pieces)
+    found = [l for p in pieces for l in p.split("\n") if l.startswith("| SRS-")]
+    assert found == rows                                     # every row once, whole, and in order
+    assert chunks[-1].endswith("Closing sentence after the table.") and "| SRS-" not in chunks[-1].split("\n")[0]
+
+
+def test_tables_are_records_with_their_path_and_caption(tables_pdf, tmp_path):
+    data = process_document(tables_pdf, tmp_path / "icd", DocsOptions(analysis="regex", tables=True,
+                                                                     table_requirements={"id": "ID",
+                                                                                         "text": "Requirement"}))
+    records = build_records(data)
+    table = next(r for r in records if r["kind"] == "table")
+    assert table["embed_text"].startswith("Interface Control Document > 1 Interface requirements\n"
+                                          "Table 1 - Interface requirements\n| ID | Requirement | Verification |")
+    assert table["text"].startswith("Table 1 - Interface requirements\n| ID |") and table["page_start"] == 1
+    chunks = [r["text"] for r in records if r["kind"] == "chunk"]
+    assert not any("| ICD-" in c for c in chunks)           # the table is not in the chunks too
+    assert "The interface carries:\n- track updates\n- alarms\nTable 1 - Interface requirements" in chunks
+    req = next(r for r in records if r["kind"] == "requirement")
+    assert req["embed_text"] == ("Interface Control Document > 1 Interface requirements > requirement\n"
+                                 "ICD-0001: The TMF shall send track updates every 500 ms.")
+    # without the table kind, the table stays in the chunks, whole
+    chunks = [r["text"] for r in build_records(data, kinds=["chunk"])]
+    assert any("| ICD-0003 | The TMF shall log every message. | Inspection |" in c for c in chunks)

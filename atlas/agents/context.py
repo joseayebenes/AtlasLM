@@ -101,8 +101,11 @@ def _sections(items: list[dict]) -> str:
         if x.get("text"):
             line += f": {x['text']}"
         v = x.get("values_differ")
-        if v and v.get("kind") == "value":          # trace only gives these
-            line += f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+        if v and v.get("kind", "value") == "value":          # trace only gives these
+            line += (f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+                     if "doors" in v else
+                     f" **(values differ from {v['against']}: {', '.join(v['official'])} vs "
+                     f"{', '.join(v['document'])})**")
         out.append(line)
     return "\n".join(out)
 

@@ -12,8 +12,9 @@ import re
 from collections import Counter
 from pathlib import Path
 
-__all__ = ["STRUCTURES", "clean_headers", "detect_sections", "diagnose_headings", "document_title",
-           "prepare_sections", "sections_from_bookmarks", "split_text"]
+__all__ = ["METADATA_KEYS", "STRUCTURES", "clean_headers", "detect_sections", "diagnose_headings",
+           "document_metadata", "document_title", "prepare_sections", "sections_from_bookmarks", "split_row",
+           "split_text", "tables_in"]
 
 STRUCTURES = ("auto", "bookmarks", "headings", "size")
 
@@ -67,33 +68,122 @@ def clean_headers(text: str) -> tuple[str, int]:
     template ("Req: SRS-0012 The TMF shall..."), not a header, even if it falls at the edge
     of some pages: it is kept."""
     pages = text.split("\f")
-    if len(pages) < 4:
-        return text, 0
-    norm = lambda l: re.sub(r"\d+", "#", " ".join(l.split()).lower())
-    at_edges: Counter = Counter()
-    in_body: Counter = Counter()
-    for page in pages:
-        lines = [l for l in page.split("\n") if l.strip()]
-        for l in set(norm(x) for x in lines[:3] + lines[-3:] if len(x.strip()) <= 120):
-            at_edges[l] += 1
-        in_body.update(norm(x) for x in lines[3:-3])
-    threshold = max(3, int(len(pages) * 0.3))
-    repeated = {l for l, n in at_edges.items() if n >= threshold and in_body[l] < n}
+    repeated = _repeated(pages)
     if not repeated:
         return text, 0
     removed, new_pages = 0, []
     for page in pages:
         lines = page.split("\n")
-        idx = [i for i, l in enumerate(lines) if l.strip()]
-        edges = set(idx[:3] + idx[-3:])
+        edges = _edges(lines)
         keep = []
         for i, l in enumerate(lines):
-            if i in edges and len(l.strip()) <= 120 and norm(l) in repeated:
+            if i in edges and len(l.strip()) <= 120 and _norm(l) in repeated:
                 removed += 1
                 continue
             keep.append(l)
         new_pages.append("\n".join(keep))
     return "\f".join(new_pages), removed
+
+
+def _norm(line: str) -> str:
+    return re.sub(r"\d+", "#", " ".join(line.split()).lower())
+
+
+def _edges(lines: list[str]) -> set[int]:
+    """The positions of the first and last three lines with text of a page."""
+    idx = [i for i, l in enumerate(lines) if l.strip()]
+    return set(idx[:3] + idx[-3:])
+
+
+def _repeated(pages: list[str]) -> set[str]:
+    """The page headers and footers of clean_headers, normalised (_norm)."""
+    if len(pages) < 4:
+        return set()
+    at_edges: Counter = Counter()
+    in_body: Counter = Counter()
+    for page in pages:
+        lines = [l for l in page.split("\n") if l.strip()]
+        for l in set(_norm(x) for x in lines[:3] + lines[-3:] if len(x.strip()) <= 120):
+            at_edges[l] += 1
+        in_body.update(_norm(x) for x in lines[3:-3])
+    threshold = max(3, int(len(pages) * 0.3))
+    return {l for l, n in at_edges.items() if n >= threshold and in_body[l] < n}
+
+
+# A table as the pymupdf extractor writes it with tables = true (and as Markdown has it):
+# "| c1 | c2 |" rows, one per line, the header first and "|---|---|" after it
+TABLE_ROW = re.compile(r"^\|.*\|$")
+TABLE_RULE = re.compile(r"^\|(?:\s*:?-{3,}:?\s*\|)+$")
+CAPTION = re.compile(r"(?i)^(?:table|tabla)\s+(?:[A-Z][.-]?)?\d")       # "Table 3", "Tabla A.1"
+
+
+def split_row(line: str) -> list[str]:
+    """The cells of a "| c1 | c2 |" row ("\\|" is a | inside a cell)."""
+    return [c.strip().replace("\\|", "|") for c in re.split(r"(?<!\\)\|", line.strip()[1:-1])]
+
+
+def tables_in(text: str) -> list[dict]:
+    """The Markdown tables of a text: each one with `header` (the cells of its first row),
+    `rows` (the cells of the others), `text` (its lines) and `caption`, the line just
+    before or just after it (blank lines aside) if it starts with "Table n" or "Tabla n"."""
+    lines = text.split("\n")
+    out, i = [], 0
+    while i < len(lines):
+        if not TABLE_ROW.match(lines[i].strip()):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and TABLE_ROW.match(lines[j].strip()):
+            j += 1
+        rows = [l.strip() for l in lines[i:j]]
+        cells = [split_row(r) for r in rows if not TABLE_RULE.match(r)]
+        before = next((l.strip() for l in reversed(lines[:i]) if l.strip()), "")
+        after = next((l.strip() for l in lines[j:] if l.strip()), "")
+        caption = before if CAPTION.match(before) else after if CAPTION.match(after) else ""
+        if cells:
+            out.append({"header": cells[0], "rows": cells[1:], "text": "\n".join(rows), "caption": caption})
+        i = j
+    return out
+
+
+METADATA_KEYS = ("doc_id", "version", "date")
+
+
+def document_metadata(text: str, pdf_metadata: dict | None = None, doc_id_regex: str = "",
+                      version_regex: str = "", date_regex: str = "") -> dict[str, str]:
+    """The code, version and date of a document: each regular expression (group 1 if it
+    has one, else the whole match) is looked for in its repeated page headers and footers
+    first, then in the first two pages, then in the title, subject and keywords of the PDF
+    metadata. The text is the extracted one, before clean_headers removes the headers.
+    Without a date found, the modification (or creation) date of the PDF. A key that is not
+    found is ""."""
+    pages = text.split("\f")
+    repeated = _repeated(pages)
+    headers: dict[str, None] = {}          # in order, without repetitions
+    for page in pages:
+        lines = page.split("\n")
+        headers.update((" ".join(lines[i].split()), None) for i in sorted(_edges(lines))
+                       if _norm(lines[i]) in repeated)
+    meta = pdf_metadata or {}
+    places = ["\n".join(headers), "\n".join(pages[:2]),
+              "\n".join(str(meta.get(k) or "") for k in ("title", "subject", "keywords"))]
+    out = {}
+    for key, regex in zip(METADATA_KEYS, (doc_id_regex, version_regex, date_regex)):
+        out[key] = ""
+        if regex:
+            pattern = re.compile(regex)
+            for place in places:
+                m = pattern.search(place)
+                if m:
+                    out[key] = " ".join((m.group(1) if pattern.groups else m.group(0)).split())
+                    break
+    if not out["date"]:
+        for k in ("modDate", "creationDate"):
+            m = re.match(r"(?:D:)?(\d{4})(\d{2})(\d{2})", str(meta.get(k) or ""))
+            if m:
+                out["date"] = "-".join(m.groups())
+                break
+    return out
 
 
 def _looks_like_title(l: str) -> bool:

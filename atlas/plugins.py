@@ -141,6 +141,12 @@ class DocumentExtractor(ABC):
     @abstractmethod
     def extract(self, path: Path) -> str: ...
 
+    def read(self, path: Path) -> tuple[str, dict]:
+        """The text and what the extractor knows about the file: `pages`,
+        `pages_without_text` (pages with images and no text: a scan) and `metadata` (of
+        the PDF). An extractor that knows nothing of that only implements `extract`."""
+        return self.extract(path), {}
+
 
 class Tool(ABC):
     """Tool for ADK agents and for the MCP server. `run` takes keyword arguments and

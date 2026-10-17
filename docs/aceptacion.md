@@ -135,7 +135,7 @@ En el PC con DOORS, con el usuario de Windows de DOORS ([tools/doors_export](../
   clave en el entorno del editor ([FAQ](faq.md#el-servidor-mcp-no-llega-al-modelo)).
   Cifra: **minutos** hasta la primera respuesta útil en el editor.
 - [ ] Durante la semana, cada uno apunta las preguntas que hizo, si la respuesta sirvió y
-  cuánto tardó. La guía de uso (`docs/uso.md`) dice qué herramienta conviene para cada tarea.
+  cuánto tardó. La [guía de uso](uso.md) dice qué herramienta conviene para cada tarea.
   Cifras: **preguntas**, **útiles** y **segundos** típicos.
 
 ### 7. Las metas, en el plan

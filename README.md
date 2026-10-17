@@ -20,6 +20,7 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 
 | Documento | Para qué |
 |---|---|
+| [Uso](docs/uso.md) | para el ingeniero, por tareas: qué pide un requisito, qué rompo si cambio algo, qué falta por trazar, la matriz, código desde el editor, preguntas |
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
@@ -159,7 +160,7 @@ atlas/
 │                   informes y evaluación
 ├── templates/      la plantilla de atlas init
 └── cli.py          las acciones de la línea de comandos
-docs/                       instalación, configuración y seguridad
+docs/                       uso, instalación, configuración, seguridad, aceptación y preguntas frecuentes
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)

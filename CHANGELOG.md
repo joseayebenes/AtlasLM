@@ -7,6 +7,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `docs/uso.md`: la guía del ingeniero, por tareas (qué pide un requisito, qué rompo si
+  cambio algo, qué falta por trazar, la matriz para una revisión, código para un requisito
+  desde el editor, preguntas concretas y amplias): la acción o la herramienta, cómo leer su
+  salida (`values_differ`, `cannot_tell`, «Nothing indexed...», `not_advanced`) y lo que
+  puede y no puede un modelo pequeño.
 - `docs/aceptacion.md`: el guion de las dos primeras semanas con el proyecto real (un puesto
   Windows limpio, el gateway por el proxy, DOORS, los PDF y el código sin modelo, la ingesta
   de noche, 20 preguntas con `atlas eval` y el servidor en el editor), con una casilla y una

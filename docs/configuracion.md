@@ -41,8 +41,9 @@ de ella:
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
 | `[llm] model` | los documentos con `analysis = "llm"` |
-| `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
+| `[embeddings] model`, `family` o los prefijos | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
+| `[index] fts_tokenizer` | solo la tabla de texto, al abrir el índice, sin embeber |
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
@@ -82,10 +83,26 @@ El modelo de embeddings del índice.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `base_url` | URL | la de `[llm]` | la API; sin ella, la misma URL y la misma clave que `[llm]` (la clave nunca se manda a otro servidor) |
-| `model` | texto | `"embeddinggemma"` | el modelo; los prefijos de consulta y documento de embeddinggemma, nomic-embed y e5 se ponen solos |
+| `model` | texto | `"embeddinggemma"` | el modelo; los prefijos de consulta y documento de su familia se ponen solos si el nombre la dice (`embeddinggemma`, `nomic-embed`, `e5`) |
 | `api_key` | texto | la de `[llm]` si comparten URL | la clave |
+| `family` | texto | `""` | la familia del modelo, para sus prefijos: `embeddinggemma`, `nomic`, `e5` o `none` (ninguno). Vacío: la que dice su nombre. Hace falta si el servidor publica el modelo con otro nombre |
+| `query_prefix` | texto | `""` | prefijo literal de las consultas, en lugar del de la familia |
+| `document_prefix` | texto | `""` | prefijo literal de los textos indexados, en lugar del de la familia; `{title}` es el título del documento |
 | `batch` | entero | `32` | textos por petición. Con un límite de peticiones por minuto, cuanto mayor, mejor: el índice llena los lotes con textos de varios documentos |
 | `network` | tabla | — | `[embeddings.network]`: claves de `[network]` solo para los embeddings |
+
+Algunos modelos de embeddings esperan un prefijo que distingue las consultas de los textos
+indexados. Con `embeddinggemma`, `task: search result | query: ` y `title: {title} | text: `,
+con el título real del documento (un módulo de DOORS, `SRS_TMS (DOORS)`; una unidad de código,
+`tracks (code)`). Un modelo cuyo nombre no dice su familia (`corp/gemma-embed-300m`) va sin
+prefijos, y el registro lo avisa; `atlas check` imprime los prefijos efectivos o ese aviso:
+
+```
+  embeddings prefixes: query='task: search result | query: ' document='title: {title} | text: '
+```
+
+Los prefijos entran en la huella del índice: cambiar la familia o un prefijo vuelve a embeber
+los textos.
 
 ## [network]
 
@@ -207,7 +224,7 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `id_pattern` | texto | `""` | expresión de un ID válido; se avisan los requisitos que no casan (los títulos y la información, no) |
-| `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
+| `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos, y a los IDs escritos de otra forma en una búsqueda («srs-4») |
 | `id_regex` | texto | `""` | la expresión de un ID dentro de un texto: los IDs de una etiqueta `Req:` del código (todos los del resto de la línea: `Req: SRS-0004 and SRS-0005`, `see SRS-0004`, `SRS-0004 / SRS-0005`), los de un requisito de un documento con `analysis = "regex"` (los que van seguidos al principio) y los que da el modelo a uno con `llm`. Vacía: `id_pattern` sin `^` ni `$`, sin distinguir mayúsculas y sin casar dentro de una palabra más larga; sin las dos, las etiquetas se leen palabra a palabra hasta la primera que no parece un ID. Cambiarla vuelve a analizar el código y esos documentos |
 | `id_canonical` | tabla | `{}` | la forma de los IDs del código y de los documentos, para que casen con DOORS: `{ regex = "^(SRS\|SSS)[-_ ]?0*(\\d+)$", format = "{1}-{2:04d}" }` hace `SRS-0004` de `srs-4` y de `SRS 0004`. `format` es un `str.format` de Python con los grupos de `regex` por número (`{0}`, el ID entero); un grupo de cifras es un número. Se aplica tras `id_normalize`; los IDs de DOORS no se tocan. Para encontrar `SRS 0004` en una etiqueta hace falta además un `id_regex` que lo admita |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
@@ -276,6 +293,22 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 | `chunk_chars` | entero | `1200` | tamaño de los fragmentos (al menos 200) |
 | `chunk_overlap` | entero | `200` | solape entre fragmentos (menos de la mitad de `chunk_chars`) |
 | `kinds` | lista | todos | qué se indexa: `overview`, `section_summary`, `chunk`, `requirement`, `definition`, `open_issue`, `code_doc` (cada subprograma, tipo y variable del código, con su comentario y su código; necesita `[sources.code]`) |
+| `fts_tokenizer` | texto | `"unicode61 remove_diacritics 2"` | el tokenizador de FTS5 de la búsqueda léxica. `"porter unicode61 remove_diacritics 2"` reduce cada palabra inglesa a su raíz: «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo no reindexa nada: al abrir el índice, la tabla de texto se rehace desde los registros en segundos, sin embeber |
+
+`porter` solo conoce el inglés. Conviene si los documentos están en inglés; los resúmenes de
+sección siguen el `lang` de su fuente (español por defecto en la plantilla), y sobre texto
+español las raíces de `porter` no son las del español. Antes de cambiarlo, mide con `atlas
+eval` antes y después sobre un conjunto del proyecto. En las muestras (documentos en inglés,
+resúmenes del manual en español), con `embeddinggemma` en Ollama y el título del documento
+en su prefijo:
+
+| | léxica acierto@1 | léxica MRR | híbrida acierto@1 | híbrida MRR |
+|---|---|---|---|---|
+| `unicode61` (por defecto) | 60 % | 0,66 | 80 % | 0,88 |
+| `porter unicode61` | 75 % | 0,79 | 90 % | 0,93 |
+| `porter` y `examples/synonyms.toml` | 80 % | 0,86 | 90 % | 0,93 |
+
+Las dos preguntas en español no empeoran con `porter`: buscan en documentos en inglés.
 
 ## [search]
 
@@ -287,8 +320,27 @@ Cambiarlo no reprocesa nada.
 | `results` | entero | `8` | resultados de una búsqueda y pasajes de una respuesta (`--k` en la línea de comandos) |
 | `per_document` | entero | `3` | como mucho, resultados de un mismo documento, módulo o unidad de código mientras otros tengan; `0` = sin límite. No se aplica si la búsqueda se limita a un documento |
 | `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
+| `context_radius` | entero | `1` | cuánto contexto lleva cada pasaje de una respuesta: los fragmentos vecinos de un fragmento, los registros de alrededor de un requisito de DOORS (en el orden del módulo) y los primeros fragmentos de un resumen de sección (`2 × context_radius + 1`); `0`, solo el propio |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `synonyms` | ruta | `""` | un fichero TOML de grupos de términos equivalentes del proyecto, relativo a este fichero (abajo) |
+
+`synonyms` apunta a un fichero como `examples/synonyms.toml`:
+
+```toml
+[[groups]]
+terms = ["track", "traza", "pista"]
+```
+
+Una consulta que trae un término de un grupo (en cualquier caso, con o sin tildes ni la «s»
+del plural) hace una búsqueda léxica más, con los demás términos del grupo añadidos, que
+entra en la fusión como una lista más. Sirve para el vocabulario del proyecto y para las
+preguntas en español sobre documentos en inglés: en las muestras, con él, «alarma cuando se
+pierde una traza» encuentra el requisito también sin vectores. `atlas check` y `atlas run`
+rechazan un fichero que no existe o un grupo con menos de dos términos.
+
+Las siglas de la pregunta (de 2 a 6 mayúsculas: «TMF») se buscan siempre entre las
+definiciones del glosario, que entran con los IDs exactos.
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
 tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos

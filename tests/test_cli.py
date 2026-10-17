@@ -393,7 +393,7 @@ communities = true
 
 
 def test_doors_requirements_are_indexed(toml, fake, fake_stats, capsys):
-    from atlas.cli import search
+    from atlas.cli import check, search
     extra = f'''
 [llm]
 base_url = "{fake[0]}"
@@ -417,6 +417,21 @@ steps = ["doors", "index"]
     assert go()["skipped"] == {"doors.requirements": 3, "index.requirements": 3}
     assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
     assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
+    outputs = []
+    for query in ("SRS-0004", "SRS0004", "srs-4"):                # an ID written in another way
+        assert search(cfg, query) == 0
+        outputs.append(capsys.readouterr().out)
+    assert outputs[0].startswith("\n[1] SRS_TMS (requirement)\n    SRS-0004:") and outputs[1:] == outputs[:1] * 2
+    # the effective prefixes of the embeddings are in the fingerprints: another family reindexes
+    none = load_config(toml(extra.replace('model = "embeddinggemma"', 'model = "embeddinggemma"\nfamily = "none"')))
+    assert go(none)["processed"] == {"index.requirements": 3} and go(none)["processed"] == {}
+    check(none)
+    assert "embeddings prefixes: query='' document=''" in capsys.readouterr().out
+    check(cfg)
+    assert "embeddings prefixes: query='task: search result | query: ' document='title: {title} | text: '" in \
+        capsys.readouterr().out
+    check(load_config(toml(extra.replace('model = "embeddinggemma"', 'model = "corp-embed-300m"'))))
+    assert "WARNING the embeddings model 'corp-embed-300m' is of no known family" in capsys.readouterr().out
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 
@@ -702,3 +717,37 @@ def test_the_deadline_of_until_and_max_minutes():
     assert datetime.fromtimestamp(deadline("07:00", now=now)) == datetime(2026, 10, 18, 7, 0)    # tomorrow
     assert datetime.fromtimestamp(deadline("23:00", now=now)) == datetime(2026, 10, 17, 23, 0)   # today
     assert deadline("23:59", minutes=10, now=now) == now + 600                                  # the earliest
+
+
+def test_a_doors_requirement_comes_with_the_note_after_it(tmp_path, samples, fake):
+    """The index keeps the order of the module: the context of SRS-0004 has SRS-0003 before
+    it and the note that follows it in the exchange database (examples/make_samples.py)."""
+    from atlas.index import Index
+    from atlas.index.search import build_context
+    path = tmp_path / "atlas.toml"
+    path.write_text(f'''
+[project]
+workspace = "{(tmp_path / 'ws').as_posix()}"
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "index"]
+[sources.doors]
+adapter = "exchange"
+modules = ["SRS_TMS"]
+[sources.doors.exchange]
+path = "{(samples / 'requirements.sqlite').as_posix()}"
+kinds = ["requirement", "heading", "information"]
+''', encoding="utf-8")
+    cfg = load_config(path)
+    assert run(cfg) == 0
+    idx = Index.from_config(cfg)
+    hit = idx.search("srs-4", k=1, kinds=["requirement"])[0]
+    context = build_context(idx.store, [hit])[0]["context"]
+    assert context.split(" … ") == [
+        next(r["text"] for r in idx.store.document_records("doors:SRS_TMS") if r["ref"] == "SRS-0003"), hit["text"],
+        "Note: the deadlines of these requirements are measured from the reception of the radar plot."]

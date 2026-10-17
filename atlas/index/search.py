@@ -3,9 +3,14 @@
 A search merges several rankings with Reciprocal Rank Fusion, which needs no calibration
 between scores of different kinds:
 
-- exact IDs (requirements, terms) mentioned in the query, matched against `ref`;
+- exact IDs (requirements, terms) mentioned in the query, matched against `ref`, and the
+  glossary definitions of its acronyms (2 to 6 capitals: "TMF"). An ID written in another
+  way ("srs0004", "SRS_0004", "srs-4") is first written as in the index ("SRS-0004"), with
+  the prefixes of the indexed requirements and their number of digits (ids_in);
 - dense: cosine similarity with the vectors of the current embeddings model;
-- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase.
+- lexical: BM25 over the same texts (FTS5), with every token as an exact phrase; with
+  [search] synonyms, a query that has a term of a group adds one more lexical ranking,
+  of the query with the other terms of the group.
 
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
@@ -14,8 +19,10 @@ its name, can take every place.
 Optionally the model first rewrites the question into 1-3 search queries plus exact
 keywords, and says whether it is broad (it needs much of a document, not a few passages)
 and which documents it is about. An answer from passages takes the hits, replaces every
-chunk by itself and its neighbours (up to a character budget) and asks the model to
-answer only from those numbered sources, citing them as [n]. An answer to a broad question
+one by its context (IndexStore.neighbours: the adjacent chunks, the records around a DOORS
+requirement, the first chunks of a section summary, the passage that states a requirement;
+up to a character budget) and asks the model to answer only from those numbered sources,
+citing them as [n]. An answer to a broad question
 reads its documents whole, section by section: in one request if they fit in
 `scope_chars`, and otherwise in parts, each giving notes that a last request combines.
 
@@ -33,9 +40,11 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Callable
 
 from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
@@ -43,12 +52,14 @@ from atlas.index.store import REF_PATTERN, IndexStore
 from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "answer_status", "build_context", "check_citations", "cite", "citation_warnings", "diverse",
-           "grounded_status", "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_sources"]
+__all__ = ["acronyms", "answer", "answer_status", "build_context", "check_citations", "cite", "citation_warnings",
+           "diverse", "expand_synonyms", "grounded_status", "ids_in", "rewrite_question", "rrf", "search",
+           "section_file", "status_line", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
 CONTEXT_CHARS = 14000   # largest context passed to the model when answering from passages
+CONTEXT_RADIUS = 1      # records on each side of a hit in its context (IndexStore.neighbours)
 SCOPE_CHARS = 100000    # largest part of whole documents read in one request
 SCOPE_DOCUMENTS = 3     # documents read whole when a broad question names none
 PART_WORKERS = 4        # parts of whole documents read at the same time
@@ -243,6 +254,51 @@ def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
     return sorted(score, key=lambda r: -score[r])
 
 
+_ACRONYM = re.compile(r"(?<![\w\-.])[A-Z]{2,6}(?![\w\-])")
+
+
+def acronyms(text: str) -> list[str]:
+    """The acronyms of a text: words of 2 to 6 capitals ("TMF", "HMI"), not part of an ID
+    ("SRS-0004")."""
+    return list(dict.fromkeys(_ACRONYM.findall(text)))
+
+
+def ids_in(query: str, prefixes: dict[str, int], normalize: str = "upper",
+           known: Callable[[list[str]], set[str]] | None = None) -> list[tuple[str, str]]:
+    """The requirement IDs of a query however they are written: (as written, ID). `prefixes`
+    are those of the index with their number of digits (IndexStore.id_prefixes): a prefix,
+    then a space, nothing, "-" or "_", then the number, padded with zeros to that width
+    ("srs 4" -> "SRS-0004"). `normalize` is [sources.doors.convention] id_normalize (upper |
+    none); with `known` (IndexStore.known_refs), only the IDs that exist."""
+    found = []
+    for prefix, width in prefixes.items():
+        for m in re.finditer(rf"(?<![A-Za-z0-9]){re.escape(prefix)}[ _-]?(\d+)(?!\d)", query, re.I):
+            rid = f"{prefix}-{(m.group(1).lstrip('0') or '0').zfill(width)}"
+            found.append((m.group(0), rid.upper() if normalize == "upper" else rid))
+    if found and known is not None:
+        exists = known([rid for _, rid in found])
+        found = [(written, rid) for written, rid in found if rid.upper() in exists]
+    return found
+
+
+def _words(text: str) -> list[str]:
+    """The words of a text in lower case, without accents and without a plural "s"."""
+    plain = "".join(c for c in unicodedata.normalize("NFKD", text.casefold()) if not unicodedata.combining(c))
+    return [w.removesuffix("s") if len(w) > 3 else w for w in re.findall(r"\w+", plain)]
+
+
+def expand_synonyms(query: str, groups: list[list[str]]) -> str:
+    """The query with the other terms of every group ([search] synonyms) that has one of its
+    terms in it (any case, accent or plural "s"); "" if no group has any."""
+    words, added = _words(query), []
+    for group in groups:
+        found = [t for t in group if (tw := _words(t)) and any(words[i:i + len(tw)] == tw
+                                                                for i in range(len(words) - len(tw) + 1))]
+        if found:
+            added += [t for t in group if t not in found and t not in added]
+    return f"{query} {' '.join(added)}" if added else ""
+
+
 def rewrite_question(llm: JsonLlm, question: str, documents: list[dict] = ()) -> dict:
     """The question as search queries and exact keywords, whether it is broad and the
     documents it is about, among `documents` ({name, title}). If the model fails, the
@@ -283,23 +339,32 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
 
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
-           per_document: int = 0, rewritten: dict | None = None) -> list[dict]:
+           per_document: int = 0, rewritten: dict | None = None,
+           synonyms: list[list[str]] = (), id_normalize: str = "upper") -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
     its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
     no limit) is the most hits of one document while others have some. With `llm`, the
     query is rewritten first (or `rewritten` gives it already). With dense=False there are
-    no vectors (IDs and BM25 only): no request to any model."""
+    no vectors (IDs and BM25 only): no request to any model. `synonyms`: groups of
+    equivalent terms (config.read_synonyms); `id_normalize`, that of the IDs (ids_in)."""
     allowed = store.allowed(document, kinds)
+    for written, rid in ids_in(query, store.id_prefixes(), id_normalize, store.known_refs):
+        query = re.sub(rf"(?<![A-Za-z0-9]){re.escape(written)}(?!\d)", rid, query)   # "srs-4": as "SRS-0004"
     if rewritten is None and llm is not None:
         rewritten = rewrite_question(llm, query)
     queries = [query] + (rewritten["queries"] if rewritten else [])
     keywords = rewritten["keywords"] if rewritten else []
     n = max(k * 3, 20)
-    rankings = [store.by_ref(" ".join([query] + keywords), allowed)]
+    exact = " ".join([query] + keywords)
+    ids = store.by_ref(exact, allowed)
+    rankings = [ids + [i for i in store.definitions(acronyms(exact), allowed) if i not in ids]]
     for q, qvec in zip(queries, embedder.queries(queries) if dense else [None] * len(queries)):
         if dense:
             rankings.append(store.dense(qvec, embedder.model, n, allowed))
         rankings.append(store.lexical(q, n, allowed))
+        expanded = expand_synonyms(q, synonyms) if synonyms else ""
+        if expanded:
+            rankings.append(store.lexical(expanded, n, allowed))
     if keywords:
         rankings.append(store.lexical(" ".join(keywords), n, allowed))
     ranked = rrf([r for r in rankings if r])
@@ -325,14 +390,17 @@ def section_file(r: dict) -> str:
     return str(hits[0]) if hits else ""
 
 
-def build_context(store: IndexStore, hits: list[dict], max_chars: int = CONTEXT_CHARS) -> list[dict]:
-    """Replaces every chunk by itself and its neighbours, without repeating, up to max_chars."""
+def build_context(store: IndexStore, hits: list[dict], max_chars: int = CONTEXT_CHARS,
+                  radius: int = CONTEXT_RADIUS) -> list[dict]:
+    """Replaces every hit by its context (IndexStore.neighbours), without repeating, up to
+    max_chars. A piece from another document (a DOORS requirement stated in a document)
+    goes with its citation."""
     sources, used, total = [], set(), 0
     for h in hits:
-        group = [r for r in store.neighbours(h) if r["id"] not in used]
+        group = [r for r in store.neighbours(h, radius) if r["id"] not in used]
         if not group:
             continue
-        text = " … ".join(r["text"] for r in group)
+        text = " … ".join(r["text"] if r["doc"] == h["doc"] else f"({cite(r)}) {r['text']}" for r in group)
         if total + len(text) > max_chars and sources:
             break
         used.update(r["id"] for r in group)
@@ -492,7 +560,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
-           extra_sources: list[dict] = ()) -> dict:
+           extra_sources: list[dict] = (), synonyms: list[list[str]] = (), id_normalize: str = "upper",
+           context_radius: int = CONTEXT_RADIUS) -> dict:
     """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
     sentences without a citation, "consulted": how many sources it was given (see
     answer_status), "sources": those it cites [{n, cite, doc, section, file,
@@ -515,16 +584,18 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, rewritten=rewritten)
+                                                   per_document=per_document, rewritten=rewritten,
+                                                   synonyms=synonyms, id_normalize=id_normalize)
         docs = _scope_documents(store, document, named, hits)
         if docs:
             res = answer_whole(store, llm, question, docs, scope_chars, extra)
             return {**res, "requests": res["requests"] + requests}
-    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
+    hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
+                  synonyms=synonyms, id_normalize=id_normalize)
     routed = {s["ref"].upper() for s in extra if s.get("ref")}
     hits = [h for h in hits if not (h["doc"].startswith(DOORS_PREFIX) and (h.get("ref") or "").upper() in routed)]
     used = sum(len(s["context"]) for s in extra)
-    sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4))
+    sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4), context_radius)
     if not sources:
         return {**_checked(NOTHING_FOUND, [], True), "scope": "passages", "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))

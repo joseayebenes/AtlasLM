@@ -36,7 +36,9 @@ configuración efectiva con las claves enmascaradas. Reconoce los modelos que ra
 `OK: 'ok' (reasoning model: …)`, o explica el fallo si el modelo agota `max_tokens`
 razonando sin contestar. Si el chat funciona, dice además qué salida estructurada acepta el
 servidor: `structured output: json_schema | json_object | none` (una petición pequeña, y una
-más por cada escalón que rechace).
+más por cada escalón que rechace). Bajo los embeddings, imprime los prefijos de
+consulta y de documento efectivos, o un aviso si el nombre del modelo no dice su familia
+(`[embeddings] family`, ver [atlas.index](../index/README.md#embeddings)).
 
 `atlas probe atlas.toml` prueba el modelo como lo usan los agentes, con razonamiento
 (`[llm] reasoning_effort`, o `low` si está vacío o es `none`):

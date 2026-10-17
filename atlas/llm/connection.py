@@ -97,6 +97,9 @@ class ServiceConfig:
                                          # an agent gives the model back its reasoning; "" = never
     stream: str = ""             # LLM only: "" = stream unless the server cannot (atlas.llm.chat); true/false force it
     batch: int = 32              # embeddings only
+    family: str = ""             # embeddings only: embeddinggemma | nomic | e5 | none; "" = from the model name
+    query_prefix: str = ""       # embeddings only: literal prefixes, instead of those of the family
+    document_prefix: str = ""
     net: NetConfig = field(default_factory=NetConfig)
 
 
@@ -870,8 +873,9 @@ def check_service(name: str, cfg: ServiceConfig) -> dict:
     return {"ok": ok, "detail": detail, "seconds": time.time() - t0, **({"warning": warning} if warning else {})}
 
 
-def check(conn: Connection) -> int:
-    """Real chat and embeddings request. Returns 0 if everything works."""
+def check(conn: Connection, notes: dict[str, list[str]] | None = None) -> int:
+    """Real chat and embeddings request. Returns 0 if everything works. `notes`: lines
+    printed under a service ("LLM", "Embeddings") after its result."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
     failures = 0
     for name, cfg in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
@@ -883,6 +887,9 @@ def check(conn: Connection) -> int:
         failures += not res["ok"]
         if res["ok"] and name == "LLM":
             print(f"  structured output: {_structured_output(cfg)}")
+        if res["ok"]:
+            for line in (notes or {}).get(name, []):
+                print(f"  {line}")
     if conn.llm.net.insecure or conn.embeddings.net.insecure:
         print("\n[warning] insecure turns TLS verification off; use it only for diagnosis.")
     return 1 if failures else 0
@@ -950,6 +957,9 @@ base_url = ""                   # empty = the same server as the LLM
 model = "embeddinggemma"
 api_key = ""                    # empty = the same as the LLM
 batch = 32
+family = ""                     # embeddinggemma | nomic | e5 | none; "" = from the model name
+query_prefix = ""               # literal prefixes instead of those of the family ("{title}": the document title)
+document_prefix = ""
 
 # [embeddings.network]          # e.g. local embeddings without proxy
 # proxy = ""

@@ -80,8 +80,8 @@ def test_the_texts_of_several_documents_go_in_full_batches(docs, tmp_path, fake,
     import math
     _, control = fake
     idx = Index(tmp_path / "atlas.db", fake_embeddings)              # batches of 16
-    texts = [r["embed_text"] for data in docs.values() for r in build_records(data)]
-    distinct = len(set(texts))
+    texts = [(r["embed_text"], data["title"]) for data in docs.values() for r in build_records(data)]
+    distinct = len(set(texts))                               # with the title of the document (embeddinggemma)
     alone = sum(math.ceil(len({r["embed_text"] for r in build_records(d)}) / 16) for d in docs.values())
     before = fake_stats()
     dry = idx.embed_missing(texts, dry_run=True)                # only counts
@@ -421,3 +421,150 @@ def test_records_of_a_code_unit(samples):
     assert {r["text"].split(" (")[1].split(",")[0] for r in code_records("tracks", parts, sources, tests=[str(files[1])])
             if "tracks.adb" in r["text"]} == {"test"}
     assert code_records("tracks", parts, sources, kinds=["chunk"]) == []
+
+
+def test_the_tokenizer_of_the_full_text_index(docs, tmp_path, fake_embeddings, fake_stats):
+    """With porter, "deleting" finds "Deleted tracks" and "log" finds "logs"; changing the
+    tokenizer rebuilds only the full-text table, embedding nothing."""
+    from atlas.index import IndexStore
+    db = tmp_path / "atlas.db"
+    idx = Index(db, fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    lexical = lambda i, q: [h["text"] for h in i.search(q, k=10, dense=False)]
+    assert not any("Deleted tracks" in t for t in lexical(idx, "deleting"))
+    assert not any("logs" in t for t in lexical(idx, "log retention"))
+    before = fake_stats()["emb_texts"]
+    porter = Index(db, fake_embeddings, fts_tokenizer="porter unicode61 remove_diacritics 2")
+    assert "porter" in porter.store.db.execute("SELECT sql FROM sqlite_master WHERE name = 'index_fts'").fetchone()[0]
+    assert any("Deleted tracks" in t for t in lexical(porter, "deleting"))
+    assert any("logs" in t for t in lexical(porter, "log retention"))
+    assert fake_stats()["emb_texts"] == before                  # nothing embedded again
+    assert porter.search("SRS-0102", k=1, dense=False)[0]["ref"] == "SRS-0102"
+    _add(porter, docs["hmi_manual.md"])                          # replacing a document keeps it in step
+    assert any("logs" in t for t in lexical(porter, "log retention"))
+    back = Index(db, fake_embeddings)                            # and back to the default
+    assert not any("Deleted tracks" in t for t in lexical(back, "deleting"))
+    assert any("Deleted tracks" in t for t in lexical(back, "deleted"))
+    with pytest.raises(ValueError, match="fts_tokenizer 'bogus'"):
+        IndexStore(db, "bogus")
+    assert any("Deleted tracks" in t for t in lexical(Index(db, fake_embeddings), "deleted"))   # untouched
+
+
+def test_synonyms_and_acronyms(docs, tmp_path, fake_embeddings):
+    from atlas.index.search import acronyms, expand_synonyms
+    groups = [["track", "traza", "pista"], ["log", "registro"], ["track loss", "pérdida de traza"]]
+    assert expand_synonyms("Alarma cuando se pierde una Traza", groups) == \
+        "Alarma cuando se pierde una Traza track pista"
+    assert expand_synonyms("registros de la HMI", groups) == "registros de la HMI log"     # plural, any case
+    assert expand_synonyms("perdida de trazas", groups) == "perdida de trazas track pista track loss"
+    assert expand_synonyms("nothing here", groups) == ""
+    assert acronyms("What is the TMF of the HMI? See SRS-0004 or the SRS") == ["TMF", "HMI", "SRS"]
+
+    path = tmp_path / "synonyms.toml"
+    path.write_text('[[groups]]\nterms = ["track", "traza", "pista"]\n', encoding="utf-8")
+    data = {**docs["hmi_manual.md"], "glossary": [{"term": "TMF", "definitions": ["Track Management Function"],
+                                                   "sections": ["002"]}]}
+    plain = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(plain, data)
+    assert plain.search("alarma traza", k=3, dense=False) == []
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, settings={"synonyms": str(path)})
+    assert idx.synonyms == [["track", "traza", "pista"]]
+    assert any("track is lost" in h["text"] for h in idx.search("alarma traza", k=3, dense=False))
+    hit = idx.search("what does the TMF do", k=3, dense=False)[0]
+    assert (hit["kind"], hit["ref"]) == ("definition", "TMF")
+
+
+def test_ids_written_in_another_way(docs, tmp_path, fake_embeddings):
+    """«srs0004», «SRS_0004» and «srs-4» find what «SRS-0004» finds."""
+    from atlas.index.search import ids_in
+    prefixes = {"SRS": 4, "SSS": 4}
+    assert ids_in("srs-4 and SSS 12, SRS_12345 or srs0004a, not XSRS-1 nor SRS-0004", prefixes) == \
+        [("srs-4", "SRS-0004"), ("SRS_12345", "SRS-12345"), ("srs0004", "SRS-0004"), ("SRS-0004", "SRS-0004"),
+         ("SSS 12", "SSS-0012")]
+    assert ids_in("srs-4", prefixes, normalize="none") == [("srs-4", "SRS-0004")]
+    assert ids_in("srs-4 or srs-9", prefixes, known=lambda ids: {"SRS-0004"}) == [("srs-4", "SRS-0004")]
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    assert idx.store.id_prefixes() == {"SRS": 4}
+    ids = lambda q, dense=True: [h["id"] for h in idx.search(q, dense=dense)]
+    exact = ids("SRS-0004")
+    assert idx.store.records(exact[:1])[0]["ref"] == "SRS-0004"
+    for variant in ("SRS0004", "srs0004", "SRS_0004", "srs-4", "SRS 0004", "srs 4"):
+        assert ids(variant) == exact and ids(variant, dense=False) == ids("SRS-0004", dense=False), variant
+    assert idx.search("srs-102", k=1)[0]["ref"] == "SRS-0102"                # one of a document
+    assert idx.search("srs 0004 or srs 45", k=1)[0]["ref"] == "SRS-0004"    # SRS-0045 is not indexed
+    idx.remove_document("doors:SRS_TMS")
+    assert idx.store.id_prefixes() == {"SRS": 4}                              # those of the manual
+
+
+def test_the_prefixes_of_the_embeddings(docs, tmp_path, fake_embeddings, caplog):
+    """The family of the model gives the prefixes; a name of no known family gets none,
+    and says so; with embeddinggemma, the document prefix has the title of the document."""
+    import hashlib
+    from atlas.index.embeddings import Embedder, prefix_note, prefixes
+    from atlas.llm import ServiceConfig
+    gemma = ("task: search result | query: ", "title: {title} | text: ")
+    assert prefixes(ServiceConfig(model="embeddinggemma:300m")) == gemma
+    other = ServiceConfig(model="corp/gemma-embed-300m-v2")
+    with caplog.at_level("WARNING"):
+        assert prefixes(other) == ("", "")
+    assert "'corp/gemma-embed-300m-v2' is of no known family" in caplog.text
+    assert prefix_note(other).startswith("WARNING")
+    assert prefixes(replace(other, family="embeddinggemma")) == gemma
+    assert prefixes(replace(other, family="none")) == ("", "")
+    assert prefix_note(replace(other, family="none")) == "embeddings prefixes: query='' document=''"
+    assert prefixes(replace(other, query_prefix="q: ", document_prefix="d: ")) == ("q: ", "d: ")
+    assert prefixes(ServiceConfig(model="nomic-embed-text", query_prefix="find: ")) == ("find: ", "search_document: ")
+    with pytest.raises(ValueError, match="family 'bert'"):
+        prefixes(replace(other, family="bert"))
+
+    e = Embedder(fake_embeddings)
+    assert e.document_text("x", "HMI  Manual") == "title: HMI Manual | text: x"
+    assert e.document_text("x") == "title: none | text: x"
+    nomic = Embedder(replace(fake_embeddings, model="nomic-embed-text"))     # keys as before for the others
+    assert nomic.key("x", "HMI Manual") == hashlib.sha256(b"nomic-embed-text\x00search_document: x").hexdigest()[:32]
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    texts = {r["embed_text"] for r in build_records(docs["hmi_manual.md"])}
+    assert len(idx.store.cache_get([e.key(t, "HMI Manual") for t in texts])) == len(texts)
+    assert idx.embed_missing([(t, "HMI Manual") for t in texts])["cached"] == len(texts)
+
+
+def test_the_context_around_what_is_found(docs, tmp_path, fake_embeddings):
+    """A DOORS requirement brings the records around it in its module and the document that
+    states it; a section summary, the first chunks of its section; a requirement of a
+    document, the passage that holds it."""
+    from atlas.index.search import build_context
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE + [{"id": "SRS-0102", "module": "SRS_TMS", "parent": None, "attributes": {},
+                                         "text": "The HMI shall raise an alarm when a track is lost."}])
+    store = idx.store
+    req = lambda ref, doc: next(r for r in store.records(store.by_ref(ref, None)) if r["doc"] == doc)
+
+    doors = req("SRS-0005", "doors:SRS_TMS")
+    assert [(r["doc_name"], r.get("ref") or r["text"]) for r in store.neighbours(doors)] == \
+        [("SRS_TMS", "SRS-0004"), ("SRS_TMS", "SRS-0005"), ("SRS_TMS", "A track is lost after three missed scans."),
+         ("spec_with_bookmarks.pdf", "SRS-0005")]                      # the specification states it too
+    assert [r["doc_name"] for r in store.neighbours(doors, radius=0)] == ["SRS_TMS", "spec_with_bookmarks.pdf"]
+    stated = store.neighbours(req("SRS-0102", "doors:SRS_TMS"), radius=0)           # and where a document says it
+    assert stated[0]["doc_name"] == "SRS_TMS" and {r["kind"] for r in stated} == {"requirement"}
+    assert {r["doc_name"] for r in stated[1:]} == {"hmi_manual.md", "spec_with_bookmarks.pdf"}
+    context = build_context(store, [req("SRS-0102", "doors:SRS_TMS")], radius=0)[0]["context"]
+    assert context.startswith("SRS-0102: The HMI shall") and "(hmi_manual.md › 2 Alarms, p. 1 (requirement)) SRS-0102: The HMI" in context
+
+    in_doc = req("SRS-0102", "test:hmi_manual.md")                                   # the passage that holds it
+    passage = store.neighbours(in_doc)
+    assert [r["kind"] for r in passage] == ["chunk"] and "Alarm latency is TBD" in passage[0]["text"]
+    summary = next(r for r in store.document_records("test:spec_with_bookmarks.pdf") if r["kind"] == "section_summary"
+                   and any(c["kind"] == "chunk" and c["section_id"] == r["section_id"]
+                           for c in store.document_records("test:spec_with_bookmarks.pdf")))
+    around = store.neighbours(summary)
+    assert around[0] == summary and len(around) > 1 and {r["kind"] for r in around[1:]} == {"chunk"}
+    assert [r["seq"] for r in around[1:]] == list(range(len(around) - 1)) and len(around) <= 4
+    assert store.neighbours(next(r for r in store.document_records("test:hmi_manual.md") if r["kind"] == "overview")) \
+        == [next(r for r in store.document_records("test:hmi_manual.md") if r["kind"] == "overview")]

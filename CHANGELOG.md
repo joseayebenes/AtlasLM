@@ -213,6 +213,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   que lo tienen era una llamada ambigua a los dos; ahora va a `store.put`. Un alias de algo de
   fuera es una llamada externa por su nombre completo (`ada.text_io.put_line`, no `log`).
   `atlas graph` cuenta las llamadas resueltas por cada camino.
+- `[index] fts_tokenizer`: el tokenizador de FTS5 de la búsqueda léxica. Con `"porter unicode61
+  remove_diacritics 2"`, «deleting» encuentra «Deleted tracks» y «log», «logs». Cambiarlo rehace
+  solo la tabla de texto al abrir el índice, en segundos y sin embeber. El valor por defecto no
+  cambia; en las muestras, `porter` sube la léxica del 60 % al 75 % de acierto@1 y la híbrida del
+  80 % al 90 %. Es solo inglés: conviene con documentos en inglés y medido con `atlas eval`.
+- `[search] synonyms`: un fichero de grupos de términos equivalentes (`examples/synonyms.toml`);
+  una consulta con uno de ellos hace una búsqueda léxica más con los demás, que entra en la
+  fusión. Las siglas de la pregunta (de 2 a 6 mayúsculas) se buscan entre las definiciones del
+  glosario, con los IDs exactos.
+- Un ID escrito de otra forma en una búsqueda se busca como está en el índice: «srs0004»,
+  «SRS_0004» y «srs-4» dan lo mismo que «SRS-0004» (antes no encontraban nada), con los prefijos
+  de los requisitos indexados y su anchura de dígitos, y solo si el ID existe.
+- `[embeddings] family` (`embeddinggemma`, `nomic`, `e5` o `none`) y los prefijos literales
+  `query_prefix` y `document_prefix`. Antes los prefijos se elegían por el nombre del modelo y, si
+  el gateway lo publicaba con otro, no se ponía ninguno sin aviso; ahora el registro lo avisa y
+  `atlas check` imprime los prefijos efectivos. Entran en la huella del índice.
+- `[search] context_radius` (1): el contexto de cada pasaje de una respuesta. Un requisito de
+  DOORS llega con los registros que lo rodean en su módulo y con el pasaje del documento que
+  dice el mismo ID; un resumen de sección, con los primeros fragmentos de la sección; un
+  requisito o una definición de un documento, con el fragmento que lo contiene y sus vecinos.
+  Antes solo se ampliaban los fragmentos.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -241,6 +262,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   convierte) o `format_only` («1,000» y «1000»). `gaps` y `trace` solo listan `value`; el
   verificador recibe también `unit_only`. Antes, 6 de 7 casos reales daban un veredicto
   erróneo.
+- Los requisitos de un módulo de DOORS se indexan en el orden del módulo (el de la base de
+  intercambio), no en el de sus IDs. Las muestras tienen una nota tras SRS-0004.
+- Con `embeddinggemma`, el prefijo de documento lleva el título del documento (`title: HMI
+  Manual | text: …`) en vez de `title: none`, como recomienda su ficha. En las muestras, la híbrida
+  pasa del 75 % al 80 % de acierto@1 (MRR de 0,83 a 0,88).
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -369,6 +395,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los
   IDs que antes se perdían: pueden aparecer requisitos implementados nuevos y, en `gaps`,
   IDs citados que no están en DOORS. El grafo se reconstruye entero.
+- Con `embeddinggemma`, el primer `atlas run` vuelve a embeber todos los textos del índice (el
+  prefijo de documento cambia y es parte de la clave de la caché). Con otros modelos, se
+  reindexa desde la caché, sin peticiones.
 
 ## [0.2.0] — 2026-10-16
 

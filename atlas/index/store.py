@@ -4,7 +4,9 @@ same records, and the embeddings cache.
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
     index_records     the records (see records.py) with their vector
-    index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
+    index_fts         full-text index of embed_text and ref (if SQLite has FTS5), with the
+                      tokenizer of [index] fts_tokenizer: when it changes, the table is
+                      rebuilt from index_records on opening (seconds, nothing is embedded)
     embed_cache       vector by key (model + prefix + text): what has been embedded once
                       is never embedded again, whatever document it comes from
 
@@ -23,7 +25,9 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["IndexStore", "REF_PATTERN"]
+from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
+
+__all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore", "REF_PATTERN"]
 
 log = logging.getLogger(__name__)
 
@@ -41,27 +45,68 @@ CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
 """
 
+DEFAULT_FTS_TOKENIZER = "unicode61 remove_diacritics 2"
+_TOKENIZE = re.compile(r"tokenize\s*=\s*'((?:[^']|'')*)'", re.I)
+
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
                   "r.ref, r.seq, r.text, r.embed_text"
 
 
+def _tokenizer(sql: str) -> str:
+    """The tokenizer of a CREATE VIRTUAL TABLE ... fts5(...), with its spaces normalised."""
+    m = _TOKENIZE.search(sql or "")
+    return " ".join(m.group(1).replace("''", "'").split()) if m else "unicode61"
+
+
+def _canon(text: str) -> str:
+    """A text in lower case, its words separated by one space and nothing else: to find a
+    requirement inside a chunk, whatever the punctuation and the line breaks."""
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
 class IndexStore:
-    def __init__(self, path: str | Path):
+    """`fts_tokenizer` is the FTS5 tokenizer of the lexical search ([index] fts_tokenizer),
+    e.g. "porter unicode61 remove_diacritics 2" for English stemming."""
+
+    def __init__(self, path: str | Path, fts_tokenizer: str = DEFAULT_FTS_TOKENIZER):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.executescript(SCHEMA)
-        try:
-            self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
-                            "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
-            self.fts = True
-        except sqlite3.OperationalError:
-            log.warning("this SQLite has no FTS5: vector search only")
-            self.fts = False
+        self.fts_tokenizer = " ".join((fts_tokenizer or DEFAULT_FTS_TOKENIZER).split())
+        self.fts = self._open_fts()
         self.lock = threading.RLock()     # one connection shared by the Runner's threads
         self._matrix: tuple[str, int, np.ndarray, np.ndarray] | None = None
+        self._prefixes: tuple[int, dict[str, int]] | None = None
+
+    def _open_fts(self) -> bool:
+        """Creates index_fts with the tokenizer asked for or, if it has another one, rebuilds
+        it from index_records in one transaction. False if this SQLite has no FTS5."""
+        tokenize = self.fts_tokenizer.replace("'", "''")
+        create = f"CREATE VIRTUAL TABLE index_fts USING fts5(embed_text, ref, tokenize='{tokenize}')"
+        row = self.db.execute("SELECT sql FROM sqlite_master WHERE name = 'index_fts'").fetchone()
+        if row is not None and _tokenizer(row[0]) == self.fts_tokenizer:
+            return True
+        try:
+            self.db.execute("BEGIN")
+            if row is not None:
+                self.db.execute("DROP TABLE index_fts")
+            self.db.execute(create)
+            if row is not None:
+                n = self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) "
+                                    "SELECT id, embed_text, ref FROM index_records").rowcount
+                log.info("full-text index rebuilt with the tokenizer '%s' (it had '%s'): %d records",
+                         self.fts_tokenizer, _tokenizer(row[0]), n)
+            self.db.execute("COMMIT")
+            return True
+        except sqlite3.OperationalError as e:
+            self.db.execute("ROLLBACK")
+            if "fts5" in str(e).lower() and "module" in str(e).lower():
+                log.warning("this SQLite has no FTS5: vector search only")
+                return False
+            raise ValueError(f"[index] fts_tokenizer '{self.fts_tokenizer}': {e}") from None
 
     def _query(self, sql: str, params: tuple | list = ()) -> list[sqlite3.Row]:
         with self.lock:
@@ -93,7 +138,7 @@ class IndexStore:
     def delete_document(self, doc: str) -> None:
         with self.lock, self.db:
             self._delete(doc)
-        self._matrix = None
+        self._matrix = self._prefixes = None
 
     def replace_document(self, doc: dict, records: list[dict], vectors: np.ndarray) -> None:
         """`doc`: doc (key), name, title, out_dir, overview, embed_model. All or nothing."""
@@ -113,7 +158,7 @@ class IndexStore:
                 if self.fts:
                     self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) VALUES (?, ?, ?)",
                                     (cur.lastrowid, r["embed_text"], r.get("ref", "")))
-        self._matrix = None
+        self._matrix = self._prefixes = None
 
     def documents(self) -> list[dict]:
         return [{**dict(r), "overview": json.loads(r["overview"] or "{}")} for r in self._query(
@@ -185,6 +230,39 @@ class IndexStore:
             return []
         return [r[0] for r in rows if allowed is None or r[0] in allowed][:n]
 
+    def id_prefixes(self) -> dict[str, int]:
+        """The prefixes of the requirement IDs of the index ("SRS" of "SRS-0004"), each with
+        its most common number of digits; read again when the index changes."""
+        with self.lock:
+            version = self.db.execute("PRAGMA data_version").fetchone()[0]
+            if self._prefixes is None or self._prefixes[0] != version:
+                rows = self.db.execute(
+                    "SELECT UPPER(substr(ref, 1, instr(ref, '-') - 1)) AS prefix, length(ref) - instr(ref, '-') "
+                    "AS width, COUNT(*) AS n FROM index_records WHERE kind = 'requirement' AND instr(ref, '-') > 1 "
+                    "AND length(ref) > instr(ref, '-') AND substr(ref, instr(ref, '-') + 1) NOT GLOB '*[^0-9]*' "
+                    "GROUP BY prefix, width ORDER BY prefix, n DESC, width").fetchall()
+                widths: dict[str, int] = {}
+                for r in rows:
+                    widths.setdefault(r["prefix"], r["width"])
+                self._prefixes = (version, widths)
+            return self._prefixes[1]
+
+    def known_refs(self, refs: list[str]) -> set[str]:
+        """Those of `refs` that are the `ref` of some record, in capitals."""
+        wanted = sorted({r.upper() for r in refs})
+        if not wanted:
+            return set()
+        return {r[0] for r in self._query(f"SELECT DISTINCT UPPER(ref) FROM index_records WHERE UPPER(ref) IN "
+                                          f"({','.join('?' * len(wanted))})", wanted)}
+
+    def definitions(self, terms: list[str], allowed: set[int] | None) -> list[int]:
+        """The glossary definitions of some terms (any case)."""
+        if not terms:
+            return []
+        rows = self._query(f"SELECT id FROM index_records WHERE kind = 'definition' AND UPPER(ref) IN "
+                           f"({','.join('?' * len(terms))})", [t.upper() for t in terms])
+        return [r[0] for r in rows if allowed is None or r[0] in allowed]
+
     def by_ref(self, query: str, allowed: set[int] | None) -> list[int]:
         """Exact match of the IDs (requirements, terms) mentioned in the query."""
         candidates = {t.upper() for t in REF_PATTERN.findall(query)}
@@ -212,13 +290,45 @@ class IndexStore:
             f"FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE r.doc = ? ORDER BY r.id", (doc,))]
 
     def neighbours(self, rec: dict, radius: int = 1) -> list[dict]:
-        """The adjacent chunks of the same section ('small-to-big' context)."""
-        if rec["kind"] != "chunk":
-            return [rec]
-        rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
-                           "AND seq BETWEEN ? AND ? ORDER BY seq",
-                           (rec["doc"], rec["section_id"], rec["seq"] - radius, rec["seq"] + radius))
-        return self.records([r[0] for r in rows])
+        """The context of a record ('small-to-big'), in the order of its document:
+        - a chunk of a document: the adjacent chunks of its section, `radius` on each side;
+        - a requirement or an information object of a DOORS module: the records of its
+          section within `radius` of it (they are indexed in the order of the module) and,
+          for a requirement, the same ID where a document states it;
+        - a section summary: the first 2 * radius + 1 chunks of its section;
+        - a requirement or a definition of a document: the chunk of its section that holds
+          its text, with its neighbours (and the record first if the chunk does not hold
+          all of it);
+        - anything else, the record itself."""
+        kind, doc = rec["kind"], rec["doc"]
+        if doc.startswith(DOORS_PREFIX) and kind in ("requirement", "chunk"):
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND section_id = ? AND id BETWEEN ? AND ? "
+                               "ORDER BY id", (doc, rec["section_id"], rec["id"] - radius, rec["id"] + radius))
+            same = [] if kind != "requirement" or not rec.get("ref") else self._query(
+                "SELECT id FROM index_records WHERE kind = 'requirement' AND UPPER(ref) = ? AND doc NOT LIKE ? "
+                "ORDER BY id", (rec["ref"].upper(), DOORS_PREFIX + "%"))
+            return self.records([r[0] for r in rows] + [r[0] for r in same])
+        if kind == "chunk":
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
+                               "AND seq BETWEEN ? AND ? ORDER BY seq",
+                               (doc, rec["section_id"], rec["seq"] - radius, rec["seq"] + radius))
+            return self.records([r[0] for r in rows])
+        if kind == "section_summary":
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
+                               "ORDER BY seq LIMIT ?", (doc, rec["section_id"], 2 * radius + 1))
+            return [rec] + self.records([r[0] for r in rows])
+        if kind in ("requirement", "definition") and not doc.startswith(CODE_PREFIX) and rec.get("section_id"):
+            chunks = self._query("SELECT id, text FROM index_records WHERE doc = ? AND kind = 'chunk' AND "
+                                 "section_id = ? ORDER BY seq", (doc, rec["section_id"]))
+            text = _canon(rec["text"])
+            body = _canon(rec["text"].split(": ", 1)[1] if rec.get("ref") and rec["text"].startswith(f"{rec['ref']}: ")
+                          else rec["text"])
+            for needle in (text, body, _canon(rec.get("ref") or "")):
+                holder = next((c for c in chunks if needle and needle in _canon(c["text"])), None)
+                if holder is not None:
+                    group = self.neighbours(self.records([holder["id"]])[0], radius)
+                    return group if needle in (text, body) else [rec] + group
+        return [rec]
 
     def requirement(self, req_id: str) -> list[dict]:
         """Records of the requirement with that exact ID, in every document."""

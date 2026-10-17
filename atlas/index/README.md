@@ -45,9 +45,18 @@ que cambian.
 ## Embeddings
 
 Todo va en `atlas.db`: registros, vectores, índice de texto y una caché de vectores por
-modelo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
+modelo, prefijo y texto, que evita embeber dos veces el mismo texto. Un documento reanalizado solo
 embebe sus textos nuevos. Cambiar `[embeddings] model` reindexa todo sin volver al LLM, y
 la búsqueda nunca mezcla vectores de dos modelos.
+
+Los prefijos de consulta y de documento salen de `[embeddings] family` (`embeddinggemma`,
+`nomic`, `e5` o `none`) o, si no se da, del nombre del modelo; `query_prefix` y
+`document_prefix` literales sustituyen a los de la familia. `prefixes(cfg)` los resuelve sin
+crear cliente y avisa en el registro si el nombre no dice ninguna familia: un gateway puede
+publicar `embeddinggemma` con otro nombre, y entonces los vectores se calculaban sin prefijo
+sin que nadie lo supiera. Con `embeddinggemma`, el prefijo de documento lleva el título del
+documento (`title: HMI Manual | text: …`) en vez de `title: none`. Los prefijos efectivos
+entran en la huella de los tres pasos de índice, y `atlas check` los imprime.
 
 Antes de indexar, cada paso junta los textos que faltan en la caché de todos sus
 documentos (o módulos) y los embebe en lotes llenos de `[embeddings] batch`, varios a la
@@ -59,9 +68,34 @@ siguiente ejecución.
 ## Búsqueda
 
 Una búsqueda combina tres listas con Reciprocal Rank Fusion:
-- los IDs exactos que aparecen en la consulta;
+- los IDs exactos que aparecen en la consulta, y las definiciones del glosario de sus siglas
+  (de 2 a 6 mayúsculas: «TMF»);
 - la similitud de los vectores;
 - BM25 sobre el mismo texto (FTS5 de SQLite).
+
+Un ID escrito de otra forma se busca como está en el índice: «srs0004», «SRS_0004», «SRS 0004»
+y «srs-4» dan lo mismo que «SRS-0004». `ids_in` toma los prefijos de los requisitos indexados
+(`IndexStore.id_prefixes`, «SRS» con su anchura de dígitos más común, 4), une el prefijo, un
+espacio, nada o un guion bajo y el número, rellena con ceros a esa anchura, aplica
+`[sources.doors.convention] id_normalize` y se queda solo con los IDs que existen; la consulta
+se busca entonces con el ID canónico en su lugar.
+
+### Léxico
+
+BM25 busca cada palabra tal cual. Con el tokenizador de serie, «deleting» no encuentra
+«Deleted tracks» ni «log», «logs». `[index] fts_tokenizer = "porter unicode61
+remove_diacritics 2"` reduce cada palabra inglesa a su raíz (no casa «verifies» con
+«verification»). Al abrir el índice, `IndexStore` compara el tokenizador de la tabla
+`index_fts` con el pedido y, si difiere, la rehace desde `index_records` en una transacción:
+segundos, sin embeber nada. `porter` es solo inglés y los resúmenes de sección siguen el
+`lang` de su fuente: conviene con documentos en inglés, medido con `atlas eval` antes y
+después (en las muestras, la léxica pasa del 60 % al 75 % de acierto@1, y la híbrida del 80 %
+al 90 %; ver la [guía](../../docs/configuracion.md#index)).
+
+`[search] synonyms` añade grupos de términos equivalentes del proyecto (`examples/synonyms.toml`):
+una consulta con un término de un grupo hace una búsqueda léxica más, con los demás términos
+del grupo, que entra en la fusión como una lista más. Es la búsqueda que queda cuando el
+servidor de embeddings no responde.
 
 Una búsqueda en todos los documentos da como mucho `[search] per_document` resultados (3)
 de cada documento, módulo de DOORS o unidad de código mientras otros tengan alguno; si no
@@ -72,8 +106,17 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 `[search] results` dice cuántos resultados (8).
 
 `atlas ask` reescribe antes la pregunta en consultas de búsqueda. Después pasa al modelo
-los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
-pide responder solo con esas fuentes y citándolas como `[n]`.
+los mejores resultados, cada uno con su contexto (hasta `[search] context_chars`), y le pide
+responder solo con esas fuentes y citándolas como `[n]`. El contexto (`IndexStore.neighbours`,
+`[search] context_radius` registros a cada lado, 1) depende de lo encontrado:
+- un fragmento: sus vecinos de la misma sección;
+- un requisito o un objeto de información de DOORS: los registros de su sección que lo
+  rodean en el módulo (se indexan en el orden del módulo, no en el de los IDs) y, si un
+  documento dice el mismo ID, su pasaje con su cita. Antes llegaba la frase a secas;
+- un resumen de sección: los primeros fragmentos de la sección. Antes, solo el resumen;
+- un requisito o una definición de un documento: el fragmento de su sección que contiene su
+  texto, con sus vecinos;
+- lo demás (resumen del documento, código), él mismo.
 
 ## Citas comprobadas
 
@@ -155,7 +198,8 @@ a leer cuando cambia la base.
 `Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
 ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
 Sobre las muestras, con `embeddinggemma`, la híbrida pone lo buscado en primer lugar en el
-75 % de los casos y entre los tres primeros en el 90 %; la léxica, en el 55 % y el 70 %.
+80 % de los casos y entre los tres primeros en el 90 %; la léxica, en el 60 % y el 60 % (con
+`porter`, la híbrida en el 90 % y el 90 %, y la léxica en el 75 % y el 75 %).
 
 El código compite con los documentos. En las muestras, «show the tracks on the operator
 screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de

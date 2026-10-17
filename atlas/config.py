@@ -78,7 +78,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
             "stream": (bool, str), "network": dict},
-    "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "network": dict},
+    "embeddings": {"base_url": str, "model": str, "api_key": str, "batch": int, "family": str,
+                   "query_prefix": str, "document_prefix": str, "network": dict},
     "network": {"proxy": str, "ca_cert": str, "client_cert": str, "client_key": str,
                 "no_proxy": str, "insecure": bool, "timeout": float, "idle_timeout": float, "turn_timeout": float,
                 "requests_per_minute": int,
@@ -92,8 +93,9 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "sources": {"docs": list, "doors": dict, "code": dict},
     "graph": {"exports": list, "communities": bool, "matrix_formats": list, "csv_delimiter": str,
               "code_revision": bool},
-    "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
-    "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
+    "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list, "fts_tokenizer": str},
+    "search": {"results": int, "per_document": int, "context_chars": int, "context_radius": int, "scope": str,
+               "scope_chars": int, "synonyms": str},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list, "profile": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -103,6 +105,7 @@ SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask rea
 MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of atlas serve (atlas.mcp)
 MATRIX_FORMATS = ("csv", "md", "json", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
 GRAPH_BUILD_KEYS = ("exports", "communities", "code_revision")     # the keys of [graph] that change the graph built
+EMBED_FAMILIES = ("embeddinggemma", "nomic", "e5", "none")   # [embeddings] family (atlas.index.embeddings)
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -130,9 +133,11 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "csv_delimiter": ";", "code_revision": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
-                        "code_doc"]},
+                        "code_doc"],
+              "fts_tokenizer": "unicode61 remove_diacritics 2"},    # changing it rebuilds only index_fts
     # what search and ask take from the index; changing it reprocesses nothing
-    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
+    "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",
+               "scope_chars": 100000, "synonyms": ""},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": [], "profile": ""},     # "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
@@ -214,12 +219,55 @@ def _validate_convention(convention: dict) -> None:
         raise ConfigError(f"[{where}] top_modules must be a list of modules")
 
 
-def _validate_search(search: dict) -> None:
+def read_synonyms(path: str | Path) -> list[list[str]]:
+    """The groups of equivalent terms of a synonyms file ([search] synonyms):
+
+        [[groups]]
+        terms = ["track", "traza", "pista"]
+
+    Each group has at least two terms; a term can have several words."""
+    path = Path(path)
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except OSError as e:
+        raise ConfigError(f"[search] synonyms: cannot read {path}: {e.strerror or e}") from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"[search] synonyms: TOML syntax in {path}: {e}") from None
+    unknown = sorted(set(data) - {"groups"})
+    groups = data.get("groups", [])
+    if unknown or not isinstance(groups, list):
+        raise ConfigError(f"[search] synonyms: {path.name} has only [[groups]] tables, each with terms")
+    out = []
+    for i, g in enumerate(groups, 1):
+        terms = g.get("terms") if isinstance(g, dict) else None
+        if (not isinstance(terms, list) or set(g) != {"terms"} or len(terms) < 2
+                or not all(isinstance(t, str) and t.strip() for t in terms)):
+            raise ConfigError(f"[search] synonyms: group {i} of {path.name} needs terms, a list of at least "
+                              f"two texts")
+        out.append([" ".join(t.split()) for t in terms])
+    return out
+
+
+def _validate_search(search: dict, base: Path) -> None:
+    """[search]; `synonyms` is resolved against `base`, the folder of atlas.toml."""
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
-    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("scope_chars", 1000)):
+    for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("context_radius", 0),
+                       ("scope_chars", 1000)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
+    if search.get("synonyms"):
+        path = Path(search["synonyms"]).expanduser()
+        search["synonyms"] = str(path if path.is_absolute() else (base / path).resolve())
+        read_synonyms(search["synonyms"])
+
+
+def _validate_index(index: dict) -> None:
+    tokenizer = index.get("fts_tokenizer")
+    if tokenizer is not None and (not tokenizer.strip() or "\x00" in tokenizer):
+        raise ConfigError("[index] fts_tokenizer must name an FTS5 tokenizer, e.g. "
+                          "\"porter unicode61 remove_diacritics 2\"")
 
 
 def _validate_mcp(mcp: dict) -> None:
@@ -368,7 +416,12 @@ def load_config(path: str | Path) -> Config:
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
-    _validate_search(data.get("search", {}))
+    _validate_search(data.get("search", {}), path.parent)
+    _validate_index(data.get("index", {}))
+    family = (data.get("embeddings") or {}).get("family", "")
+    if family and family not in EMBED_FAMILIES:
+        raise ConfigError(f"[embeddings] family must be one of {', '.join(EMBED_FAMILIES)} (or empty: from the "
+                          f"name of the model)")
     _validate_mcp(data.get("mcp", {}))
     stream = data.get("llm", {}).get("stream", "")
     if isinstance(stream, str) and stream.strip().lower() not in ("", "auto", "true", "false"):

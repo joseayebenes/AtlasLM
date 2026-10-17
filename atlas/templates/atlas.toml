@@ -29,6 +29,7 @@ reasoning_effort = "none"              # gemma4 razona por defecto y tarda minut
 [embeddings]
 model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]
 batch = 64                             # textos por petición
+# family = "embeddinggemma"            # si el gateway lo publica con otro nombre: sus prefijos (atlas check los dice)
 
 [network]
 proxy = "${HTTPS_PROXY:-}"             # con usuario: "http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"
@@ -72,6 +73,11 @@ results = 8                            # resultados de atlas search y pasajes de
 per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
 scope = "auto"                         # auto: una pregunta amplia lee sus documentos enteros; passages: nunca
 scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
+context_radius = 1                     # vecinos de cada pasaje de una respuesta (fragmentos, requisitos de DOORS)
+# synonyms = "synonyms.toml"            # grupos de términos equivalentes del proyecto ([[groups]] terms = [...])
+
+# [index]
+# fts_tokenizer = "porter unicode61 remove_diacritics 2"   # raíces inglesas en la búsqueda léxica: «log» encuentra «logs»
 
 # --- Agentes y servidor MCP ------------------------------------------------------------
 [agents]

@@ -177,3 +177,22 @@ def test_paths_are_relative_to_the_toml_wherever_atlas_runs(tmp_path, monkeypatc
     assert cfg.relative(home / "docs" / "a.pdf") == os.path.join("docs", "a.pdf")
     outside = os.path.abspath(home.parent / "other" / "a.pdf")
     assert cfg.relative("../other/a.pdf") == outside and cfg.relative(outside) == outside
+
+
+def test_the_synonyms_file_is_checked(tmp_path):
+    from atlas.config import ConfigError, load_config
+    toml = tmp_path / "atlas.toml"
+    toml.write_text('[search]\nsynonyms = "synonyms.toml"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="cannot read"):
+        load_config(toml)
+    syn = tmp_path / "synonyms.toml"
+    syn.write_text('[[groups]]\nterms = ["track"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="group 1 of synonyms.toml needs terms"):
+        load_config(toml)
+    syn.write_text('[[groups]]\nterms = ["track", "traza"]\n', encoding="utf-8")
+    cfg = load_config(toml)                                     # relative to atlas.toml
+    assert cfg["search"]["synonyms"] == str(syn.resolve())
+    assert cfg["index"]["fts_tokenizer"] == "unicode61 remove_diacritics 2"
+    toml.write_text('[index]\nfts_tokenizer = " "\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="fts_tokenizer"):
+        load_config(toml)

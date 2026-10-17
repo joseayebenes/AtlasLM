@@ -428,6 +428,21 @@ class IndexIncomplete(RuntimeError):
 INDEX_VERSION = "index-1"   # change it when the records or the index tables change
 
 
+def index_fingerprint(ctx) -> str:
+    """What the records of the index depend on in [index]: not fts_tokenizer, since the
+    full-text table is rebuilt from the records when it changes (IndexStore)."""
+    return ctx.cfg.fingerprint("index", exclude=("fts_tokenizer",))
+
+
+def embed_settings(ctx) -> str:
+    """What the vectors of the index depend on: the embeddings model and its effective
+    prefixes (changing the family reindexes)."""
+    from atlas.index.embeddings import prefixes
+    from atlas.llm import from_config
+    emb = from_config(ctx.cfg).embeddings
+    return "|".join((emb.model, *prefixes(emb)))
+
+
 def index_options(ctx) -> dict:
     """The validated [index] options for index_document."""
     from atlas.index import KINDS
@@ -441,7 +456,7 @@ def index_options(ctx) -> dict:
     return {"chunk_chars": ic["chunk_chars"], "chunk_overlap": ic["chunk_overlap"], "kinds": ic["kinds"]}
 
 
-def embeddings_estimate(ctx, step: str, index, texts: list[str], workers: int) -> dict:
+def embeddings_estimate(ctx, step: str, index, texts: list, workers: int) -> dict:
     """The Step.estimate of an index step: the batches of the texts that have no vector
     in the cache (embed_missing without sending them)."""
     res = index.embed_missing(texts, workers, dry_run=True)
@@ -453,10 +468,9 @@ def index_step(ctx) -> Step:
     """One unit per processed document (docs.process): its structure.json is indexed. The
     texts of all the documents to index are embedded first, together, in full batches."""
     from atlas.index import Index, build_records
-    from atlas.llm import from_config
     options = index_options(ctx)
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     shared: dict = {}
     lock = threading.Lock()            # documents are indexed in parallel
 
@@ -473,7 +487,7 @@ def index_step(ctx) -> Step:
         return [d["unit"] for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
 
     def fingerprint(ctx, unit: str) -> str:
-        return f"{sha256_file(structure(unit))}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return f"{sha256_file(structure(unit))}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, unit: str):
         d = ctx.store.document(unit)
@@ -487,10 +501,13 @@ def index_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def texts(units: list[str]) -> list[str]:
-        return [r["embed_text"] for unit in units for r in build_records(
-            json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
-            options["chunk_overlap"], options["kinds"])]
+    def texts(units: list[str]) -> list[tuple[str, str]]:
+        out = []
+        for unit in units:
+            data = json.loads(structure(unit).read_text(encoding="utf-8"))
+            out += [(r["embed_text"], data["title"]) for r in build_records(
+                data, options["chunk_chars"], options["chunk_overlap"], options["kinds"])]
+        return out
 
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, unit: index().remove_document(unit),
@@ -503,11 +520,10 @@ def index_requirements_step(ctx) -> Step:
     """One unit per DOORS module read by doors.requirements: its requirements are indexed
     as one more document ("doors:<module>"), so that search finds them too. Like
     index.documents, the texts of all the modules to index are embedded first, together."""
-    from atlas.index import DOORS_PREFIX, Index, requirement_records
-    from atlas.llm import from_config
+    from atlas.index import DOORS_PREFIX, Index, module_title, requirement_records
     kinds = index_options(ctx)["kinds"]
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     shared: dict = {}
     lock = threading.Lock()
 
@@ -521,18 +537,19 @@ def index_requirements_step(ctx) -> Step:
         return ctx.store.modules() if {"requirement", "chunk"} & set(kinds) else []
 
     def fingerprint(ctx, module: str) -> str:
-        rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        rows = json.dumps(ctx.store.requirements(module, in_module_order=True), sort_keys=True, default=str)
+        return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def texts(modules: list[str]) -> list[str]:
-        return [r["embed_text"] for m in modules for r in requirement_records(m, ctx.store.requirements(m), kinds)]
+    def texts(modules: list[str]) -> list[tuple[str, str]]:
+        return [(r["embed_text"], module_title(m)) for m in modules
+                for r in requirement_records(m, ctx.store.requirements(m, in_module_order=True), kinds)]
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
@@ -552,10 +569,9 @@ def index_code_step(ctx) -> Step | None:
     if not sc or not sc.get("enabled", True) or "code_doc" not in options["kinds"]:
         return None
     from atlas.graph.build import is_test_file
-    from atlas.index import CODE_PREFIX, Index, code_records
-    from atlas.llm import from_config
+    from atlas.index import CODE_PREFIX, Index, code_records, code_title
     workers = step_workers(ctx, "index")
-    embed_model = from_config(ctx.cfg).embeddings.model
+    embed_model = embed_settings(ctx)
     test_patterns = sc.get("test_patterns", [])
     shared: dict = {}
     lock = threading.Lock()
@@ -587,7 +603,7 @@ def index_code_step(ctx) -> Step | None:
     def fingerprint(ctx, unit: str) -> str:
         files = [[p, sha256_file(ctx.cfg.resolve(p["file"])) if ctx.cfg.resolve(p["file"]).exists() else ""]
                  for p in parts(unit)]
-        return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{ctx.cfg.fingerprint('index')}|"
+        return (f"{sha256_text(json.dumps(files, sort_keys=True))}|{test_patterns}|{index_fingerprint(ctx)}|"
                 f"{embed_model}|{INDEX_VERSION}")
 
     def run(ctx, unit: str):
@@ -598,8 +614,8 @@ def index_code_step(ctx) -> Step | None:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def texts(pending: list[str]) -> list[str]:
-        return [r["embed_text"] for unit in pending for r in records(unit)]
+    def texts(pending: list[str]) -> list[tuple[str, str]]:
+        return [(r["embed_text"], code_title(unit)) for unit in pending for r in records(unit)]
 
     return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit),
@@ -903,7 +919,7 @@ def status(cfg: Config, as_json: bool = False) -> int:
         from atlas.doors import describe_exports
         print("DOORS:", describe_exports(exports))
     print("graph:", GraphStore(ctx.store.path).counts())
-    print("index:", IndexStore(ctx.store.path).counts())
+    print("index:", IndexStore(ctx.store.path, ctx.cfg["index"]["fts_tokenizer"]).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
     pending = ledger.pending()
     for p in pending[:30]:
@@ -1442,7 +1458,9 @@ def check(cfg: Config) -> int:
     from atlas.llm import check as check_connection, from_config
     if cfg.unset:
         print(f"WARNING {unset_hint(cfg)}", file=sys.stderr)
-    return check_connection(from_config(cfg))
+    from atlas.index.embeddings import prefix_note
+    conn = from_config(cfg)
+    return check_connection(conn, {"Embeddings": [prefix_note(conn.embeddings)]})
 
 
 def doctor(cfg: Config) -> int:

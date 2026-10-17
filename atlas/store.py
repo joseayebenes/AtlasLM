@@ -84,11 +84,14 @@ class Store:
             d["links_in"] = [dict(x) for x in self._query("SELECT source, type FROM links WHERE target=?", (d["id"],))]
             return d
 
-    def requirements(self, module: str | None = None) -> list[dict]:
-        """Every requirement (or those of a module), by module and ID, with its attributes."""
+    def requirements(self, module: str | None = None, in_module_order: bool = False) -> list[dict]:
+        """Every requirement (or those of a module), by module and ID, with its attributes;
+        with in_module_order, by module and in the order the adapter read them (that of the
+        module in the exchange database)."""
         where, params = ("WHERE module = ?", (module,)) if module else ("", ())
+        order = "module, rowid" if in_module_order else "module, id"
         return [{**dict(r), "attributes": json.loads(r["attributes"] or "{}")}
-                for r in self._query(f"SELECT * FROM requirements {where} ORDER BY module, id", params)]
+                for r in self._query(f"SELECT * FROM requirements {where} ORDER BY {order}", params)]
 
     def modules(self) -> list[str]:
         return [r["module"] for r in self._query("SELECT DISTINCT module FROM requirements ORDER BY module")]

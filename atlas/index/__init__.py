@@ -30,14 +30,15 @@ from atlas.index.embeddings import Embedder
 from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
                                   requirement_records)
 from atlas.index.search import answer, answer_whole, build_context, cite, search
-from atlas.index.store import IndexStore
+from atlas.index.store import DEFAULT_FTS_TOKENIZER, IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
 __all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
-           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "embed_missing",
+           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "code_title",
+           "embed_missing", "module_title",
            "index_code", "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
@@ -57,6 +58,16 @@ def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, 
                            "overview": data.get("overview", {})})
 
 
+def module_title(module: str) -> str:
+    """The title of a DOORS module in the index."""
+    return f"{module} (DOORS)"
+
+
+def code_title(unit: str) -> str:
+    """The title of a code unit in the index."""
+    return f"{unit} (code)"
+
+
 def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
                  kinds: Iterable[str] | None = None) -> dict:
     """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
@@ -65,7 +76,7 @@ def index_module(store: IndexStore, embedder: Embedder, module: str, requirement
     records = requirement_records(module, requirements, kinds)
     summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
-                                                     "title": f"{module} (DOORS)", "out_dir": "",
+                                                     "title": module_title(module), "out_dir": "",
                                                      "overview": {"summary": summary}})
 
 
@@ -76,22 +87,24 @@ def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dic
     records = code_records(unit, parts, sources, tests, chunk_chars, kinds)
     files = ", ".join(sorted(p["file"] for p in parts))
     return _index_records(store, embedder, records, {"doc": CODE_PREFIX + unit, "name": unit,
-                                                     "title": f"{unit} (code)", "out_dir": "",
+                                                     "title": code_title(unit), "out_dir": "",
                                                      "overview": {"summary": f"code unit {unit}: {files}"}})
 
 
-def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1,
-                  dry_run: bool = False) -> dict:
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str | tuple[str, str]],
+                  workers: int = 1, dry_run: bool = False) -> dict:
     """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
     `workers` batches at a time, and saves each batch in the cache. The texts of many
     documents go in the same batches: fewer requests than embedding each document on its
     own (index_document then finds everything in the cache). Returns how many texts there
     were, how many were in the cache, the batches (one request each), how many were
     embedded and the failed batches. A connection error raises FatalError; the batches that
-    finished stay in the cache. `dry_run` only counts: no batch is sent."""
-    by_key: dict[str, str] = {}
+    finished stay in the cache. Each text can be (text, title of its document), for a
+    document prefix with its title. `dry_run` only counts: no batch is sent."""
+    by_key: dict[str, tuple[str, str]] = {}
     for t in texts:
-        by_key.setdefault(embedder.key(t), t)               # each distinct text once
+        text, title = (t, "") if isinstance(t, str) else t
+        by_key.setdefault(embedder.key(text, title), (text, title))     # each distinct text once
     cached = store.cache_get(list(by_key))
     missing = [(k, t) for k, t in by_key.items() if k not in cached]
     batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
@@ -101,8 +114,9 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
     log.info("embeddings: %d texts, %d in the cache, %d to compute in %d batches of up to %d (%s)",
              len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
 
-    def one(batch: list[tuple[str, str]]) -> int:
-        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+    def one(batch: list[tuple[str, tuple[str, str]]]) -> int:
+        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, (t, _) in batch],
+                                                                         [ti for _, (_, ti) in batch]))))
         return len(batch)
 
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -125,7 +139,8 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
 
 def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], doc: dict) -> dict:
     name = doc["name"]
-    keys = [embedder.key(r["embed_text"]) for r in records]
+    title = doc["title"]                         # in the document prefix of embeddinggemma
+    keys = [embedder.key(r["embed_text"], title) for r in records]
     vectors = store.cache_get(keys)
     missing = [i for i, k in enumerate(keys) if k not in vectors]
     batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
@@ -134,7 +149,8 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
     failed, t0 = [], time.time()
     for n, batch in enumerate(batches, 1):
         try:
-            new = dict(zip((keys[i] for i in batch), embedder.documents([records[i]["embed_text"] for i in batch])))
+            new = dict(zip((keys[i] for i in batch),
+                           embedder.documents([records[i]["embed_text"] for i in batch], [title] * len(batch))))
             store.cache_put(new)                 # saved batch by batch
             vectors.update(new)
             log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)
@@ -159,24 +175,32 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
 class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
-    `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    `settings` are those of [search] (results, per_document, context_chars, context_radius,
+    scope, scope_chars, synonyms: the path of a synonyms file); what is not given takes its
+    default. `fts_tokenizer` is that of [index]; `id_normalize`, that of
+    [sources.doors.convention], for the IDs written in another way in a query."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
-        from atlas.config import DEFAULTS
-        self.store = IndexStore(db)
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
+                 fts_tokenizer: str = DEFAULT_FTS_TOKENIZER, id_normalize: str = "upper"):
+        from atlas.config import DEFAULTS, read_synonyms
+        self.store = IndexStore(db, fts_tokenizer)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
+        self.synonyms = read_synonyms(self.settings["synonyms"]) if self.settings["synonyms"] else []
+        self.id_normalize = id_normalize
 
     @classmethod
     def from_config(cls, cfg) -> "Index":
-        """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
-        atlas.toml."""
+        """The index of <workspace>/atlas.db with the [embeddings], [llm], [search], [index]
+        fts_tokenizer and [sources.doors.convention] id_normalize of atlas.toml."""
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
+        convention = ((cfg.get("sources") or {}).get("doors") or {}).get("convention") or {}
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"),
+                   (cfg.get("index") or {}).get("fts_tokenizer") or DEFAULT_FTS_TOKENIZER,
+                   convention.get("id_normalize", "upper"))
 
     @property
     def llm(self) -> JsonLlm:
@@ -199,7 +223,7 @@ class Index:
         """See index_code."""
         return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds)
 
-    def embed_missing(self, texts: Iterable[str], workers: int = 1, dry_run: bool = False) -> dict:
+    def embed_missing(self, texts: Iterable[str | tuple[str, str]], workers: int = 1, dry_run: bool = False) -> dict:
         """See embed_missing."""
         return embed_missing(self.store, self.embedder, texts, workers, dry_run)
 
@@ -214,7 +238,8 @@ class Index:
         """k = 0 and per_document = None: those of the settings."""
         per = self.settings["per_document"] if per_document is None else per_document
         return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per)
+                      self.llm if rewrite else None, dense, per, synonyms=self.synonyms,
+                      id_normalize=self.id_normalize)
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "", extra_sources: list[dict] = ()) -> dict:
@@ -222,7 +247,9 @@ class Index:
         of DocTools.route; see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], extra_sources)
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+                      extra_sources=extra_sources, synonyms=self.synonyms, id_normalize=self.id_normalize,
+                      context_radius=s["context_radius"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

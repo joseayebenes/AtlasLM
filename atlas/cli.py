@@ -40,6 +40,7 @@
                    [--compare]      and each case against the last report of another version of atlas
                    [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
                                     graph of the workspace, the same each time (instead of evaluating)
+                   [--set FILE]     only that set (examples/eval/develop.yaml: plans of atlas develop)
     atlas usage    [atlas.toml] [--since 30d]   what the usage log of the workspace says: calls by tool
                                     and week, milliseconds, errors, tokens and cost, answers with
                                     and without sources
@@ -1399,7 +1400,7 @@ OPTIONS = {"init": {"--profile": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--section": str, "--dry-run": bool,
                    **FILTERS},
            "develop": {"--check": bool, "--resume": bool},
-           "eval": {"--compare": bool, "--generate": str, "--n": int},
+           "eval": {"--compare": bool, "--generate": str, "--n": int, "--set": str},
            "cache": {"--with-judgements": bool},
            "usage": {"--since": str},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
@@ -1623,6 +1624,7 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
               f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
+              + (f"\n      untagged: {', '.join(s['untagged'])}" if s.get("untagged") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else "")
               + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else ""), flush=True)
 
@@ -1688,7 +1690,8 @@ def generate_set(cfg: Config, path: str, n: int) -> int:
     return 0
 
 
-def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0) -> int:
+def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0, set: str = "") -> int:
+    """The sets of [agents.eval] sets, or only `set` (--set FILE, relative to atlas.toml)."""
     from atlas import __version__
     from atlas.agents.evaluate import SEARCH_MODES, evaluate_sets, previous_report
     if n and not generate:
@@ -1699,7 +1702,14 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0)
         return generate_set(cfg, generate, n or 50)
 
     def show(r: dict) -> None:
-        if r.get("kind") == "search":
+        if r.get("kind") == "develop":
+            e, c = r.get("edits") or {}, r.get("compiles") or {}
+            print(f"{'ok  ' if r['passed'] else 'FAIL'} {r['id']} #{r['run']} {r['seconds']:.0f}s "
+                  + (f"{r['tests_passed']} of {r['tests']} tests (expected {r['expect_tests_passed']}), "
+                     f"{r['calls']} calls, edits {e.get('made', 0) + e.get('failed', 0)} ({e.get('failed', 0)} failed), "
+                     f"compilations with errors {c.get('failed', 0)}" + (f", ${r['cost']}" if "cost" in r else "")
+                     if "error" not in r else r["error"]), flush=True)
+        elif r.get("kind") == "search":
             ranks = "  ".join(f"{m} {r[m]['rank'] or '-'}" for m in SEARCH_MODES)
             lost = sorted({x for m in SEARCH_MODES for x, n in r[m]["ranks"].items() if not n})
             print(f"{'ok  ' if r['hybrid']['rank'] else 'MISS'} {r['id']}  position: {ranks}"
@@ -1722,7 +1732,7 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0)
                   + (f"  {r['error']}" if r.get("error") else ""), flush=True)
 
     try:
-        results = evaluate_sets(cfg, context=_context(cfg), on_result=show)
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show, sets=[set] if set else None)
     except ImportError as e:
         sys.exit(str(e))
     regressions = 0
@@ -1750,6 +1760,12 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0)
             print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s"
                   + (f", {tokens['prompt']} + {tokens['completion']} tokens" if tokens.get("prompt") else "")
                   + (f", ${a['cost']:.4f}" if "cost" in a else ""))
+        if "develop" in res:
+            d, totals = res["develop"], res["develop"]["totals"]
+            print(f"  develop: {d['passed']} of {d['total']} runs reached their tests ({d['rate']:.0%}); "
+                  f"{totals['tests_passed']} of {totals['tests']} tests, {totals['calls']} calls, "
+                  f"{totals['edits']['failed']} of {totals['edits']['made'] + totals['edits']['failed']} edits failed, "
+                  f"{totals['seconds'] / 60:.1f} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
         for section in ("answers", "agents"):
             for tag, t in res.get(section, {}).get("tags", {}).items():
                 print(f"    {section} {tag}: {t['passed']} of {t['total']}")

@@ -140,10 +140,13 @@ planner = "planner"                      # opcional: un agente que lee y dice c�
 task_calls = 0                           # presupuesto de cada intento: llamadas (0 = sin límite)
 task_seconds = 0                         # ... segundos
 task_cost = 0.0                          # ... coste, el que dice el servidor del modelo
+require_tags = false                     # un encargo cuyos requisitos no cita nada de lo cambiado vuelve una vez
+requirement_chars = 1200                 # caracteres de cada requisito delante del encargo
 
 [[tasks]]
 id = "ping-bye"
 text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PONG ..."
+requirements = ["SRS-0113", "SRS-0114"]  # opcional: los requisitos que implementa, del grafo
 advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
 ```
 
@@ -236,9 +239,59 @@ de ese intento; lo hecho se conserva o se deshace como siempre, y el paso lo dic
 sin arreglar nada. Una ejecución que falla por el servidor del modelo queda como `error`, no
 como encargo conservado, y el resumen final las cuenta.
 
+### Encargos anclados a requisitos
+
+Sin `requirements`, la trazabilidad entra en la tanda solo porque `implementer.md` pide poner
+`-- Req:`, y nada lo comprueba; el encargo nombra los requisitos en texto libre y el agente no
+recibe su texto oficial. Con `requirements` (IDs del grafo, así que antes `atlas run`), un
+encargo recibe tres cosas sin modelo:
+
+1. **Su texto, delante.** Por cada requisito, su texto oficial, las secciones que lo declaran
+   (con el texto del documento) y el código que ya lo cita, de `trace`, como mucho
+   `requirement_chars` caracteres cada uno: no el `build_context` entero, que es para un
+   requisito solo y gasta 4000 tokens. El planificador, si lo hay, lo recibe igual.
+2. **Sus tests, si no trae `advances`.** Los tests del plan que lo citan (`verified_by` de
+   `trace`, los que lo nombran en un comentario) y los de los procedimientos de prueba
+   enlazados con él por `verifies` en DOORS (STP-0101 `verifies` SRS-0113): los que citan el
+   procedimiento y los que llevan su nombre, como los escribe `atlas tests`
+   (`test_stp_0101.py`). Cuando DOORS tenga la semántica de los tipos de enlace (6.1 del
+   análisis), el tipo saldrá de ahí; hoy se busca el tipo `verifies` tal cual.
+3. **Si quedan sin etiquetar.** Tras un encargo conservado, se analizan los ficheros cambiados
+   con el analizador de su lenguaje (`[sources.code] languages`, sin el motor incremental) y el
+   paso dice qué requisitos del encargo no cita ningún subprograma cambiado (`untagged`, y
+   «Untagged» en el informe). Cuenta la etiqueta de la declaración en la especificación cuando
+   cambió el cuerpo. Con `require_tags = true`, el encargo vuelve una vez al agente con ese aviso
+   (`tag-fix`); si esa vuelta rompe algo, se deshace ella sola.
+
+Un ID que no está en el grafo, o un workspace sin `atlas run`, es un error de configuración
+antes de empezar, no a mitad de la tanda. El informe guarda en `requirements` los de cada
+encargo y sus `advances` (con `advances_from = "requirements"` cuando salen del grafo).
+
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
 (`[sources.code] protected`), para que el agente no pueda cambiarlos.
+
+### Los agentes medidos
+
+`examples/agents/` trae los agentes con los que se midió lo que sigue, adaptados de los de
+`atlas-socket-demo` a un proyecto Ada cualquiera (sin lo propio del servidor de órdenes ni el
+resumen de `GNAT.Sockets`):
+
+| Agente | Qué hace | Herramientas | Límites |
+|---|---|---|---|
+| `implementer` | los encargos: cambia el código, lo compila y lo prueba con `run_program` | `replace_subprogram`, `add_subprogram`, `write_file`, `edit_file`, `check_code`, `run_program`, `library_spec`, `search_reference`, `find_definition`, `describe_symbol`, `get_requirement` | `max_steps` 40, `stall_steps` 15, `keep_tool_results` 10 |
+| `fixer` | las rondas: busca por qué falla un test y arregla el código | las mismas, más `grep` y `run_test` | igual |
+| `planner` | lee y dice cómo hacer un encargo (`planner = "planner"`) | solo de lectura | `max_steps` 15, `keep_tool_results` 10 |
+| `tester` | escribe una prueba de un requisito y la ejecuta | `write_file`, `run_test`... | `max_steps` 20 |
+
+Los ficheros no fijan el muestreo: dicen en un comentario con qué modelo se midieron, y
+`atlas.openrouter.toml` pone el de `gemma-4-26b` en `[agents.implementer]`, `[agents.fixer]` y
+`[agents.planner]` (razonamiento `low`, temperatura 1,0, `top_p` 0,95, `top_k` 64). Con
+`atlas.dev.toml` (`gemma4:12b` en Ollama) van con lo de `[llm]`, sin razonamiento. Para un
+proyecto, se copian a su carpeta `agents/` y se añade al cuerpo un resumen de la biblioteca que
+más usa, con sus declaraciones reales (`atlas-socket-demo` lleva el de `GNAT.Sockets`).
+`tests/test_examples.py` comprueba que cargan, que todas sus herramientas existen y el
+muestreo de cada TOML.
 
 Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
 `atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
@@ -364,8 +417,9 @@ compilan (`read_file`, `grep`, `check_code`...) no arranca.
 
 ## Evaluación
 
-`atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML) y los puntúa sin modelo.
-Un conjunto mezcla cuatro tipos de caso, según la clave que lleva la pregunta:
+`atlas eval` ejecuta los conjuntos de `[agents.eval] sets` (YAML), o solo el de `--set
+FICHERO`, y los puntúa sin modelo. Un conjunto mezcla cuatro tipos de caso, según la clave que
+lleva la pregunta:
 
 ```yaml
 - id: trace-srs-0004                 # un agente: necesita el modelo y el extra [agents]
@@ -385,6 +439,11 @@ Un conjunto mezcla cuatro tipos de caso, según la clave que lleva la pregunta:
   expect: ["30"]
   cited: true                        # opcional: cada texto esperado, en una fuente citada
   document: hmi_manual.md            # opcional, como scope (auto, passages, whole) y section
+- id: calc-from-start                # un plan de atlas develop: necesita el modelo y el extra [agents]
+  develop: examples/develop/calc/plan.toml
+  from: examples/develop/calc/start  # se copia a una carpeta temporal antes de cada ejecución
+  expect_tests_passed: 2             # pasa si al final pasan al menos estos tests
+  runs: 1                            # opcional: si no, [agents.eval] runs
 ```
 
 - **Agentes.** Un caso está bien si la respuesta contiene los textos esperados (IDs,
@@ -414,6 +473,21 @@ Un conjunto mezcla cuatro tipos de caso, según la clave que lleva la pregunta:
   sacado de la fuente equivocada no vale. Guarda las peticiones al modelo, el `scope` con el
   que se leyó, los segundos y las fuentes citadas (y `status` y `unsupported` cuando la
   respuesta los trae). Es lo más caro y lo que más cambia entre versiones.
+- **Encargos.** Un caso `develop` ejecuta un plan de `atlas develop` sobre una copia de su
+  carpeta de partida, en una carpeta temporal, y está bien si al final pasan al menos
+  `expect_tests_passed` tests. El modelo y la red son los del `atlas.toml` evaluado;
+  `[sources.code]` y `[agents] dirs`, los del `atlas.toml` que hay junto al plan (o el de
+  `config`). De cada ejecución se guardan los tests que pasan, las ediciones hechas y
+  fallidas, las compilaciones con errores, las llamadas, los tokens, el tiempo y el coste, y el
+  informe de `atlas develop` va a `reports/eval-<conjunto>/<caso>-<n>.md`. Hasta ahora, cada
+  versión del bucle se juzgaba a mano; así se compara con la anterior y entre modelos
+  (`tools/compare_models.py --develop`, ver [OpenRouter](../../docs/openrouter.md)).
+  `examples/develop/calc` es un proyecto Python mínimo (una calculadora con `add` mal hecha,
+  sin `divide`, y dos tests protegidos) con su plan y su agente `python_implementer`; sirve con
+  el servidor falso (no cambia nada: el informe dice 0 de 2) y con un modelo real. Va en un
+  conjunto aparte, `examples/eval/develop.yaml`, fuera de los de por defecto, porque con un
+  modelo real tarda minutos: `make eval-develop` (con `EVAL_CONFIG=atlas.test.toml` y
+  `make fake`, sin modelo).
 
 `tags` agrupa los casos por tipo: el informe y la salida de `atlas eval` dan las cifras de
 la búsqueda (acierto@k y MRR, híbrida y léxica) y del grafo de cada tag, además de las del
@@ -472,6 +546,8 @@ retrieval (written to workspace-test/reports/eval-retrieval.json):
   regressions: search-code-hours
 ```
 
+Los resultados van a `<workspace>/reports/eval-<conjunto>.json`, en `meta`, `retrieval`, `answers`,
+`agents`, `develop` y `usage`.
 Un conjunto con solo búsquedas y consultas del grafo no necesita ADK ni el modelo de chat;
 la búsqueda híbrida sí necesita el de embeddings. Los vectores de las consultas quedan en la
 caché del índice: una segunda pasada no hace ninguna petición a los embeddings.
@@ -575,8 +651,10 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
-que se deshacen, arreglos de compilación, rondas y lo que se deja a una persona).
+que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona y encargos
+anclados a requisitos, con DOORS y el grafo de verdad).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
-agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.
+agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda, del grafo y
+de los casos `develop` (con un agente de pega y con el servidor falso).
 Con Ollama, `tests/test_agents_ollama.py`.

@@ -41,3 +41,19 @@ def test_the_table_compares_the_reports_of_each_model(tmp_path):
     assert models[0]["cases"][1] == {"id": "impact", "run": 1, "passed": False, "seconds": 12,
                                      "tokens": {"prompt": 198, "completion": 22}, "cost": 0.002}
     assert models[0]["cost_per_right"] == 0.003 and models[1]["answers"] == 0
+
+
+def test_the_table_of_the_develop_cases(tmp_path):
+    (tmp_path / "atlas.toml").write_text('[project]\nworkspace = "ws/${ATLAS_MODEL}"\n[agents.eval]\nsets = []\n')
+    reports = tmp_path / "ws" / "m" / "reports"
+    reports.mkdir(parents=True)
+    run = {"id": "calc", "run": 1, "passed": True, "tests_passed": 2, "tests": 2, "edits": {"made": 5, "failed": 1},
+           "compiles": {"ok": 4, "failed": 2}, "calls": 30, "seconds": 120, "cost": 0.05}
+    (reports / "eval-develop.json").write_text(json.dumps({"develop": {"results": [
+        run, {**run, "run": 2, "passed": False, "tests_passed": 1}]}}))
+    res = subprocess.run([sys.executable, str(ROOT / "tools" / "compare_models.py"), "m", "--config",
+                          str(tmp_path / "atlas.toml"), "--no-run", "--develop", str(tmp_path / "develop.yaml")],
+                         capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+    assert "| model | runs that reached their tests |" in res.stdout
+    assert "| `m` | 1/2 | 3/4 | 12 (2) | 4 | 60 | 4.0 | $0.10 |" in res.stdout

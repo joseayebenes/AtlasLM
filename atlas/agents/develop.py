@@ -19,12 +19,15 @@ The plan is a TOML file:
     task_calls = 0                           # budget of an attempt at a task: tool calls (0: no limit)
     task_seconds = 0                         # ... seconds
     task_cost = 0.0                          # ... cost, as the model server reports it
+    require_tags = false                     # a kept task whose requirements no changed subprogram cites goes back once
+    requirement_chars = 1200                 # characters of each requirement in front of a task
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
     [[tasks]]
     id = "controller"                        # optional: T01, T02...
     text = "Create the package Controller of SRS-0191 ..."
+    requirements = ["SRS-0191"]              # optional: the requirements it implements, in the graph
     advances = ["tests/python/test_stp_0101.py"]   # optional: the tests it makes get further
 
 The paths of the plan (check, tests, advances) are relative to the folder of atlas.toml, like
@@ -101,6 +104,19 @@ those with an `error` or `interrupted` go again; the rounds go on from where the
 state is what the tests say now, not what the report says. With attempts > 1, Ctrl+C waits for
 the runs in progress to end.
 
+A task anchored to requirements (`requirements`, IDs of the graph: atlas run first, and an ID
+that is not there stops the plan before it starts) gets three things without a model:
+- in front of its text, for each requirement, its official text, the sections that state it and
+  the code that already cites it (from trace, at most `requirement_chars` characters each): the
+  agent does not have to find them, nor guess them from the words of the task;
+- without `advances`, the tests of the plan that verify those requirements: those that cite
+  them (trace verified_by), and those of the test procedures linked to them with `verifies`
+  (an STP of DOORS, whose tests atlas tests names after it: test_stp_0101), by file or by name;
+- after it is kept, the changed files are analysed (the analyzer of their language, without
+  the pipeline) and the step says which of its requirements no changed subprogram cites
+  (`untagged`). With require_tags, the task goes back to the agent once to tag them; a turn that
+  breaks something is undone alone. The traceability does not depend on an instruction.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 """
@@ -110,6 +126,7 @@ import difflib
 import fnmatch
 import glob
 import json
+import logging
 import math
 import re
 import shutil
@@ -126,12 +143,18 @@ from atlas.config import Config, ConfigError
 
 __all__ = ["Plan", "develop", "load_plan"]
 
+log = logging.getLogger(__name__)
+
 MAX_OUTPUT = 1500          # characters of a test output in a prompt
 MAX_CHANGES = 3000         # characters of the diff of what a stopped run changed, in the prompt of its restart
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
 WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
 MAX_TASK_CHARS = 1200      # a longer task gets a warning from check(): small models do better with small tasks
+REQUIREMENT_CHARS = 1200   # characters of each requirement in front of a task
+SHOWN_SECTIONS = 2         # sections that state a requirement, in front of a task
+SHOWN_CODE = 5             # code elements that cite a requirement, in front of a task
+SIMILAR = 2                # requirements like it already implemented, when atlas has similar_requirements
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -164,6 +187,17 @@ PLANNED = """{task}
 How to do it, from a colleague who has read the code and the requirements (follow it unless the code says \
 otherwise):
 {plan}"""
+REQUIREMENTS = """The requirements of this task, as the project states them. Cite their IDs in a \
+`{tag}` comment right before each subprogram that implements them (in its spec when it has one).
+
+{blocks}
+
+The task:
+{task}"""
+TAGS_PROMPT = """No subprogram you changed cites {missing} in its `{tag}` comment. Add those IDs to the \
+`{tag}` comment right before each subprogram that implements them, in its spec when it has one \
+(`-- {tag} {first}` in Ada, `# {tag} {first}` in Python), without changing what the code does, and check \
+the files again with check_code."""
 RETRY = """
 
 A first attempt at this task was undone, because it broke what worked:
@@ -190,6 +224,8 @@ class Plan:
     task_calls: int = 0
     task_seconds: int = 0
     task_cost: float = 0.0
+    require_tags: bool = False
+    requirement_chars: int = REQUIREMENT_CHARS
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -207,14 +243,14 @@ def load_plan(path: str | Path) -> Plan:
     tasks = data.pop("tasks", [])
     if not isinstance(tasks, list) or not all(isinstance(t, dict) and isinstance(t.get("text"), str) for t in tasks):
         raise ConfigError(f"plan {path}: each [[tasks]] needs its text")
+    strings = lambda v: isinstance(v, list) and all(isinstance(x, str) for x in v)
     for t in tasks:
-        unknown = sorted(set(t) - {"id", "text", "advances"})
-        advances = t.get("advances", [])
-        if unknown or not isinstance(advances, list) or not all(isinstance(a, str) for a in advances):
-            raise ConfigError(f"plan {path}: a task has id, text and advances (a list of tests)"
-                              + (f", not {unknown}" if unknown else ""))
-    tasks = [{"id": str(t.get("id") or f"T{i:02d}"), "text": t["text"], "advances": t.get("advances", [])}
-             for i, t in enumerate(tasks, 1)]
+        unknown = sorted(set(t) - {"id", "text", "advances", "requirements"})
+        if unknown or not strings(t.get("advances", [])) or not strings(t.get("requirements", [])):
+            raise ConfigError(f"plan {path}: a task has id, text, requirements (a list of IDs) and advances "
+                              f"(a list of tests)" + (f", not {unknown}" if unknown else ""))
+    tasks = [{"id": str(t.get("id") or f"T{i:02d}"), "text": t["text"], "advances": t.get("advances", []),
+              "requirements": t.get("requirements", [])} for i, t in enumerate(tasks, 1)]
     if data.get("progress"):
         try:
             re.compile(data["progress"])
@@ -379,6 +415,19 @@ class Developer:
         if unknown:
             raise ConfigError(f"plan {plan.name}: no command runs {unknown[0]} ([sources.code] test_command or "
                               f"test_commands)")
+        self.graph = self._graph()
+        anchored: dict[str, dict] = {}
+        for task in plan.tasks:                  # the requirements, in the graph, as the graph names them
+            ids = []
+            for r in task["requirements"]:
+                t = self.graph.trace(r)
+                if "error" in t:
+                    similar = f" (similar: {', '.join(t['similar'][:5])})" if t.get("similar") else ""
+                    raise ConfigError(f"plan {plan.name}, task {task['id']}: requirement {r!r} is not in the graph of "
+                                      f"{cfg.workspace / 'atlas.db'}{similar}")
+                if t["id"] not in ids:
+                    ids.append(t["id"])
+            task["requirements"] = ids
         for task in plan.tasks:                  # each pattern of advances, the tests it names
             found = []
             for pattern in task["advances"]:
@@ -387,14 +436,126 @@ class Developer:
                     raise ConfigError(f"plan {plan.name}, task {task['id']}: advances {pattern!r} is none of its "
                                       f"tests")
                 found += [t for t in named if t not in found]
-            task["advances"] = found
+            from_graph = not found and bool(task["requirements"])
+            task["advances"] = found or self.verifying(task["requirements"])
+            if task["requirements"]:
+                anchored[task["id"]] = {"requirements": task["requirements"], "advances": task["advances"],
+                                        **({"advances_from": "requirements"} if from_graph else {})}
         self.report: dict = {"plan": plan.name, "started": time.strftime("%Y-%m-%d %H:%M:%S"), "steps": [],
-                             "tests": self.tests}
+                             "tests": self.tests, **({"requirements": anchored} if anchored else {})}
         self.path = cfg.workspace / "reports" / f"develop-{plan.name}"
         self.errors: dict[str, dict] = {}      # the errors of the compiler, by their message without names
         self._answers: dict[int, str] = {}     # the whole answer of each step (the report keeps its start)
         self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
         self._started, self._wall_before = time.time(), 0     # the wall time of this run, and of earlier ones
+
+    # --- the requirements of the tasks ------------------------------------------------------
+    def _graph(self):
+        """The graph of the workspace, if a task names requirements (None otherwise); a
+        ConfigError if atlas run has not built it."""
+        if not any(task["requirements"] for task in self.plan.tasks):
+            return None
+        from atlas.graph import KnowledgeGraph
+        db = self.cfg.workspace / "atlas.db"
+        graph = KnowledgeGraph.from_config(self.cfg) if db.exists() else None
+        if graph is None or not any(d.get("kind") == "requirement" for _, d in graph.G.nodes(data=True)):
+            raise ConfigError(f"plan {self.plan.name}: its tasks name requirements, but {db} has no graph with "
+                              f"requirements: atlas run first")
+        return graph
+
+    def verifying(self, requirements: list[str]) -> list[str]:
+        """The tests of the plan that verify some of `requirements`, in the order of the plan:
+        those that cite them (trace verified_by, "tag"), and those of the test procedures linked
+        to them with `verifies` (STP-0101 verifies SRS-0113): those that cite the procedure, and
+        those named after it (test_stp_0101.py, as atlas tests names them)."""
+        if not requirements:
+            return []
+        from atlas.code.procedures import slugs
+        files, names = set(), set()
+
+        def cited_by(r: str) -> None:
+            for v in self.graph.trace(r).get("verified_by", []):
+                if v["how"] == "tag" and self.graph.G.nodes[v["id"]].get("file"):
+                    files.add(Path(self.graph.G.nodes[v["id"]]["file"]).resolve())
+
+        for r in requirements:
+            cited_by(r)
+            for link in self.graph.trace(r).get("links_in", []):
+                if link["type"].lower() == "verifies":
+                    cited_by(link["id"])
+                    names.add(slugs(link["id"])["slug"])
+        named = lambda test: any(re.search(rf"(?<![a-z0-9]){re.escape(n)}(?![a-z0-9])", Path(test).stem.lower())
+                                 for n in names)
+        return [t for t in self.tests if Path(t).resolve() in files or named(t)]
+
+    def requirement(self, r: str) -> str:
+        """What goes in front of a task about requirement `r`: its text, the sections that state
+        it and the code that cites it, at most plan.requirement_chars characters."""
+        t = self.graph.trace(r)
+        lines = [f"{r}" + (f" ({t['module']})" if t.get("module") else "") + ": "
+                 + (t.get("text") or "(no text in DOORS)")]
+        for d in t["documents"][:SHOWN_SECTIONS]:
+            lines.append(f"  Stated in {d.get('document')} › {d.get('section') or ''} {d.get('title') or ''}".rstrip()
+                         + (f": {d['text']}" if d.get("text") else ""))
+        code = t["implemented_by"]["items"]
+        if code:
+            lines.append("  Code that already cites it: " + ", ".join(
+                f"{c['id']} ({c.get('file', '')}" + (f", lines {c['lines']}" if c.get("lines") else "") + ")"
+                for c in code[:SHOWN_CODE]) + (" and more" if t["implemented_by"]["count"] > SHOWN_CODE else ""))
+        else:
+            lines.append("  No code cites it yet.")
+        from atlas.agents import context
+        similar = getattr(context, "similar_requirements", None)     # 3.4 of the analysis, when it is there
+        if similar is not None:
+            for x in (similar(self.graph, r, k=SIMILAR).get("similar") or []):
+                lines.append(f"  Like it, already implemented: {x['id']} in {x['code']}"
+                             + (f" ({x['signature']})" if x.get("signature") else ""))
+        text, most = "\n".join(lines), max(200, self.plan.requirement_chars)
+        return text if len(text) <= most else text[:most - 1].rstrip() + "…"
+
+    def task_text(self, task: dict) -> str:
+        """The text of a task with its requirements in front (see the module)."""
+        if not task["requirements"]:
+            return task["text"]
+        return REQUIREMENTS.format(tag=self._tag(), task=task["text"],
+                                   blocks="\n\n".join(self.requirement(r) for r in task["requirements"]))
+
+    def _tag(self) -> str:
+        return ((self.cfg["sources"].get("code") or {}).get("req_tag") or "Req:").strip()
+
+    def untagged(self, requirements: list[str], before: dict[Path, bytes]) -> list[str]:
+        """Those of `requirements` that no subprogram (or declaration) changed since `before`
+        cites, with the analyzers of [sources.code] languages, without the pipeline. A
+        declaration in a spec counts when its subprogram changed in the body."""
+        from atlas import plugins
+        sc = self.cfg["sources"].get("code") or {}
+        by_ext = {}
+        for lang in sc.get("languages", ["ada"]):
+            try:
+                analyzer = plugins.get("code_analyzer", lang, self.cfg["plugins"]["disabled"])(sc)
+            except LookupError:
+                continue
+            by_ext.update({ext: analyzer for ext in analyzer.extensions})
+        now, units = self.files.snapshot(), []
+        for p in sorted(set(before) | set(now)):
+            if p not in now or before.get(p) == now[p] or p.suffix.lower() not in by_ext:
+                continue
+            try:
+                unit = by_ext[p.suffix.lower()].analyze_file(Path(self.code._show(p)), now[p])
+            except Exception as e:               # an analyzer that cannot read it: nothing cited there
+                log.warning("develop: %s not analysed: %s", self.code._show(p), e)
+                continue
+            units.append((unit, _changed_lines(before.get(p, b""), now[p])))
+        elements = lambda unit: [*unit.subprograms, *unit.declarations]
+
+        def span(e: dict) -> tuple[int, int]:            # with the comment above it, where its tag is
+            start = e.get("start_line") or e.get("line") or 0
+            return start - (e.get("doc") or "").count("\n") - 1, e.get("end_line") or start
+        changed = {e["name"].lower() for unit, lines in units for e in elements(unit)
+                   if any(span(e)[0] <= n <= span(e)[1] for n in lines)}
+        cited = {r.upper() for unit, _ in units for e in elements(unit) if e["name"].lower() in changed
+                 for r in e.get("reqs", [])}
+        return [r for r in requirements if r.upper() not in cited]
 
     # --- what the code does --------------------------------------------------------------
     def _score(self, result: dict) -> float:
@@ -704,8 +865,16 @@ class Developer:
                 step, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
                     broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
                 step["outcome"] = self._outcome(step, broken)
-            self._patched(step, before, task["id"])
-            self._done(step, state)
+            if step["outcome"] == "kept" and task["requirements"]:
+                step["untagged"] = self.untagged(task["requirements"], before)
+            if step.get("untagged") and self.plan.require_tags:
+                self._done(step, state)
+                state = self.tag_fix(task, step["untagged"], before, state)
+                self._patched(step, before, task["id"])          # the tags too
+                self.save()
+            else:
+                self._patched(step, before, task["id"])
+                self._done(step, state)
         return state
 
     def finished(self, task: str) -> bool:
@@ -716,17 +885,34 @@ class Developer:
         return any(s.get("outcome") == "kept" and not s.get("error") for s in ends) or \
             any(s.get("outcome") == "undone" and s["kind"].startswith("task-retry") for s in ends)
 
+    def tag_fix(self, task: dict, missing: list[str], before: dict[Path, bytes], state: dict) -> dict:
+        """The turn that tags the requirements of a kept task that no changed subprogram cites
+        (require_tags), as one more attempt (its budget, undone if it breaks something): the
+        state after it, or `state` if it broke something."""
+        fix, after, broken = self.attempt(self.plan.agent, TAGS_PROMPT.format(missing=", ".join(missing),
+                                                                             tag=self._tag(), first=missing[0]),
+                                          "tag-fix", task["id"], state)
+        if broken:
+            fix["outcome"] = "undone"
+            self._done(fix, state)
+            return state
+        fix["untagged"] = self.untagged(task["requirements"], before)
+        fix["outcome"] = "untagged" if fix["untagged"] else "tagged"
+        self._done(fix, after)
+        return after
+
     def planned(self, task: dict, state: dict) -> str:
-        """The text of a task for the agent: with the plan of the planner, if the plan has one
-        and it answered."""
+        """The text of a task for the agent, with its requirements in front: with the plan of
+        the planner, if the plan has one and it answered."""
+        text = self.task_text(task)
         if not self.plan.planner:
-            return task["text"]
+            return text
         self.main.budget = _Budget(self.plan)
-        step = self.run(self.plan.planner, task["text"], "plan", task["id"])
+        step = self.run(self.plan.planner, text, "plan", task["id"])
         step["outcome"] = "planned" if step.get("answer") else "no plan"
         self._done(step, state)
         plan = self._answers.get(step["n"], "")
-        return PLANNED.format(task=task["text"], plan=plan) if plan.strip() else task["text"]
+        return PLANNED.format(task=text, plan=plan) if plan.strip() else text
 
     def rounds(self, state: dict) -> dict:
         """The rounds (see the module), after those of an earlier run (--resume): the steps
@@ -899,6 +1085,18 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
 
 
+def _changed_lines(old: bytes, new: bytes) -> set[int]:
+    """The lines of `new` (from 1) that are not in `old`, and those next to where lines of
+    `old` were removed."""
+    a = old.decode("utf-8", "replace").splitlines()
+    b = new.decode("utf-8", "replace").splitlines()
+    out: set[int] = set()
+    for op, _, _, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op != "equal":
+            out.update(range(j1 + 1, max(j2, j1 + 1) + 1))
+    return out
+
+
 def _shape(message: str) -> str:
     """A message of the compiler without its names and numbers: the same error in other places."""
     return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
@@ -975,6 +1173,10 @@ def markdown(report: dict) -> str:
     if undone:
         out += ["", "## Undone", ""]
         out += [f"- {s['n']} {s['task']}: " + "; ".join(s["broke"])[:400] for s in undone]
+    untagged = [s for s in report["steps"] if s.get("untagged")]
+    if untagged:
+        out += ["", "## Untagged", "", "Kept, but no subprogram they changed cites these requirements of the task:", ""]
+        out += [f"- {s['n']} {s['task']}: {', '.join(s['untagged'])}" for s in untagged]
     behind = [s for s in report["steps"] if s.get("not_advanced")]
     if behind:
         out += ["", "## Did not advance", "", "Kept, but these tests did not get further with them:", ""]

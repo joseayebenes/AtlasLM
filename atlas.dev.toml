@@ -86,7 +86,7 @@ scope_chars = 30000                         # OLLAMA_CONTEXT_LENGTH=16384: unos 
 
 [agents]                                    # agentes: ficheros Markdown (atlas/agents/builtin y dirs)
 model = "gemma4:12b"                        # vacío: el de [llm]
-dirs = ["agents", "examples/agents"]        # carpetas con los .md del proyecto (examples/agents: implementer y tester)
+dirs = ["agents", "examples/agents"]        # carpetas con los .md del proyecto (examples/agents: implementer, fixer, planner, tester)
 [agents.assistant]                          # retoques de un agente sin tocar su fichero
 max_steps = 10
 [agents.eval]                               # atlas eval: preguntas y búsquedas con respuesta conocida

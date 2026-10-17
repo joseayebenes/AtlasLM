@@ -463,8 +463,32 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice, consultas del grafo y respuestas de los documentos (`ask`) |
-| `runs` | entero | `1` | veces que se hace cada pregunta a un agente o caso `ask`: los modelos no responden siempre igual |
+| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice, consultas del grafo, respuestas de los documentos (`ask`) y planes de `atlas develop`. `atlas eval --set FICHERO` pasa solo ese conjunto |
+| `runs` | entero | `1` | veces que se hace cada pregunta a un agente o caso `ask`, o cada plan de un caso `develop` que no diga las suyas: los modelos no responden siempre igual |
+
+Los casos `develop` (`examples/eval/develop.yaml`, fuera de los conjuntos por defecto porque
+tardan) ejecutan un plan sobre una copia temporal de su carpeta de partida (`from`). Toman el
+modelo y la red de este fichero, y `[sources.code]` y `[agents] dirs` del `atlas.toml` que hay
+junto al plan (o del de su clave `config`). Sus rutas son relativas a este fichero.
+`ATLAS_PYTHON`, si no está puesta, es el Python que ejecuta atlas, para los comandos de un
+proyecto en Python.
+
+## El plan de `atlas develop`
+
+El plan no va en `atlas.toml`: es un TOML aparte, `atlas develop PLAN atlas.toml` (ver
+[atlas.agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests)). Una clave
+desconocida es un error, como aquí.
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `agent`, `fix_agent`, `planner` | texto | `implementer`, el de `agent`, `""` | los agentes de los encargos, de las rondas y el que planifica cada encargo |
+| `check`, `tests` | lista | `[]`; `tests` obligatoria | los ficheros que compilar tras cada encargo, y los tests que lo juzgan |
+| `progress` | texto | `""` | expresión regular de hasta dónde llega un test que falla (el último número) |
+| `build_fixes`, `advance_fixes`, `fix_rounds`, `stuck_rounds`, `restarts`, `attempts` | entero | 2, 2, 12, 2, 1, 1 | vueltas de cada clase |
+| `task_calls`, `task_seconds`, `task_cost` | entero, entero, número | 0 | presupuesto de cada intento de un encargo: llamadas, segundos y coste (0 = sin límite) |
+| `require_tags` | sí/no | `false` | un encargo conservado cuyos `requirements` no cita ningún subprograma cambiado vuelve una vez al agente |
+| `requirement_chars` | entero | `1200` | caracteres de cada requisito que van delante del encargo |
+| `[[tasks]]` | tabla | — | `id`, `text` (obligatorio), `advances` (tests que hace avanzar) y `requirements` (IDs del grafo: hace falta `atlas run`; con ellos, el encargo recibe su texto y, sin `advances`, los tests que los verifican) |
 
 ## [mcp]
 

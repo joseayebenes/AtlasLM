@@ -130,6 +130,7 @@ atlas eval --compare atlas.dev.toml   # y cada caso contra el último informe de
 atlas eval --generate examples/eval/tms.yaml --n 50 atlas.toml   # casos de búsqueda y grafo desde el workspace
 atlas doctor   atlas.toml     # lo que puede fallar en este puesto antes de un run: tabla OK/WARN/FAIL
 atlas usage    atlas.dev.toml --since 30d   # llamadas del editor y de la CLI, errores, tokens y coste
+atlas eval atlas.openrouter.toml --set examples/eval/develop.yaml   # el banco de encargos de atlas develop
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
@@ -198,7 +199,9 @@ docs/                       instalación, configuración y seguridad
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)
-examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
+examples/eval/              conjuntos de evaluación de los agentes (atlas eval); develop.yaml, aparte
+examples/agents/            agentes de proyecto que escriben código: los medidos en atlas develop
+examples/develop/calc/      un proyecto Python mínimo con su plan, para el banco de encargos
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tools/check_install.py      instalación limpia desde el wheelhouse (make check-install)

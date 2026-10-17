@@ -62,6 +62,10 @@ eval-openrouter:    ## atlas run y atlas eval con un modelo de OpenRouter; infor
 compare-openrouter: ## lo mismo con cada modelo de MODELS="a b c" y una tabla que los compara
 	$(PY) tools/compare_models.py $(MODELS)
 
+EVAL_CONFIG ?= atlas.openrouter.toml
+eval-develop:       ## el banco de encargos de atlas develop (examples/eval/develop.yaml) con EVAL_CONFIG; atlas.test.toml y make fake, sin modelo
+	$(PY) -m atlas.cli eval $(EVAL_CONFIG) --set examples/eval/develop.yaml
+
 wheel:          ## dist/atlaslm-<versión>-py3-none-any.whl y el .tar.gz
 	rm -f $(WHEEL)
 	$(PY) -m build --outdir dist .
@@ -82,5 +86,5 @@ clean:
 	rm -rf workspace-dev workspace-test workspace-openrouter examples/samples examples/large .pytest_cache dist build *.egg-info
 
 .PHONY: install samples fake test lint typecheck test-ollama test-gateway run-test large run-dev status sections check serve \
-	check-openrouter run-openrouter eval-openrouter compare-openrouter \
+	check-openrouter run-openrouter eval-openrouter compare-openrouter eval-develop \
 	wheel wheelhouse wheelhouse-windows check-install clean

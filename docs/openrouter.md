@@ -60,6 +60,19 @@ python tools/compare_models.py MODELO... --no-run --out comparacion.md   # solo 
 Los modelos responden con algo de azar: para comparar con más seguridad, sube `runs` en
 `[agents.eval]` (cada pregunta se hace esas veces).
 
+Para comparar también cómo escriben código, el banco de encargos de `atlas develop`
+(`examples/eval/develop.yaml`, un plan pequeño sobre una calculadora en Python) va aparte,
+porque tarda minutos u horas por modelo:
+
+```bash
+make eval-develop ATLAS_MODEL=google/gemma-4-26b-a4b-it          # atlas eval --set examples/eval/develop.yaml
+python tools/compare_models.py MODELO... --develop examples/eval/develop.yaml   # y una segunda tabla
+```
+
+La segunda tabla da, por modelo, las ejecuciones que llegaron a sus tests, los tests que pasan
+al final, las ediciones (y cuántas fallaron), las compilaciones con errores, las llamadas, los
+minutos y el coste.
+
 Medido el 12 de octubre de 2026 con `make compare-openrouter`, sin razonamiento:
 
 | Modelo | Asistente | Mediana | `atlas run` desde cero |

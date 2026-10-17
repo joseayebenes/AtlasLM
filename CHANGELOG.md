@@ -382,6 +382,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   herramientas con un aviso: antes enviaba todo, sin recuento ni tope. Queda por hacer la
   calibración de los caracteres por token con el `usage` del servidor: depende de guardar los
   tokens de cada petición, que aún no está en `develop`.
+- `examples/agents/fixer.md` y `planner.md`, los agentes con los que se midió `atlas develop`
+  con `gemma-4-26b` en `atlas-socket-demo`, adaptados a un proyecto Ada cualquiera. Cada uno
+  dice en un comentario con qué modelo se midió; `atlas.openrouter.toml` les pone su muestreo
+  (`[agents.implementer]`, `[agents.fixer]`, `[agents.planner]`: razonamiento `low`,
+  temperatura 1,0, `top_p` 0,95, `top_k` 64). `tests/test_examples.py` comprueba que cargan y
+  que sus herramientas existen.
+- Encargos anclados a requisitos en `atlas develop`: `requirements = ["SRS-0113"]` en cada
+  encargo, comprobados contra el grafo al arrancar (un ID que no está, o un workspace sin
+  `atlas run`, para la tanda antes de empezar). El encargo lleva delante el texto oficial de
+  cada requisito, las secciones que lo declaran y el código que ya lo cita (`requirement_chars`);
+  sin `advances`, se rellenan con los tests del plan que lo citan y con los de los
+  procedimientos enlazados por `verifies` (`test_stp_0101.py`); y tras conservarlo, el paso dice
+  qué requisitos no cita ningún subprograma cambiado (`untagged`). Con `require_tags = true`,
+  el encargo vuelve una vez al agente para etiquetarlos.
+- Un banco de encargos en `atlas eval`: casos `develop` (un plan, una carpeta de partida que se
+  copia a un temporal antes de cada ejecución, `expect_tests_passed` y `runs`) en un conjunto
+  aparte, `examples/eval/develop.yaml`, sobre `examples/develop/calc`, un proyecto Python
+  mínimo con su plan. El informe guarda de cada ejecución los tests que pasan, las ediciones
+  hechas y fallidas, las compilaciones con errores, las llamadas, el tiempo y el coste, con el
+  modelo. `atlas eval --set FICHERO` pasa un solo conjunto (`make eval-develop`) y
+  `tools/compare_models.py --develop` añade una tabla por modelo.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -436,6 +457,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   fichero del registro.
 - La fila de una ejecución de `atlas run` en la tabla `runs` se crea al empezar; una
   ejecución interrumpida deja su fila sin segundos y `atlas status` no la enseña.
+- `examples/agents/implementer.md` es el medido: `replace_subprogram`, `add_subprogram`,
+  `library_spec`, `search_reference`, `find_definition`, `describe_symbol` y `run_program`,
+  `stall_steps` 15 y `keep_tool_results` 10, sin `reasoning_effort` en el fichero. El de la
+  fase 5 (con `edit_file` y `write_file` solamente) se quita: con él fallaba el 53 % de las
+  ediciones de `gemma-4-26b`, con el medido el 11 %.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

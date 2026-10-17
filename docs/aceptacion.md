@@ -11,7 +11,8 @@ Todo lo que se usa aquí existe en la 0.2.0.
 
 Antes de empezar:
 - la entrega: el wheelhouse `wheelhouse-win_amd64-py312` con `[dev]` (ver el paso 1) y
-  una copia del repositorio (`tests/`, `examples/` y `tools/doors_export/`);
+  una copia del repositorio (`tests/`, `examples/`, `tools/doors_export/` y
+  `atlas.test.toml`);
 - la URL del gateway, el nombre del modelo, la clave y el proxy (con su usuario si lo pide);
 - dos ingenieros del proyecto que escriban preguntas (semana 2) y dos que usen el editor;
 - un módulo de DOORS pequeño (decenas de requisitos) que conozcan bien.
@@ -50,6 +51,13 @@ En el puesto, siguiendo solo la [guía de instalación](instalacion.md):
   Genera las muestras, arranca el servidor falso y comprueba que una ejecución, una
   búsqueda, una respuesta, un `trace` y un agente solo se conectan a la API configurada.
   Cifra: **pruebas que pasan** de las que hay.
+- [ ] El recorrido de las muestras, con `examples\walkthrough.py` y `atlas.test.toml`
+  copiados a esa misma carpeta: arranca el servidor falso y lanza las acciones principales
+  con lo instalado, sin red y sin gastar cupo.
+  ```powershell
+  C:\atlas\venv\Scripts\python examples\walkthrough.py atlas.test.toml
+  ```
+  Cifras: **acciones bien**, de las de la tabla final, y **segundos** en total.
 
 ### 2. DOORS: la primera matriz real (día 2)
 

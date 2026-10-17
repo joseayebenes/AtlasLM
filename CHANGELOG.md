@@ -7,6 +7,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- `examples/walkthrough.py` y `make demo CONFIG=atlas.test.toml`: las acciones principales
+  (`check`, `sections`, dos `run`, `status`, `graph`, `trace`, `matrix`, `search`, `ask` y
+  el asistente si está el extra `[agents]`) con la configuración dada, cada una con su salida
+  y su tiempo, y una tabla al final. Arranca el servidor falso si la configuración lo pide
+  (`model = "fake"`) y no responde nadie; sin modelo, solo lo que no lo necesita. Es el
+  guion del curso y la prueba de humo de un puesto nuevo (`--id`, `--module`, `--search`,
+  `--ask`, `--skip`, `--lines`).
+- Una prueba comprueba que cada acción de la ayuda de `atlas` aparece en `docs/uso.md` o en
+  el README.
 - `docs/uso.md`: la guía del ingeniero, por tareas (qué pide un requisito, qué rompo si
   cambio algo, qué falta por trazar, la matriz para una revisión, código para un requisito
   desde el editor, preguntas concretas y amplias): la acción o la herramienta, cómo leer su

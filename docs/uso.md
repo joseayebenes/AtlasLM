@@ -293,3 +293,6 @@ Y siempre:
 | `atlas check atlas.toml`, `atlas probe atlas.toml` | la conexión con el modelo, y el modelo como agente |
 | `atlas serve atlas.toml` | el servidor MCP del editor (lo arranca el editor) |
 | `atlas init`, `atlas --version` | una plantilla de `atlas.toml`, y la versión |
+
+`python examples/walkthrough.py atlas.toml` recorre las principales con la configuración
+dada e imprime cada salida con su tiempo; `make demo` lo hace con las muestras.

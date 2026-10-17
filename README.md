@@ -134,6 +134,14 @@ atlas search "alarm latency" atlas.test.toml
 # cambiadas y los textos nuevos del índice)
 ```
 
+`make demo` hace un recorrido parecido de una vez (`examples/walkthrough.py`): arranca el
+servidor falso si hace falta y lanza `check`, `sections`, dos `run`, `status`, `graph`,
+`trace`, `matrix`, `search`, `ask` y, con el extra `[agents]`, una pregunta al asistente,
+imprimiendo la salida y el tiempo de cada una. Con otra configuración,
+`make demo CONFIG=atlas.dev.toml`; en un puesto nuevo,
+`python examples/walkthrough.py atlas.toml --id ID --module MÓDULO` sirve de prueba de humo
+(sale con 1 si algo falla).
+
 Para medir el motor con un proyecto grande, `make large` genera uno sintético en
 `examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
 procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
@@ -164,6 +172,7 @@ docs/                       uso, instalación, configuración, seguridad, acepta
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)
+examples/walkthrough.py     recorrido de las acciones con una configuración, con sus tiempos (make demo)
 examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)

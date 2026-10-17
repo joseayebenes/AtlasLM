@@ -20,9 +20,12 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 
 | Documento | Para qué |
 |---|---|
+| [Uso](docs/uso.md) | para el ingeniero, por tareas: qué pide un requisito, qué rompo si cambio algo, qué falta por trazar, la matriz, código desde el editor, preguntas |
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
+| [Aceptación](docs/aceptacion.md) | el guion de las dos primeras semanas en Windows con el proyecto real, con una cifra por paso |
+| [Preguntas frecuentes](docs/faq.md) | los errores conocidos y su remedio: red, razonamiento, rutas, entorno del editor |
 | [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
 | [API pública](docs/api.md) | lo que se puede usar como librería y no cambia sin avisar |
 | [Contribuir](docs/contribuir.md) | ramas, mensajes de commit, pruebas y la lista de cada versión |
@@ -176,6 +179,14 @@ atlas search "alarm latency" atlas.test.toml
 # cambiadas y los textos nuevos del índice)
 ```
 
+`make demo` hace un recorrido parecido de una vez (`examples/walkthrough.py`): arranca el
+servidor falso si hace falta y lanza `check`, `sections`, dos `run`, `status`, `graph`,
+`trace`, `matrix`, `search`, `ask` y, con el extra `[agents]`, una pregunta al asistente,
+imprimiendo la salida y el tiempo de cada una. Con otra configuración,
+`make demo CONFIG=atlas.dev.toml`; en un puesto nuevo,
+`python examples/walkthrough.py atlas.toml --id ID --module MÓDULO` sirve de prueba de humo
+(sale con 1 si algo falla).
+
 Para medir el motor con un proyecto grande, `make large` genera uno sintético en
 `examples/large/`: 20 PDFs (260 páginas), 660 ficheros Ada y 5500 requisitos. Después lo
 procesa tres veces con el servidor falso (ver [atlas.pipeline](atlas/pipeline/README.md)):
@@ -204,10 +215,11 @@ atlas/
 │                   informes y evaluación
 ├── templates/      las plantillas de atlas init (ollama y gateway)
 └── cli.py          las acciones de la línea de comandos
-docs/                       instalación, configuración y seguridad
+docs/                       uso, instalación, configuración, seguridad, aceptación y preguntas frecuentes
 examples/make_samples.py    genera examples/samples/ (PDFs con y sin marcadores, Ada, requisitos)
 examples/library/           ejemplos de uso como librería (pipeline, documentos, trazabilidad, búsqueda)
 examples/large_project.py   proyecto grande sintético y medición del motor (make large)
+examples/walkthrough.py     recorrido de las acciones con una configuración, con sus tiempos (make demo)
 examples/eval/              conjuntos de evaluación de los agentes (atlas eval); develop.yaml, aparte
 examples/agents/            agentes de proyecto que escriben código: los medidos en atlas develop
 examples/develop/calc/      un proyecto Python mínimo con su plan, para el banco de encargos

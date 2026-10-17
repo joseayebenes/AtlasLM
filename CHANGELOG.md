@@ -438,6 +438,29 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   encuentra sin fallos y con los contadores a cero (`POST /reset`).
 - `docs/contribuir.md`: ramas (gitflow), mensajes de commit, cómo pasar las pruebas y la
   lista de cada versión. El README dice cuántas pruebas hay (249 sin modelo) y cuánto tardan.
+- `examples/walkthrough.py` y `make demo CONFIG=atlas.test.toml`: las acciones principales
+  (`check`, `sections`, dos `run`, `status`, `graph`, `trace`, `matrix`, `search`, `ask` y
+  el asistente si está el extra `[agents]`) con la configuración dada, cada una con su salida
+  y su tiempo, y una tabla al final. Arranca el servidor falso si la configuración lo pide
+  (`model = "fake"`) y no responde nadie; sin modelo, solo lo que no lo necesita. Es el
+  guion del curso y la prueba de humo de un puesto nuevo (`--id`, `--module`, `--search`,
+  `--ask`, `--skip`, `--lines`).
+- Una prueba comprueba que cada acción de la ayuda de `atlas` aparece en `docs/uso.md` o en
+  el README.
+- `docs/uso.md`: la guía del ingeniero, por tareas (qué pide un requisito, qué rompo si
+  cambio algo, qué falta por trazar, la matriz para una revisión, código para un requisito
+  desde el editor, preguntas concretas y amplias): la acción o la herramienta, cómo leer su
+  salida (`values_differ`, `cannot_tell`, «Nothing indexed...», `not_advanced`) y lo que
+  puede y no puede un modelo pequeño.
+- `docs/aceptacion.md`: el guion de las dos primeras semanas con el proyecto real (un puesto
+  Windows limpio, el gateway por el proxy, DOORS, los PDF y el código sin modelo, la ingesta
+  de noche, 20 preguntas con `atlas eval` y el servidor en el editor), con una casilla y una
+  cifra por paso, y dónde van las de las metas 1 a 7 en `legacy/PLAN.md`.
+- `docs/faq.md`: los errores conocidos y su remedio (certificados, proxy, cupo, el
+  razonamiento de gemma 4, el 501 del esquema JSON, `OLLAMA_CONTEXT_LENGTH`, las rutas
+  relativas, «does not exist» en las fuentes y el entorno del servidor MCP).
+- `make wheelhouse` y `make wheelhouse-windows` aceptan `EXTRAS` (`all` por defecto):
+  `EXTRAS=all,dev` mete pytest para pasar `tests/test_security.py` en el puesto.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,

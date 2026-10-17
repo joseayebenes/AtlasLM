@@ -1,6 +1,8 @@
 # Tareas habituales. En Windows sin make: ejecuta los comandos a mano.
 PY ?= python3
 WIN_PY ?= 3.12          # versión de Python de los puestos Windows, para make wheelhouse-windows
+CONFIG ?= atlas.test.toml   # configuración de make demo
+EXTRAS ?= all           # extras del wheelhouse; all,dev añade pytest para las pruebas en el puesto
 VERSION := $(shell $(PY) -c "import re; print(re.search(r'__version__ = \"(.+)\"', open('atlas/__init__.py').read())[1])")
 WHEEL := dist/atlaslm-$(VERSION)-py3-none-any.whl
 
@@ -33,6 +35,9 @@ test-gateway:   ## las mismas contra el gateway de atlas.toml (proxy, CA, cupo);
 
 run-test:       ## procesamiento incremental sobre las muestras (sin modelo)
 	$(PY) -m atlas.cli run atlas.test.toml
+
+demo:           ## recorrido de las muestras con CONFIG (atlas.test.toml arranca el servidor falso): cada acción, su salida y su tiempo
+	$(PY) examples/walkthrough.py $(CONFIG)
 
 large:          ## proyecto sintético grande (examples/large) y tres ejecuciones medidas con el servidor falso
 	$(PY) examples/large_project.py
@@ -74,11 +79,11 @@ wheel:          ## dist/atlaslm-<versión>-py3-none-any.whl y el .tar.gz
 	$(PY) -m build --outdir dist .
 
 wheelhouse: wheel     ## dist/wheelhouse: atlaslm y sus dependencias para este sistema y este Python, sin red al instalar
-	$(PY) -m pip download "$(WHEEL)[all]" -c constraints.txt -d dist/wheelhouse
+	$(PY) -m pip download "$(WHEEL)[$(strip $(EXTRAS))]" -c constraints.txt -d dist/wheelhouse
 	cp constraints.txt dist/wheelhouse/
 
 wheelhouse-windows: wheel   ## lo mismo para Windows de 64 bits con Python $(WIN_PY), desde cualquier sistema
-	$(PY) -m pip download "$(WHEEL)[all]" -c constraints.txt -d dist/wheelhouse-win_amd64-py$(subst .,,$(strip $(WIN_PY))) \
+	$(PY) -m pip download "$(WHEEL)[$(strip $(EXTRAS))]" -c constraints.txt -d dist/wheelhouse-win_amd64-py$(subst .,,$(strip $(WIN_PY))) \
 		--platform win_amd64 --python-version $(strip $(WIN_PY)) --implementation cp --only-binary=:all:
 	cp constraints.txt dist/wheelhouse-win_amd64-py$(subst .,,$(strip $(WIN_PY)))/
 
@@ -88,6 +93,6 @@ check-install: wheelhouse   ## instalación limpia desde dist/wheelhouse, como d
 clean:
 	rm -rf workspace-dev workspace-test workspace-openrouter examples/samples examples/large .pytest_cache dist build *.egg-info
 
-.PHONY: install samples fake test test-fast lint typecheck test-ollama test-gateway run-test large run-dev status sections check serve \
+.PHONY: install samples fake test test-fast lint typecheck test-ollama test-gateway run-test demo large run-dev status sections check serve \
 	check-openrouter run-openrouter eval-openrouter compare-openrouter eval-develop \
 	wheel wheelhouse wheelhouse-windows check-install clean

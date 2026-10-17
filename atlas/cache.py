@@ -23,6 +23,15 @@ The exported file is a SQLite database:
 The key of a vector is a hash of the embeddings model, its prefix and the text, so a key
 of one model never matches a text embedded with another: importing the vectors of
 another model would add rows that are never used. unpack refuses them.
+
+[project] shared_cache names a folder (a network share) with exported caches (*.sqlite):
+a second cache, read only, that the vectors (IndexStore.cache_get) and the analyses of
+sections (atlas.docs.analysis) look up when the workspace lacks an entry. What is found
+there is copied to the workspace; the folder is never written by atlas run (an
+administrator fills it with `atlas cache export`). If the folder cannot be read, atlas
+goes on without it, with a warning once.
+
+    shared = shared_cache(cfg)       # SharedCache, or None without [project] shared_cache
 """
 from __future__ import annotations
 
@@ -31,13 +40,15 @@ import logging
 import os
 import re
 import sqlite3
+import threading
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import quote
 
 from atlas.config import Config
 
-__all__ = ["CacheError", "FORMAT", "JUDGEMENT_FILES", "docs_cache", "header", "pack", "read_only", "unpack"]
+__all__ = ["CacheError", "FORMAT", "JUDGEMENT_FILES", "SharedCache", "docs_cache", "header", "pack", "read_only",
+           "shared_cache", "unpack"]
 
 log = logging.getLogger("atlas.cache")
 
@@ -228,3 +239,134 @@ def unpack(cfg: Config, path: str | Path) -> dict:
         src.close()
     log.info("imported from %s: %s", path, {k: out[k] for k in ("vectors", "analyses", "judgements")})
     return out
+
+
+# --------------------------------------------------------------------------
+# Shared cache: read only, in a folder of exported caches
+# --------------------------------------------------------------------------
+
+class SharedCache:
+    """The exported caches (*.sqlite) of a folder, read only: vectors of the embeddings
+    model `embeddings_model` and analyses of sections. The newest file is asked first.
+    The folder is read on first use; if it, or a file, cannot be read, it is left out
+    with one warning and atlas goes on without it. Thread-safe."""
+
+    def __init__(self, folder: str | Path, embeddings_model: str):
+        self.folder = Path(folder)
+        self.model = embeddings_model
+        self.hits = {"vectors": 0, "analyses": 0}
+        self._files: list[dict] | None = None
+        self._lock = threading.RLock()
+        self._warned: set[str] = set()
+
+    def _warn(self, key: str, message: str, *args) -> None:
+        if key not in self._warned:
+            self._warned.add(key)
+            log.warning(message, *args)
+
+    def _open(self) -> list[dict]:
+        with self._lock:
+            if self._files is not None:
+                return self._files
+            self._files = []
+            try:
+                found = sorted(self.folder.glob("*.sqlite"), key=lambda f: f.stat().st_mtime, reverse=True)
+                if not self.folder.is_dir():
+                    raise FileNotFoundError("not a folder")
+            except OSError as e:
+                self._warn("folder", "shared cache %s is not accessible (%s): going on without it", self.folder, e)
+                return self._files
+            for f in found:
+                try:
+                    db = read_only(f)
+                    head = header(db, f.name)
+                except (CacheError, sqlite3.Error, OSError) as e:
+                    self._warn(str(f), "shared cache %s left out: %s", f, e)
+                    continue
+                vectors = head["embeddings_model"] == self.model
+                if not vectors and head["counts"].get("vectors"):
+                    self._warn(f"model:{f}", "shared cache %s has vectors of '%s', not of '%s': only its analyses "
+                               "are used", f, head["embeddings_model"], self.model)
+                self._files.append({"file": f, "db": db, "vectors": vectors})
+            if not self._files:
+                self._warn("empty", "shared cache %s has no exported cache (*.sqlite): going on without it",
+                           self.folder)
+            else:
+                log.info("shared cache: %s", ", ".join(x["file"].name for x in self._files))
+            return self._files
+
+    def _query(self, x: dict, sql: str, params: list) -> list:
+        """A query to one file; a file that stops being readable (the network) is left out."""
+        try:
+            return x["db"].execute(sql, params).fetchall()
+        except sqlite3.Error as e:
+            self._warn(f"read:{x['file']}", "shared cache %s cannot be read any more (%s): left out", x["file"], e)
+            self._files = [y for y in self._files if y is not x]
+            return []
+
+    def vectors(self, keys: list[str]) -> dict[str, tuple[bytes, str]]:
+        """{key: (vector, model)} of the keys that some file has."""
+        out: dict[str, tuple[bytes, str]] = {}
+        with self._lock:
+            for x in list(self._open()):
+                missing = [k for k in keys if k not in out]
+                if not missing:
+                    break
+                if not x["vectors"]:
+                    continue
+                for i in range(0, len(missing), 500):
+                    part = missing[i:i + 500]
+                    for key, blob in self._query(x, f"SELECT key, vector FROM embeddings WHERE model = ? AND key IN "
+                                                    f"({','.join('?' * len(part))})", [self.model, *part]):
+                        if blob and len(blob) % 4 == 0:
+                            out[key] = (blob, self.model)
+            self.hits["vectors"] += len(out)
+        return out
+
+    def analysis(self, name: str) -> str | None:
+        """The content of the analysis `name` (a file of docs/.cache), or None."""
+        with self._lock:
+            for x in list(self._open()):
+                rows = self._query(x, "SELECT content FROM files WHERE kind = 'docs' AND name = ?", [name])
+                if rows:
+                    self.hits["analyses"] += 1
+                    return rows[0][0]
+        return None
+
+    def has_analysis(self, name: str) -> bool:
+        with self._lock:
+            return any(self._query(x, "SELECT 1 FROM files WHERE kind = 'docs' AND name = ?", [name])
+                       for x in list(self._open()))
+
+    def close(self) -> None:
+        with self._lock:
+            for x in self._files or []:
+                x["db"].close()
+            self._files = None
+
+
+_SHARED: dict[tuple[str, str], SharedCache] = {}
+_SHARED_LOCK = threading.Lock()
+
+
+def shared_folder(cfg: Config) -> Path | None:
+    """[project] shared_cache, relative to the folder of atlas.toml; None if it is empty."""
+    value = (cfg["project"].get("shared_cache") or "").strip()
+    if not value:
+        return None
+    p = Path(value).expanduser()
+    return p if p.is_absolute() or value.startswith(("//", "\\\\")) else cfg.path.parent / p
+
+
+def shared_cache(cfg: Config) -> SharedCache | None:
+    """The shared cache of [project] shared_cache (one per folder and model in this
+    process, so a folder that cannot be read is only warned about once), or None."""
+    folder = shared_folder(cfg)
+    if folder is None:
+        return None
+    _, emb = _models(cfg)
+    with _SHARED_LOCK:
+        key = (str(folder), emb)
+        if key not in _SHARED:
+            _SHARED[key] = SharedCache(folder, emb)
+        return _SHARED[key]

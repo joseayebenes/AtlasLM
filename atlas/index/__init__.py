@@ -159,12 +159,13 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    scope_chars); what is not given takes its default. `shared`: a read-only cache of
+    vectors to look up what the local one lacks (atlas.cache.SharedCache)."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
-                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
+                 llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None, shared=None):
         from atlas.config import DEFAULTS
-        self.store = IndexStore(db)
+        self.store = IndexStore(db, shared)
         self.embedder = embeddings if isinstance(embeddings, Embedder) else Embedder(embeddings)
         self._llm = llm
         self.settings = {**DEFAULTS["search"], **(settings or {})}
@@ -172,10 +173,11 @@ class Index:
     @classmethod
     def from_config(cls, cfg) -> "Index":
         """The index of <workspace>/atlas.db with the [embeddings], [llm] and [search] of
-        atlas.toml."""
+        atlas.toml, and the shared cache of [project] shared_cache, if any."""
+        from atlas.cache import shared_cache
         from atlas.llm import from_config
         conn = from_config(cfg)
-        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"))
+        return cls(cfg.workspace / "atlas.db", conn.embeddings, conn.llm, cfg.get("search"), shared_cache(cfg))
 
     @property
     def llm(self) -> JsonLlm:

@@ -7,7 +7,8 @@ same records, and the embeddings cache.
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
     embed_cache       vector by key (model + prefix + text) and the model: what has been
                       embedded once is never embedded again, whatever document it comes
-                      from
+                      from. With a shared cache (atlas.cache.SharedCache), what the local
+                      one lacks is looked up there and copied here
 
 A document is replaced in a single transaction. Dense search only uses vectors of the
 current embeddings model, so changing the model never mixes vectors of two models.
@@ -45,8 +46,13 @@ _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r
 
 
 class IndexStore:
-    def __init__(self, path: str | Path):
+    """`shared`: a read-only cache of vectors (atlas.cache.SharedCache) that cache_get
+    asks for the keys this one lacks; what it has is copied to this one. It is never
+    written."""
+
+    def __init__(self, path: str | Path, shared=None):
         self.path = Path(path)
+        self.shared = shared
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.db.row_factory = sqlite3.Row
@@ -70,12 +76,19 @@ class IndexStore:
 
     # --- embeddings cache ---------------------------------------------------
     def cache_get(self, keys: list[str]) -> dict[str, np.ndarray]:
+        """The cached vectors of these keys: from this cache and, for what it lacks, from
+        the shared one (copied to this one)."""
         out = {}
         for i in range(0, len(keys), 500):
             part = keys[i:i + 500]
             for key, blob in self._query(f"SELECT key, vector FROM embed_cache WHERE key IN "
                                          f"({','.join('?' * len(part))})", part):
                 out[key] = np.frombuffer(blob, dtype=np.float32)
+        if self.shared is not None and len(out) < len(set(keys)):
+            found = self.shared.vectors([k for k in dict.fromkeys(keys) if k not in out])
+            if found:
+                self.cache_add([(k, blob, model) for k, (blob, model) in found.items()])
+                out.update({k: np.frombuffer(blob, dtype=np.float32) for k, (blob, _) in found.items()})
         return out
 
     def cache_put(self, items: dict[str, np.ndarray], model: str = "") -> None:

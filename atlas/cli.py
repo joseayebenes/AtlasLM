@@ -195,7 +195,7 @@ def docs_step(ctx) -> Step | None:
     sources = doc_sources(ctx)
     if not sources:
         return None
-    from atlas.cache import docs_cache
+    from atlas.cache import docs_cache, shared_cache
     from atlas.docs import extractor_for, process_document
     from atlas.docs.analysis import PROMPT_VERSION
     from atlas.llm import JsonLlm, from_config
@@ -203,6 +203,7 @@ def docs_step(ctx) -> Step | None:
     root = ctx.cfg.workspace / "docs"
     model = from_config(ctx.cfg).llm.model
     workers = step_workers(ctx, "docs")
+    analyses = shared_cache(ctx.cfg)        # read-only: [project] shared_cache
     shared: dict = {}
     lock = threading.Lock()             # documents are processed in parallel
     reserved: dict[str, str] = {}       # output folder -> unit, for the documents of this run
@@ -246,7 +247,7 @@ def docs_step(ctx) -> Step | None:
         out = out_dir(ctx, unit)
         data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
                                 cache_dir=docs_cache(ctx.cfg), workers=workers, disabled=ctx.disabled,
-                                stop=ctx.stopping)
+                                stop=ctx.stopping, shared_cache=analyses)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"]}
         ctx.store.put_document(unit, name, f, str(out), data["title"], summary)

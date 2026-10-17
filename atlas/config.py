@@ -71,7 +71,7 @@ def unset_hint(cfg: "Config") -> str:
 
 # Schema: section -> {key: type | "any"}. "list" = list, "dict" = free nested table.
 SCHEMA: dict[str, dict[str, Any]] = {
-    "project": {"name": str, "workspace": str, "log_level": str},
+    "project": {"name": str, "workspace": str, "log_level": str, "shared_cache": str},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
             "network": dict},
@@ -111,7 +111,7 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
                "reference": list, "language_server": list, "language_server_project": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
-    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},
+    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "shared_cache": ""},
     "pipeline": {"workers": 1, "step_workers": {}, "on_error": "continue", "max_attempts": 3,
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"]},

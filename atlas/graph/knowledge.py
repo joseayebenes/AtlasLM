@@ -18,7 +18,8 @@ Traceability, without the model:
     impact(name)        what a change of a code element or of a requirement affects
     matrix(module)      requirement -> code -> tests -> documents, and its gaps
     gaps(module)        requirements without code or tests, code without requirements, IDs
-                        that are not in DOORS, values that differ between DOORS and documents
+                        that are not in DOORS, values that differ between DOORS and documents,
+                        and between documents (documents_disagree)
     neighbors(name)     the subgraph around a node, as JSON or Mermaid
     communities()       groups of code that work together (Louvain)
 
@@ -46,6 +47,12 @@ DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
 ID_LIKE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+\b")     # SRS-0001: not a value
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+
+
+def _cite(x: dict) -> str:
+    """'spec.pdf v2 §3.1 Timing p.12' from a section of _section."""
+    return (x["document"] + (f" v{x['version']}" if x.get("version") else "") + f" §{x['title']}"
+            + (f" p.{x['page_start']}" if x.get("page_start") else ""))
 
 
 def _natural(text: str) -> list:
@@ -197,17 +204,43 @@ class KnowledgeGraph:
         return seen
 
     def _section(self, s: str, requirement: str = "") -> dict:
+        """A section, with the version of its document and its first page; for a requirement
+        it states, its text and the values (deadlines, limits) that differ from DOORS or,
+        when the requirement is not in DOORS, from the most authoritative document that
+        states it (`against`)."""
         d = self.G.nodes[s]
-        out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name")}
+        doc = self.G.nodes.get(f"doc:{d.get('document')}", {})
+        out = {"id": s, "document": d.get("document"), "section": d.get("section"), "title": d.get("name"),
+               "version": doc.get("version", ""), "page_start": d.get("page_start") or 0}
         if requirement:
-            text = next((x["text"] for x in d.get("requirements", []) if x["id"] == requirement), "")
-            official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
+            text = self._statement(s, requirement)
             if text:
                 out["text"] = text
+            if self.G.nodes[requirement].get("module"):
+                official, against = self.G.nodes[requirement].get("text", ""), "doors"
+            else:
+                ref = self._reference(requirement)
+                official, against = (self._statement(ref, requirement), _cite(self._section(ref))) \
+                    if ref and ref != s else ("", "")
             if text and official and _values(text) != _values(official):
-                out["values_differ"] = {"doors": sorted(_values(official) - _values(text), key=_natural),
-                                        "document": sorted(_values(text) - _values(official), key=_natural)}
+                differ = {"official": sorted(_values(official) - _values(text), key=_natural),
+                          "document": sorted(_values(text) - _values(official), key=_natural)}
+                out["values_differ"] = {"doors": differ["official"], "document": differ["document"]} \
+                    if against == "doors" else {"against": against, **differ}
         return out
+
+    def _statement(self, s: str, requirement: str) -> str:
+        return next((x["text"] for x in self.G.nodes[s].get("requirements", []) if x["id"] == requirement), "")
+
+    def _authority(self, s: str) -> int:
+        """The authority of the document of a section: 1 = normative, 2..., 0 = none."""
+        return self.G.nodes.get(f"doc:{self.G.nodes[s].get('document')}", {}).get("authority") or 0
+
+    def _reference(self, r: str) -> str | None:
+        """The section of the most authoritative document (lowest authority >= 1) that
+        states `r`, or None if no document that states it has an authority."""
+        ranked = [s for s in self._linked(r, {"declares"}, incoming=True) if self._authority(s) >= 1]
+        return min(ranked, key=lambda s: (self._authority(s), _natural(s))) if ranked else None
 
     def _documents(self, r: str) -> list[dict]:
         return [self._section(s, r) for s in self._linked(r, {"declares"}, incoming=True)]
@@ -428,8 +461,10 @@ class KnowledgeGraph:
     # --- traceability -----------------------------------------------------------
     def trace(self, req_id: str, limit: int = MAX_LIST) -> dict:
         """Everything about a requirement: its text and attributes in DOORS, its parent,
-        children and links; the document sections that state it, with their text and the
-        values (deadlines, limits) that differ from DOORS; the code that implements it; and
+        children and links; the document sections that state it (with the version of their
+        document and their first page), their text and the values (deadlines, limits) that
+        differ from DOORS, or from the most authoritative document when it is not in DOORS;
+        the code that implements it; and
         the tests that verify it (citing it, "tag") or cover it (calling that code, "calls")."""
         r, err = self._requirement(req_id)
         if err:
@@ -518,7 +553,7 @@ class KnowledgeGraph:
                 "derived": self._derived(r), "code": self._code_of(r),
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],
-                "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)]}
+                "documents": [_cite(x) for x in self._documents(r)]}
 
     def _without_code(self, reqs: list[str]) -> list[str]:
         return [r for r in reqs if not any(self._code_of(x) for x in self._through(r))]
@@ -530,8 +565,10 @@ class KnowledgeGraph:
         """What traceability lacks: the requirements (of a DOORS module, or all) without
         code or without tests, neither their own nor through the requirements derived from
         them; the subprograms that cite no requirement; the IDs cited in the code or stated
-        in the documents that are not in DOORS; and the requirements whose values
-        (deadlines, limits) differ between DOORS and a document."""
+        in the documents that are not in DOORS; the requirements whose values (deadlines,
+        limits) differ between DOORS and a document, or, out of DOORS, from the most
+        authoritative document ([[sources.docs]] authority); and, with no module, the
+        requirements out of DOORS that several documents state with different values."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
@@ -551,14 +588,33 @@ class KnowledgeGraph:
                 [{"id": r, "cited_by": self._linked(r, {"implements", "verifies"}, incoming=True)[:5]}
                  for r in outside if self._linked(r, {"implements", "verifies"}, incoming=True)])
             out["stated_in_documents_not_in_doors"] = part(
-                [{"id": r, "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)][:5]}
+                [{"id": r, "documents": [_cite(x) for x in self._documents(r)][:5]}
                  for r in outside if self._linked(r, {"declares"}, incoming=True)])
         differ = []
         for r in reqs:
             for x in self._documents(r):
                 if "values_differ" in x:
-                    differ.append({"id": r, "section": f"{x['document']} §{x['title']}", **x["values_differ"]})
+                    differ.append({"id": r, "section": _cite(x), **x["values_differ"]})
         out["values_differ"] = part(differ)
+        if not module:
+            out["documents_disagree"] = part(self._disagreements())
+        return out
+
+    def _disagreements(self) -> list[dict]:
+        """The requirements that are not in DOORS and that several sections state with
+        different values: the sections, the values of each one and, if a document has an
+        authority, the section of reference."""
+        out = []
+        for r in sorted((n for n, d in self.G.nodes(data=True) if d.get("kind") == "requirement"
+                         and not d.get("module")), key=_natural):
+            stated = {s: self._statement(s, r) for s in self._linked(r, {"declares"}, incoming=True)}
+            stated = {s: _values(t) for s, t in stated.items() if t}
+            if len({frozenset(v) for v in stated.values()}) < 2:
+                continue
+            ref = self._reference(r)
+            out.append({"id": r, "reference": _cite(self._section(ref)) if ref else "",
+                        "sections": [_cite(self._section(s)) for s in stated],
+                        "values": {_cite(self._section(s)): sorted(v, key=_natural) for s, v in stated.items()}})
         return out
 
     def neighbors(self, name: str, depth: int = 1, kinds: str = "", limit: int = 60, format: str = "json") -> dict:

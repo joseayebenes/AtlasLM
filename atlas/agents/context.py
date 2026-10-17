@@ -84,7 +84,10 @@ def _sections(items: list[dict]) -> str:
             line += f": {x['text']}"
         if x.get("values_differ"):
             v = x["values_differ"]
-            line += f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+            line += (f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+                     if "doors" in v else
+                     f" **(values differ from {v['against']}: {', '.join(v['official'])} vs "
+                     f"{', '.join(v['document'])})**")
         out.append(line)
     return "\n".join(out)
 

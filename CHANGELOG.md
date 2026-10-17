@@ -15,9 +15,28 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `[[sources.docs]] ocr_command` (`["ocrmypdf", "--skip-text", "{file}", "{out}"]`): los PDF
   con páginas sin texto pasan por OCR sobre una copia, guardada en `<workspace>/docs/.ocr` por
   el hash del PDF y de la orden.
+- Versión, fecha y autoridad de los documentos: `[[sources.docs]] doc_id_regex`,
+  `version_regex` y `date_regex` se buscan en las cabeceras repetidas, las dos primeras
+  páginas y los metadatos del PDF (de donde sale también la fecha si no hay otra), y van a
+  `structure.json` y al nodo `document`. Las secciones de `trace`, `trace_code` e `impact`
+  llevan `version` y `page_start`, y la columna `documents` de `matrix` dice
+  `spec.pdf v2 §3.1 Timing p.12`.
+- `[[sources.docs]] authority` (1 = normativo): un requisito que no está en DOORS se compara
+  con la declaración del documento de mayor autoridad (`values_differ` con `against`), y
+  `gaps` añade `documents_disagree`: los requisitos fuera de DOORS que varios documentos
+  declaran con cifras distintas. Dos documentos con el mismo `doc_id` y versión menor dan un
+  aviso en `atlas graph`.
 - `DocumentExtractor.read(path)`: el texto y lo que el extractor sabe del fichero (páginas,
   páginas sin texto, metadatos del PDF). Un extractor de un plugin puede seguir implementando
   solo `extract`.
+
+### Al actualizar
+- Todos los documentos se vuelven a procesar una vez (`docs-2`), para que `structure.json`
+  tenga `doc_id`, `version`, `date` y las páginas sin texto. El texto de las secciones no
+  cambia: el análisis sale de la caché y no se pregunta nada al modelo.
+- Las cadenas de la columna `documents` de `matrix` y de `gaps` llevan versión y página
+  (`spec.pdf §1 Tracks p.1`); las secciones de `trace`, `trace_code` e `impact` tienen dos
+  claves más (`version`, `page_start`).
 
 ## [0.2.0] — 2026-10-16
 

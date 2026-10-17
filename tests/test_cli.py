@@ -461,3 +461,51 @@ analysis = "regex"
     assert f"! {message}" in capsys.readouterr().out
     assert run(cfg) == 1                                        # retried on the next run
     assert json.loads(capsys.readouterr().out)["errors"] == {"docs.process": 1}
+
+
+def test_versions_and_authority_of_the_documents(toml, docs_samples, tmp_path, capsys):
+    from atlas.cli import graph, sections
+    from atlas.graph import KnowledgeGraph
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "old_spec.md").write_text(
+        "Doc. TMS-SRS-001  Issue 1\n\n# Old specification\n\n1 Timing\n\n"
+        "Req: SRS-0001 The TMF shall process track event 0 within 999 ms.\n", encoding="utf-8")
+    sources = f'''
+[pipeline]
+steps = ["docs", "graph"]
+[[sources.docs]]
+name = "normative"
+paths = ["{(docs_samples / 'spec_with_bookmarks.pdf').as_posix()}"]
+analysis = "regex"
+doc_id_regex = 'Doc\\.\\s+(\\S+)'
+version_regex = '\\bIssue\\s+(\\w+)'
+authority = 1
+[[sources.docs]]
+name = "old"
+paths = ["{(tmp_path / 'old').as_posix()}"]
+analysis = "regex"
+doc_id_regex = 'Doc\\.\\s+(\\S+)'
+version_regex = '\\bIssue\\s+(\\w+)'
+authority = 2
+'''
+    cfg = load_config(toml(sources))
+    assert sections(cfg) == 0
+    assert "doc_id: TMS-SRS-001; version: 2" in capsys.readouterr().out
+    assert run(cfg) == 0
+    assert json.loads(capsys.readouterr().out)["processed"] == {"docs.process": 2, "graph.build": 1}
+    assert graph(cfg) == 0
+    assert "! old_spec.md (TMS-SRS-001 v1) is older than spec_with_bookmarks.pdf (v2)" in capsys.readouterr().out
+    t = KnowledgeGraph.open(cfg.workspace / "atlas.db").trace("SRS-0001")
+    old = next(x for x in t["documents"] if x["document"] == "old_spec.md")
+    assert old["values_differ"]["against"].startswith("spec_with_bookmarks.pdf v2 §") and old["version"] == "1"
+
+    # the authority is only of the graph: the documents are not processed again
+    cfg = load_config(toml(sources.replace("authority = 2", "authority = 0")))
+    assert run(cfg) == 0
+    assert json.loads(capsys.readouterr().out)["processed"] == {"graph.build": 1}
+    t = KnowledgeGraph.open(cfg.workspace / "atlas.db").trace("SRS-0001")
+    assert next(x for x in t["documents"] if x["document"] == "old_spec.md")["values_differ"]["against"]
+    import pytest
+    from atlas.config import ConfigError
+    with pytest.raises(ConfigError, match="authority"):
+        run(load_config(toml(sources.replace("authority = 2", "authority = -1"))))

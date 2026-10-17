@@ -36,6 +36,7 @@ de ella:
 | Cambio | Qué se reprocesa |
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
+| `[[sources.docs]] authority` | el grafo |
 | `[llm] model` | los documentos con `analysis = "llm"` |
 | `[embeddings] model` | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
@@ -146,10 +147,34 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `min_chars` | entero | `300` | las secciones más cortas se unen a la anterior |
 | `lang` | texto | `""` | idioma de los resúmenes (`"Spanish"`); vacío = el del documento |
 | `ocr_command` | lista | `[]` | orden que pasa por OCR los PDF con páginas sin texto: `["ocrmypdf", "--skip-text", "{file}", "{out}"]` |
+| `doc_id_regex` | texto | `""` | código del documento (grupo 1): `'Doc\.\s+(\S+)'` |
+| `version_regex` | texto | `""` | su versión (grupo 1): `'\bIssue\s+(\w+)'` |
+| `date_regex` | texto | `""` | su fecha (grupo 1): `'\b(\d{4}-\d{2}-\d{2})\b'`; sin ella, la de los metadatos del PDF |
+| `authority` | entero | `0` | autoridad del grupo frente a otros: `1` = normativo, `2`..., `0` = ninguna. Solo la usa el grafo |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
 modelo.
+
+### Versión, fecha y autoridad
+
+`doc_id_regex`, `version_regex` y `date_regex` se buscan, en este orden, en las cabeceras y
+pies que se repiten en las páginas, en las dos primeras páginas y en el título, asunto y
+palabras clave de los metadatos del PDF; vale el grupo 1 (o todo, si la expresión no tiene
+grupos). Sin fecha, se toma la de modificación (o creación) del PDF, como `AAAA-MM-DD`. Se
+guardan en `structure.json` (`doc_id`, `version`, `date`) y en el nodo del documento, y
+`atlas sections` los muestra. Para las muestras, cuya portada dice «Doc. TMS-SRS-001  Issue 2»:
+
+```toml
+doc_id_regex = 'Doc\.\s+(\S+)'
+version_regex = '\bIssue\s+(\w+)'
+```
+
+Con `authority`, un requisito que no está en DOORS se compara con lo que declara el
+documento del grupo de menor número: `trace` dice qué cifras difieren y `atlas graph` lista
+en `documents disagree` los requisitos que varios documentos declaran con cifras distintas.
+Dos documentos con el mismo `doc_id` y versiones distintas dan un aviso en `atlas graph`
+(¿está sustituido el más antiguo?). Cambiar `authority` solo reconstruye el grafo.
 
 ### PDF escaneados
 

@@ -28,7 +28,8 @@ from typing import Iterable
 
 from atlas.docs import analysis as an
 from atlas.docs import extractor_for, read_document
-from atlas.docs.structure import STRUCTURES, clean_headers, diagnose_headings, document_title, prepare_sections
+from atlas.docs.structure import (STRUCTURES, clean_headers, diagnose_headings, document_metadata, document_title,
+                                  prepare_sections)
 from atlas.docs.writer import pages, write_document
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
@@ -50,6 +51,9 @@ class DocsOptions:
     max_chars: int = 12000          # largest section sent to the model
     min_chars: int = 300            # shorter sections are merged with the previous one
     ocr_command: list[str] = ()     # ["ocrmypdf", "--skip-text", "{file}", "{out}"]: for PDFs with scanned pages
+    doc_id_regex: str = ""          # code, version and date of the document (group 1), from its headers
+    version_regex: str = ""         # and first two pages: r"Doc\.\s+(\S+)", r"\bIssue\s+(\w+)"
+    date_regex: str = ""
 
     def __post_init__(self):
         if self.analysis not in an.ANALYSES:
@@ -65,7 +69,7 @@ class DocsOptions:
             raise ValueError('ocr_command must be a list of strings with "{file}" and "{out}", '
                              'such as ["ocrmypdf", "--skip-text", "{file}", "{out}"]')
         self.ocr_command = list(self.ocr_command)
-        for key in ("req_regex", "heading_regex"):
+        for key in ("req_regex", "heading_regex", "doc_id_regex", "version_regex", "date_regex"):
             try:
                 re.compile(getattr(self, key))
             except re.error as e:
@@ -139,22 +143,29 @@ def extract(path: Path, options: DocsOptions, disabled: Iterable[str], ocr_dir: 
     return text, info, pdf
 
 
+def _metadata(raw: str, extracted: dict, options: DocsOptions) -> dict[str, str]:
+    return document_metadata(raw, extracted.get("metadata"), options.doc_id_regex, options.version_regex,
+                             options.date_regex)
+
+
 def preview(path: str | Path, options: DocsOptions | None = None, disabled: Iterable[str] = (),
             ocr_dir: str | Path | None = None) -> dict:
     """The sections a document would have, without analysing it (the --dry-run of the
     legacy script): title, extractor, structure source, sections and, when the structure
     did not come from the bookmarks or some section had to be split in many parts, the
-    heading diagnosis. `pages_without_text` counts the pages that are only an image, and
-    `scanned` warns when they are more than half. With `ocr_command`, the copies with OCR
+    heading diagnosis; `doc_id`, `version` and `date` as in structure.json.
+    `pages_without_text` counts the pages that are only an image, and `scanned` warns
+    when they are more than half. With `ocr_command`, the copies with OCR
     are kept in `ocr_dir` (by default, in a temporary folder that is removed)."""
     path, options = Path(path), options or DocsOptions()
     with tempfile.TemporaryDirectory() if ocr_dir is None else contextlib.nullcontext(ocr_dir) as folder:
         raw, extracted, pdf = extract(path, options, disabled, Path(folder))
+        metadata = _metadata(raw, extracted, options)
         text, removed = clean_headers(raw)
         info: dict = {}
         sections = prepare_sections(text, options.max_chars, options.min_chars, options.heading_regex or None,
                                     pdf, options.structure, info)
-    out = {"title": document_title(text, path), "chars": len(text), "removed_lines": removed,
+    out = {"title": document_title(text, path), **metadata, "chars": len(text), "removed_lines": removed,
            "extractor": extractor_for(path, disabled).name,
            **{k: extracted[k] for k in ("pages", "pages_without_text", "scanned", "ocr") if k in extracted},
            "structure": info["source"],
@@ -205,6 +216,7 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
     if extracted.get("pages_without_text"):
         log.warning("'%s': %d of %d pages have no text (scanned?)", path.name, extracted["pages_without_text"],
                     extracted["pages"])
+    metadata = _metadata(raw, extracted, options)
     text, removed = clean_headers(raw)
     doc_title = title or document_title(text, path)
     info: dict = {k: extracted[k] for k in ("pages", "pages_without_text", "ocr") if extracted.get(k)}
@@ -247,7 +259,7 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
         cons = an.consolidate(sections)
         data = write_document(tmp, doc_title, path.name, llm.model if options.analysis == "llm" else "",
                               sections, doc_overview, cons,
-                              extra={"analysis_mode": options.analysis, "overview_error": overview_error,
+                              extra={**metadata, "analysis_mode": options.analysis, "overview_error": overview_error,
                                      **{k: extracted[k] for k in ("pages", "pages_without_text") if k in extracted}})
         _replace_dir(tmp, out)
     except BaseException:

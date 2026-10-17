@@ -53,6 +53,21 @@ El grafo completo se exporta a `<workspace>/graph/atlas.graphml` (Gephi, yEd) y
 `atlas.json`. Con `[graph] communities = true`, cada elemento de código lleva su grupo
 (Louvain), para colorearlo en Gephi.
 
+## Versión y autoridad de los documentos
+
+El nodo `document` lleva `doc_id`, `version` y `date` (de `structure.json`, ver
+`[[sources.docs]] doc_id_regex`, `version_regex` y `date_regex`) y la `authority` de su
+fuente (1 = normativo, 2..., 0 = sin autoridad). Las secciones que devuelven `trace`,
+`trace_code` e `impact` llevan la `version` de su documento y su `page_start`, y la columna
+`documents` de `matrix` los escribe así: `spec.pdf v2 §3.1 Timing p.12`.
+
+Un requisito que no está en DOORS se compara con la declaración del documento de mayor
+autoridad que lo declara: `values_differ` dice entonces `against` (esa sección), `official`
+(sus cifras) y `document`. Sin ninguna autoridad no hay referencia, pero `gaps` lista igual en
+`documents_disagree` los requisitos que varios documentos declaran con cifras distintas. Dos
+documentos con el mismo `doc_id` y versiones distintas solo dan un aviso en `atlas graph` (y
+en `superseded` de las estadísticas de la parte `docs`): los dos siguen en el grafo.
+
 ## Consultas de trazabilidad
 
 Sin modelo:
@@ -63,7 +78,7 @@ Sin modelo:
 | `trace_code(nombre)` | requisitos, llamadores, llamados, pruebas y secciones de un elemento de código; de una prueba, el código que ejercita y los requisitos que cubre |
 | `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas y secciones afectados, incluidos los requisitos que esos satisfacen en DOORS; de un requisito: los que derivan de él, su código, pruebas y secciones |
 | `matrix(módulo)` | requisito → código → pruebas → documentos, con resumen y huecos |
-| `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
+| `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos (o, fuera de DOORS, frente al documento de mayor autoridad); sin módulo, `documents_disagree`: requisitos fuera de DOORS que varios documentos declaran con cifras distintas |
 | `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
 | `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
 

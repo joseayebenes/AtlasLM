@@ -99,6 +99,9 @@ def _prompt(ev: dict) -> str:
     if ev["values_differ"]:
         lines.append("\nValues found only in one of the texts (a comparison without a model):")
         lines += [f"- {d['source']}: DOORS {', '.join(d['doors']) or '-'}; document {', '.join(d['document']) or '-'}"
+                  if "doors" in d else
+                  f"- {d['source']}: {d['against']} {', '.join(d['official']) or '-'}; "
+                  f"document {', '.join(d['document']) or '-'}"
                   for d in ev["values_differ"]]
     return "\n".join(lines)
 

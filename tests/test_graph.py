@@ -262,7 +262,7 @@ def test_trace_and_trace_code(unified):
     assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
     assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
     assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
-                               "text": "The TMF shall delete a track within 300 ms.",
+                               "version": "", "page_start": 1, "text": "The TMF shall delete a track within 300 ms.",
                                "values_differ": {"doors": ["320"], "document": ["300"]}}]
     assert [i["id"] for i in t["implemented_by"]["items"]] == ["tracks.delete_track"]
     assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
@@ -307,7 +307,7 @@ def test_matrix_and_gaps(unified):
     assert m["rows"][3] == {"id": "SRS-0004", "text": "The TMF shall delete a track within 320 ms.",
                             "verification": "Test", "derived": [], "code": ["tracks.delete_track"],
                             "tests": ["test_tracks.test_tracks"], "covering_tests": [],
-                            "documents": ["spec.pdf §1 Tracks"]}
+                            "documents": ["spec.pdf §1 Tracks p.1"]}
     assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
     m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
@@ -324,7 +324,7 @@ def test_matrix_and_gaps(unified):
     assert gaps["code_without_requirement"]["items"] == ["logger.next_id"]
     assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
     assert gaps["stated_in_documents_not_in_doors"]["items"] == [{"id": "SRS-0103", "documents": ["spec.pdf §2 Logs"]}]
-    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320"],
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks p.1", "doors": ["320"],
                                                "document": ["300"]}]
     assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
     assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
@@ -353,3 +353,67 @@ def test_neighbors_and_communities(unified, tmp_path):
     c = g.communities()
     assert c["count"] == len(set(groups.values())) and sum(x["size"] for x in c["items"]) == len(groups)
     assert c["items"][0]["size"] >= c["items"][-1]["size"]
+
+
+def _stating(name: str, text: str, version: str, page: int = 3) -> dict:
+    return {"title": name, "doc_id": "TMS-SRS-001", "version": version, "date": "", "sections": [
+        {"id": "001", "title": "4 Timing", "path": ["4 Timing"], "page_start": page, "page_end": page, "body": text,
+         "analysis": {"requirements": [{"id": "SRS-0300", "text": text}]}}]}
+
+
+def test_authority_of_documents_and_documents_that_disagree(tmp_path):
+    from atlas.graph import build_docs_graph
+    docs = [{"name": "srs.pdf", "path": "a/srs.pdf", "source": "normative", "out_dir": str(tmp_path / "a"),
+             "authority": 1, "structure": _stating("SRS", "The TMF shall answer within 200 ms.", "3")},
+            {"name": "design.pdf", "path": "b/design.pdf", "source": "design", "out_dir": str(tmp_path / "b"),
+             "authority": 2, "structure": _stating("Design", "The TMF shall answer within 250 ms.", "2", 7)},
+            {"name": "notes.md", "path": "c/notes.md", "source": "notes", "out_dir": str(tmp_path / "c"),
+             "structure": _stating("Notes", "The TMF shall answer within 200 ms.", "")}]
+    G, stats = build_docs_graph(docs)
+    assert G.nodes["doc:srs.pdf"]["authority"] == 1 and G.nodes["doc:notes.md"]["authority"] == 0
+    assert G.nodes["doc:design.pdf"]["doc_id"] == "TMS-SRS-001" and G.nodes["doc:design.pdf"]["version"] == "2"
+    # same doc_id, lower version: only a warning
+    assert stats["superseded"] == [{"doc_id": "TMS-SRS-001", "document": "design.pdf", "version": "2",
+                                    "by": "srs.pdf", "by_version": "3"}]
+    g = KnowledgeGraph(G)
+
+    # not in DOORS: compared with the most authoritative document that states it
+    t = {x["document"]: x for x in g.trace("SRS-0300")["documents"]}
+    assert t["design.pdf"]["values_differ"] == {"against": "srs.pdf v3 §4 Timing p.3", "official": ["200"],
+                                                "document": ["250"]}
+    assert (t["design.pdf"]["version"], t["design.pdf"]["page_start"]) == ("2", 7)
+    assert "values_differ" not in t["srs.pdf"] and "values_differ" not in t["notes.md"]
+    gaps = g.gaps()
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0300", "section": "design.pdf v2 §4 Timing p.7",
+                                               "against": "srs.pdf v3 §4 Timing p.3", "official": ["200"],
+                                               "document": ["250"]}]
+    assert gaps["documents_disagree"]["items"] == [{
+        "id": "SRS-0300", "reference": "srs.pdf v3 §4 Timing p.3",
+        "sections": ["design.pdf v2 §4 Timing p.7", "notes.md §4 Timing p.3", "srs.pdf v3 §4 Timing p.3"],
+        "values": {"design.pdf v2 §4 Timing p.7": ["250"], "notes.md §4 Timing p.3": ["200"],
+                   "srs.pdf v3 §4 Timing p.3": ["200"]}}]
+    assert g.matrix()["rows"][0]["documents"] == ["design.pdf v2 §4 Timing p.7", "notes.md §4 Timing p.3",
+                                                  "srs.pdf v3 §4 Timing p.3"]
+
+    # without any authority, the disagreement is still a gap, with no reference to compare with
+    for d in docs:
+        d["authority"] = 0
+    g = KnowledgeGraph(build_docs_graph(docs)[0])
+    assert all("values_differ" not in x for x in g.trace("SRS-0300")["documents"])
+    assert g.gaps()["documents_disagree"]["items"][0]["reference"] == ""
+
+
+def test_doc_id_version_and_date_of_the_samples(docs_samples, tmp_path):
+    from atlas.docs import DocsOptions, preview, process_document
+    opts = DocsOptions(analysis="regex", doc_id_regex=r"Doc\.\s+(\S+)", version_regex=r"\bIssue\s+(\w+)",
+                       date_regex=r"\b(\d{4}-\d{2}-\d{2})\b")
+    data = process_document(docs_samples / "spec_with_bookmarks.pdf", tmp_path / "spec", opts)
+    assert (data["doc_id"], data["version"], data["date"]) == ("TMS-SRS-001", "2", "")
+    assert all("Doc. TMS-SRS-001" not in s["body"] for s in data["sections"])     # clean_headers still removes it
+    p = preview(docs_samples / "spec_without_bookmarks.pdf", opts)
+    assert (p["doc_id"], p["version"]) == ("TMS-SRS-001", "2")
+    assert preview(docs_samples / "spec_with_bookmarks.pdf")["doc_id"] == ""           # no regex, nothing
+    from atlas.docs.structure import document_metadata
+    meta = {"modDate": "D:20261001120000+02'00'", "subject": "SDD-0042 rev B"}
+    assert document_metadata("no headers", meta, r"\b(SDD-\d+)", r"rev\s+(\w+)") == \
+        {"doc_id": "SDD-0042", "version": "B", "date": "2026-10-01"}

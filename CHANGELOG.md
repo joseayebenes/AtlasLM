@@ -16,10 +16,18 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Presupuesto por intento de un encargo en el plan: `task_calls`, `task_seconds` y `task_cost`
   (0 = sin límite). Al llegar a él no se lanzan más arreglos de compilación, vueltas de
   `advances` ni reinicios, y el paso lo dice (`budget_exceeded`).
+- `[sources.code]` `check_timeout`, `test_timeout` y `program_timeout`: el tiempo de cada clase
+  de comando, con `command_timeout` por defecto.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
   no como `kept`; el resumen final cuenta los errores.
+
+### Corregido
+- Un comando de `check_code`, `run_test` o `run_program` al que se le acaba el tiempo se mata
+  con todo lo que arrancó (su grupo de procesos; `taskkill /T` en Windows). Antes se mataba
+  solo el comando, y un envoltorio como `with_server` dejaba vivo el servidor.
+- `run_test` encuentra el ejecutable con `.exe` que GNAT deja en Windows.
 
 ## [0.2.0] — 2026-10-16
 

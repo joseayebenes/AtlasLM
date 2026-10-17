@@ -24,7 +24,8 @@ to a compiler. Placeholders:
     {file}      the absolute path of the file
     {include}   one -I<folder> per folder of the code roots that holds source files
     {build}     <workspace>/build, where the compiler leaves what it produces
-    {exe}       the executable of run_test: <workspace>/build/<name of the file>
+    {exe}       the executable of run_test: <workspace>/build/<name of the file> (in run_command,
+                the one that exists of it and of it with .exe: GNAT adds it on Windows)
 
 With GNAT (installed with Alire, `alr toolchain --select gnat_native gprbuild`):
 
@@ -44,6 +45,12 @@ extension, with no build: { py = ["with_server", "python3", "{file}"] }. `progra
 what run_program runs, with the lines on its standard input: the program itself, or a script
 that passes them on to it (e.g. ["with_server", "session"], a client that sends each line to the
 server and prints the answer).
+
+Each command has at most `command_timeout` seconds, or that of its kind: `check_timeout`
+(check_code and the syntax check), `test_timeout` (each command of run_test) and
+`program_timeout` (run_program). A command runs in a process group of its own, and when its
+time is up the whole group is killed (SIGTERM, a second, SIGKILL; `taskkill /T` on Windows):
+killing only the command left alive what a wrapper like with_server had started.
 
 `tool_path` goes before PATH for these commands (globs allowed; a relative folder is relative
 to where atlas runs, like the code roots), so the toolchain and the project's own scripts are
@@ -74,7 +81,9 @@ import ast
 import glob
 import os
 import re
+import signal
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -98,6 +107,8 @@ MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix,
 MAX_EDIT_ERRORS = 5        # errors of check_code in the answer of a change
 MAX_OUTPUT_CHARS = 3000
 MAX_INPUT_LINES = 100      # of run_program
+KILL_GRACE = 1.0           # seconds between SIGTERM and SIGKILL to the group of a command out of time
+TIMEOUT_KEYS = {"check": "check_timeout", "test": "test_timeout", "program": "program_timeout"}
 MAX_CITED, CITED_CONTEXT = 4, 3     # places of the code shown from an output, and lines around each one
 # "controller.adb:103" (GNAT, gcc and most tools) or 'File "/x/client.py", line 12' (Python)
 CITED = re.compile(r'File "(?P<py>[^"]+)", line (?P<py_line>\d+)|(?P<file>[\w./\\~-]+\.[A-Za-z]\w*):(?P<line>\d+)')
@@ -204,7 +215,8 @@ class BuildTools:
                  check_commands: dict | None = None, program_command: Iterable[str] = (),
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
                  hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
-                 reference: Iterable[str] = (), reference_db: str | Path | None = None):
+                 reference: Iterable[str] = (), reference_db: str | Path | None = None,
+                 timeouts: dict[str, int] | None = None):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
         self.library = Library(library, files.roots)
@@ -220,6 +232,7 @@ class BuildTools:
         self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
                           for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
         self.timeout = timeout
+        self.timeouts = {kind: int((timeouts or {}).get(kind) or timeout) for kind in TIMEOUT_KEYS}   # by kind
 
     @classmethod
     def from_config(cls, cfg, files: CodeTools | None = None, base: str | Path | None = None) -> "BuildTools":
@@ -228,17 +241,19 @@ class BuildTools:
         scripts of the project build what is in it); the manuals and the library are shared."""
         sc = cfg["sources"].get("code") or {}
         tool_path = sc.get("tool_path", [])
+        timeout = int(sc.get("command_timeout", 120))
         build_dir = cfg.workspace / "build"
         if base is not None:
             tool_path = [rebased(p, base) if Path(p).expanduser().is_absolute() else str(Path(base) / p)
                          for p in tool_path]          # relative ones are relative to where atlas runs: the copy
             build_dir = Path(base) / ".atlas" / "build"
         return cls(files or CodeTools.from_config(cfg, base=base), build_dir, sc.get("check_command", []),
-                   sc.get("test_command", []), tool_path, int(sc.get("command_timeout", 120)),
+                   sc.get("test_command", []), tool_path, timeout,
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
                    load_hints([*(_relative(cfg, h) for h in sc.get("hints", [])), HINTS]), sc.get("library", []),
-                   sc.get("reference", []), cfg.workspace / "reference.db")
+                   sc.get("reference", []), cfg.workspace / "reference.db",
+                   {kind: sc.get(key, timeout) for kind, key in TIMEOUT_KEYS.items()})
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -270,7 +285,7 @@ class BuildTools:
             copy = self.build_dir / "syntax" / p.name
             copy.parent.mkdir(parents=True, exist_ok=True)
             copy.write_text(text, encoding="utf-8")
-            ran = self._run(self._command(command, copy))
+            ran = self._run(self._command(command, copy), kind="check")
             if isinstance(ran, dict):
                 return None
             output = ran.stdout + ran.stderr
@@ -305,10 +320,10 @@ class BuildTools:
                           if p.is_file() and not self.files._excluded(p)})
         return [f"-I{f}" for f in folders]
 
-    def _command(self, template: list[str], file: Path | None) -> list[str]:
+    def _command(self, template: list[str], file: Path | None, exe: Path | None = None) -> list[str]:
         values = {"{build}": str(self.build_dir)}
         if file is not None:
-            values.update({"{file}": str(file), "{exe}": str(self.build_dir / file.stem)})
+            values.update({"{file}": str(file), "{exe}": str(exe or self.build_dir / file.stem)})
         out: list[str] = []
         for arg in template:
             if arg == "{include}":
@@ -319,17 +334,38 @@ class BuildTools:
                 out.append(arg)
         return out
 
-    def _run(self, args: list[str], input: str | None = None) -> subprocess.CompletedProcess | dict:
+    def _run(self, args: list[str], input: str | None = None,
+             kind: str = "check") -> subprocess.CompletedProcess | dict:
+        """Runs a command in a process group of its own, at most the seconds of its kind
+        (check, test, program); out of time, the whole group is killed (see the module)."""
         self.build_dir.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "PATH": os.pathsep.join([*self.tool_path, os.environ.get("PATH", "")])}
+        group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt"
+                 else {"start_new_session": True})
+        timeout = self.timeouts.get(kind, self.timeout)
         try:
-            return subprocess.run(args, cwd=self.build_dir, env=env, capture_output=True, text=True,
-                                  timeout=self.timeout, input=input,
-                                  stdin=None if input is not None else subprocess.DEVNULL)
+            proc = subprocess.Popen(args, cwd=self.build_dir, env=env, text=True, stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE,
+                                    stdin=subprocess.PIPE if input is not None else subprocess.DEVNULL, **group)
         except FileNotFoundError:
             return {"error": f"{args[0]} not found: install it or set [sources.code] tool_path"}
+        try:
+            stdout, stderr = proc.communicate(input, timeout=timeout)
         except subprocess.TimeoutExpired:
-            return {"error": f"{args[0]} took more than {self.timeout} s ([sources.code] command_timeout)"}
+            _kill_group(proc)
+            try:
+                proc.communicate(timeout=KILL_GRACE)           # what it wrote, and the pipes closed
+            except subprocess.TimeoutExpired:                   # someone left the group and holds them
+                for pipe in (proc.stdout, proc.stderr):
+                    pipe.close()
+                proc.wait()
+            key = TIMEOUT_KEYS.get(kind, "command_timeout")
+            return {"error": f"{args[0]} took more than {timeout} s ([sources.code] {key} or command_timeout): "
+                             "it was killed with its process group, everything it had started"}
+        except BaseException:                                   # Ctrl+C: nothing of it goes on running
+            _kill_group(proc)
+            raise
+        return subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
 
     def _source(self, path: str) -> tuple[Path | None, dict | None]:
         p, err = self.files._resolve(path)
@@ -446,7 +482,7 @@ class BuildTools:
         command = self.check_commands.get(p.suffix.lower().lstrip("."), self.check_command)
         if not command:
             return {"error": "no compiler configured ([sources.code] check_command)"}
-        res = self._run(self._command(command, p))
+        res = self._run(self._command(command, p), kind="check")
         if isinstance(res, dict):
             return res
         output = res.stdout + res.stderr
@@ -468,23 +504,23 @@ class BuildTools:
             return err
         direct = self.test_commands.get(p.suffix.lower().lstrip("."))
         if direct:                                    # not built: run as it is
-            ran = self._run(self._command(direct, p))
+            ran = self._run(self._command(direct, p), kind="test")
             if isinstance(ran, dict):
                 return {"file": self.files._show(p), "passed": False, **ran}
             return {"file": self.files._show(p), "passed": ran.returncode == 0, **self._ran(ran)}
         if not self.test_command:
             return {"error": "no test command configured ([sources.code] test_command)"}
-        res = self._run(self._command(self.test_command, p))
+        res = self._run(self._command(self.test_command, p), kind="test")
         if isinstance(res, dict):
             return res
         found = parse_messages(res.stdout + res.stderr)
         self._hinted(found["errors"], p)
-        exe = self.build_dir / p.stem
-        if res.returncode != 0 or found["errors"] or not exe.exists():
+        exe = next((e for e in (self.build_dir / p.stem, self.build_dir / f"{p.stem}.exe") if e.exists()), None)
+        if res.returncode != 0 or found["errors"] or exe is None:
             return {"file": self.files._show(p), "built": False, **found,
                     **({"output": _tail(res.stdout + res.stderr)} if not found["errors"] else {})}
         warnings = {"warnings": found["warnings"]} if found["warnings"] else {}
-        ran = self._run(self._command(self.run_command, p))
+        ran = self._run(self._command(self.run_command, p, exe), kind="test")
         if isinstance(ran, dict):
             return {"file": self.files._show(p), "built": True, "passed": False, **ran, **warnings}
         return {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0, **self._ran(ran),
@@ -501,8 +537,33 @@ class BuildTools:
             return {"error": "input_lines must be a list of strings, one per line"}
         if len(input_lines) > MAX_INPUT_LINES:
             return {"error": f"at most {MAX_INPUT_LINES} input lines"}
-        ran = self._run(self._command(self.program_command, None), "".join(f"{l}\n" for l in input_lines))
+        ran = self._run(self._command(self.program_command, None), "".join(f"{l}\n" for l in input_lines),
+                        kind="program")
         return ran if isinstance(ran, dict) else self._ran(ran)
+
+
+def _kill_group(proc: subprocess.Popen) -> None:
+    """Kills a command and what it started, its process group: SIGTERM, KILL_GRACE seconds for
+    them to end, and SIGKILL to what is left; on Windows, taskkill of its tree."""
+    if os.name == "nt":
+        try:
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        except OSError:                          # no taskkill: the command at least
+            proc.kill()
+        return
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except OSError:                          # the group is gone
+            return
+        deadline = time.monotonic() + KILL_GRACE
+        while sig == signal.SIGTERM and time.monotonic() < deadline:
+            proc.poll()                          # a zombie leader would keep the group alive
+            try:
+                os.killpg(proc.pid, 0)
+            except OSError:
+                return
+            time.sleep(0.05)
 
 
 register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"))

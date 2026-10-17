@@ -102,6 +102,49 @@ def test_tool_path_timeout_and_missing_compiler(project, tmp_path):
     assert "not found" in make(check=["no-such-compiler", "{file}"]).check_code(str(ada / "src" / "tracks.adb"))["error"]
     slow = make(check=[sys.executable, "-c", "import time; time.sleep(5)"], timeout=1)
     assert "more than 1 s" in slow.check_code(str(ada / "src" / "tracks.adb"))["error"]
+    # the time of each kind: check_timeout for check_code, command_timeout (30) for the others
+    slow = make(check=[sys.executable, "-c", "import time; time.sleep(5)"], extra="check_timeout = 1")
+    assert "([sources.code] check_timeout" in slow.check_code(str(ada / "src" / "tracks.adb"))["error"]
+    assert (slow.timeouts, slow.timeout) == ({"check": 1, "test": 30, "program": 30}, 30)
+
+
+HANG = '''import subprocess, sys, time
+server = subprocess.Popen(["sleep", "30"])       # what a wrapper starts, like with_server
+open(sys.argv[1], "w").write(str(server.pid))
+time.sleep(30)
+'''
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups of POSIX (Windows: taskkill /T)")
+def test_a_command_out_of_time_dies_with_what_it_started(project, tmp_path):
+    import time
+    ada, make = project
+    script, pid = tmp_path / "hang.py", tmp_path / "server.pid"
+    script.write_text(HANG)
+    slow = make(check=[sys.executable, str(script), str(pid)], timeout=1)
+    t0 = time.monotonic()
+    error = slow.check_code(str(ada / "src" / "tracks.adb"))["error"]
+    assert "more than 1 s" in error and "killed with its process group" in error and time.monotonic() - t0 < 10
+    server = int(pid.read_text())
+    for _ in range(50):
+        try:
+            os.kill(server, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(server, 9)
+        pytest.fail("the process that the command started is still alive")
+
+
+def test_run_test_finds_the_exe_of_windows(project):
+    """GNAT adds .exe to the executable on Windows: {exe} of run_command is the one that exists."""
+    ada, make = project
+    cc = Path(make().check_command[1])
+    tools = make(test=[sys.executable, str(cc), "{include}", "{file}", "-o", "{exe}.exe"])
+    res = tools.run_test(str(ada / "tests" / "test_tracks.adb"))
+    assert res["built"] and res["passed"] and res["output"].strip() == "ran"
+    assert (tools.build_dir / "test_tracks.exe").exists() and not (tools.build_dir / "test_tracks").exists()
 
 
 WRAPPER = '''import os, subprocess, sys

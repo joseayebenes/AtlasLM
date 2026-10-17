@@ -105,7 +105,8 @@ AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": in
                 "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
                "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
-               "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
+               "test_command": list, "tool_path": list, "command_timeout": int, "check_timeout": int,
+               "test_timeout": int, "program_timeout": int, "run_command": list,
                "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
                "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
                "reference": list, "language_server": list, "language_server_project": str}

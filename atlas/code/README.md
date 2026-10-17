@@ -285,6 +285,14 @@ tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
 py = ["with_server", "python3", "{file}"]
 ```
 
+Cada comando tiene como mucho `command_timeout` segundos (120), o los de su clase:
+`check_timeout` (`check_code` y la sintaxis), `test_timeout` (cada comando de `run_test`) y
+`program_timeout` (`run_program`). Corre en su propio grupo de procesos y, si se le acaba el
+tiempo, se mata el grupo entero (SIGTERM, un segundo de gracia y SIGKILL; en Windows,
+`taskkill /T`): matar solo el comando dejaba vivo el servidor que había arrancado
+`with_server`. En `run_command`, `{exe}` es el ejecutable que exista, con o sin `.exe` (GNAT se
+lo añade en Windows).
+
 GNAT ve más errores cuando genera código: una cadena de longitud fija asignada a otra de
 distinta longitud es, al compilar con código, el aviso «Constraint_Error will be raised at run
 time», y con `-gnatwE` un error; con `-gnatc` no se ve. Pero GNAT no genera código para una

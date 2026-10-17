@@ -93,6 +93,34 @@ secciones (10 422 nodos y 36 324 aristas):
   cubren cada elemento lo calcula una vez, 0,3 s);
 - la matriz de los 5000 SRS: 0,35 s; `gaps`: 0,2 s; las comunidades: 0,3 s.
 
+`matrix` y `gaps` guardan por instancia lo que calculan de cada requisito (derivados,
+pruebas, secciones) y los huecos de cada módulo; `matrix` construye solo las filas de la
+página pedida, y el resumen y los huecos salen de los conjuntos de requisitos sin código o
+sin pruebas, que se calculan una vez a partir de las aristas. Cada construcción del grafo es
+un `KnowledgeGraph` nuevo (`GraphTools.graph`), así que nada queda viejo.
+
+Medido el 17-10-2026 en tiempo de CPU, alternando en el mismo proceso la versión anterior y
+la nueva (el mínimo de siete; la máquina estaba muy cargada, con una carga media de 40 a 60,
+así que las cifras absolutas son el doble o el triple que en una máquina libre y lo que
+cuenta es la proporción), cada consulta en un `KnowledgeGraph` recién creado, con las pruebas
+que cubren cada elemento ya calculadas:
+
+| Consulta | `make large` (5000 SRS) antes | después |
+|---|---|---|
+| `matrix("SRS_LARGE", limit=50)` | 0,33 s | 0,05 s |
+| `matrix("SRS_LARGE", limit=50, offset=2500)` | 0,52 s | 0,08 s |
+| `gaps("SRS_LARGE")` | 0,49 s | 0,27 s |
+| `gaps()` | 0,60 s | 0,28 s |
+
+Con una sonda en memoria de 20 000 SRS, 2000 SSS, 3000 subprogramas en seis capas, 300
+pruebas y 2000 secciones, `matrix(limit=50)` pasa de 3,1 s a 0,1-0,4 s (tanto la primera
+página como otra) y `gaps` de 2,0-2,7 s a 0,6-0,9 s; otra página de la misma matriz, ya
+calculados los huecos, 0,03 s. Lo que queda en `gaps` es comparar las cifras de cada
+requisito con las de sus secciones, que necesita el texto de todas.
+
+`python examples/large_project.py --graph` repite la medida sobre un `make large` ya
+ejecutado, y `make large` la hace al final.
+
 ## Como librería
 
 Las consultas son las del antiguo `ada_graph_mcp.py`, más las de trazabilidad:

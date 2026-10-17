@@ -17,7 +17,10 @@ By default, 20 PDFs (250 requirements each, ~14 pages), 300 packages (3000 subpr
 60 tests, 500 SSS and 5000 SRS. The measurement runs `atlas run` three times: the first one,
 a second one without changes (it must make no request to the API and take less than a
 minute) and one after changing the deadline of one requirement in one PDF (the text of
-one page: only its section must go to the model again).
+one page: only its section must go to the model again). Then it times the traceability
+matrix and the gaps on the graph it built (`measure_graph`):
+
+    python examples/large_project.py --graph [DEST]     only that, on a project already run
 
 Requires: pip install pymupdf (and the [docs,code] extras to run atlas on it)
 """
@@ -214,6 +217,42 @@ def generate(dest: Path, base_url: str = "http://127.0.0.1:8770/v1", **sizes) ->
     return {**s, "pages": pages, "ada_files": files}
 
 
+def measure_graph(cfg) -> dict[str, float]:
+    """CPU seconds (the least of five runs: wall time depends on what else the machine is
+    doing) of matrix and gaps of SRS_LARGE on the graph of the workspace, each on a new
+    KnowledgeGraph (cold, as the first question of a server), and of another page of the
+    matrix after gaps (warm)."""
+    from atlas.graph import KnowledgeGraph
+    base = KnowledgeGraph.from_config(cfg)
+    base.covering_tests([])                   # computed once per graph: outside the measure
+    out = {}
+
+    def fresh():
+        g = KnowledgeGraph(base.G, base.root)
+        g._covering = base._covering
+        return g
+
+    def clock(label, query, warm=None):
+        best = float("inf")
+        for _ in range(5):
+            g = fresh()
+            if warm:
+                warm(g)
+            t = time.process_time()
+            query(g)
+            best = min(best, time.process_time() - t)
+        out[label] = best
+
+    clock("matrix(SRS_LARGE, limit=50)", lambda g: g.matrix("SRS_LARGE", limit=50))
+    clock("matrix(SRS_LARGE, limit=50, offset=2500)", lambda g: g.matrix("SRS_LARGE", limit=50, offset=2500))
+    clock("gaps(SRS_LARGE)", lambda g: g.gaps("SRS_LARGE"))
+    clock("gaps()", lambda g: g.gaps())
+    clock("matrix(SRS_LARGE, limit=50, offset=50) after gaps()",
+          lambda g: g.matrix("SRS_LARGE", limit=50, offset=50), warm=lambda g: g.gaps())
+    print("\n== graph queries (CPU): " + ", ".join(f"{k} {v:.3f} s" for k, v in out.items()), flush=True)
+    return out
+
+
 def _measure(dest: Path) -> None:
     sock = socket.socket()
     sock.bind(("127.0.0.1", 0))
@@ -256,10 +295,18 @@ def _measure(dest: Path) -> None:
         spec_pdf(dest / "docs" / "spec_01.pdf", 1, first, per_pdf(sizes["srs"], sizes["pdfs"]), sizes["units"],
                  override={f"SRS-{first + 7:05d}": 999})
         measure("one deadline changed in one page of spec_01.pdf")
+        measure_graph(cfg)
     finally:
         fake.terminate()
         fake.wait(timeout=5)
 
 
 if __name__ == "__main__":
-    _measure(Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "examples" / "large")
+    args = [a for a in sys.argv[1:] if a != "--graph"]
+    dest = Path(args[0]) if args else ROOT / "examples" / "large"
+    if "--graph" in sys.argv:
+        sys.path.insert(0, str(ROOT))
+        from atlas.config import load_config
+        measure_graph(load_config(dest / "atlas.toml"))
+    else:
+        _measure(dest)

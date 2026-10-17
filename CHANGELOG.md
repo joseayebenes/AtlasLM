@@ -6,6 +6,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Cambiado
+- `matrix` y `gaps` del grafo, más rápidas: cachés por instancia de lo que se calcula de cada
+  requisito, los huecos una vez por módulo y solo las filas de la página pedida. Con `make
+  large` (5000 SRS), `matrix(limit=50)` pasa de 0,33 s a 0,05 s y `gaps()` de 0,60 s a 0,28 s
+  (en una máquina cargada; cifras en `atlas/graph/README.md`). `make large` mide también
+  `matrix` y `gaps` (`examples/large_project.py --graph`).
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

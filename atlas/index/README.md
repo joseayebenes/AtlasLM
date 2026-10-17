@@ -75,6 +75,27 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
 pide responder solo con esas fuentes y citándolas como `[n]`.
 
+## Preguntas de trazabilidad
+
+«¿Qué prueba verifica SRS-0004?» no se contesta bien con pasajes: el índice gastaba dos
+peticiones y solo lo encontraba si BM25 sacaba por casualidad el código que lo cita, mientras
+`trace` lo da en milisegundos. Antes de buscar, `DocTools.route(pregunta)` mira, sin modelo,
+si la pregunta nombra IDs de requisito (los de `[sources.doors.convention] id_pattern`, o
+cualquiera que esté en DOORS o en el grafo) o elementos de código (una unidad, o un nombre
+con `.` o `_`) y pregunta por su trazabilidad: pruebas (*test*, *prueba*, *verif…*),
+implementación, padre, enlaces (*satisf…*, *link*, *enlace*), llamadas o impacto de un
+cambio (*impact…*, *afecta*, *cambi…*). Entonces da fuentes deterministas:
+
+- de cada requisito, su `trace` del grafo; sin grafo (o si no está en él), su texto oficial,
+  padre, atributos y enlaces de DOORS; y su `impact` si la pregunta habla de cambios;
+- de cada elemento de código, su `trace_code` y, si se pregunta por cambios, su `impact`.
+
+`atlas ask` y `ask_docs` las pasan a la respuesta como las primeras fuentes numeradas,
+delante de los pasajes (`extra_sources` en `Index.answer`): el modelo las cita como `[1]`,
+`[2]`. Una pregunta con ellas no se reescribe (sus IDs se encuentran sin hacerlo), así que
+cuesta una petición en vez de dos, y no se lee entera salvo con `--whole`. El requisito de
+DOORS que ya va en una fuente de trazabilidad no se repite entre los pasajes.
+
 ## Preguntas amplias
 
 Ocho pasajes no bastan para «resume los requisitos de SRS_TMS» o «explica cómo funciona el
@@ -131,6 +152,6 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas amplias
-en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
+documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas de
+trazabilidad, preguntas amplias en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

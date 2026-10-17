@@ -901,11 +901,12 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
 
 
 def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
-    from atlas.index import Index
+    from atlas.index import DocTools
     kinds = _kinds(kind)
     _context(cfg)
-    res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
-                                        scope="whole" if whole else "")
+    tools = DocTools.from_config(cfg)
+    res = tools.index.answer(question, k=k, document=document, kinds=kinds, scope="whole" if whole else "",
+                             extra_sources=tools.route(question))
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")

@@ -9,6 +9,11 @@
     ask_docs          an answer written only from the documents, citing them; a broad
                       question (or whole=True) reads its documents whole
 
+`route(question)` is not a tool: it gives the sources that need no search when a question
+names requirement IDs or code and asks for their traceability ("which test verifies
+SRS-0004?"), from DOORS and, if there is one, the graph. ask_docs and `atlas ask` pass
+them to the answer before the passages.
+
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
 the agent can correct itself or tell the user.
@@ -30,6 +35,7 @@ import openai
 
 from atlas.index.records import DOORS_PREFIX, KINDS
 from atlas.index.search import cite
+from atlas.index.store import REF_PATTERN
 from atlas.llm import model_failed
 from atlas.plugins import register_methods
 from atlas.store import Store
@@ -44,6 +50,13 @@ TOOL_NAMES = ("list_documents", "search", "get_section", "get_requirement", "ask
 MAX_RESULTS = 20            # results of a search
 MAX_SUMMARY_CHARS = 500     # characters of the summary of a document in list_documents
 MAX_SECTION_CHARS = 20000   # characters of a section
+ROUTE_CHARS = 4000          # characters of a source of route
+ROUTE_IDS = 3               # requirements and code elements of a question that route follows
+
+# words of a question about traceability (English and Spanish), by what they ask for
+TRACE_WORDS = re.compile(r"\b(test|prueba|verif|ensay|implement|parent|padre|child|hij|deriv|satisf|link|enlace"
+                         r"|trace|traza|call|llama)", re.I)
+IMPACT_WORDS = re.compile(r"\b(impact|afecta|cambi|chang|modif)", re.I)
 
 
 def _heading(f: Path) -> dict:
@@ -74,17 +87,49 @@ def _asks_for(wanted: str, title: str) -> bool:
     return bool(wanted) and wanted in names
 
 
+def _routed(doc_name: str, title: str, kind: str, ref: str, text: str) -> dict:
+    """A source of route, with the fields of an index record that answers use."""
+    text = text if len(text) <= ROUTE_CHARS else text[:ROUTE_CHARS] + " …"
+    return {"doc": "", "doc_name": doc_name, "section_id": "", "section_title": title, "kind": kind, "ref": ref,
+            "page_start": 0, "page_end": 0, "out_dir": "", "text": text, "context": text}
+
+
+def _official(r: dict) -> str:
+    """A requirement of Store.requirement as the text of a source."""
+    links = lambda items, end: ", ".join(f"{x[end]} ({x['type']})" for x in items)
+    lines = [f"{r['id']} (DOORS module {r['module']})", r["text"] or ""]
+    if r.get("parent"):
+        lines.append(f"parent: {r['parent']}")
+    if r.get("attributes"):
+        lines.append("attributes: " + "; ".join(f"{k} = {v}" for k, v in r["attributes"].items()))
+    if r.get("links_out"):
+        lines.append("links out: " + links(r["links_out"], "target"))
+    if r.get("links_in"):
+        lines.append("links in: " + links(r["links_in"], "source"))
+    return "\n".join(lines)
+
+
 class DocTools:
-    def __init__(self, index: "Index", store: Store | None = None, cfg=None):
+    def __init__(self, index: "Index", store: Store | None = None, cfg=None, graph=None):
         self.index = index
         self.store = store          # the requirements read from DOORS (atlas.db)
         self.cfg = cfg              # for the variables it lacks, when the model fails
+        self.graph = graph          # GraphTools, for route; None: only DOORS
+        convention = (((cfg.get("sources") or {}).get("doors") or {}).get("convention") or {}) if cfg else {}
+        self._id_re = re.compile(convention["id_pattern"]) if convention.get("id_pattern") else None
 
     @classmethod
-    def from_config(cls, cfg, store: Store | None = None) -> "DocTools":
-        """Over the atlas.db of the workspace, with the [embeddings] and [llm] of atlas.toml."""
+    def from_config(cls, cfg, store: Store | None = None, graph=None) -> "DocTools":
+        """Over the atlas.db of the workspace, with the [embeddings] and [llm] of atlas.toml,
+        and its graph (GraphTools) if atlas.graph can be imported."""
         from atlas.index import Index
-        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg)
+        if graph is None:
+            try:
+                from atlas.graph.tools import GraphTools
+                graph = GraphTools.from_config(cfg)
+            except ImportError:
+                graph = None
+        return cls(Index.from_config(cfg), store or Store(cfg.workspace), cfg, graph)
 
     @classmethod
     def for_context(cls, context: Any) -> "DocTools":
@@ -174,15 +219,66 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         return out
 
+    def route(self, question: str) -> list[dict]:
+        """The sources a question about traceability needs, without searching: if it names
+        requirement IDs (those of the [sources.doors.convention] id_pattern, or any in DOORS
+        or the graph) or code elements (a unit, or a name with "." or "_") and asks for
+        tests, implementation, parents, links, calls or the impact of a change. Of each
+        requirement, its trace in the graph (or, without it, its official text, parent and
+        links in DOORS) and its impact; of each code element, its trace_code and its impact.
+        [] when the question is not about traceability."""
+        impact, trace = bool(IMPACT_WORDS.search(question)), bool(TRACE_WORDS.search(question))
+        if not (impact or trace):
+            return []
+        g = self.graph.graph() if self.graph is not None else None
+        sources: list[dict] = []
+        tokens = list(dict.fromkeys(t.rstrip(".-_") for t in REF_PATTERN.findall(question)))
+        requirements = [t.upper() for t in tokens if re.search(r"[A-Za-z]", t) and re.search(r"\d", t)]
+        if self._id_re is not None:
+            requirements = [r for r in requirements if self._id_re.fullmatch(r)]
+        for rid in requirements[:ROUTE_IDS]:
+            traced = g.trace(rid) if g is not None else {"error": "no graph"}
+            if "error" not in traced:
+                sources.append(_routed("traceability graph", f"trace {traced['id']}", "trace", traced["id"],
+                                       json.dumps(traced, ensure_ascii=False)))
+            else:
+                official = self.store.requirement(rid) if self.store else None
+                if official:
+                    sources.append(_routed(f"DOORS {official['module']}", official["id"], "requirement",
+                                           official["id"], _official(official)))
+            if impact and g is not None and "error" not in (affected := g.impact(rid)):
+                sources.append(_routed("traceability graph", f"impact {rid}", "impact", rid,
+                                       json.dumps(affected, ensure_ascii=False)))
+        if g is None:
+            return sources
+        from atlas.graph.build import CODE_KINDS
+        code = []
+        for t in dict.fromkeys(re.findall(r"[A-Za-z_][\w.]*\w", question)):
+            n, err = g.resolve(t)
+            kind = g.G.nodes[n].get("kind") if n else None
+            if not err and n not in code and (kind == "unit" or (kind in CODE_KINDS and ("." in t or "_" in t))):
+                code.append(n)
+        for n in code[:ROUTE_IDS]:
+            if trace:
+                sources.append(_routed("traceability graph", f"trace_code {n}", "trace", n,
+                                       json.dumps(g.trace_code(n), ensure_ascii=False)))
+            if impact:
+                sources.append(_routed("traceability graph", f"impact {n}", "impact", n,
+                                       json.dumps(g.impact(n), ensure_ascii=False)))
+        return sources
+
     def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
         passages. `document` limits it to one document or DOORS module. A broad question (a
         summary, a whole function, every requirement about a topic) reads its documents
         whole instead of the best passages, in parts if they are long; `whole` = true makes
-        it read them whole always (`scope` in the answer says how it was read)."""
+        it read them whole always (`scope` in the answer says how it was read). A question
+        about the tests, code, parent, links or impact of a requirement or code element also
+        gets their traceability from DOORS and the graph as its first sources."""
         try:
-            return self.index.answer(question, document=document, scope="whole" if whole else "")
+            return self.index.answer(question, document=document, scope="whole" if whole else "",
+                                     extra_sources=self.route(question))
         except openai.APIError as e:
             return model_failed(e, self.cfg)
 

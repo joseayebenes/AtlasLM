@@ -277,6 +277,63 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert [s["n"] for s in res["sources"]] == sorted(s["n"] for s in res["sources"])
 
 
+def _store(path):
+    """A Store with SRS_TMS (MODULE) and a link of SRS-0004."""
+    from types import SimpleNamespace as N
+    from atlas.store import Store
+    store = Store(path)
+    store.replace_module("SRS_TMS", [N(raw_id=r["id"], **r) for r in MODULE],
+                         [N(source="SRS-0004", target="SSS-0005", type="satisfies")],
+                         {r["id"]: "h" for r in MODULE})
+    return store
+
+
+def test_traceability_questions_get_their_sources_without_searching(docs, samples, tmp_path, fake_llm,
+                                                                    fake_embeddings, fake_chats):
+    """«Which test verifies SRS-0004?» is answered by the graph in milliseconds; the index
+    only finds it by chance."""
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("networkx")
+    from atlas.code import AdaAnalyzer
+    from atlas.graph import GraphStore, GraphTools, build_code_graph
+    from atlas.index import DocTools, cite
+    analyzer = AdaAnalyzer({})
+    units = [analyzer.analyze_file(f, f.read_bytes()) for f in sorted((samples / "ada").rglob("*.ad?"))]
+    GraphStore(tmp_path / "atlas.db").replace("code", *build_code_graph(units, test_patterns=["**/tests/**"]))
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    store = _store(tmp_path / "doors")
+    tools = DocTools(idx, store, graph=GraphTools(tmp_path / "atlas.db"))
+
+    assert tools.route("When does the HMI raise an alarm?") == []           # no traceability
+    assert tools.route("What does SRS-0004 say?") == []
+    routed = tools.route("Which test verifies SRS-0004?")
+    assert [(s["section_title"], s["kind"]) for s in routed] == [("trace SRS-0004", "trace")]
+    assert "test_tracks.test_tracks" in routed[0]["context"]
+    before = fake_chats()
+    res = tools.ask_docs("Which test verifies SRS-0004?")
+    assert res["requests"] == 1 == fake_chats() - before                     # not rewritten
+    assert res["answer"] == "Answer taken from the sources [1]."             # it cites the graph
+    assert res["sources"][0]["cite"] == "traceability graph › trace SRS-0004 (trace)"
+    assert [s["doc"] for s in res["sources"] if s["ref"] == "SRS-0004"] == ["traceability graph"]   # once
+
+    assert [s["section_title"] for s in tools.route("¿Qué afecta cambiar tracks.delete_track?")] == \
+        ["impact tracks.delete_track"]
+    assert [s["section_title"] for s in tools.route("Who calls delete_track and what does it impact?")] == \
+        ["trace_code tracks.delete_track", "impact tracks.delete_track"]
+
+    # without a graph: the official text, parent and links in DOORS
+    alone = DocTools(idx, store)
+    routed = alone.route("¿Cuál es el padre de SRS-0004?")
+    assert [cite(s) for s in routed] == ["DOORS SRS_TMS › SRS-0004 (requirement)"]
+    assert routed[0]["context"].splitlines() == ["SRS-0004 (DOORS module SRS_TMS)",
+                                                 "The TMF shall delete a lost track within 320 ms.",
+                                                 "parent: SRS-0910", "attributes: kind = requirement; "
+                                                 "status = Approved", "links out: SSS-0005 (satisfies)"]
+    assert alone.route("Which test verifies SRS-9999?") == []
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

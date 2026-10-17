@@ -18,6 +18,10 @@ chunk by itself and its neighbours (up to a character budget) and asks the model
 answer only from those numbered sources, citing them as [n]. An answer to a broad question
 reads its documents whole, section by section: in one request if they fit in
 `scope_chars`, and otherwise in parts, each giving notes that a last request combines.
+
+`extra_sources` (DocTools.route: the traceability of the requirements and code the
+question names, from DOORS and the graph) go before the passages as the first numbered
+sources; a question that has them is not rewritten, nor read whole unless scope="whole".
 """
 from __future__ import annotations
 
@@ -250,10 +254,10 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
-                 max_chars: int = SCOPE_CHARS) -> dict:
-    """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them."""
-    sources = [s for d in docs for s in whole_sources(store, d["doc"])]
+                 max_chars: int = SCOPE_CHARS, extra_sources: list[dict] = ()) -> dict:
+    """The answer from whole documents ({doc, name}), after `extra_sources`: one request if
+    they fit in max_chars; if not, notes from each part and a last request that combines them."""
+    sources = list(extra_sources) + [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "whole",
@@ -303,12 +307,18 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
-           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
+           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
+           extra_sources: list[dict] = ()) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
-    the question is broad."""
+    the question is broad. `extra_sources` ({doc_name, section_title, kind, ref, context},
+    as DocTools.route gives them) are the first sources; with them the question is not
+    rewritten (its IDs are found without it) and "auto" answers from passages."""
+    extra = list(extra_sources)
+    if extra:
+        rewrite, scope = False, "passages" if scope == "auto" else scope
     candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX)]
     rewritten = rewrite_question(llm, question, candidates) if rewrite else None
     requests = 1 if rewrite else 0
@@ -318,10 +328,13 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
                                                    per_document=per_document, rewritten=rewritten)
         docs = _scope_documents(store, document, named, hits)
         if docs:
-            res = answer_whole(store, llm, question, docs, scope_chars)
+            res = answer_whole(store, llm, question, docs, scope_chars, extra)
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
-    sources = build_context(store, hits, context_chars)
+    routed = {s["ref"].upper() for s in extra if s.get("ref")}
+    hits = [h for h in hits if not (h["doc"].startswith(DOORS_PREFIX) and (h.get("ref") or "").upper() in routed)]
+    used = sum(len(s["context"]) for s in extra)
+    sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4))
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",
                 "documents": [], "requests": requests}

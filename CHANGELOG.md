@@ -6,6 +6,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Preguntas de trazabilidad en `atlas ask` y `ask_docs`: si la pregunta nombra requisitos o
+  código y pregunta por sus pruebas, su implementación, su padre, sus enlaces, sus llamadas o
+  el impacto de un cambio, `DocTools.route` da sin modelo su `trace`, `trace_code` o `impact`
+  del grafo (sin grafo, su texto, padre y enlaces de DOORS) como las primeras fuentes de la
+  respuesta (`extra_sources` en `Index.answer`). «¿Qué prueba verifica SRS-0004?» gastaba dos
+  peticiones y solo lo encontraba por casualidad; ahora una, y con la fuente del grafo.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

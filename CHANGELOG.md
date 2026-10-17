@@ -60,10 +60,26 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   entero (hasta 300 líneas). `examples/agents/implementer.md` y `tester.md` las usan.
 - `[sources.code]` `check_timeout`, `test_timeout` y `program_timeout`: el tiempo de cada clase
   de comando, con `command_timeout` por defecto.
+- El servidor falso (`tests/fakes/fake_api.py`) inyecta más fallos, sin cambiar la forma de su
+  fichero de control: 429 en el chat (`chat_429_after`), 5xx puntuales (`chat_status_once`),
+  `Retry-After` y cabeceras `x-ratelimit-*` en los rechazos, llamadas a herramientas
+  (`tool_call`), `usage` calculado del tamaño real (`usage_chars_per_token`, que también corta
+  las respuestas más largas que `max_tokens`) y servidores que aceptan `json_object` pero no
+  `json_schema` (`no_structured_output: "json_schema"`). Con ellos se prueban por HTTP la
+  espera por `Retry-After`, los escalones de salida estructurada, `finish_reason` y `atlas
+  probe`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
   no como `kept`; el resumen final cuenta los errores.
+- La salida estructurada va por escalones: `json_schema`, `json_object` y ninguno. Antes, un
+  servidor que rechazaba el esquema se quedaba sin `response_format`, cuando casi todos
+  aceptan `json_object`. El escalón se aprende por servidor y modelo para todo el proceso
+  (antes, por instancia: cada llamada MCP de `verify` o `link` pagaba otra petición
+  rechazada), y `atlas check` lo dice: `structured output: json_schema | json_object | none`.
+- `ask_json` comprueba la respuesta contra su esquema (tipos, claves obligatorias, listas y
+  valores permitidos) y la corrección cita el primer error («requirements[2].text must be a
+  string»), en vez de pedir JSON sin más.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -90,6 +106,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   que se lanzaba: un editor que arrancaba `atlas serve` en otra carpeta no encontraba nada, y
   `atlas run` daba 0 ficheros y borraba lo procesado. Las herramientas de ficheros, el grafo y
   los intentos de `atlas develop` también parten de la carpeta de `atlas.toml`.
+- Una respuesta de texto cortada por `max_tokens` (o vacía, con un modelo que razona) llegaba
+  al usuario sin aviso. Ahora se pregunta otra vez con el doble de presupuesto y, si sigue
+  cortada, la respuesta de `atlas ask` y `ask_docs` lleva `truncated` y `atlas ask` lo avisa.
+- Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
+  Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
+  `failed_parts`) y la respuesta se escribe con las demás, con sus fuentes y peticiones bien
+  contadas.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,

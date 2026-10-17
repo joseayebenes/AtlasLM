@@ -91,7 +91,10 @@ nunca unidades de código:
 - si caben en `[search] scope_chars` (100 000 caracteres), una sola petición;
 - si no, por partes de ese tamaño, a la vez: de cada una, el modelo toma notas de todo lo
   que importa a la pregunta, con sus citas, y una última petición las junta en la
-  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones.
+  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones. Si una parte
+  falla (el servidor no contesta, se acaba el cupo), la respuesta se escribe con las demás y
+  termina con la nota «part 2 of 4 failed: …», que también va en `failed_parts`; solo si
+  fallan todas falla la pregunta.
 
 Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se leyó
 (`passages` o `whole`). `--whole` (o `whole` en `ask_docs`) lee enteros los documentos aunque

@@ -276,6 +276,21 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert res["answer"].startswith("Answer combined from the notes [1]") and len(res["sources"]) > 2
     assert [s["n"] for s in res["sources"]] == sorted(s["n"] for s in res["sources"])
 
+    # a part that fails leaves a note, and the answer is written with the others
+    real = small.llm.ask_text
+
+    def ask_text(system, user):
+        if user.startswith("Sources:\n\n[1] "):
+            raise RuntimeError("the gateway closed the connection")
+        return real(system, user)
+
+    small.llm.ask_text = ask_text
+    failed = small.answer("Summarise everything spec_with_bookmarks.pdf says")
+    assert failed["requests"] == res["requests"] and failed["failed_parts"] == [
+        f"part 1 of {parts} failed: RuntimeError: the gateway closed the connection"]
+    assert failed["answer"].endswith(f"\n\n(part 1 of {parts} failed: RuntimeError: the gateway closed the connection)")
+    assert 1 not in [s["n"] for s in failed["sources"]] and len(failed["sources"]) == len(res["sources"]) - 1
+
 
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the

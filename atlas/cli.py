@@ -933,6 +933,9 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
     res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
                                         scope="whole" if whole else "")
     print(res["answer"])
+    if res.get("truncated"):
+        print("\n(The answer is cut: the model reached max_tokens even when asked again with twice the "
+              "budget. Raise [llm] max_tokens.)")
     if res["sources"]:
         print("\nSources:")
     for s in res["sources"]:

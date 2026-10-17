@@ -769,6 +769,16 @@ def _check_chat(response) -> tuple[bool, str]:
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
 
 
+def _structured_output(cfg: ServiceConfig) -> str:
+    """The response_format tier the server accepts (json_schema | json_object | none), with
+    one small request per tier it rejects."""
+    from atlas.llm.structured import JsonLlm
+    try:
+        return JsonLlm(cfg).probe_structured()
+    except Exception as e:
+        return f"unknown ({diagnose(e)})"
+
+
 def check(conn: Connection) -> int:
     """Real chat and embeddings request. Returns 0 if everything works."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
@@ -791,6 +801,8 @@ def check(conn: Connection) -> int:
             print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
             if not ok:
                 failures += 1
+            elif name == "LLM":
+                print(f"  structured output: {_structured_output(cfg)}")
         except SystemExit:
             raise
         except Exception as e:

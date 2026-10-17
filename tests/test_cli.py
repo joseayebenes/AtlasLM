@@ -168,6 +168,11 @@ patterns = ["*.md"]
         main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
     out = capsys.readouterr().out
     assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
+    control.write_text(json.dumps({"usage_chars_per_token": 4}))     # an answer longer than max_tokens
+    assert ask(load_config(toml(extra.replace('model = "fake"', 'model = "fake"\nmax_tokens = 3'))),
+               "When does the HMI raise an alarm?") == 0
+    assert "(The answer is cut: the model reached max_tokens" in capsys.readouterr().out
+    control.write_text("{}")
     for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
                         (["search", "x", "--whole"], "unknown option --whole"),
                         (["ask", "x", "--k", "many"], "--k must be an integer"),

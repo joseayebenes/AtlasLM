@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from atlas.llm import JsonLlm, TruncatedResponse, parse_json, repair_json
+from atlas.llm import JsonLlm, TruncatedResponse, parse_json, repair_json, validate
 
 KEYS = ["summary", "requirements"]
 SCHEMA = {"type": "object", "properties": {"summary": {"type": "string"}, "requirements": {"type": "array"}},
@@ -23,6 +23,38 @@ def test_repair_json_keeps_what_was_complete():
     assert repair_json(cut, KEYS) == {"summary": "s", "requirements": [{"id": "R1", "text": "a"}, {"id": "R2"}]}
     assert repair_json('{"summary": "s", "requirements": [],}', KEYS) == {"summary": "s", "requirements": []}
     assert repair_json("nothing", KEYS) is None
+
+
+def test_validate_names_the_first_place_that_breaks_the_schema():
+    schema = {"type": "object", "required": ["verdict", "requirements"], "properties": {
+        "verdict": {"type": "string", "enum": ["yes", "no"]},
+        "count": {"type": "integer"},
+        "requirements": {"type": "array", "items": {"type": "object", "required": ["id", "text"], "properties": {
+            "id": {"type": "string"}, "text": {"type": "string"}}}}}}
+    good = {"verdict": "yes", "count": 2, "requirements": [{"id": "R1", "text": "a"}]}
+    assert validate(good, schema) == []
+    bad = {"verdict": "maybe", "count": True,
+           "requirements": [{"id": "R1", "text": "a"}, {"id": "R2"}, {"id": "R3", "text": 3}]}
+    assert validate(bad, schema) == ['verdict must be one of "yes", "no"', "count must be an integer",
+                                     "requirements[1].text is missing", "requirements[2].text must be a string"]
+    assert validate([], schema) == ["the answer must be an object"]
+    assert validate({}, schema) == ["verdict is missing", "requirements is missing"]
+
+
+def test_the_correction_quotes_what_breaks_the_schema(fake_llm):
+    service, control = fake_llm
+    llm = JsonLlm(service)
+    sent, real = [], llm.client.chat.completions.create
+    llm.client.chat.completions.create = lambda **kwargs: sent.append(kwargs["messages"]) or real(**kwargs)
+    numbered = {**SCHEMA, "properties": {**SCHEMA["properties"], "requirements": {"type": "array", "items": {
+        "type": "object", "properties": {"id": {"type": "integer"}}}}}}
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", numbered, "section")
+    assert len(sent) == 2
+    assert sent[1][-1]["content"].startswith("That JSON object does not follow the schema: "
+                                             "requirements[0].id must be an integer.")
+    # the correction (the fake answers an overview without requirements) is no better: the
+    # first answer is kept
+    assert d["requirements"][0]["id"] == "SRS-0001"
 
 
 def test_ask_json_against_the_fake_api(fake_llm, fake_chats):
@@ -59,9 +91,9 @@ def test_servers_without_structured_output(fake_llm, fake_chats):
     control.write_text(json.dumps({"no_structured_output": True}))
     llm = JsonLlm(service)
     d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
-    assert d["requirements"][0]["id"] == "SRS-0001" and llm.schema_ok is False
-    before = fake_chats()                       # from then on, no request with the schema
-    llm.ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert d["requirements"][0]["id"] == "SRS-0001" and llm.structured == "none"
+    before = fake_chats()                       # from then on, no request with response_format,
+    JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")   # in any instance
     assert fake_chats() - before == 1
 
 
@@ -98,3 +130,40 @@ def test_concurrency_caps_the_requests_in_flight(fake_llm):
     with ThreadPoolExecutor(6) as pool:
         answers = list(pool.map(lambda _: llm.ask_text("system", "Reply with: ok"), range(6)))
     assert answers == ["ok"] * 6 and state["max"] == 2
+
+
+def test_a_server_without_json_schema_gets_json_object(fake_llm, fake_stats):
+    service, control = fake_llm
+    control.write_text(json.dumps({"no_structured_output": "json_schema"}))
+    llm = JsonLlm(service)
+    assert llm.structured == "json_schema"
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"][0]["id"] == "SRS-0001" and llm.structured == "json_object"
+    assert fake_stats()["last_chat"]["response_format"] == {"type": "json_object"}
+    before = fake_stats()["chat"]                 # another instance, same server: no rejected request
+    JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert fake_stats()["chat"] - before == 1 and fake_stats()["last_chat"]["response_format"]["type"] == "json_object"
+    other = JsonLlm(type(service)(**{**service.__dict__, "model": "another"}))   # another model starts again
+    assert other.structured == "json_schema"
+
+
+def test_ask_text_asks_again_when_the_answer_is_cut(fake_llm, fake_chats):
+    from dataclasses import replace
+    service, control = fake_llm
+    control.write_text(json.dumps({"usage_chars_per_token": 4}))
+    question = "Sources:\n\n[1] Some text.\n\nQuestion: what?"      # "Answer taken from the sources [1]." is 9 tokens
+    before = fake_chats()
+    text = JsonLlm(replace(service, max_tokens=5)).ask_text("system", question)   # cut at 5, whole at 10
+    assert (text, text.truncated, text.requests) == ("Answer taken from the sources [1].", False, 2)
+    assert fake_chats() - before == 2
+    text = JsonLlm(replace(service, max_tokens=2)).ask_text("system", question)   # cut at 2 and at 4
+    assert (text, text.truncated, text.requests) == ("Answer taken fro", True, 2)
+    text = JsonLlm(replace(service, max_tokens=50)).ask_text("system", question)  # whole: one request
+    assert (text.truncated, text.requests) == (False, 1)
+
+    # a reasoning model that spends the whole budget thinking: empty, and asked again with twice
+    control.write_text(json.dumps({"reasoning_tokens": 80}))
+    text = JsonLlm(replace(service, max_tokens=50)).ask_text("system", "Reply with: ok")
+    assert (text, text.truncated) == ("ok", False)
+    text = JsonLlm(replace(service, max_tokens=20)).ask_text("system", "Reply with: ok")
+    assert (text, text.truncated) == ("", True)

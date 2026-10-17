@@ -60,13 +60,29 @@ def test_same_names_in_two_packages_are_two_nodes(tmp_path):
     assert ("gamma.run", "beta.update") in calls          # a bare name: the unit it imports with `with`
     assert ("gamma.run", "alpha.update") in calls         # a qualified name
     assert {("omega.go", "alpha.reset"), ("omega.go", "beta.reset")} <= calls   # ambiguous: both
-    assert stats["ambiguous_calls"] == 1
+    assert stats["ambiguous_calls"] == 1 and stats["unimported_calls"] == 1   # omega imports neither
+    assert G.nodes["gamma.run"]["subprogram_kind"] == "procedure" and G.nodes["gamma.run"]["signature"] == "procedure Run"
     assert ("alpha", "alpha.spec_only") in _edges(G, "defines")           # declared without a body
     assert G.nodes["alpha.update"]["requirements"] == ["SYS-1"] and "beta.update" not in G.predecessors("SYS-1")
     g = KnowledgeGraph(G, root=tmp_path)
     assert [i["id"] for i in g.impact("alpha.reset")["items"]] == ["alpha.update", "omega.go", "gamma.run"]
     assert g.node("Update")["candidates"] == ["alpha.update", "beta.update"]     # by simple name: ambiguous
     assert g.node("Run")["id"] == "gamma.run"
+
+
+def test_the_predefined_names_are_those_of_the_language_of_the_caller():
+    """Integer is a type of Ada, not of Python; and an analyzer of another language may give
+    its calls as bare names, without their place."""
+    from atlas.plugins import CodeUnit
+    ada = CodeUnit(file="a.adb", unit="a", language="ada",
+                   subprograms=[{"name": "go", "start_line": 1, "end_line": 3, "doc": "", "reqs": [],
+                                 "calls": [{"name": "integer", "line": 2, "column": 7}, "b.run", "b.run"]}])
+    py = CodeUnit(file="m.py", unit="m", language="python",
+                  subprograms=[{"name": "go", "start_line": 1, "end_line": 2, "doc": "", "reqs": [],
+                                "calls": [{"name": "integer", "line": 2, "column": 5}]}])
+    G, stats = build_code_graph([ada, py])
+    assert stats["edges_by_kind"]["predefined"] == 1 and _edges(G, "calls") == {("a.go", "b.run"), ("m.go", "integer")}
+    assert stats["unresolved_calls"] == 2
 
 
 def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):

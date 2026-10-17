@@ -185,7 +185,8 @@ Todo lo que varía de un proyecto a otro es un plugin con nombre, que se elige e
 
 - **Otro lenguaje**: una clase `CodeAnalyzer` registrada con `register("code_analyzer", "cpp", Clase)`
   en un módulo propio; actívalo con `[sources.code] languages = ["ada", "cpp"]` y declara el
-  módulo en `[plugins] modules` (o como entry point `atlas.plugins` en su `pyproject`).
+  módulo en `[plugins] modules` (o como entry point `atlas.plugins` en su `pyproject`). Lo que
+  devuelve, `CodeUnit`, y sus nombres predefinidos están en [atlas/code](atlas/code/README.md#la-interfaz-codeunit).
 - **Otra fuente de requisitos**: una clase `RequirementsAdapter` (`modules`, `snapshot`,
   `requirements`, `links`) y `adapter = "nombre"` en `[sources.doors]`.
 - **Otro formato de documento**: una clase `DocumentExtractor` por extensión.

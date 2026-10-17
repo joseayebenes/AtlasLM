@@ -1,9 +1,10 @@
 """Ada analyzer with tree-sitter-ada, one file at a time (the analysis of legacy/ada_graph.py).
 
 For each file: the `with` clauses, the subprogram declarations of the spec (their header
-comment is the documentation), the subprogram bodies (lines, own calls, header comment and
-the requirement IDs in their comments), the package-level types and subtypes (with their
-source: for a record, its fields) and the package-level variables and constants.
+comment is the documentation), the subprogram bodies (lines, kind, profile, own calls with
+the line and column of each one, header comment and the requirement IDs in their comments),
+the package-level types and subtypes (with their source: for a record, its fields) and the
+package-level variables and constants.
 
 In Ada `Name (X)` is a call, a type conversion or an array indexing alike: here every
 `Name (...)` of a body is a "call" except the local objects and parameters of that body;
@@ -21,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
-from atlas.code.common import extract_requirements, requirement_pattern
+from atlas.code.common import call_at, extract_requirements, requirement_pattern
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
 __all__ = ["AdaAnalyzer", "PREDEFINED_TYPES", "analyze_ada"]
@@ -64,14 +65,15 @@ PATTERNS = {
 }
 
 # Predefined types are never calls
-PREDEFINED_TYPES = {
+PREDEFINED_TYPES = frozenset({
     "integer", "natural", "positive", "float", "long_float", "long_long_float",
     "short_float", "long_integer", "long_long_integer", "short_integer",
     "short_short_integer", "boolean", "character", "wide_character",
     "wide_wide_character", "string", "wide_string", "wide_wide_string", "duration",
     "unsigned_8", "unsigned_16", "unsigned_32", "unsigned_64",
     "integer_8", "integer_16", "integer_32", "integer_64",
-}
+})
+KINDS = {"procedure_specification": "procedure", "function_specification": "function"}
 MAX_SOURCE_CHARS = 2000  # cap for the text of a type declaration kept in the result
 
 
@@ -179,6 +181,11 @@ def _first_identifier(node):
     return next((c for c in node.children if c.type == "identifier"), None)
 
 
+def _profile(spec, src: bytes) -> str:
+    """The specification of a subprogram on one line, without its comments."""
+    return " ".join(re.sub(r"--[^\n]*", " ", _text(spec, src)).split())
+
+
 def unit_name(path: Path) -> str:
     """Compilation unit of a file by the GNAT convention: tracks-db.ads -> tracks.db."""
     return path.stem.lower().replace("-", ".")
@@ -228,8 +235,10 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
     if g.body:
         for _, caps in _matches(g.body, root, "body"):
             body = caps["body"][0]
+            spec = next((c for c in body.children if c.type in KINDS), None)
             bodies.append({"name": _norm(_text(caps["name"][0], src)), "node": body,
-                           "start_line": body.start_point[0] + 1, "end_line": body.end_point[0] + 1})
+                           "start_line": body.start_point[0] + 1, "end_line": body.end_point[0] + 1,
+                           **({"kind": KINDS[spec.type], "signature": _profile(spec, src)} if spec else {})})
 
     # For each body: its own calls (not those of nested subprograms), header comment and
     # the requirements cited in its comments
@@ -244,17 +253,20 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
             local_names = {_norm(_text(n, src)) for n in caps.get("local", [])}
             for param in caps.get("param", []):
                 local_names.update(_norm(_text(n, src)) for n in _parameter_names(param))
-        calls = set()
+        calls = []
         if g.call:
             for n in _captures(g.call, node).get("call", []):
                 if any(s <= n.start_byte < e for s, e in nested):
                     continue
                 name = _norm(_text(n, src))
                 if name not in local_names:            # indexing of a local array or parameter
-                    calls.add(name)
+                    row, column = n.start_point
+                    call = call_at(name, row + 1, src[n.start_byte - column:n.start_byte])
+                    if call not in calls:
+                        calls.append(call)
         doc = _leading_comment(node, lines)
         subprograms.append({"name": b["name"], "start_line": b["start_line"], "end_line": b["end_line"],
-                            "calls": sorted(calls), "doc": doc,
+                            **{k: b[k] for k in ("kind", "signature") if k in b}, "calls": calls, "doc": doc,
                             "reqs": extract_requirements(doc + "\n" + _inner_comments(node, src), req_pattern)})
 
     return {"file": str(path), "unit": unit_name(path), "withs": withs, "declarations": declarations,
@@ -264,6 +276,7 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
 class AdaAnalyzer(CodeAnalyzer):
     name = "ada"
     extensions = (".ads", ".adb", ".ada")
+    predefined = PREDEFINED_TYPES
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -277,4 +290,4 @@ class AdaAnalyzer(CodeAnalyzer):
                         variables=a["variables"])
 
     def version(self) -> str:
-        return "ada-1"
+        return "ada-2"

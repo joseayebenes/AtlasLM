@@ -434,7 +434,7 @@ def index_code_step(ctx) -> Step | None:
                 depends_on=["code.parse"])
 
 
-GRAPH_VERSION = "graph-2"   # change it when the building of the graph changes
+GRAPH_VERSION = "graph-3"   # change it when the building of the graph changes
 GRAPH_EXPORTS = ("graphml", "json")
 
 
@@ -664,7 +664,8 @@ def graph(cfg: Config) -> int:
               f"externals, {s['requirements']} requirements) from {s['files']} files ({s['test_files']} of tests)")
         c = s["edges_by_kind"]
         print(f"calls: {c['calls']} | type conversions: {c['converts']} | global variables used: {c['uses']} | "
-              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}")
+              f"predefined types ignored: {c['predefined']} | ambiguous calls: {s['ambiguous_calls']}"
+              + (f" | calls to units not imported: {s['unimported_calls']}" if "unimported_calls" in s else ""))
         print(f"subprograms without a comment: {s['subprograms_without_doc']} | "
               f"without a requirement: {s['subprograms_without_requirement']} | "
               f"unresolved calls: {s['unresolved_calls']}"

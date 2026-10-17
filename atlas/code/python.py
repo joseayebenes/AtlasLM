@@ -1,8 +1,9 @@
 """Python analyzer with the standard library (ast and tokenize), one file at a time.
 
-For each file: the imports, the functions and methods (lines, own calls, docstring and
-header comments, and the requirement IDs in their comments and docstring), the classes (as
-types) and the module-level variables and constants (a name in upper case is a constant).
+For each file: the imports, the functions and methods (lines, kind, signature, own calls
+with the line and column of each one, docstring and header comments, and the requirement IDs
+in their comments and docstring), the classes (as types) and the module-level variables and
+constants (a name in upper case is a constant).
 
 A module is named by its dotted path from the code root that holds it:
 tests/python/test_session.py under the root "tests" is "python.test_session", so that it
@@ -25,7 +26,7 @@ import re
 import tokenize
 from pathlib import Path
 
-from atlas.code.common import extract_requirements, requirement_pattern
+from atlas.code.common import call_at, extract_requirements, requirement_pattern
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
 __all__ = ["PythonAnalyzer", "analyze_python", "module_name"]
@@ -97,6 +98,11 @@ def _own_nodes(node: ast.AST):
         yield from _own_nodes(child)
 
 
+def _signature(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
+    returns = f" -> {ast.unparse(node.returns)}" if node.returns else ""
+    return f"{'async ' if isinstance(node, ast.AsyncFunctionDef) else ''}def {node.name}({ast.unparse(node.args)}){returns}"
+
+
 def _first_line(node: ast.AST) -> int:
     decorators = getattr(node, "decorator_list", [])
     return min([node.lineno, *(d.lineno for d in decorators)])
@@ -113,6 +119,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
         log.warning("%s does not parse as Python, analysed as empty: %s", path, e)
         return empty
     lines = text.splitlines()
+    rows = re.split(r"\r\n|\r|\n", text)          # the lines as ast counts them, for the columns
     comments = _comments(text)
 
     imports = set()
@@ -124,7 +131,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
 
     subprograms, types = [], []
 
-    def visit(node: ast.AST, scope: list[str]) -> None:
+    def visit(node: ast.AST, scope: list[str], in_class: bool = False) -> None:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, FUNCTIONS):
                 name = ".".join([*scope, child.name])
@@ -135,14 +142,18 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
                                   and not any(s <= n <= e for s, e in nested))
                 doc = "\n".join(x for x in (_leading_comment(start, lines, comments),
                                             ast.get_docstring(child) or "") if x)
-                calls = set()
+                calls = []
                 for n in _own_nodes(child):
                     if isinstance(n, ast.Call):
                         called = _dotted(n.func)
                         if called and called not in BUILTINS:
-                            calls.add(called)
-                subprograms.append({"name": name, "start_line": start, "end_line": end, "calls": sorted(calls),
-                                    "doc": doc, "reqs": extract_requirements(doc + "\n" + inner, req_pattern)})
+                            row = rows[n.lineno - 1] if n.lineno <= len(rows) else ""
+                            calls.append(call_at(called, n.lineno, row.encode("utf-8")[:n.col_offset]))
+                calls.sort(key=lambda c: (c["line"], c["column"]))
+                subprograms.append({"name": name, "start_line": start, "end_line": end,
+                                    "kind": "method" if in_class else "function", "signature": _signature(child),
+                                    "calls": calls, "doc": doc,
+                                    "reqs": extract_requirements(doc + "\n" + inner, req_pattern)})
                 visit(child, [*scope, child.name])
             elif isinstance(child, ast.ClassDef):
                 start = _first_line(child)
@@ -152,7 +163,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
                 types.append({"name": ".".join([*scope, child.name]), "line": start, "doc": doc,
                               "reqs": extract_requirements(doc, req_pattern), "source": source[:MAX_SOURCE_CHARS],
                               "record": False})
-                visit(child, [*scope, child.name])
+                visit(child, [*scope, child.name], in_class=True)
 
     visit(tree, [])
 
@@ -172,6 +183,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
 class PythonAnalyzer(CodeAnalyzer):
     name = "python"
     extensions = (".py",)
+    predefined = frozenset()        # the builtins are already left out of the calls
 
     def __init__(self, config: dict):
         super().__init__(config)
@@ -184,4 +196,4 @@ class PythonAnalyzer(CodeAnalyzer):
                         subprograms=a["subprograms"], types=a["types"], variables=a["variables"])
 
     def version(self) -> str:
-        return "python-1"
+        return "python-2"

@@ -15,10 +15,14 @@ requirements by their ID normalised like those of DOORS (upper case by default),
 the code, DOORS and the documents meet in the same node.
 
 Every `Name (...)` of a body is classified by what Name is: subprogram -> calls, type ->
-converts, variable -> uses, predefined type -> ignored, unknown -> external call. A name
-without a package is looked for first in the caller's own unit, then in every unit; if
-several units have it, the ones the caller imports with `with` are preferred, and if it is
-still ambiguous the edge goes to all of them (an impact analysis must not miss any).
+converts, variable -> uses, a name of the language (the `predefined` of the analyzer of the
+caller's language: Integer, Float...) -> ignored, unknown -> external call. A name without a
+package is looked for first in the caller's own unit, then in every unit; if several units
+have it, the ones the caller imports with `with` are preferred, and if it is still ambiguous
+the edge goes to all of them (an impact analysis must not miss any). A call found only in
+units the caller does not import is counted apart (`unimported_calls`): it is the one guess
+of the resolution that `ambiguous_calls` does not show. The analyzers are those of the
+plugin registry, so `atlas.code` (or the plugins) must be loaded first.
 """
 from __future__ import annotations
 
@@ -28,9 +32,9 @@ from typing import Callable, Iterable
 
 import networkx as nx
 
-from atlas.code.ada import PREDEFINED_TYPES
+from atlas import plugins
 from atlas.doors import normalize_id
-from atlas.plugins import CodeUnit
+from atlas.plugins import CodeUnit, call_name
 
 __all__ = ["CODE_KINDS", "build_code_graph", "find_communities", "is_test_file"]
 
@@ -45,12 +49,20 @@ def is_test_file(file: str, patterns: Iterable[str]) -> bool:
     return any(fnmatch.fnmatch(f, p) or fnmatch.fnmatch("/" + f, p) for p in patterns)
 
 
+def _predefined(language: str) -> frozenset[str]:
+    """The names of a language that are never calls, as its analyzer says."""
+    try:
+        return frozenset(plugins.get("code_analyzer", language).predefined)
+    except LookupError:                    # an analyzer that is not loaded: nothing is predefined
+        return frozenset()
+
+
 def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[str] = (),
                      normalize: Callable[[str], str] = normalize_id) -> tuple[nx.DiGraph, dict]:
     """(graph, statistics) from the analysis of every file. The subprograms of the files
     that match `test_patterns` are tests; `normalize` gives the requirement IDs the form
     of DOORS ([sources.doors.convention] id_normalize)."""
-    units = sorted((u if isinstance(u, CodeUnit) else CodeUnit(**u) for u in units), key=lambda u: u.file)
+    units = sorted((u if isinstance(u, CodeUnit) else CodeUnit.from_dict(u) for u in units), key=lambda u: u.file)
     test_patterns = list(test_patterns)
     tests = {u.file for u in units if is_test_file(u.file, test_patterns)}
     G = nx.DiGraph()
@@ -107,7 +119,8 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
             G.add_node(sid, kind="test" if u.file in tests else "subprogram", name=s["name"], unit=u.unit,
                        file=u.file, spec_file=sp.get("spec_file", ""), start_line=s["start_line"],
                        end_line=s["end_line"], doc=sp.get("doc") or s["doc"],     # the doc of the spec first
-                       requirements=reqs)
+                       requirements=reqs, **({"subprogram_kind": s["kind"]} if s.get("kind") else {}),
+                       **({"signature": s["signature"]} if s.get("signature") else {}))
             G.add_edge(u.unit, sid, kind="defines")
             cites(sid, reqs)
 
@@ -124,24 +137,27 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         G.add_edge(unit, sid, kind="defines")
         cites(sid, reqs)
 
-    def resolve(call: str, unit: str) -> tuple[list[str], str]:
+    def resolve(call: str, unit: str, predefined: frozenset[str]) -> tuple[list[str], str, bool]:
+        """The targets of a call, the kind of the edge and whether it was found only in units
+        the caller does not import."""
         prefix, _, simple = call.rpartition(".")
         for kind in DECLARED:
             ids = index[kind]
             if prefix and f"{prefix}.{simple}" in ids.get(simple, []):
-                return [f"{prefix}.{simple}"], EDGE_FOR[kind]
+                return [f"{prefix}.{simple}"], EDGE_FOR[kind], False
             if f"{unit}.{simple}" in ids.get(simple, []):
-                return [f"{unit}.{simple}"], EDGE_FOR[kind]
+                return [f"{unit}.{simple}"], EDGE_FOR[kind], False
             found = ids.get(simple, [])
             if found:
                 visible = [i for i in found if G.nodes[i]["unit"] in imports[unit]]
-                return (visible or found), EDGE_FOR[kind]
-        return [], "predefined" if simple in PREDEFINED_TYPES else "external"
+                return (visible or found), EDGE_FOR[kind], not visible
+        return [], "predefined" if simple in predefined else "external", False
 
     # Pass 2: edges
     counts = {"calls": 0, "converts": 0, "uses": 0, "predefined": 0}
     unresolved: dict[str, int] = defaultdict(int)
-    ambiguous = 0
+    ambiguous = unimported = 0
+    predefined = {lang: _predefined(lang) for lang in {u.language for u in units}}
     for u in units:
         for w in u.imports:
             if w not in G:
@@ -149,8 +165,9 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
             G.add_edge(u.unit, w, kind="withs")
         for s in u.subprograms:
             sid = f"{u.unit}.{s['name']}"
-            for call in s["calls"]:
-                targets, kind = resolve(call, u.unit)
+            for call in dict.fromkeys(call_name(c) for c in s["calls"]):     # each name once, in order
+                targets, kind, guessed = resolve(call, u.unit, predefined[u.language])
+                unimported += guessed
                 if kind == "predefined":
                     counts["predefined"] += 1
                     continue
@@ -180,6 +197,7 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
         "requirements": len(nodes_of("requirement")),
         "edges_by_kind": counts,
         "ambiguous_calls": ambiguous,
+        "unimported_calls": unimported,
         "subprograms_without_doc": sum(1 for _, d in subs if not d.get("doc")),
         "subprograms_without_requirement": sum(1 for _, d in subs if not d.get("requirements")),
         "unresolved_calls": sum(unresolved.values()),

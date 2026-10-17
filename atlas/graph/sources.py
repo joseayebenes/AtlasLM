@@ -87,7 +87,7 @@ def code_names(units: Iterable[CodeUnit | dict]) -> dict[str, str]:
     qualified: dict[str, str] = {}
     simple: dict[str, set[str]] = defaultdict(set)
     for u in units:
-        u = u if isinstance(u, CodeUnit) else CodeUnit(**u)
+        u = u if isinstance(u, CodeUnit) else CodeUnit.from_dict(u)
         if "." in u.unit or "_" in u.unit:
             qualified[u.unit] = u.unit
         for item in (*u.subprograms, *u.declarations, *u.types, *u.variables):

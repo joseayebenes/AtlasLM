@@ -6,6 +6,36 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- La interfaz `CodeUnit`, de forma aditiva: cada subprograma puede llevar `kind` (`procedure`,
+  `function`, `method`, `task`, `entry`, `operator`) y `signature`, su perfil en una línea, y
+  cada llamada puede ser `{"name", "line", "column"}` además del nombre. Los analizadores de
+  Ada y Python dan las tres cosas; el grafo las acepta con o sin posición, y el nodo de un
+  subprograma gana `subprogram_kind` y `signature`, que `get_node` enseña.
+- `CodeAnalyzer.predefined`: los nombres del lenguaje que nunca son llamadas (Ada: `Integer`,
+  `Float`...; Python: ninguno). El grafo los consulta por el lenguaje de la unidad que llama;
+  ya no importa nada de `atlas.code.ada`.
+- `atlas graph` cuenta `calls to units not imported` (`unimported_calls`): llamadas que solo
+  se encuentran en unidades que el llamador no importa con `with`, la suposición de la
+  resolución por nombres que `ambiguous calls` no enseña.
+
+### Quitado
+- El campo `tests` de `CodeUnit`, que no leía nadie. `CodeUnit.from_dict` lee lo guardado
+  por la 0.2 sin él.
+
+### Al actualizar
+- La primera ejecución vuelve a analizar todo el código (`ada-2`, `python-2`) y reconstruye
+  la parte de código del grafo (`graph-3`). Sin cambios en la configuración.
+- Un analizador propio que pase `tests=` a `CodeUnit` tiene que quitarlo.
+
+### Pendiente
+- Medir `ambiguous calls` y `calls to units not imported` con el proyecto real antes de pedir
+  las referencias exactas al Ada Language Server en la construcción del grafo (sección 6.6
+  del análisis de mejoras). Ese paso no se ha hecho: 0 llamadas ambiguas en las muestras, en `make
+  large` (6059 llamadas), en atlas-socket-demo y en otro proyecto pequeño, y las 82 llamadas
+  de atlas-socket-demo que el ALS resuelve dentro del proyecto dan la misma arista que los
+  nombres. Detalle y coste en [atlas/graph/README.md](atlas/graph/README.md#precisión-de-la-resolución-por-nombres).
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

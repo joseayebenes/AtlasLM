@@ -987,7 +987,10 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else "")
-              + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else ""), flush=True)
+              + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else "")
+              + (f"\n      conflict: {', '.join(s['conflict']['files'])}"
+                 + (f" (with {', '.join(s['conflict']['with'])})" if s["conflict"]["with"] else "")
+                 + "; undone, it goes again alone" if s.get("conflict") else ""), flush=True)
 
     _context(cfg)
     try:
@@ -1005,6 +1008,13 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
           f"{totals['seconds'] // 60} min of runs, {totals.get('wall_seconds', 0) // 60} min in all"
           + (f", ${totals['cost']}" if "cost" in totals else "")
           + (f"; {final['errors']} runs failed with an error" if final.get("errors") else ""))
+    schedule = report.get("schedule")
+    if schedule:
+        print(f"tasks: {schedule['tasks_seconds'] // 60} min one after another in "
+              f"{schedule['wall_seconds'] // 60} min, {schedule['speedup']:g}x as fast with {schedule['parallel']} at once"
+              + (f"; {schedule['conflicts']} done again alone after a conflict" if schedule["conflicts"] else ""))
+    for warning in report.get("warnings", []):
+        print(f"warning: {warning}")
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")

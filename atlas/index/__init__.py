@@ -100,7 +100,8 @@ def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], w
              len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
 
     def one(batch: list[tuple[str, str]]) -> int:
-        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))))
+        store.cache_put(dict(zip((k for k, _ in batch), embedder.documents([t for _, t in batch]))),
+                        embedder.model)
         return len(batch)
 
     pool = ThreadPoolExecutor(max_workers=max(1, workers))
@@ -133,7 +134,7 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
     for n, batch in enumerate(batches, 1):
         try:
             new = dict(zip((keys[i] for i in batch), embedder.documents([records[i]["embed_text"] for i in batch])))
-            store.cache_put(new)                 # saved batch by batch
+            store.cache_put(new, embedder.model)     # saved batch by batch
             vectors.update(new)
             log.info("  batch %d/%d ok (%.0fs)", n, len(batches), time.time() - t0)
         except Exception as e:

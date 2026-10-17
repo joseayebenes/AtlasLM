@@ -5,8 +5,9 @@ same records, and the embeddings cache.
                       overview and the embeddings model of its vectors
     index_records     the records (see records.py) with their vector
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
-    embed_cache       vector by key (model + prefix + text): what has been embedded once
-                      is never embedded again, whatever document it comes from
+    embed_cache       vector by key (model + prefix + text) and the model: what has been
+                      embedded once is never embedded again, whatever document it comes
+                      from
 
 A document is replaced in a single transaction. Dense search only uses vectors of the
 current embeddings model, so changing the model never mixes vectors of two models.
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS index_records (
     page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB);
 CREATE INDEX IF NOT EXISTS idx_index_records_doc ON index_records(doc);
 CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
-CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
+CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB, model TEXT);
 """
 
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
@@ -51,6 +52,8 @@ class IndexStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.executescript(SCHEMA)
+        if "model" not in {r[1] for r in self.db.execute("PRAGMA table_info(embed_cache)")}:
+            self.db.execute("ALTER TABLE embed_cache ADD COLUMN model TEXT")    # atlas 0.2: without it
         try:
             self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
                             "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
@@ -75,10 +78,44 @@ class IndexStore:
                 out[key] = np.frombuffer(blob, dtype=np.float32)
         return out
 
-    def cache_put(self, items: dict[str, np.ndarray]) -> None:
+    def cache_put(self, items: dict[str, np.ndarray], model: str = "") -> None:
+        """Vectors by key, of the embeddings model `model`."""
         with self.lock, self.db:
-            self.db.executemany("INSERT OR REPLACE INTO embed_cache VALUES (?, ?)",
-                                [(k, v.astype(np.float32).tobytes()) for k, v in items.items()])
+            self.db.executemany("INSERT OR REPLACE INTO embed_cache (key, vector, model) VALUES (?, ?, ?)",
+                                [(k, v.astype(np.float32).tobytes(), model or None) for k, v in items.items()])
+
+    def cache_add(self, rows: list[tuple[str, bytes, str]]) -> int:
+        """(key, vector, model) rows that are not in the cache yet; what is there is never
+        replaced. Returns how many went in."""
+        with self.lock, self.db:
+            before = self.db.total_changes
+            self.db.executemany("INSERT OR IGNORE INTO embed_cache (key, vector, model) VALUES (?, ?, ?)", rows)
+            return self.db.total_changes - before
+
+    def cache_rows(self, model: str) -> list[tuple[str, bytes]]:
+        """(key, vector) of every cached vector of the embeddings model `model`."""
+        return [(r[0], r[1]) for r in self._query("SELECT key, vector FROM embed_cache WHERE model = ? "
+                                                  "ORDER BY key", (model,))]
+
+    def cache_without_model(self) -> int:
+        """Cached vectors whose model is not known (cached by atlas 0.2)."""
+        return self._query("SELECT COUNT(*) FROM embed_cache WHERE model IS NULL")[0][0]
+
+    def attribute_cache(self, model: str, keys: list[str]) -> int:
+        """Records `model` as the model of the cached vectors without one whose key is in
+        `keys` (the keys of the texts of the index, computed with that model). Returns how
+        many."""
+        n = 0
+        with self.lock, self.db:
+            for i in range(0, len(keys), 500):
+                part = keys[i:i + 500]
+                n += self.db.execute(f"UPDATE embed_cache SET model = ? WHERE model IS NULL AND key IN "
+                                     f"({','.join('?' * len(part))})", [model, *part]).rowcount
+        return n
+
+    def embed_texts(self) -> list[str]:
+        """The distinct embed_text of every record of the index."""
+        return [r[0] for r in self._query("SELECT DISTINCT embed_text FROM index_records")]
 
     # --- documents ----------------------------------------------------------
     def _delete(self, doc: str) -> None:

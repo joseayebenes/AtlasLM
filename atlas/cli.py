@@ -30,6 +30,10 @@
                                     whether the server uses the reasoning that the agents give back
     atlas reference [atlas.toml]    indexes the manuals of [sources.code] reference and the declarations of
                                     its library for search_reference (also done on the first search)
+    atlas cache    export FILE [atlas.toml] [--with-judgements]   writes the analyses of sections and the
+                                    vectors of this workspace (and the judgements of verify, comply and link)
+                                    to FILE, for other workstations
+    atlas cache    import FILE [atlas.toml]   adds what FILE has and this workspace lacks; never replaces
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
     atlas --version
@@ -191,6 +195,7 @@ def docs_step(ctx) -> Step | None:
     sources = doc_sources(ctx)
     if not sources:
         return None
+    from atlas.cache import docs_cache
     from atlas.docs import extractor_for, process_document
     from atlas.docs.analysis import PROMPT_VERSION
     from atlas.llm import JsonLlm, from_config
@@ -240,7 +245,7 @@ def docs_step(ctx) -> Step | None:
         d, options = by_name[name]
         out = out_dir(ctx, unit)
         data = process_document(Path(f), out, options, llm=llm() if options.analysis == "llm" else None,
-                                cache_dir=root / ".cache", workers=workers, disabled=ctx.disabled,
+                                cache_dir=docs_cache(ctx.cfg), workers=workers, disabled=ctx.disabled,
                                 stop=ctx.stopping)
         summary = {"sections": len(data["sections"]), "requirements": len(data["requirements"]),
                    "errors": data["errors"], "structure": data["structure_info"]["source"]}
@@ -850,7 +855,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
+OPTIONS = {"cache": {"--with-judgements": bool},
+           "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
 
 
@@ -868,14 +874,14 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
         kind = allowed[name]
         if kind is bool:
-            options[name[2:]] = True
+            options[name[2:].replace("-", "_")] = True
             continue
         if not has_value:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
         try:
-            options[name[2:]] = kind(value)
+            options[name[2:].replace("-", "_")] = kind(value)
         except ValueError:
             sys.exit(f"atlas {action}: {name} must be {'an integer' if kind is int else 'a text'}")
     return positional, options
@@ -1057,6 +1063,39 @@ def serve(cfg: Config) -> int:
     return 0
 
 
+def cache(cfg: Config, command: str, file: str, with_judgements: bool = False) -> int:
+    """atlas cache export|import FILE: the caches of the models, from one workspace to others
+    (atlas/cache.py)."""
+    from atlas.cache import CacheError, pack, unpack
+    if command == "export":
+        if not (cfg.workspace / "atlas.db").exists():         # before _context, which would create it
+            raise CacheError(f"nothing to export: {cfg.workspace} has no atlas.db (run `atlas run` first)")
+        _context(cfg)
+        head = pack(cfg, file, with_judgements)
+        c = head["counts"]
+        print(f"exported to {file}: {c['vectors']} vectors ({head['embeddings_model']}), {c['analyses']} analyses "
+              f"of sections ({head['chat_model']})" + (f", {c['judgements']} judgements" if with_judgements else ""))
+        if head["unattributed"]:
+            print(f"{head['unattributed']} cached vectors of an unknown model (texts no longer in the index) "
+                  f"were not exported", file=sys.stderr)
+        return 0
+    if with_judgements:
+        sys.exit("atlas cache import: --with-judgements is an option of export (import takes what the file has)")
+    _context(cfg)
+    res = unpack(cfg, file)
+    head = res["header"]
+    print(f"imported from {file} (project {head['project']}, atlas {head['atlas_version']}, {head['created']}):")
+    print(f"  vectors ({head['embeddings_model']}): {res['vectors']['new']} new, "
+          f"{res['vectors']['present']} already here")
+    print(f"  analyses of sections ({head['chat_model']}): {res['analyses']['new']} new, "
+          f"{res['analyses']['present']} already here")
+    for name, n in res["judgements"].items():
+        print(f"  judgements {name}: {n['new']} new, {n['present']} already here")
+    for w in res["warnings"]:
+        print(f"WARNING {w}", file=sys.stderr)
+    return 0
+
+
 TEMPLATE = Path(__file__).parent / "templates" / "atlas.toml"
 
 
@@ -1095,6 +1134,18 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit(agent(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1]))
         except ConfigError as e:
             sys.exit(f"configuration: {e}")
+    if action == "cache":                       # cache export|import FILE [atlas.toml]
+        from atlas.cache import CacheError
+        from atlas.pipeline import WorkspaceLocked
+        rest, options = _options(action, rest)
+        if len(rest) < 2 or rest[0] not in ("export", "import"):
+            sys.exit("usage: atlas cache export|import FILE [atlas.toml] [--with-judgements]")
+        try:
+            sys.exit(cache(load_config(rest[2] if len(rest) > 2 else "atlas.toml"), rest[0], rest[1], **options))
+        except ConfigError as e:
+            sys.exit(f"configuration: {e}")
+        except (CacheError, WorkspaceLocked) as e:
+            sys.exit(f"atlas cache {rest[0]}: {e}")
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")
     rest, options = _options(action, rest)

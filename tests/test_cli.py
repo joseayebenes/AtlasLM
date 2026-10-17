@@ -439,3 +439,113 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_cache_export_and_import_make_a_new_workspace_ask_nothing(toml, samples, docs_samples, tmp_path, fake,
+                                                                   fake_stats, capsys):
+    """run -> export -> a new workspace -> import -> run: no request to the chat model nor
+    to the embeddings. Import adds what is missing and never replaces anything."""
+    import shutil
+    import sqlite3
+    import pytest
+    from atlas.cli import main
+    pytest.importorskip("markitdown")
+    pytest.importorskip("tree_sitter_ada")
+    url, _ = fake
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    for f in ("spec_with_bookmarks.pdf", "hmi_manual.md"):
+        shutil.copy(docs_samples / f, docs / f)
+    extra = f'''
+[llm]
+base_url = "{url}"
+model = "fake"
+[embeddings]
+model = "embeddinggemma"
+batch = 8
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code", "docs", "graph", "index"]
+[[sources.docs]]
+name = "manuals"
+paths = ["{docs.as_posix()}"]
+lang = "Spanish"
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}"]
+languages = ["ada"]
+'''
+    first = toml(extra)
+    second = tmp_path / "second.toml"
+    second.write_text(first.read_text().replace(f"{(tmp_path / 'ws').as_posix()}\"",
+                                                f"{(tmp_path / 'ws2').as_posix()}\""))
+    a, b = load_config(first), load_config(second)
+    assert b.workspace == tmp_path / "ws2"
+
+    def cli(*args) -> tuple[int, str, str]:
+        with pytest.raises(SystemExit) as e:
+            main(list(args))
+        out = capsys.readouterr()
+        return e.value.code, out.out, out.err
+
+    assert run(a) == 0
+    capsys.readouterr()
+    computed = fake_stats()
+    assert computed["chat"] > 0 and computed["embeddings"] > 0
+    # a workspace of atlas 0.2 did not record the model of each vector: export finds it
+    # from the texts of the index; a vector of a text no longer indexed stays out
+    db = sqlite3.connect(a.workspace / "atlas.db")
+    with db:
+        vectors = db.execute("SELECT COUNT(*) FROM embed_cache").fetchone()[0]
+        db.execute("UPDATE embed_cache SET model = NULL")
+        db.execute("INSERT INTO embed_cache VALUES (?, ?, NULL)", ("f" * 32, b"\0" * 16))
+    db.close()
+    (a.workspace / "reports").mkdir(exist_ok=True)
+    (a.workspace / "reports" / ".verify_cache.json").write_text(json.dumps({"k1": {"verdict": "ok"},
+                                                                            "k2": {"verdict": "ok"}}))
+    file = tmp_path / "share" / "tms-cache.sqlite"
+    code, out, err = cli("cache", "export", str(file), str(first), "--with-judgements")
+    assert code == 0, err
+    analyses = len(list((a.workspace / "docs" / ".cache").glob("*.json")))
+    assert analyses > 0
+    assert f"{vectors} vectors (embeddinggemma), {analyses} analyses of sections (fake), 2 judgements" in out
+    assert "1 cached vectors of an unknown model" in err
+
+    # the new workspace: one judgement of its own, which import does not replace
+    (b.workspace / "reports").mkdir(parents=True)
+    (b.workspace / "reports" / ".verify_cache.json").write_text(json.dumps({"k1": {"verdict": "mine"}}))
+    code, out, err = cli("cache", "import", str(file), str(second))
+    assert code == 0, err
+    assert f"vectors (embeddinggemma): {vectors} new, 0 already here" in out
+    assert f"analyses of sections (fake): {analyses} new, 0 already here" in out
+    assert "judgements .verify_cache.json: 1 new, 1 already here" in out
+    assert json.loads((b.workspace / "reports" / ".verify_cache.json").read_text()) == \
+        {"k1": {"verdict": "mine"}, "k2": {"verdict": "ok"}}
+
+    before = fake_stats()
+    assert run(b) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"]["docs.process"] == 2 and rep["processed"]["index.documents"] == 2
+    assert rep["processed"]["index.requirements"] >= 1 and rep["processed"]["index.code"] >= 1
+    after = fake_stats()
+    assert (after["chat"], after["embeddings"]) == (before["chat"], before["embeddings"])
+
+    code, out, _ = cli("cache", "import", str(file), str(second))      # again: nothing new
+    assert code == 0 and f"{vectors} already here" in out and f"0 new, {analyses} already here" in out
+
+    # another embeddings model: refused, its keys would never match
+    other = tmp_path / "other.toml"
+    other.write_text(second.read_text().replace('model = "embeddinggemma"', 'model = "nomic-embed-text"'))
+    code, _, _ = cli("cache", "import", str(file), str(other))
+    assert "embeddings model 'embeddinggemma'" in code and "uses 'nomic-embed-text'" in code
+    for args, error in ((["cache", "import", str(a.workspace / "atlas.db"), str(second)], "is not a cache exported"),
+                        (["cache", "import", str(tmp_path / "none.sqlite"), str(second)], "does not exist"),
+                        (["cache", "import", str(file), str(second), "--with-judgements"], "an option of export"),
+                        (["cache", "list", str(file)], "usage: atlas cache export|import")):
+        code, _, _ = cli(*args)
+        assert error in str(code)
+    empty = tmp_path / "empty.toml"
+    empty.write_text(second.read_text().replace("/ws2\"", "/ws3\""))
+    code, _, _ = cli("cache", "export", str(file), str(empty))
+    assert "has no atlas.db" in str(code) and not (tmp_path / "ws3" / "atlas.db").exists()

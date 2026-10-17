@@ -11,7 +11,7 @@ import numpy as np
 
 from atlas.llm.connection import ServiceConfig, create_client
 
-__all__ = ["EMBED_PREFIXES", "Embedder"]
+__all__ = ["EMBED_PREFIXES", "Embedder", "document_key", "prefixes"]
 
 # (query prefix, document prefix) by model name
 EMBED_PREFIXES = {
@@ -21,13 +21,24 @@ EMBED_PREFIXES = {
 }
 
 
+def prefixes(model: str) -> tuple[str, str]:
+    """(query prefix, document prefix) of an embeddings model; ("", "") if it needs none."""
+    return next((v for k, v in EMBED_PREFIXES.items() if k in model.lower()), ("", ""))
+
+
+def document_key(model: str, text: str) -> str:
+    """Cache key of a document vector: a hash of the model, its document prefix and the
+    text. The model is inside the hash, so a key of one model never matches a text
+    embedded with another (and cannot be read back from the key)."""
+    return hashlib.sha256(f"{model}\x00{prefixes(model)[1]}{text}".encode("utf-8")).hexdigest()[:32]
+
+
 class Embedder:
     def __init__(self, cfg: ServiceConfig):
         self.client, self.proxy = create_client(cfg)
         self.model = cfg.model
         self.batch = cfg.batch
-        self.q_prefix, self.d_prefix = next(
-            (v for k, v in EMBED_PREFIXES.items() if k in self.model.lower()), ("", ""))
+        self.q_prefix, self.d_prefix = prefixes(self.model)
 
     def _embed(self, texts: list[str]) -> np.ndarray:
         vecs = []
@@ -39,8 +50,8 @@ class Embedder:
         return m / np.where(norms == 0, 1, norms)
 
     def key(self, text: str) -> str:
-        """Cache key of a document vector: it depends on the model, the prefix and the text."""
-        return hashlib.sha256(f"{self.model}\x00{self.d_prefix}{text}".encode("utf-8")).hexdigest()[:32]
+        """Cache key of a document vector: see document_key."""
+        return document_key(self.model, text)
 
     def documents(self, texts: list[str]) -> np.ndarray:
         return self._embed([self.d_prefix + t for t in texts])

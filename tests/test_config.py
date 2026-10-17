@@ -65,6 +65,18 @@ def test_search_settings(toml):
     assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
 
 
+def test_link_semantics(toml):
+    conv = "link_semantics = "               # the extra of toml() goes inside [sources.doors.convention]
+    cfg = load_config(toml(conv + '{ derives = ["satisfies"], verifies = ["verifies"], ignore = ["references"] }'))
+    assert cfg["sources"]["doors"]["convention"]["link_semantics"]["derives"] == ["satisfies"]
+    with pytest.raises(ConfigError, match="unknown key 'tests'"):
+        load_config(toml(conv + '{ tests = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="'verifies' is in derives and in verifies"):
+        load_config(toml(conv + '{ derives = ["verifies"], verifies = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="must be a list"):
+        load_config(toml(conv + '{ derives = "satisfies" }'))
+
+
 def test_wrong_type(toml):
     with pytest.raises(ConfigError, match="integer"):
         load_config(toml('[pipeline]\nworkers = "many"'))

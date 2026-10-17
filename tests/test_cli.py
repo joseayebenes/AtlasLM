@@ -303,7 +303,7 @@ communities = true
     assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
     assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
-                                                  "documents"
+                                                  "procedures,documents"
     assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
     assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
     assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()

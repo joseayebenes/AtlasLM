@@ -6,7 +6,9 @@ build_doors_graph (origin "doors"): the requirements of every module read by atl
   Edges: contains (module -> its top-level objects, parent -> child) and one edge per link,
   source -> target, with the type of the link as kind (satisfies, refines, references...).
   If two links join the same pair, the first one read stays: the link of the source before
-  the reference found in the text.
+  the reference found in the text. What each type of link means for the queries
+  ([sources.doors.convention] link_semantics: derives, verifies or ignore) goes in the
+  statistics of the build, so that every reader of the graph takes the same convention.
 
 build_docs_graph (origin "docs"): the documents processed by atlas.docs.
   Nodes: document ("doc:hmi_manual.md"), section ("doc:hmi_manual.md#003": title, path,
@@ -33,14 +35,32 @@ from atlas.code.common import REQ_ID_SHAPE
 from atlas.doors import normalize_id
 from atlas.plugins import CodeUnit
 
-__all__ = ["build_docs_graph", "build_doors_graph", "code_names", "document_names"]
+__all__ = ["build_docs_graph", "build_doors_graph", "code_names", "document_names", "graph_convention"]
 
 OBJECT_KINDS = ("heading", "information")     # the DOORS objects that are not requirements
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*")
 
 
-def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tuple[nx.DiGraph, dict]:
-    """(graph, statistics) from the rows of Store.requirements() and Store.links()."""
+def graph_convention(convention: dict | None = None) -> dict:
+    """What the queries of the graph take from [sources.doors.convention]:
+    link_semantics, the types of link that derive a requirement from another (satisfies,
+    refines...; empty: every type that is neither in verifies nor in ignore), those of a
+    test procedure that verifies a requirement, and those that are only references (by
+    default "references" and the inline_reference_type). Idempotent: it takes its own
+    result."""
+    conv = convention or {}
+    given = conv.get("link_semantics") or {}
+    inline = conv.get("inline_reference_type") or "references"
+    semantics = {"derives": list(given.get("derives") or []),
+                 "verifies": list(given.get("verifies", ["verifies"])),
+                 "ignore": list(given.get("ignore", sorted({"references", inline})))}
+    return {"link_semantics": semantics}
+
+
+def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict],
+                      convention: dict | None = None) -> tuple[nx.DiGraph, dict]:
+    """(graph, statistics) from the rows of Store.requirements() and Store.links(); the
+    statistics carry graph_convention(convention)."""
     G = nx.DiGraph()
     reqs = list(requirements)
     for r in reqs:
@@ -77,7 +97,8 @@ def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tu
                "modules": sum(1 for _, d in G.nodes(data=True) if d["kind"] == "module"),
                "requirements": count("requirement"), "headings": count("heading"),
                "information": count("information"), "linked_outside": missing,
-               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items()))}
+               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items())),
+               **graph_convention(convention)}
 
 
 def code_names(units: Iterable[CodeUnit | dict]) -> dict[str, str]:

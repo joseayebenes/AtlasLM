@@ -195,6 +195,7 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
 | `inline_reference_type` | texto | `"references"` | tipo de esos enlaces |
+| `link_semantics` | tabla | `{ derives = [], verifies = ["verifies"], ignore = ["references"] }` | qué es cada tipo de enlace para el grafo. `derives`: el origen deriva del destino (un SRS que satisface un SSS); cuenta en `derived` de la matriz, en el código y las pruebas «a través de» y en `impact`; vacía, todos los tipos que no están en las otras dos. `verifies`: el origen es un procedimiento de prueba del destino (un STP); sale en `procedures`, nunca entre las pruebas del código. `ignore`: solo referencias, que se ven en `trace` y no cuentan. Por defecto `ignore` lleva también el `inline_reference_type`. Un tipo no puede estar en dos listas. Cambiarla reconstruye la parte de DOORS del grafo |
 | `id_column`, `text_column`, `module_column`, `parent_column` | texto | `id`, `text`, `module`, `""` | columnas de `requirements_query`; `parent_column` da la jerarquía |
 | `attribute_columns` | lista | `[]` | columnas que pasan como atributos |
 | `link_columns` | tabla | `{ source = "source_id", target = "target_id", type = "link_type" }` | columnas de `links_query` |

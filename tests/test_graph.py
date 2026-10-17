@@ -232,7 +232,8 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     G = g.G
     assert stats["doors"] == {"nodes": 10, "edges": 11, "modules": 2, "requirements": 6, "headings": 1,
                               "information": 0, "linked_outside": 1, "duplicate_links": 1,
-                              "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3}}
+                              "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3},
+                              "link_semantics": {"derives": [], "verifies": ["verifies"], "ignore": ["references"]}}
     assert (stats["docs"]["sections"], stats["docs"]["requirements"], stats["docs"]["mentions"]) == (2, 2, 3)
     assert G.nodes["SSS-0900"]["kind"] == "heading" and ("SSS-0900", "SSS-0005") in _edges(G, "contains")
     assert ("module:SRS", "SRS-0004") in _edges(G, "contains") and G.nodes["SRS-0004"]["outline"] == "2"
@@ -306,9 +307,10 @@ def test_matrix_and_gaps(unified):
     assert [r["id"] for r in m["rows"]] == ["SRS-0001", "SRS-0002", "SRS-0003", "SRS-0004"]     # DOORS order
     assert m["rows"][3] == {"id": "SRS-0004", "text": "The TMF shall delete a track within 320 ms.",
                             "verification": "Test", "derived": [], "code": ["tracks.delete_track"],
-                            "tests": ["test_tracks.test_tracks"], "covering_tests": [],
+                            "tests": ["test_tracks.test_tracks"], "covering_tests": [], "procedures": [],
                             "documents": ["spec.pdf §1 Tracks"]}
-    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
+    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_procedures": 0,
+                            "with_documents": 1}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
     m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
     assert [(r["id"], r["derived"], r["code"]) for r in m["rows"]] == [("SSS-0005", ["SRS-0004"], []),
@@ -329,6 +331,53 @@ def test_matrix_and_gaps(unified):
     assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
     assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
     assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
+
+
+STP = [{"id": "STP-0101", "module": "STP", "text": "1. Delete track 1. 2. Check that it is not listed.",
+        "parent": None, "attributes": {"outline": "1"}}]
+STP_LINKS = [{"source": "STP-0101", "target": "SRS-0004", "type": "verifies"}]
+
+
+def test_test_procedures_are_neither_tests_nor_derived(unified):
+    """A test procedure of DOORS (STP -verifies-> SRS) is not a test of the code, nor a
+    requirement derived from the SRS: it has its own column, summary and gap."""
+    from atlas.graph import build_doors_graph
+    store, _, _ = unified
+    store.replace("doors", *build_doors_graph(DOORS + STP, LINKS + STP_LINKS))
+    g = KnowledgeGraph.open(store.path)
+    t = g.trace("SRS-0004")
+    assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    assert t["procedures"] == [{"id": "STP-0101", "type": "verifies",
+                                "text": "1. Delete track 1. 2. Check that it is not listed."}]
+    assert t["links_in"] == [{"id": "STP-0101", "type": "verifies"}]          # the link is still shown
+    m = g.matrix("SRS")
+    row = m["rows"][3]
+    assert (row["id"], row["derived"], row["tests"], row["procedures"]) == \
+        ("SRS-0004", [], ["test_tracks.test_tracks"], ["STP-0101"])
+    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_procedures": 1,
+                            "with_documents": 1}
+    assert m["gaps"]["without_test_procedure"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+    sss = g.matrix("SSS")                                     # verified through the SRS that satisfies it
+    assert [(r["id"], r["derived"], r["procedures"]) for r in sss["rows"]] == [("SSS-0005", ["SRS-0004"], []),
+                                                                              ("SSS-0006", ["SRS-0002"], [])]
+    assert sss["gaps"]["without_test_procedure"]["items"] == ["SSS-0006"]
+    i = g.impact("SRS-0004")
+    assert i["requirements"] == [] and i["procedures"] == ["STP-0101"]       # not a derived requirement
+    assert i["tests"] == ["test_tracks.test_tracks"]
+    i = g.impact("SSS-0005")
+    assert [r["id"] for r in i["requirements"]] == ["SRS-0004"] and i["procedures"] == ["STP-0101"]
+    i = g.impact("Delete_Track")
+    assert "STP-0101" not in [r["id"] for r in i["requirements"]] and i["procedures"] == ["STP-0101"]
+    gaps = g.gaps("SRS")
+    assert gaps["requirements_without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+    assert gaps["requirements_without_test_procedure"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+
+    # link_semantics: with no verifies type the procedure derives, as before; outside derives, it is ignored
+    old = KnowledgeGraph(g.G, convention={"link_semantics": {"verifies": []}})
+    assert old.matrix("SRS")["rows"][3]["derived"] == ["STP-0101"] and old.trace("SRS-0004")["procedures"] == []
+    only = KnowledgeGraph(g.G, convention={"link_semantics": {"derives": ["satisfies"], "verifies": []}})
+    assert only.matrix("SRS")["rows"][3]["derived"] == [] and only.impact("SRS-0004")["requirements"] == []
+    assert only.matrix("SSS")["rows"][0]["derived"] == ["SRS-0004"]
 
 
 def test_neighbors_and_communities(unified, tmp_path):

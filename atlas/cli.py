@@ -445,13 +445,15 @@ def graph_step(ctx) -> Step:
     from atlas.doors import normalize_id
     from atlas.graph import (GraphStore, build_code_graph, build_docs_graph, build_doors_graph, code_names,
                              document_names, export_graph, find_communities)
+    from atlas.graph.sources import graph_convention
     exports = ctx.cfg["graph"]["exports"]
     unknown = sorted(set(exports) - set(GRAPH_EXPORTS))
     if unknown:
         raise ConfigError(f"[graph] unknown exports {unknown} (valid: {', '.join(GRAPH_EXPORTS)})")
     folder = ctx.cfg.workspace / "graph"
     test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
-    id_normalize = ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {}).get("id_normalize", "upper")
+    convention = (ctx.cfg["sources"].get("doors") or {}).get("convention") or {}
+    id_normalize = convention.get("id_normalize", "upper")
     normalize = lambda rid: normalize_id(rid, id_normalize)
     settings = f"{ctx.cfg.fingerprint('graph')}|{test_patterns}|{id_normalize}|{GRAPH_VERSION}"
 
@@ -471,7 +473,7 @@ def graph_step(ctx) -> Step:
         if unit == "code":
             data = ctx.store.code_units()
         elif unit == "doors":
-            data = [ctx.store.requirements(), ctx.store.links()]
+            data = [ctx.store.requirements(), ctx.store.links(), graph_convention(convention)]
         else:
             docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
             data = [[d["unit"], d["path"], sha256_file(Path(d["out_dir"]) / "structure.json")] for d in docs]
@@ -488,7 +490,7 @@ def graph_step(ctx) -> Step:
                 stats["communities"] = len(set(groups.values()))
             return G, stats
         if unit == "doors":
-            return build_doors_graph(ctx.store.requirements(), ctx.store.links())
+            return build_doors_graph(ctx.store.requirements(), ctx.store.links(), convention)
         return build_docs_graph(documents(ctx), code_names(ctx.store.code_units()), normalize)
 
     def export(store: GraphStore) -> None:
@@ -714,7 +716,8 @@ def matrix(cfg: Config, module: str) -> int:
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
-    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
+    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "procedures",
+               "documents"]
     cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
     prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
     prefix.parent.mkdir(parents=True, exist_ok=True)
@@ -725,14 +728,16 @@ def matrix(cfg: Config, module: str) -> int:
     sm, gaps = res["summary"], res["gaps"]
     md = [f"# Traceability matrix: {res['module']}", "",
           f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
-          f"{sm['with_documents']} in documents.", "",
+          f"{sm['with_procedures']} with test procedures, {sm['with_documents']} in documents.", "",
           "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
     md += ["| " + " | ".join(cell(row.get(c, "")).replace("|", "\\|") for c in columns) + " |" for row in res["rows"]]
-    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
+    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests"),
+                       ("without_test_procedure", "Without a test procedure")):
         md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
     prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
     print(md[2])
-    for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
+    for key, title in (("without_code", "without code"), ("without_tests", "without tests"),
+                       ("without_test_procedure", "without a test procedure")):
         items = gaps[key]["items"]
         print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
     print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")

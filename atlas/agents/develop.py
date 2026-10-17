@@ -21,6 +21,9 @@ The plan is a TOML file:
     task_cost = 0.0                          # ... cost, as the model server reports it
     require_tags = false                     # a kept task whose requirements no changed subprogram cites goes back once
     requirement_chars = 1200                 # characters of each requirement in front of a task
+    reviewer = "reviewer"                    # optional: an agent that reads the diff of a task that compiles
+    review_fixes = 1                         # turns that the verdict of the reviewer goes back to the agent (0: report)
+    stray = "report"                         # or "delete": the new files of a task that are tests outside tests/
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -71,6 +74,13 @@ writes how to do it, and the task goes to the agent with that plan. The architec
 Aider: the model does not have to think out the change and get the tools right in the same
 turns (with the same model in both roles, GPT-4o-mini went from 55.6 to 60.2 %).
 
+With a reviewer (off by default), a task that compiles and breaks nothing goes to that agent,
+read-only whatever its tools, with the task and the diff of the change: it answers in JSON, ok or
+the issues with their lines (what neither the compiler nor the tests see: a swallowed exception,
+dead branches, changes outside the task). The issues go back to the agent once (`review_fixes`);
+a fix that breaks something is undone. The rules of [sources.code] rules come first, without a
+model.
+
 With attempts > 1, each task (and its retry) and each round go to that many runs at once, each
 in its own copy of the working folder, the folder of atlas.toml (<workspace>/attempts/<n>: the
 code roots, the scripts of the project, its own build folder), with its build fixes and the
@@ -117,6 +127,13 @@ that is not there stops the plan before it starts) gets three things without a m
   (`untagged`). With require_tags, the task goes back to the agent once to tag them; a turn that
   breaks something is undone alone. The traceability does not depend on an instruction.
 
+The files a kept task creates are listed in its step (`created`, "New files" in the report): in
+the fourth run, the agent left a test of its own in src, which went into check, into every copy
+of `attempts` and into the next atlas run. With stray = "delete", the new files of the run of a
+task that match [sources.code] test_patterns, and not its protected ones, are deleted before the
+task is judged (`deleted`): a test of the agent outside tests/. Only those: a new package of the
+code is never deleted. `protected` already keeps the agent out of the tests themselves.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 """
@@ -139,6 +156,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from atlas.agents.hints import shape as _shape, write_hints_draft
 from atlas.config import Config, ConfigError
 
 __all__ = ["Plan", "develop", "load_plan"]
@@ -155,6 +173,7 @@ REQUIREMENT_CHARS = 1200   # characters of each requirement in front of a task
 SHOWN_SECTIONS = 2         # sections that state a requirement, in front of a task
 SHOWN_CODE = 5             # code elements that cite a requirement, in front of a task
 SIMILAR = 2                # requirements like it already implemented, when atlas has similar_requirements
+STRAY = ("report", "delete")   # what to do with the tests an agent leaves among the code
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -198,6 +217,27 @@ TAGS_PROMPT = """No subprogram you changed cites {missing} in its `{tag}` commen
 `{tag}` comment right before each subprogram that implements them, in its spec when it has one \
 (`-- {tag} {first}` in Ada, `# {tag} {first}` in Python), without changing what the code does, and check \
 the files again with check_code."""
+REVIEW_PROMPT = """Review a change to the code of the project. The task it does:
+
+{task}
+
+The change:
+
+{diff}
+It compiles and no test got worse. Look for what the compiler and the tests do not see: an exception \
+that is swallowed (when others => null, except: pass), a branch that can never run, code or files left \
+behind, changes the task does not ask for, a part of the task that is not done. You can read the code; you \
+cannot change it. Answer only with JSON, {{"verdict": "ok"}} when there is nothing to fix, or {{"verdict": \
+"issues", "issues": [{{"file": "src/x.adb", "line": 12, "issue": "what is wrong and what to do"}}]}}."""
+REVIEW_FIX_PROMPT = """A colleague reviewed the change you made for this task:
+
+{task}
+
+and found these issues:
+{issues}
+
+Fix them, without breaking what works and without changing what the task does not ask for. Check every \
+file you change with check_code."""
 RETRY = """
 
 A first attempt at this task was undone, because it broke what worked:
@@ -226,6 +266,9 @@ class Plan:
     task_cost: float = 0.0
     require_tags: bool = False
     requirement_chars: int = REQUIREMENT_CHARS
+    reviewer: str = ""
+    review_fixes: int = 1
+    stray: str = "report"
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -260,6 +303,8 @@ def load_plan(path: str | Path) -> Plan:
         value = data.get(key, 0)
         if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
             raise ConfigError(f"plan {path}: {key} is a number, 0 or more (0: no limit)")
+    if data.get("stray", "report") not in STRAY:
+        raise ConfigError(f"plan {path}: stray is {' or '.join(map(repr, STRAY))}, not {data['stray']!r}")
     plan = Plan(name=path.stem, tasks=tasks, **data)
     plan.fix_agent = plan.fix_agent or plan.agent
     if not plan.tests:
@@ -345,13 +390,14 @@ class _Workspace:
         self.files = _Files(self.code)
         self.budget = _Budget(dev.plan)      # of the attempt that runs here now
 
-    def context(self):
-        """What the tools of an agent receive: their file and build tools on this folder."""
+    def context(self, read_only: bool = False):
+        """What the tools of an agent receive: their file and build tools on this folder
+        (`read_only`: the file tools change nothing, for the reviewer)."""
         from atlas.agents.runtime import context_for
         from atlas.code import BuildTools, CodeTools
         context = context_for(self.dev.cfg)
-        if self.base is not None:
-            context._code_tools = CodeTools.from_config(self.dev.cfg, base=self.base)
+        if self.base is not None or read_only:
+            context._code_tools = CodeTools.from_config(self.dev.cfg, read_only=read_only, base=self.base)
             context._build_tools = BuildTools.from_config(self.dev.cfg, context._code_tools, base=self.base)
             context._build_tools.hook()
         return context
@@ -381,8 +427,9 @@ class Developer:
         self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
         self.tests = _files(plan.tests, self.code.base)
         from atlas.agents.runtime import definition       # each agent exists, or a ConfigError now and not after a task
-        if plan.planner:
-            definition(plan.planner, cfg)
+        for helper in (plan.planner, plan.reviewer):
+            if helper:
+                definition(helper, cfg)
         compiler = bool(self.build.check_command or self.build.check_commands)
         for key, name, needs in (("agent", plan.agent, ["check_code"] * compiler),
                                  ("fix_agent", plan.fix_agent, ["check_code"] * compiler + ["run_test"])):
@@ -586,12 +633,13 @@ class Developer:
         return out
 
     # --- the agent -------------------------------------------------------------------------
-    def run(self, agent: str, prompt: str, kind: str, task: str, ws: _Workspace | None = None) -> dict:
+    def run(self, agent: str, prompt: str, kind: str, task: str, ws: _Workspace | None = None,
+            read_only: bool = False) -> dict:
         """A run of the agent, started again with a fresh conversation, at most `restarts`
         times, when it stops before finishing (see the module): the step of the last one."""
         ws = ws or self.main
         before = ws.files.snapshot() if self.plan.restarts else {}
-        step = self._run_once(agent, prompt, kind, task, ws)
+        step = self._run_once(agent, prompt, kind, task, ws, read_only)
         for _ in range(self.plan.restarts):
             if not step.get("stopped") or step.get("error") or ws.budget.spent():
                 break
@@ -602,7 +650,7 @@ class Developer:
             why = " without changing the code in its last steps" if step.get("stalled") else ""
             step = self._run_once(agent, RESTART.format(prompt=prompt, calls=step["calls"], why=why,
                                                         changes=changes or "(nothing)", check=check),
-                                  f"{kind}-restart", task, ws)
+                                  f"{kind}-restart", task, ws, read_only)
         return step
 
     def _changes(self, before: dict, ws: _Workspace) -> tuple[str, str]:
@@ -626,7 +674,8 @@ class Developer:
             diff = diff[:MAX_CHANGES] + "\n… (more changes: read the files)"
         return diff, ("\n".join(checks) + "\n") if checks else ""
 
-    def _run_once(self, agent: str, prompt: str, kind: str, task: str, ws: _Workspace) -> dict:
+    def _run_once(self, agent: str, prompt: str, kind: str, task: str, ws: _Workspace,
+                  read_only: bool = False) -> dict:
         from atlas.agents.runtime import run_agent
         t0 = time.time()
         step = {"n": len(self.report["steps"]) + 1, "kind": kind, "task": task, "agent": agent,
@@ -634,7 +683,7 @@ class Developer:
         res: dict = {"calls": []}
         record: list = []
         try:
-            res = run_agent(agent, prompt, self.cfg, ws.context(), client=self.client, record=record)
+            res = run_agent(agent, prompt, self.cfg, ws.context(read_only), client=self.client, record=record)
             step.update({"calls": len(res["calls"]), "stopped": res["stopped"], "tokens": res.get("tokens"),
                          **({"stalled": True} if res.get("stalled") else {}),
                          **({"cost": res["cost"]} if "cost" in res else {}), "answer": res["answer"][:MAX_ANSWER]})
@@ -706,17 +755,55 @@ class Developer:
             self._done(fix, after)
         return after
 
+    def reviewed(self, agent: str, prompt: str, task: str, snapshot: dict, before: dict, after: dict,
+                 ws: _Workspace) -> dict:
+        """The review of a task that compiles and breaks nothing (see the module): the reviewer
+        reads the task and the diff since `snapshot`; its issues go back to the agent at most
+        review_fixes times (0: they are only reported). The state after them; a fix that breaks
+        something is undone."""
+        for turn in range(max(1, self.plan.review_fixes)):
+            diff, _ = self._changes(snapshot, ws)
+            if not diff.strip():
+                break
+            review = self.run(self.plan.reviewer, REVIEW_PROMPT.format(task=prompt, diff=diff), "review", task, ws,
+                              read_only=True)
+            verdict = _verdict(self._answers.get(review["n"], ""))
+            review["outcome"] = "no verdict" if verdict is None else "issues" if verdict else "ok"
+            if verdict:
+                review["issues"] = verdict
+            self._done(review, after)
+            if not verdict or turn >= self.plan.review_fixes:
+                break
+            fix_snapshot = ws.files.snapshot()
+            issues = "\n".join(f"- {i.get('file', '?')}" + (f", line {i['line']}" if i.get("line") else "")
+                               + f": {i.get('issue', '')}" for i in verdict)
+            fix = self.run(agent, REVIEW_FIX_PROMPT.format(task=prompt, issues=issues), "review-fix", task, ws)
+            fixed = self.compiled(agent, task, after, self.evaluate(ws), ws)
+            broken = self.broken(after, fixed)
+            if broken:
+                fix.update(outcome="undone", undone=ws.files.restore(fix_snapshot), broke=broken)
+                self._done(fix, after)
+                break
+            after = fixed
+            fix["outcome"] = "kept"
+            self._done(fix, after)
+        return after
+
     def attempt(self, agent: str, prompt: str, kind: str, task: str, before: dict,
                 advances: list[str] = (), ws: _Workspace | None = None) -> tuple[dict, dict, list]:
-        """One change of the agent with its build fixes and the turns that make the tests of
-        `advances` get further: (step, state after, what it broke). What breaks something is
-        undone, and the state is `before` again. No more runs start once its budget is spent
-        (task_calls, task_seconds, task_cost)."""
+        """One change of the agent with its build fixes, the turns that make the tests of
+        `advances` get further and, with a reviewer, its review: (step, state after, what it
+        broke). What breaks something is undone, and the state is `before` again. No more runs
+        start once its budget is spent (task_calls, task_seconds, task_cost)."""
         ws = ws or self.main
         ws.budget = _Budget(self.plan)
         snapshot, t0, since = ws.files.snapshot(), time.time(), len(self.report["steps"])
         try:
             step = self.run(agent, prompt, kind, task, ws)
+            if self.plan.stray == "delete":
+                deleted = self.strays(snapshot, ws)
+                if deleted:
+                    step["deleted"] = deleted
             after = self.compiled(agent, task, before, self.evaluate(ws), ws)
             broken = self.broken(before, after)
             if not broken and advances:
@@ -724,10 +811,17 @@ class Developer:
                 stuck = self.not_advanced(list(advances), before, after)
                 if stuck:
                     step["not_advanced"] = stuck
+            compiles = not (set(after["check"]) - set(before["check"]))
+            if not broken and compiles and self.plan.reviewer and kind in ("task", "task-retry"):
+                after = self.reviewed(agent, prompt, task, snapshot, before, after, ws)
             if broken:
                 step["undone"] = ws.files.restore(snapshot)
                 step["broke"] = broken
                 after = before
+            else:
+                created = sorted(ws.code._show(p) for p in ws.files.snapshot() if p not in snapshot)
+                if created:
+                    step["created"] = created
         except BaseException as e:               # Ctrl+C: nothing is left half done
             self._interrupted(agent, kind, task, ws, snapshot, t0, since, e)
             raise
@@ -757,6 +851,19 @@ class Developer:
         self.save()
         for s in steps:
             self.on_step(s)
+
+    def strays(self, snapshot: dict, ws: _Workspace) -> list[str]:
+        """Deletes the files created since `snapshot` that are tests ([sources.code]
+        test_patterns) and not protected, and returns them: a test of the agent among the code.
+        Files only, never a folder, nor a new file that is not a test."""
+        patterns = (self.cfg["sources"].get("code") or {}).get("test_patterns", [])
+        deleted = []
+        for p in sorted(set(ws.files.snapshot()) - set(snapshot)):
+            shown = ws.code._show(p)
+            if _is_test(shown, patterns) and not ws.code.protected_file(p):
+                p.unlink()
+                deleted.append(shown)
+        return deleted
 
     def attempts(self, agent: str, prompt: str, kind: str, task: str, before: dict,
                  advances: list[str] = ()) -> tuple[dict, dict, list]:
@@ -993,6 +1100,7 @@ class Developer:
             "check_errors": sorted(state["check"]),
             "errors": sum(1 for s in self.report["steps"] if s.get("error"))}
         self.report["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.hints_to_write()
         self.save()
         return self.report
 
@@ -1044,6 +1152,19 @@ class Developer:
         with open(self.path / "all.patch", "a", encoding="utf-8") as all_patches:
             all_patches.write(text)
         step["patch"] = f"{self.path.name}/{file}"
+
+    def hints_to_write(self) -> None:
+        """The drafts of hints of the errors without one (atlas/agents/hints.py), in
+        reports/hints-<plan>.toml and, short, in the report: never used as they are."""
+        calls = Path(f"{self.path}.calls.jsonl")
+        if not calls.is_file():
+            return
+        path, drafts = write_hints_draft(calls)
+        if drafts:
+            self.report["hints_to_write"] = {
+                "file": path.name, "errors": [{"count": d["count"], "message": d["message"], "match": d["match"],
+                                               **({"fixed_in_run": d["fix"]["run"]} if d["fix"] else {})}
+                                              for d in drafts]}
 
     # --- the report ------------------------------------------------------------------------
     def save(self) -> None:
@@ -1097,9 +1218,27 @@ def _changed_lines(old: bytes, new: bytes) -> set[int]:
     return out
 
 
-def _shape(message: str) -> str:
-    """A message of the compiler without its names and numbers: the same error in other places."""
-    return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
+def _is_test(file: str, patterns: list[str]) -> bool:
+    """Whether a file matches one of [sources.code] test_patterns ("**/tests/**"), as the graph says."""
+    return any(fnmatch.fnmatch(file, p) or fnmatch.fnmatch("/" + file, p) for p in patterns)
+
+
+def _verdict(answer: str) -> list[dict] | None:
+    """The issues of the answer of a reviewer ([] when it says ok), or None when the answer has
+    no verdict in JSON. An issue is {file, line, issue}; a plain text is taken as the issue."""
+    start, end = answer.find("{"), answer.rfind("}")
+    if start < 0 or end < start:
+        return None
+    try:
+        data = json.loads(answer[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict) or data.get("verdict") not in ("ok", "issues"):
+        return None
+    issues = data.get("issues") or []
+    if data["verdict"] == "ok" or not isinstance(issues, list):
+        return []
+    return [i if isinstance(i, dict) else {"issue": str(i)} for i in issues if i]
 
 
 def _cited(result: dict) -> str:
@@ -1181,6 +1320,12 @@ def markdown(report: dict) -> str:
     if behind:
         out += ["", "## Did not advance", "", "Kept, but these tests did not get further with them:", ""]
         out += [f"- {s['n']} {s['task']}: {', '.join(s['not_advanced'])}" for s in behind]
+    reviews = [s for s in report["steps"] if s.get("issues")]
+    if reviews:
+        out += ["", "## Review", "", "What the reviewer found in tasks that compiled and broke nothing:", ""]
+        out += [f"- {s['n']} {s['task']}: " + "; ".join(
+            f"{i.get('file', '?')}" + (f":{i['line']}" if i.get("line") else "") + f" {i.get('issue', '')}"
+            for i in s["issues"])[:400] for s in reviews]
     person = report.get("for_a_person") or {}
     if person:
         out += ["", "## For a person", "", "The agent made no progress on these tests:", ""]
@@ -1195,6 +1340,20 @@ def markdown(report: dict) -> str:
                 "can get one in a file of [sources.code] hints.", "", "| times | message | hint |", "|---|---|---|"]
         out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {'yes' if e['hint'] else '**no**'} |"
                 for e in errors[:SHOWN_ERRORS]]
+    new = [s for s in report["steps"] if s.get("created") or s.get("deleted")]
+    if new:
+        out += ["", "## New files", "", "The files that kept tasks created, and those deleted as tests of the agent "
+                "among the code (stray = \"delete\"):", ""]
+        out += [f"- {s['n']} {s['task']}: " + "; ".join(
+            part for part in (", ".join(s.get("created", [])), "deleted " + ", ".join(s["deleted"])
+                              if s.get("deleted") else "") if part) for s in new]
+    drafts = report.get("hints_to_write") or {}
+    if drafts.get("errors"):
+        out += ["", "## Hints to write", "", f"The errors that came without a hint, as drafts in {drafts['file']}: "
+                "write the hints worth having there and copy them to a file of [sources.code] hints.", "",
+                "| times | message | fixed in run |", "|---|---|---|"]
+        out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {e.get('fixed_in_run', '')} |"
+                for e in drafts["errors"][:SHOWN_ERRORS]]
     return "\n".join(out) + "\n"
 
 

@@ -17,6 +17,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 | `tools.py` | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` como plugins `tool` |
 | `evaluate.py` | `atlas eval`: preguntas a los agentes, búsquedas y consultas del grafo con respuesta conocida, puntuadas sin modelo |
 | `develop.py` | `atlas develop`: un agente escribe el código encargo a encargo y los tests lo juzgan; lo que rompe algo se deshace |
+| `hints.py` | `draft_hints` y `write_hints_draft`: borradores de pistas para los errores del compilador sin pista de una tanda, con el arreglo de cada uno (`atlas hints`) |
 
 ## Agentes en ficheros Markdown
 
@@ -142,6 +143,9 @@ task_seconds = 0                         # ... segundos
 task_cost = 0.0                          # ... coste, el que dice el servidor del modelo
 require_tags = false                     # un encargo cuyos requisitos no cita nada de lo cambiado vuelve una vez
 requirement_chars = 1200                 # caracteres de cada requisito delante del encargo
+reviewer = "reviewer"                    # opcional: un agente que lee el diff de un encargo que compila
+review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente (0: solo se informa)
+stray = "report"                         # o "delete": los tests que el agente deja entre el código
 
 [[tasks]]
 id = "ping-bye"
@@ -201,13 +205,33 @@ cambios que rompían lo que ya iba.
    una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
-7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+7. Con `reviewer` (apagado por defecto), un encargo que compila y no rompe nada pasa por ese
+   agente con el encargo y el diff del cambio. Solo lee, tenga las herramientas que tenga: las
+   de ficheros le contestan que son de solo lectura. Contesta en JSON, `{"verdict": "ok"}` o
+   `{"verdict": "issues", "issues": [{"file", "line", "issue"}]}`, y los problemas vuelven al
+   agente `review_fixes` veces (una por defecto; con 0 solo se informan); un arreglo que rompe
+   algo se deshace. El
+   informe los lista en «Review». Es para lo que no ven ni el compilador ni los tests (ramas
+   muertas, cambios fuera del encargo); antes van las reglas sin modelo de
+   `[sources.code] rules`. Falta medirlo con un banco de encargos antes de encenderlo por
+   defecto. `examples/agents/reviewer.md` es un ejemplo.
+8. Los ficheros que **crea** un encargo (o una ronda) que se conserva van en su paso
+   (`created`), en la sección «New files» del informe y en la salida de `atlas develop`. En la
+   tanda 4 el agente dejó en `src` un fichero suyo de prueba, que entró en `check`, en cada
+   copia de `attempts` y en el siguiente `atlas run`. Con `stray = "delete"`, antes de juzgar
+   el encargo se borran los ficheros nuevos de su ejecución que casan con
+   `[sources.code] test_patterns` y no con `protected`: un test del agente fuera de `tests/`. Se
+   dicen en `deleted`. Nunca se borra un fichero nuevo que no sea un test, ni una carpeta. No
+   hace falta limitar dónde escribe cada agente: `protected` ya se aplica a los ficheros nuevos.
+9. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. El tiempo de las ejecuciones (`seconds`, sumado) y el de pared de la
    tanda (`wall_seconds`: con los tests, y con los intentos a la vez contados una vez). Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
-   lecciones que añadir antes de la siguiente. Lo que cada encargo y cada ronda dejó en el
+   lecciones que añadir antes de la siguiente, y van como borradores en
+   `reports/hints-<plan>.toml` (ver «Borradores de pistas»). Lo que cada encargo y cada ronda dejó
+   en el
    código es un **parche**, `develop-<plan>/<id>.patch` (`round-<n>.patch`), enlazado desde su
    paso, y todos juntos en `develop-<plan>/all.patch`: para revisarlos y para llevarlos a otra
    copia (`git apply`, o `patch -p1`).
@@ -266,6 +290,34 @@ encargo recibe tres cosas sin modelo:
 Un ID que no está en el grafo, o un workspace sin `atlas run`, es un error de configuración
 antes de empezar, no a mitad de la tanda. El informe guarda en `requirements` los de cada
 encargo y sus `advances` (con `advances_from = "requirements"` cuando salen del grafo).
+
+### Borradores de pistas
+
+Escribir una pista era leer el `.calls.jsonl`: las dos de la prueba corta del 2026-10-15
+fueron un commit a mano. `atlas hints PLAN [atlas.toml]` (y el final de cada `atlas develop`,
+en la sección «Hints to write» del informe) lee las llamadas de la última tanda del plan y
+agrupa por forma (el mensaje sin sus nombres ni sus números) los errores sin pista: los del
+`check` de cada cambio, los de la sintaxis de un cambio rechazado y los de `check_code`. Para
+cada forma busca en la misma ejecución la primera escritura posterior al mismo fichero cuyo
+`check` ya no lo trae (en un error de sintaxis, la primera que se hizo), y guarda su diff.
+Escribe `reports/hints-<plan>.toml`, un `[[hint]]` por forma, las más frecuentes primero:
+
+```toml
+# 3 times, in src/server.adb (runs 4, 7)
+# message: "Get_Line" not declared in "Text_IO"
+# how the agent got past it (run 4, edit_file of src/server.adb):
+#   -      Line := Text_IO.Get_Line (Socket);
+#   +      Line := Ada.Text_IO.Get_Line;
+[[hint]]
+match = '"(?P<name>[^"]+)" not declared in "(?P<name2>[^"]+)"'
+hint = ""
+```
+
+El `match` sale del mensaje: cada nombre entre comillas, un grupo con nombre; cada número,
+`\d+`; el resto, tal cual. Nunca se usa solo: una persona lo revisa, escribe la pista
+(`{name}` va al texto), borra las que no merecen una y las copia a un fichero de
+`[sources.code] hints`. En la librería, `draft_hints(calls_path)` devuelve lo mismo como una
+lista.
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
@@ -651,8 +703,9 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
-que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona y encargos
-anclados a requisitos, con DOORS y el grafo de verdad).
+que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona, encargos
+anclados a requisitos, con DOORS y el grafo de verdad, el revisor, los ficheros nuevos con
+`stray` y los borradores de pistas de un `.calls.jsonl` de pega).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
 agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda, del grafo y

@@ -403,6 +403,25 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   hechas y fallidas, las compilaciones con errores, las llamadas, el tiempo y el coste, con el
   modelo. `atlas eval --set FICHERO` pasa un solo conjunto (`make eval-develop`) y
   `tools/compare_models.py --develop` añade una tabla por modelo.
+- Reglas deterministas para el código nuevo (`[sources.code] rules`): ficheros TOML con
+  `[[rule]]` `match`, `message`, `level` y `files`, aplicados por las herramientas que escriben a
+  las líneas que añade cada cambio, también en ficheros nuevos. Un `error` no se escribe y el
+  agente recibe la línea; un `warning` va en `notes`. De serie, como avisos (`atlas/code/rules.toml`):
+  `when others => null;` y `pragma Suppress` en Ada, `except: pass` en Python. En la tanda 4 de
+  `atlas develop`, un `when others => null` se tragó una excepción que ningún test veía.
+- `reviewer` y `review_fixes` en el plan de `atlas develop`, apagado por defecto: tras un encargo
+  que compila y no rompe nada, un agente de solo lectura lee el encargo y el diff y contesta en
+  JSON; sus problemas vuelven al agente una vez. Ejemplo en `examples/agents/reviewer.md`.
+- `atlas hints PLAN` y `draft_hints` (`atlas/agents/hints.py`): borradores de pistas para los
+  errores del compilador que salieron sin pista en la última tanda de `atlas develop`, agrupados
+  por forma, con el `match` derivado del mensaje, la `hint` vacía y, como comentario, el diff de
+  la primera escritura de la misma ejecución tras la que el error ya no estaba. Van en
+  `reports/hints-<plan>.toml` y en la sección «Hints to write» del informe; nunca se usan solos.
+- Los ficheros que crea cada encargo conservado de `atlas develop` van en su paso (`created`), en
+  la sección «New files» del informe y en la salida del comando. `stray = "delete"` en el plan
+  borra, antes de juzgar el encargo, los nuevos que casan con `[sources.code] test_patterns` y no
+  con `protected`: en la tanda 4 el agente dejó en `src` un fichero suyo de prueba. Por defecto,
+  `stray = "report"`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,

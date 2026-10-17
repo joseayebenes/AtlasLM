@@ -177,6 +177,10 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
     assert report["totals"]["edits"]["failed"] >= 1 and report["compiler_errors"][0]["count"] >= 1
     md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
     assert "## Compiler errors" in md and "| edits (failed) |" in md and "Edits: " in md
+    # the syntax error had no hint: a draft of one (its run wrote nothing after it)
+    assert "## Hints to write" in md and "hints-plan.toml" in md
+    draft = (cfg.workspace / "reports" / "hints-plan.toml").read_text()
+    assert "\n[[hint]]\nmatch = " in draft and 'hint = ""' in draft and "# no write in the same run" in draft
 
 
 def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project, caplog):
@@ -270,6 +274,67 @@ def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
     assert client.prompts[1].endswith("Replace the body of add: return a + b.")
     (base / "plan.toml").write_text(plan + 'planner = "nobody"\n\n[[tasks]]\ntext = "x"\n')
     with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        develop(base / "plan.toml", cfg, client=StubClient([]))
+
+
+def test_a_reviewer_reads_the_diff_and_its_issues_go_back_once(project):
+    """reviewer: after a task that compiles and breaks nothing, a read-only run with the task and
+    its diff; its JSON verdict goes back to the agent once (review_fixes)."""
+    from atlas.agents.develop import _verdict, develop
+    base, cfg = project
+    (base / "agents" / "reviewer.md").write_text(AGENT.replace("NAME", "reviewer"))   # it has write_file: refused
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + 'reviewer = "reviewer"\n\n[[tasks]]\nid = "add"\ntext = "Implement add and mul."\n')
+    issues = '{"verdict": "issues", "issues": [{"file": "src/calc.py", "line": 2, "issue": "mul is missing"}]}'
+    client = StubClient(write(ADD)
+                        + [{"write_file": {"path": "src/calc.py", "content": "x = 1\n"}}, f"```json\n{issues}\n```"]
+                        + write(MUL))
+    report = develop(base / "plan.toml", cfg, client=client)
+    assert [(s["kind"], s["agent"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "implementer", "kept"), ("review", "reviewer", "issues"), ("review-fix", "implementer", "kept")]
+    assert report["steps"][1]["issues"] == [{"file": "src/calc.py", "line": 2, "issue": "mul is missing"}]
+    assert client.prompts[1].startswith("Review a change to the code of the project. The task it does:\n\n"
+                                        "Implement add and mul.") and "+    return a + b" in client.prompts[1]
+    assert client.prompts[2].startswith("A colleague reviewed") and "- src/calc.py, line 2: mul is missing" in \
+        client.prompts[2]
+    runs = [json.loads(l) for l in (cfg.workspace / "reports" / "develop-plan.calls.jsonl").read_text().splitlines()]
+    assert runs[1]["calls"][0]["result"] == {"error": "these tools are read-only"}
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    assert "## Review" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert _verdict('{"verdict": "ok"}') == [] and _verdict("Looks fine.") is None
+    (base / "plan.toml").write_text(plan + 'reviewer = "nobody"\n\n[[tasks]]\ntext = "x"\n')
+    with pytest.raises(ConfigError, match="there is no agent 'nobody'"):
+        develop(base / "plan.toml", cfg, client=StubClient([]))
+
+
+@pytest.mark.parametrize("stray", ["report", "delete"])
+def test_the_files_a_task_leaves(project, stray):
+    """The agent of the fourth run left a test of its own in src: a kept task lists what it
+    created; with stray = "delete", a new file that is a test among the code is deleted before
+    the task is judged, and a new module is not."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    cfg["sources"]["code"]["test_patterns"] = ["tests/**", "**/*_test.py"]
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + f'stray = "{stray}"\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient(write(ADD)[:2] + [
+        {"write_file": {"path": "src/scratch_test.py", "content": "import calc\nprint(calc.add(1, 2))\n"}},
+        {"write_file": {"path": "src/util.py", "content": "def half(x):\n    return x / 2\n"}}, "Done."])
+    report = develop(base / "plan.toml", cfg, client=client)
+    step = report["steps"][0]
+    assert (step["kind"], step["outcome"]) == ("task", "kept")
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## New files" in md and (base / "src" / "util.py").exists()
+    if stray == "report":
+        assert step["created"] == ["src/scratch_test.py", "src/util.py"] and "deleted" not in step
+        assert (base / "src" / "scratch_test.py").exists()
+        assert "- 1 add: src/scratch_test.py, src/util.py" in md
+    else:
+        assert step["created"] == ["src/util.py"] and step["deleted"] == ["src/scratch_test.py"]
+        assert not (base / "src" / "scratch_test.py").exists()
+        assert "- 1 add: src/util.py; deleted src/scratch_test.py" in md
+    (base / "plan.toml").write_text(plan + 'stray = "keep"\n[[tasks]]\ntext = "x"\n')
+    with pytest.raises(ConfigError, match="stray is 'report' or 'delete'"):
         develop(base / "plan.toml", cfg, client=StubClient([]))
 
 
@@ -438,6 +503,62 @@ def test_a_run_that_fails_is_an_error_and_not_a_task_done(project):
     assert step["outcome"] == "error" and "the server is down" in step["error"]
     assert report["final"]["errors"] == 1
     assert "1 agent runs failed with an error." in (cfg.workspace / "reports" / "develop-plan.md").read_text()
+
+
+CALLS = [
+    {"n": 1, "kind": "task", "task": "T01", "prompt": "x", "answer": "", "calls": [
+        {"name": "write_file", "args": {"path": "src/a.adb", "content": "..."},
+         "result": {"file": "src/a.adb", "created": True, "check": {"ok": False, "errors": [
+             {"line": 3, "message": '"Foo" is undefined', "hint": "Foo is not declared"},
+             {"line": 5, "message": 'unexpected token "bar" at 12', "details": ["did you mean Bar"]}]}}},
+        {"name": "edit_file", "args": {"path": "src/a.adb"},
+         "result": {"error": "the change was not made: it breaks the syntax of src/a.adb",
+                    "syntax_errors": [{"line": 2, "message": 'missing ";"'}]}},
+        {"name": "edit_file", "args": {"path": "src/a.adb"},
+         "result": {"file": "src/a.adb", "replacements": 1, "diff": "-   bar\n+   Bar;",
+                    "check": {"ok": False, "errors": [{"line": 3, "message": '"Foo" is undefined', "hint": "x"}]}}},
+        {"name": "check_code", "args": {"path": "src/b.adb"},
+         "result": {"file": "src/b.adb", "ok": False, "errors": [
+             {"file": "b.adb", "line": 7, "message": 'unexpected token "baz" at 40'}]}}]},
+    {"n": 2, "kind": "round", "task": "tests/t.py", "prompt": "y", "answer": "", "calls": [
+        {"name": "check_code", "args": {"path": "src/b.adb"},
+         "result": {"file": "src/b.adb", "ok": False, "errors": [
+             {"file": "b.adb", "line": 9, "message": 'unexpected token "qux" at 3'}]}}]}]
+
+
+def test_drafts_of_hints_from_the_calls(project, capsys):
+    """The errors without a hint of a calls log, by shape, the most frequent first, each with the
+    write that got rid of it; a TOML of [[hint]] with empty hints, for a person to write."""
+    import re
+    import tomllib
+    from atlas import cli
+    from atlas.agents.hints import draft_hints, hint_match, write_hints_draft
+    from atlas.code.build import load_hints
+    base, cfg = project
+    calls = cfg.workspace / "reports" / "develop-server.calls.jsonl"
+    calls.parent.mkdir(parents=True)
+    calls.write_text("\n".join(json.dumps(r) for r in CALLS) + "\n")
+    drafts = draft_hints(calls)
+    assert [(d["shape"], d["count"]) for d in drafts] == [('unexpected token "X" at N', 3), ('missing "X"', 1)]
+    token, syntax = drafts
+    assert token["match"] == 'unexpected token "(?P<name>[^"]+)" at \\d+'
+    assert all(re.search(token["match"], m) for m in ('unexpected token "bar" at 12', 'unexpected token "q" at 3'))
+    assert token["fix"] == {"diff": "-   bar\n+   Bar;", "call": "edit_file", "file": "src/a.adb", "run": 1}
+    assert token["details"] == ["did you mean Bar"] and token["runs"] == [1, 2]
+    assert token["files"] == ["src/a.adb", "src/b.adb"]
+    assert syntax["fix"]["run"] == 1                      # the syntax error: the next write that was made
+    assert hint_match('"A" and "B" at line 4') == '"(?P<name>[^"]+)" and "(?P<name2>[^"]+)" at line \\d+'
+    path, _ = write_hints_draft(calls)
+    assert path.name == "hints-server.toml"
+    text = path.read_text()
+    assert "# 3 times, in src/a.adb, src/b.adb (runs 1, 2)" in text and "#   +   Bar;" in text
+    assert [h["hint"] for h in tomllib.loads(text)["hint"]] == ["", ""]
+    assert len(load_hints([path])) == 2                  # a hints file as it is, which says nothing yet
+    assert cli.hints(cfg, "tasks/server.toml") == 0
+    out = capsys.readouterr().out
+    assert "2 errors without a hint; drafts in" in out and "fixed in run 1" in out
+    with pytest.raises(SystemExit, match="no calls of atlas develop for other"):
+        cli.hints(cfg, "other")
 
 
 def test_a_failure_in_a_line():

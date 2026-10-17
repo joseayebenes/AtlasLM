@@ -25,6 +25,10 @@ lines. Writes are atomic and keep the encoding (UTF-8, or Latin-1 for old source
 line endings (LF or CRLF) and the permissions of the file. `read_only=True` turns edit and
 write off.
 
+The rules of the project (BuildTools gives them, see build.py) look at the lines a change
+adds, in a new file too: one of level error refuses the change, with the line; a warning goes
+in the `notes` of the answer.
+
 replace_subprogram and add_subprogram need nothing copied from the file: the agent gives the
 whole subprogram, and the file says where it goes (symbols.py). gemma-4-26b tried to replace
 whole blocks with edit_file: 39 of its 151 edits in a run of atlas develop were refused for an
@@ -105,8 +109,10 @@ class CodeTools:
         self.requirements = requirements or requirement_pattern({})      # the tag of [sources.code], for outline
         self._lock = threading.Lock()
         # Set by BuildTools (see build.py): the syntax errors of a text as the content of a file
-        # (None: nothing checks that language), and check_code of a file after a change
+        # (None: nothing checks that language), what the rules of the project find in the lines
+        # a change adds (file, new text, old text or None), and check_code of a file after a change
         self.syntax: Callable[[Path, str], list[dict] | None] | None = None
+        self.rules: Callable[[Path, str, str | None], list[dict]] | None = None
         self.after_change: Callable[[Path], dict | None] | None = None
 
     @classmethod
@@ -386,9 +392,10 @@ class CodeTools:
             if "error" in found:
                 return found
             new, count, notes = found["text"], found["count"], found["notes"]
-            err = self._store(p, new, encoding, crlf, before=text)
-            if err:
-                return err
+            stored = self._store(p, new, encoding, crlf, before=text)
+            if isinstance(stored, dict):
+                return stored
+            notes = notes + stored
         return {"file": self._show(p), "replacements": count, "diff": self._diff(self._show(p), text, new),
                 **({"notes": notes} if notes else {}), **self._checked(p)}
 
@@ -446,12 +453,13 @@ class CodeTools:
             if before == content:
                 return {"file": self._show(p), "created": False, "unchanged": True, "lines": content.count("\n") + 1,
                         "note": "the file already had exactly this content: nothing changed"}
-            err = self._store(p, content, encoding, crlf, before=before)
-            if err:
-                return err
+            stored = self._store(p, content, encoding, crlf, before=before)
+            if isinstance(stored, dict):
+                return stored
+            notes = ([LISTING_NOTE] if unlisted else []) + stored
         return {"file": self._show(p), "created": before is None, "lines": content.count("\n") + 1,
                 **({} if before is None else {"diff": self._diff(self._show(p), before, content)}),
-                **({"notes": [LISTING_NOTE]} if unlisted else {}), **self._checked(p)}
+                **({"notes": notes} if notes else {}), **self._checked(p)}
 
     # --- whole subprograms ----------------------------------------------------
     def _current(self, p: Path, path: str, outlined: bool = False) -> tuple[str, str, bool] | dict:
@@ -463,21 +471,27 @@ class CodeTools:
         raw, encoding = _decode(data)
         return raw.replace("\r\n", "\n"), encoding, "\r\n" in raw
 
-    def _store(self, p: Path, text: str, encoding: str, crlf: bool, before: str | None = None) -> dict | None:
-        """Writes `text` (with LF) as the file, in its encoding and line endings. An error
-        instead when the text cannot be encoded, or when it breaks the syntax of a file that
-        had none (`before`: its text; None for a new file, which is written anyway)."""
+    def _store(self, p: Path, text: str, encoding: str, crlf: bool, before: str | None = None) -> dict | list[str]:
+        """Writes `text` (with LF) as the file, in its encoding and line endings, and returns
+        the notes of the warnings of the rules on the lines it adds. An error instead when the
+        text cannot be encoded, when it breaks the syntax of a file that had none (`before`: its
+        text; None for a new file, which is written anyway), or when a rule of level error
+        finds something in the lines it adds (in a new file too)."""
         if self.syntax is not None and before is not None:
             errors = self.syntax(p, text)
             if errors and not self.syntax(p, before):
                 return _broken_syntax(self._show(p), text, errors)
+        found = self.rules(p, text, before) if self.rules is not None else []
+        refused = [f for f in found if f["level"] == "error"]
+        if refused:
+            return _broken_rule(self._show(p), refused)
         try:
             out = (text.replace("\n", "\r\n") if crlf else text).encode(encoding)
         except UnicodeEncodeError as e:
             return {"error": f"the file is {encoding} and the new text has characters it cannot hold: {e}"}
         p.parent.mkdir(parents=True, exist_ok=True)
         self._write(p, out)
-        return None
+        return [f"line {f['line']}: {f['message']}" for f in found]
 
     def _checked(self, p: Path) -> dict:
         """{"check": what check_code says of a file just changed}, when BuildTools gave a hook."""
@@ -538,9 +552,10 @@ class CodeTools:
                 while start > 0 and lines[start - 1].strip().startswith(mark):
                     start -= 1
             new = "\n".join(lines[:start] + block + lines[end:])
-            err = self._store(p, new, encoding, crlf, before=text)
-            if err:
-                return err
+            stored = self._store(p, new, encoding, crlf, before=text)
+            if isinstance(stored, dict):
+                return stored
+            notes = notes + stored
         return {"file": self._show(p), "replaced": f"{target.kind} of {target.qualified}, lines {target.start}-"
                                                   f"{target.end}",
                 "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
@@ -602,9 +617,10 @@ class CodeTools:
                 head.pop()
             tail = lines[where - 1:]
             new = "\n".join(head + gap + block + ([""] if tail and tail[0].strip() else []) + tail)
-            err = self._store(p, new, encoding, crlf, before=text)
-            if err:
-                return err
+            stored = self._store(p, new, encoding, crlf, before=text)
+            if isinstance(stored, dict):
+                return stored
+            notes = notes + stored
         return {"file": self._show(p), "added": [a.name for a in added],
                 "diff": self._diff(self._show(p), text, new), **({"notes": notes} if notes else {}),
                 **self._checked(p)}
@@ -685,6 +701,14 @@ def _signature(lines: list[str], span: Span) -> str:
         if s and not s.startswith("@") and s.lower() not in ("overriding", "not overriding"):
             return s[:MAX_LINE_CHARS]
     return lines[span.start - 1].strip()[:MAX_LINE_CHARS]
+
+
+def _broken_rule(path: str, found: list[dict]) -> dict:
+    """The answer to a change that a rule of level error refuses: not made, with what the rules
+    found and where."""
+    first = found[0]
+    return {"error": f"the change was not made: line {first['line']} of the new text of {path} breaks a rule of "
+                     f"the project: {first['message']}", "rules": found[:5]}
 
 
 def _indent(line: str) -> str:

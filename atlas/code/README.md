@@ -16,6 +16,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
 | `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
 | `hints.toml` | las pistas de serie para los mensajes de GNAT |
+| `rules.toml` | las reglas de serie para el texto nuevo de un cambio (Ada y Python) |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
 ## Análisis
@@ -154,7 +155,32 @@ hint = "Controller declares Session and Execute; the commands are Do_* procedure
 La regla del `String` ya estaba en las instrucciones del agente y el error salió igual 16
 veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
 errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
-lista de lecciones que crece tras cada tanda.
+lista de lecciones que crece tras cada tanda. `atlas hints PLAN` (y el final de cada tanda)
+deja un borrador de cada una en `reports/hints-<plan>.toml`, con el `match` hecho y el diff con
+el que el agente salió del error, para escribir la pista y copiarla aquí (ver
+[atlas.agents](../agents/README.md)).
+
+### Reglas para el código nuevo
+
+Lo que no ven ni el compilador ni los tests se queda: en la tanda 4, un `when others => null`
+se tragó un `Constraint_Error` que ningún test veía y el cliente se quedaba sin respuesta. Las
+reglas son expresiones regulares sobre las líneas que añade cada cambio (todas, en un fichero
+nuevo), sin modelo. Las de serie (`rules.toml`) son avisos: `when others => null;` y
+`pragma Suppress` en Ada, `except: pass` en Python. Las del proyecto, en los ficheros de
+`[sources.code] rules` (relativos a `atlas.toml`), van antes:
+
+```toml
+[[rule]]
+match = '(?i)\bdelay\s+\d'                  # expresión regular; \s cruza también los saltos de línea
+message = "No delays in the server: use the timer of Controller."
+level = "error"                              # error: el cambio no se hace; warning: se hace, con aviso
+files = ["*.adb"]                            # opcional: los nombres de fichero a los que se aplica
+```
+
+Un `error` no se escribe: el agente recibe `error` con la línea y el mensaje, y la lista en
+`rules`. Un `warning` se escribe y su mensaje va en `notes` de la respuesta, con la línea. Lo
+que ya estaba en el fichero no cuenta: una edición en otra parte de un fichero que ya tenía un
+`when others => null` pasa sin aviso.
 
 ### La biblioteca de verdad
 

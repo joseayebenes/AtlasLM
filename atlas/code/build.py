@@ -74,10 +74,18 @@ errors came without a hint, to add one after each run. An error that names somet
 does not exist brings what does: '"Arguments" not declared in "Command_Line"' comes with what
 Ada.Command_Line declares like it (`declared_in`), and '"LF" is undefined' with the units that
 declare LF (`found_in`).
+
+The same hook gives them the rules of the project ([sources.code] rules, then rules.toml):
+regular expressions on the lines that a change adds, for what neither the compiler nor the
+tests see (`when others => null`, `pragma Suppress`, `except: pass`). A rule of level "error"
+refuses the change, with the line; one of level "warning" lets it through, with its message in
+`notes`. No model: the rules come first, before any reviewer.
 """
 from __future__ import annotations
 
 import ast
+import difflib
+import fnmatch
 import glob
 import os
 import re
@@ -86,7 +94,7 @@ import signal
 import subprocess
 import time
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, NamedTuple
 
 from atlas.code.library import Library, with_clauses
 from atlas.code.reference import Reference
@@ -99,9 +107,12 @@ try:
 except ImportError:  # Python < 3.11
     import tomli as tomllib  # type: ignore
 
-__all__ = ["BuildTools", "BUILD_TOOL_NAMES", "HINTS", "hint_for", "load_hints", "parse_messages"]
+__all__ = ["BuildTools", "BUILD_TOOL_NAMES", "HINTS", "RULES", "Rule", "hint_for", "load_hints", "load_rules",
+           "parse_messages", "rule_findings"]
 
 HINTS = Path(__file__).parent / "hints.toml"
+RULES = Path(__file__).parent / "rules.toml"
+RULE_LEVELS = ("error", "warning")
 
 BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program", "library_spec", "search_reference")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
@@ -174,6 +185,75 @@ def load_hints(paths: Iterable[str | Path]) -> list[tuple[re.Pattern, str]]:
     return out
 
 
+class Rule(NamedTuple):
+    match: re.Pattern
+    message: str
+    level: str                  # "error" | "warning"
+    files: tuple[str, ...]      # file name patterns; empty = every file
+
+
+def load_rules(paths: Iterable[str | Path]) -> list[Rule]:
+    """The rules of these files, in order: each [[rule]] has `match`, a regular expression,
+    `message`, `level` ("error" or "warning") and, optional, `files` (patterns of file names)."""
+    out = []
+    for path in paths:
+        path = Path(path)
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as e:
+            raise ConfigError(f"rules {path}: {e}") from None
+        for i, r in enumerate(data.get("rule", []), 1):
+            if not (isinstance(r, dict) and isinstance(r.get("match"), str) and isinstance(r.get("message"), str)):
+                raise ConfigError(f"rules {path}: [[rule]] {i} needs match and message, two texts")
+            unknown = sorted(set(r) - {"match", "message", "level", "files"})
+            if unknown:
+                raise ConfigError(f"rules {path}: [[rule]] {i} has match, message, level and files, not {unknown}")
+            level = r.get("level", "warning")
+            if level not in RULE_LEVELS:
+                raise ConfigError(f"rules {path}: [[rule]] {i}: level is error or warning, not {level!r}")
+            files = r.get("files", [])
+            if not isinstance(files, list) or not all(isinstance(f, str) for f in files):
+                raise ConfigError(f"rules {path}: [[rule]] {i}: files is a list of patterns")
+            try:
+                rx = re.compile(r["match"])
+            except re.error as e:
+                raise ConfigError(f"rules {path}: [[rule]] {i}: match is not a valid regular expression: {e}") from None
+            out.append(Rule(rx, " ".join(r["message"].split()), level, tuple(files)))
+    return out
+
+
+def _added_lines(text: str, before: str | None) -> set[int]:
+    """The numbers (from 1) of the lines of `text` that are not in `before`: all for a new file."""
+    lines = text.split("\n")
+    if before is None:
+        return set(range(1, len(lines) + 1))
+    added: set[int] = set()
+    for tag, _, _, j1, j2 in difflib.SequenceMatcher(None, before.split("\n"), lines, autojunk=False).get_opcodes():
+        if tag in ("replace", "insert"):
+            added.update(range(j1 + 1, j2 + 1))
+    return added
+
+
+def rule_findings(rules: list[Rule], name: str, text: str, before: str | None = None) -> list[dict]:
+    """What the rules find in the lines of `text` (the new content of the file `name`) that
+    are not in `before` (None: a new file, every line): {line, level, message, text}, at most
+    one per rule and line. A match that spans lines counts when one of them is new."""
+    added, out, seen = _added_lines(text, before), [], set()
+    for rule in rules:
+        if rule.files and not any(fnmatch.fnmatch(name, f) for f in rule.files):
+            continue
+        for m in rule.match.finditer(text):
+            first = text.count("\n", 0, m.start()) + 1
+            last = first + m.group(0).count("\n")
+            line = next((n for n in range(first, last + 1) if n in added), None)
+            if line is None or (rule, line) in seen:
+                continue
+            seen.add((rule, line))
+            out.append({"line": line, "level": rule.level, "message": rule.message,
+                        "text": text.split("\n")[line - 1].strip()[:200]})
+    return sorted(out, key=lambda f: (f["level"] != "error", f["line"]))
+
+
 class _Keep(dict):
     def __missing__(self, key: str) -> str:            # a group that did not match stays as it was
         return "{" + key + "}"
@@ -220,9 +300,10 @@ class BuildTools:
                  syntax_commands: dict | None = None, check_on_edit: bool = True,
                  hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
                  reference: Iterable[str] = (), reference_db: str | Path | None = None,
-                 timeouts: dict[str, int] | None = None):
+                 timeouts: dict[str, int] | None = None, rules: list[Rule] | None = None):
         self.files = files                    # the confinement of the file tools: same roots and exclusions
         self.hints = hints if hints is not None else load_hints([HINTS])
+        self.rules = rules if rules is not None else load_rules([RULES])
         self.library = Library(library, files.roots)
         self.reference = Reference(reference_db or Path(build_dir).parent / "reference.db", reference, self.library)
         self.build_dir = Path(build_dir)
@@ -255,7 +336,8 @@ class BuildTools:
                    load_hints([*(cfg.resolve(h) for h in sc.get("hints", [])), HINTS]),
                    [str(cfg.resolve(p)) for p in sc.get("library", [])],
                    [str(cfg.resolve(p)) for p in sc.get("reference", [])], cfg.workspace / "reference.db",
-                   {kind: sc.get(key, timeout) for kind, key in TIMEOUT_KEYS.items()})
+                   {kind: sc.get(key, timeout) for kind, key in TIMEOUT_KEYS.items()},
+                   load_rules([*(cfg.resolve(r) for r in sc.get("rules", [])), RULES]))
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -269,9 +351,10 @@ class BuildTools:
         return tools
 
     def hook(self) -> None:
-        """Gives the file tools the syntax check and, with check_on_edit, check_code after
-        each change."""
+        """Gives the file tools the syntax check, the rules and, with check_on_edit, check_code
+        after each change."""
         self.files.syntax = self.syntax_errors
+        self.files.rules = self.rule_findings
         self.files.after_change = self.after_change if self.check_on_edit else None
 
     def syntax_errors(self, p: Path, text: str) -> list[dict] | None:
@@ -303,6 +386,10 @@ class BuildTools:
                 return [{"line": e.lineno, "column": e.offset, "message": e.msg}]
             return []
         return None
+
+    def rule_findings(self, p: Path, text: str, before: str | None) -> list[dict]:
+        """What the rules find in the lines a change adds to the file `p` (see rule_findings)."""
+        return rule_findings(self.rules, p.name, text, before) if self.rules else []
 
     def after_change(self, p: Path) -> dict | None:
         """What check_code says of a file just changed, short: ok, and its first errors."""

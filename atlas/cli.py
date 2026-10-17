@@ -36,6 +36,8 @@
                    [--check] [--resume]  is undone, and what it cannot fix goes to a person (a report);
                                        --check: the plan, check_code and the tests at the start, no model;
                                        --resume: goes on from where an earlier run stopped (Ctrl+C)
+    atlas hints    PLAN [atlas.toml]   drafts of hints for the errors of the compiler that came without one in
+                                       the last atlas develop of the plan, with how the agent fixed each one
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
                    [--compare]      and each case against the last report of another version of atlas
                    [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
@@ -1625,6 +1627,8 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
               + (f"\n      untagged: {', '.join(s['untagged'])}" if s.get("untagged") else "")
+              + (f"\n      new files: {', '.join(s['created'])}" if s.get("created") else "")
+              + (f"\n      deleted (a test among the code): {', '.join(s['deleted'])}" if s.get("deleted") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else "")
               + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else ""), flush=True)
 
@@ -1646,6 +1650,10 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
           + (f"; {final['errors']} runs failed with an error" if final.get("errors") else ""))
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")
+    created = [f for s in report["steps"] if s.get("outcome") not in ("undone", "not chosen")
+               for f in s.get("created", [])]
+    if created:
+        print(f"new files: {', '.join(created)}")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
     return 0 if final["tests_passed"] == final["tests"] else 1
 
@@ -1687,6 +1695,21 @@ def generate_set(cfg: Config, path: str, n: int) -> int:
     kinds = {k: sum(1 for c in cases if c["tags"][1] == k) for k in GENERATE_KINDS}
     print(f"written {written}: {len(cases)} cases (" + ", ".join(f"{v} {k}" for k, v in kinds.items()) + ")")
     print(f"add it to [agents.eval] sets of {cfg.path.name} and run `atlas eval {cfg.path.name}`")
+    return 0
+
+
+def hints(cfg: Config, plan: str) -> int:
+    """Drafts of hints from the calls of the last atlas develop of a plan (atlas/agents/hints.py)."""
+    from atlas.agents.hints import write_hints_draft
+    calls = cfg.workspace / "reports" / f"develop-{Path(plan).stem}.calls.jsonl"
+    if not calls.is_file():
+        sys.exit(f"no calls of atlas develop for {Path(plan).stem}: {calls} does not exist")
+    path, drafts = write_hints_draft(calls)
+    for d in drafts:
+        fixed = f", fixed in run {d['fix']['run']}" if d["fix"] else ""
+        print(f"{d['count']:4d}  {d['message'][:100]}{fixed}")
+    print(f"\n{len(drafts)} errors without a hint; drafts in {path}: write the hints there and copy them to a "
+          "file of [sources.code] hints" if drafts else "every error of the compiler came with a hint")
     return 0
 
 
@@ -1965,7 +1988,7 @@ def _dispatch(action: str, rest: list[str]) -> None:
                "plugins": list_plugins, "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor,
                "probe": probe, "reference": reference, "serve": serve, "usage": usage}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
+                 "tests": tests, "develop": develop, "hints": hints, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

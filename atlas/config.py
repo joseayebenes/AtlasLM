@@ -131,7 +131,8 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
                "test_timeout": int, "program_timeout": int, "run_command": list,
                "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
                "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
-               "reference": list, "language_server": list, "language_server_project": str, "model": str}
+               "reference": list, "language_server": list, "language_server_project": str, "model": str,
+               "rules": list}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
     "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "shared_cache": "", "log_dir": "logs",

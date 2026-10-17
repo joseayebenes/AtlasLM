@@ -44,7 +44,8 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
 
     for f in ("spec_with_bookmarks.pdf", "spec_without_bookmarks.pdf", "hmi_manual.md"):
         data = process_document(docs_samples / f, tmp_path / "docs" / f, DocsOptions(), llm=llm)
-        assert build_records(data) == rag.construir_registros(data)
+        without_meta = [{k: v for k, v in r.items() if k != "meta"} for r in build_records(data)]   # atlas only
+        assert without_meta == rag.construir_registros(data)
         rag.indexar(old_store, old_embedder, dict(data), f)
         new.add_document(data, doc=f"docs:{f}", name=f, out_dir=data["out_dir"])
 

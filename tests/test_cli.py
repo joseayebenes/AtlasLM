@@ -1,4 +1,5 @@
 import json
+import re
 from atlas.cli import run, status
 from atlas.config import load_config
 
@@ -168,6 +169,10 @@ patterns = ["*.md"]
         main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
     out = capsys.readouterr().out
     assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
+    with pytest.raises(SystemExit) as e:              # a chapter: by its title, without its number
+        main(["ask", "When does the HMI raise an alarm?", str(path), "--chapter", "alarms"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "hmi_manual.md › 2 Alarms" in out and "3 Logging" not in out
     control.write_text(json.dumps({"usage_chars_per_token": 4}))     # an answer longer than max_tokens
     assert ask(load_config(toml(extra.replace('model = "fake"', 'model = "fake"\nmax_tokens = 3'))),
                "When does the HMI raise an alarm?") == 0
@@ -392,8 +397,15 @@ communities = true
     assert (cfg.workspace / "graph" / "atlas.graphml").exists()
 
 
+def _with_attributes(path, attributes: str):
+    path.write_text(re.sub(r"attributes = \[.*\]", f"attributes = {attributes}", path.read_text()))
+    return load_config(path)
+
+
 def test_doors_requirements_are_indexed(toml, fake, fake_stats, capsys):
-    from atlas.cli import check, search
+    import pytest
+    from atlas.cli import check, main, search
+    from atlas.config import ConfigError
     extra = f'''
 [llm]
 base_url = "{fake[0]}"
@@ -406,7 +418,8 @@ no_proxy = "*"
 [pipeline]
 steps = ["doors", "index"]
 '''
-    cfg = load_config(toml(extra))
+    path = toml(extra)
+    cfg = load_config(path)
 
     def go(config=cfg):
         assert run(config) == 0
@@ -432,6 +445,28 @@ steps = ["doors", "index"]
         capsys.readouterr().out
     check(load_config(toml(extra.replace('model = "embeddinggemma"', 'model = "corp-embed-300m"'))))
     assert "WARNING the embeddings model 'corp-embed-300m' is of no known family" in capsys.readouterr().out
+
+    # the attributes of [sources.doors] attributes: in the text, and filters
+    path = toml(extra)
+    assert go()["processed"] == {"index.requirements": 3}           # back to the family of the model
+    assert search(cfg, "track event", k=20, attribute="status=Approved", module="SRS_TMS") == 0
+    out = capsys.readouterr().out
+    assert out.count("status: Approved") == out.count("(requirement)") > 3 and "Draft" not in out
+    assert "SSS_MISSION" not in out
+    with pytest.raises(SystemExit) as e:              # repeated: both pairs
+        main(["search", "track event", str(path), "--attribute", "status=Draft", "--attribute=verification=Test"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "nothing found with those filters" in out and "no passage has verification" in out
+    assert re.search(r"status \([^)]*Draft", out)                    # what the filters can take
+    with pytest.raises(SystemExit) as e:
+        main(["search", "track event", str(path), "--attribute", "Approved"])
+    assert "is not name=value" in str(e.value.code)
+    # another list of attributes reindexes the modules, without reading DOORS again
+    path.write_text(path.read_text().replace('adapter = "database"', 'adapter = "database"\nattributes = ["Status"]'))
+    assert go(load_config(path))["processed"] == {"index.requirements": 3}
+    assert search(load_config(path), "srs-0004") == 0 and "Status: " in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="not attribute names"):
+        run(_with_attributes(path, '["a=b"]'))
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 

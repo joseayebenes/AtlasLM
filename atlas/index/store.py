@@ -3,7 +3,8 @@ same records, and the embeddings cache.
 
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
-    index_records     the records (see records.py) with their vector
+    index_records     the records (see records.py) with their vector and their meta (JSON:
+                      what a search can be narrowed by, see allowed)
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5), with the
                       tokenizer of [index] fts_tokenizer: when it changes, the table is
                       rebuilt from index_records on opening (seconds, nothing is embedded)
@@ -25,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
+from atlas.index.records import CODE_PREFIX, DOORS_PREFIX, asks_for
 
 __all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore", "REF_PATTERN"]
 
@@ -39,7 +40,8 @@ CREATE TABLE IF NOT EXISTS index_documents (
     embed_model TEXT, indexed_at TEXT);
 CREATE TABLE IF NOT EXISTS index_records (
     id INTEGER PRIMARY KEY, doc TEXT, kind TEXT, section_id TEXT, section_title TEXT, path TEXT,
-    page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB);
+    page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB,
+    meta TEXT);
 CREATE INDEX IF NOT EXISTS idx_index_records_doc ON index_records(doc);
 CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
@@ -49,7 +51,15 @@ DEFAULT_FTS_TOKENIZER = "unicode61 remove_diacritics 2"
 _TOKENIZE = re.compile(r"tokenize\s*=\s*'((?:[^']|'')*)'", re.I)
 
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
-                  "r.ref, r.seq, r.text, r.embed_text"
+                  "r.ref, r.seq, r.text, r.embed_text, r.meta"
+
+
+def _record(row: sqlite3.Row) -> dict:
+    return {**dict(row), "meta": json.loads(row["meta"] or "{}")}
+
+
+def _chapter_is(chapter: str | None, wanted: str) -> bool:
+    return bool(chapter) and asks_for(wanted, chapter or "")
 
 
 def _tokenizer(sql: str) -> str:
@@ -75,6 +85,9 @@ class IndexStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.executescript(SCHEMA)
+        if "meta" not in {r["name"] for r in self.db.execute("PRAGMA table_info(index_records)")}:
+            self.db.execute("ALTER TABLE index_records ADD COLUMN meta TEXT")   # an index of before 0.3
+        self.db.create_function("atlas_chapter_is", 2, _chapter_is, deterministic=True)
         self.fts_tokenizer = " ".join((fts_tokenizer or DEFAULT_FTS_TOKENIZER).split())
         self.fts = self._open_fts()
         self.lock = threading.RLock()     # one connection shared by the Runner's threads
@@ -151,10 +164,11 @@ class IndexStore:
             for r, v in zip(records, vectors):
                 cur = self.db.execute(
                     "INSERT INTO index_records (doc, kind, section_id, section_title, path, page_start, "
-                    "page_end, ref, seq, text, embed_text, vector) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "page_end, ref, seq, text, embed_text, vector, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (doc["doc"], r["kind"], r.get("section_id", ""), r.get("section_title", ""),
                      r.get("path", ""), r.get("page_start", 0), r.get("page_end", 0), r.get("ref", ""),
-                     r.get("seq", 0), r["text"], r["embed_text"], v.astype(np.float32).tobytes()))
+                     r.get("seq", 0), r["text"], r["embed_text"], v.astype(np.float32).tobytes(),
+                     json.dumps(r.get("meta") or {}, ensure_ascii=False)))
                 if self.fts:
                     self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) VALUES (?, ?, ?)",
                                     (cur.lastrowid, r["embed_text"], r.get("ref", "")))
@@ -187,10 +201,12 @@ class IndexStore:
                 self._matrix = (model, version, ids, m)
             return self._matrix[2], self._matrix[3]
 
-    def allowed(self, document: str = "", kinds: list[str] | None = None) -> set[int] | None:
-        """Record ids of a document (by name, key or part of its title) and of some kinds;
-        None if there is no filter."""
-        if not document and not kinds:
+    def allowed(self, document: str = "", kinds: list[str] | None = None,
+                where: dict[str, str] | None = None) -> set[int] | None:
+        """Record ids of a document (by name, key or part of its title), of some kinds and
+        whose meta has every key = value of `where` (in any case; `chapter` also by its
+        number or its title without the number); None if there is no filter."""
+        if not document and not kinds and not where:
             return None
         sql, params = "SELECT r.id FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE 1=1", []
         if document:
@@ -199,7 +215,26 @@ class IndexStore:
         if kinds:
             sql += f" AND r.kind IN ({','.join('?' * len(kinds))})"
             params += kinds
+        for key, value in (where or {}).items():
+            path = '$."' + str(key).lower().replace('"', "") + '"'
+            if str(key).lower() == "chapter":
+                sql += " AND atlas_chapter_is(json_extract(r.meta, ?), ?)"
+            else:
+                sql += " AND json_extract(r.meta, ?) = ? COLLATE NOCASE"
+            params += [path, str(value).strip()]
         return {r[0] for r in self._query(sql, params)}
+
+    def meta_values(self, limit: int = 20) -> dict[str, list[str]]:
+        """Every key of the meta of the records, with some of its values (the most
+        frequent first): what `where` can take."""
+        rows = self._query("SELECT j.key, j.value, COUNT(*) AS n FROM index_records r, json_each(r.meta) j "
+                           "GROUP BY j.key, j.value ORDER BY j.key, n DESC, j.value")
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            values = out.setdefault(r["key"], [])
+            if len(values) < limit:
+                values.append(str(r["value"]))
+        return out
 
     def dense(self, qvec: np.ndarray, model: str, n: int, allowed: set[int] | None) -> list[int]:
         ids, m = self._load_matrix(model)
@@ -279,13 +314,13 @@ class IndexStore:
         rows = self._query(f"SELECT {_RECORD_COLUMNS}, d.name AS doc_name, d.title AS doc_title, d.out_dir "
                            f"FROM index_records r JOIN index_documents d ON d.doc = r.doc "
                            f"WHERE r.id IN ({','.join('?' * len(ids))})", ids)
-        by_id = {r["id"]: dict(r) for r in rows}
+        by_id = {r["id"]: _record(r) for r in rows}
         return [by_id[i] for i in ids if i in by_id]
 
     def document_records(self, doc: str) -> list[dict]:
         """Every record of a document (by its key), in the order it was indexed: that of the
         document."""
-        return [dict(r) for r in self._query(
+        return [_record(r) for r in self._query(
             f"SELECT {_RECORD_COLUMNS}, d.name AS doc_name, d.title AS doc_title, d.out_dir "
             f"FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE r.doc = ? ORDER BY r.id", (doc,))]
 

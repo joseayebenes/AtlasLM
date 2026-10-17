@@ -61,7 +61,10 @@ INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
         "what the tools return, and say where it comes from.",
     "docs": "Documents (standards, specifications, manuals): `search` finds passages and gives their "
-            "citation; `get_section` reads a whole section; `get_requirement` gives the exact text of a "
+            "citation; narrow it, rather than searching again with other words, with `document`, `module` (a "
+            "DOORS module), `chapter` (its number or title), `kind` (e.g. requirement) and `attribute` "
+            "(\"status=Approved;verification=Test\": the DOORS attributes each result shows in its `meta`); "
+            "`get_section` reads a whole section; `get_requirement` gives the exact text of a "
             "requirement ID, from DOORS and from the documents; `ask_docs` writes an answer with citations. "
             "Cite document and section.",
     "graph": "Graph of code, requirements and documents: code identifiers are `unit.name` in lower case.",

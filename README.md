@@ -99,6 +99,7 @@ atlas search "track deletion latency" atlas.dev.toml   # búsqueda en documentos
 atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 atlas ask "Resume los requisitos de SRS_TMS" atlas.dev.toml   # una pregunta amplia lee el módulo entero
 atlas search "deletion" atlas.dev.toml --kind requirement --k 5   # solo requisitos, 5 resultados
+atlas search "deletion" atlas.dev.toml --attribute status=Approved --module SRS_TMS   # solo los aprobados de un módulo
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente

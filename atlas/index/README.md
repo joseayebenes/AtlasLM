@@ -26,7 +26,9 @@ El paso `index.documents` indexa cada documento procesado a varias granularidade
 Los requisitos de DOORS también se indexan (paso `index.requirements`): cada módulo es un
 documento más del índice, con el nombre del módulo. Cada requisito es un registro de tipo
 `requirement` con los encabezados que tiene encima como ruta, y cada objeto de información,
-un fragmento. Así, `search` encuentra un requisito aunque no aparezca en ningún documento, y
+un fragmento. Los atributos de `[sources.doors] attributes` (`status` y `verification` por
+defecto) van en una última línea del texto del requisito (`status: Approved; verification:
+Test`): pesan en la búsqueda y el modelo los ve con el requisito. Así, `search` encuentra un requisito aunque no aparezca en ningún documento, y
 su cita queda como `SRS_TMS › 1.1 Deletion (requirement)`. `get_requirement` sigue dando el
 texto oficial aparte, y en sus documentos no repite el de DOORS.
 
@@ -41,6 +43,18 @@ palabras. Un fichero cambiado solo reindexa su unidad, y de ella solo se embeben
 que cambian.
 
 `[index] kinds` elige qué se indexa; sin `code_doc`, el código no entra en el índice.
+
+Cada registro lleva además su `meta` (JSON en la columna `meta` de `index_records`): lo que
+permite acotar una búsqueda.
+
+| Registros | `meta` |
+|---|---|
+| requisitos y objetos de información de DOORS | `module`, `chapter` (el primer encabezado de su ruta) y, en los requisitos, los atributos de `attributes` que tengan |
+| fragmentos, resúmenes de sección y requisitos de un documento | `chapter`: el primer elemento de su ruta (`2 Alarms`) |
+| `code_doc` | `kind` (`subprogram`, `test`, `type`, `variable` o `constant`) y `file` (`tracks.adb`) |
+
+Las claves van en minúsculas y los valores, como texto. El resumen global, las definiciones
+y los pendientes no tienen `meta`.
 
 ## Embeddings
 
@@ -210,6 +224,41 @@ Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embed
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
 contexto y de la respuesta.
 
+## Filtros
+
+Lo primero que pide una revisión es acotar: los requisitos aprobados, los que se verifican
+por prueba, un módulo, un capítulo. Las búsquedas y las respuestas se acotan por la `meta`
+de los registros:
+
+| Filtro | Herramienta `search` | `atlas search` y `atlas ask` | Qué deja |
+|---|---|---|---|
+| atributo | `attribute = "status=Approved"` | `--attribute status=Approved` | los registros con ese valor; varios pares con «;» (`status=Approved;verification=Test`) o, en la línea de comandos, repitiendo la opción. Vale cualquier clave de la tabla de arriba: `kind=test`, `file=tracks.adb` |
+| módulo | `module = "SRS_TMS"` | `--module SRS_TMS` | los registros de ese módulo de DOORS |
+| capítulo | `chapter = "3"` | `--chapter 3` | los de ese capítulo, por su número, su título o los dos (`3`, `Logging`, `3 Logging`) |
+
+Los filtros se suman entre sí y con `document` y `kind`, y no distinguen mayúsculas. En
+`Index.search` e `Index.answer` son `where = {"status": "Approved", "chapter": "3"}`
+(`filters` lo saca del texto de las opciones).
+
+```bash
+atlas search "deletion" atlas.test.toml --attribute status=Approved
+atlas ask "¿Qué requisitos aprobados se verifican por prueba?" atlas.dev.toml --attribute "status=Approved;verification=Test"
+```
+
+En las muestras, «deletion» sin filtro da ocho pasajes de los documentos y del código, y
+ningún requisito de DOORS; con `status=Approved`, ocho requisitos aprobados de SRS_TMS y
+SSS_MISSION.
+
+Un filtro que no casa con nada no es un error: la herramienta devuelve, en `filters`, las
+claves que hay y sus valores más frecuentes, y `error` si la clave no existe
+(`no passage has criticality: the filters are chapter, file, kind, module, status,
+verification`); `atlas search` las escribe. Una pregunta amplia con filtros lee enteros
+solo los registros que casan: «resume los requisitos de SRS_TMS» con `status=Approved` lee
+los aprobados del módulo, no el módulo entero.
+
+El filtro es una condición `json_extract` sobre las filas del índice, sin índice propio: con
+20 000 requisitos basta.
+
 ## Como librería
 
 ```python
@@ -217,6 +266,7 @@ from atlas.config import load_config
 from atlas.index import Index
 idx = Index.from_config(load_config("atlas.dev.toml"))
 hits = idx.search("alarm latency", k=8, kinds=["requirement"])
+hits = idx.search("deletion", where={"status": "Approved", "module": "SRS_TMS"})   # filtros
 res = idx.answer("When does the HMI raise an alarm?")      # {"answer", "sources", "scope", ...}
 res = idx.answer("Summarise SRS_TMS", scope="whole")       # el módulo entero, por partes si no cabe
 idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lotes llenos
@@ -227,7 +277,7 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas de
-trazabilidad, citas comprobadas, estado de la respuesta, preguntas amplias en una petición y
-por partes), `tests/test_cli.py` (pasos de `atlas
-run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).
+documentos, cambio de modelo, herramientas, DOORS, filtros por `meta`, límite por documento,
+preguntas de trazabilidad, citas comprobadas, estado de la respuesta, preguntas amplias en
+una petición y por partes), `tests/test_cli.py` (pasos de `atlas run`, `search`, `ask` y sus
+filtros) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

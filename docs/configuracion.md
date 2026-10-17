@@ -47,6 +47,7 @@ de ella:
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
+| `[sources.doors] attributes` | el índice de los módulos de DOORS, sin volver a leerlos |
 | `[graph]` `exports` o `communities` | el grafo (`matrix_formats` y `csv_delimiter`, nada) |
 | una clave o una contraseña | nada |
 
@@ -190,11 +191,25 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 | `exchange` | tabla | — | `[sources.doors.exchange]` |
 | `database` | tabla | — | `[sources.doors.database]` |
 | `convention` | tabla | — | `[sources.doors.convention]` |
-| `attributes` | lista | `["status", "verification"]` | los atributos de DOORS que atlas enseña y por los que filtra: las columnas de `atlas matrix` (CSV, Markdown y JSON) y lo que dan `matrix` y `list_requirements` de cada requisito. Se escriben como los nombra el relleno de la base, sin distinguir mayúsculas (`["Status", "Verification Method"]`), y salen con el nombre que se escribe aquí. No es una lista blanca de importación: qué atributos entran en atlas lo deciden `attribute_columns` (adaptador `database`) y el `mapping.toml` del exportador. La búsqueda usará la misma lista para filtrar (tarea «Índice: filtros por metadatos») |
+| `attributes` | lista | `["status", "verification"]` | los atributos de DOORS que atlas enseña y por los que filtra (ver abajo); `[]`, ninguno |
 | `max_age_days` | entero | `0` | días que puede tener la exportación de un módulo antes de que `atlas run` y `atlas serve` avisen en el registro de que los requisitos pueden estar desfasados; 0 = sin aviso. La fecha es la que escribe el relleno de la base de intercambio (`exchange_modules.filled_at`); el adaptador `database` no la tiene |
 
-`attributes` y `max_age_days` solo cambian lo que se enseña: cambiarlas no vuelve a leer los
-módulos.
+`attributes` no elige qué atributos se leen: eso lo deciden el relleno de la base de
+intercambio (con `exchange`) o `attribute_columns` (con `database`) y el `mapping.toml` del
+exportador. Dice cuáles de los leídos enseña atlas y por cuáles se puede filtrar. Se
+escriben como los nombra el relleno de la base, sin distinguir mayúsculas (`["Status",
+"Verification Method"]`), y salen con el nombre que se escribe aquí. Cada uno que tenga un
+requisito va:
+- en las columnas de `atlas matrix` (CSV, Markdown y JSON) y en lo que dan `matrix` y
+  `list_requirements` de cada requisito;
+- en su texto del índice, como una línea `status: Approved; verification: Test`, así que
+  también pesa en la búsqueda y llega al modelo con el requisito;
+- en su `meta`, que da cada resultado de `search`;
+- en los filtros: `attribute = "status=Approved"` en la herramienta `search`, y
+  `--attribute status=Approved` en `atlas search` y `atlas ask`.
+
+Cambiar `attributes` solo reindexa los módulos de DOORS, sin volver a leerlos; cambiar
+`max_age_days` no reprocesa nada.
 
 ### [sources.doors.exchange]
 
@@ -313,7 +328,8 @@ Las dos preguntas en español no empeoran con `porter`: buscan en documentos en 
 ## [search]
 
 Lo que `atlas search`, `atlas ask` y las herramientas `search` y `ask_docs` toman del índice.
-Cambiarlo no reprocesa nada.
+Cambiarlo no reprocesa nada. Los filtros (`--module`, `--chapter`, `--attribute`) no se
+configuran aquí: van en cada búsqueda (ver [atlas.index](../atlas/index/README.md#filtros)).
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|

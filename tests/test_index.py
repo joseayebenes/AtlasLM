@@ -184,8 +184,15 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert records[0]["path"] == "1 Track management > 1.1 Deletion" and records[0]["section_id"] == "SRS-0910"
     assert records[1]["section_title"] == "1.1 Deletion"            # under a requirement: the heading above it
     assert records[0]["embed_text"] == ("SRS_TMS > 1 Track management > 1.1 Deletion > requirement\n"
-                                        "SRS-0004: The TMF shall delete a lost track within 320 ms.")
+                                        "SRS-0004: The TMF shall delete a lost track within 320 ms.\n"
+                                        "status: Approved")            # [sources.doors] attributes weigh in
+    assert records[0]["meta"] == {"module": "SRS_TMS", "chapter": "1 Track management", "status": "Approved"}
+    assert records[1]["text"] == "SRS-0005: Deleted tracks shall be logged." and "status" not in records[1]["meta"]
     assert records[3]["path"] == "" and records[3]["embed_text"].startswith("SRS_TMS > requirement\n")
+    assert records[3]["meta"] == {"module": "SRS_TMS"} and records[2]["meta"]["chapter"] == "1 Track management"
+    named = requirement_records("SRS_TMS", MODULE, attributes=["Status", "verification"])   # any case
+    assert named[0]["text"].endswith("\nStatus: Approved") and named[0]["meta"]["status"] == "Approved"
+    assert requirement_records("SRS_TMS", MODULE, attributes=[])[0]["text"].endswith("320 ms.")
     assert [r["kind"] for r in requirement_records("SRS_TMS", MODULE, kinds=["chunk"])] == ["chunk"]
 
     idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
@@ -207,6 +214,65 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert {h["document"] for h in tools.search("track", k=20, document="SRS_TMS")["results"]} == {"SRS_TMS"}
     idx.remove_document("doors:SRS_TMS")
     assert [d["name"] for d in idx.documents()] == ["hmi_manual.md"]
+
+
+def test_search_by_the_meta_of_the_records(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    """A review narrows first: the approved requirements, one module, one chapter."""
+    import sqlite3
+    from atlas.index import DocTools, filters
+    from atlas.index.store import IndexStore
+    from atlas.store import Store
+    records = build_records(docs["hmi_manual.md"])
+    assert {"2 Alarms", "3 Logging"} <= {r["meta"]["chapter"] for r in records if r["kind"] == "chunk"}
+    assert next(r for r in records if r.get("ref") == "SRS-0102")["meta"] == {"chapter": "2 Alarms"}
+    assert "meta" not in next(r for r in records if r["kind"] == "overview")
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    hits = idx.search("deletion track", k=20, where={"status": "approved"})        # any case
+    assert [h["ref"] for h in hits] == ["SRS-0004"] and hits[0]["meta"]["status"] == "Approved"
+    assert {h["doc_name"] for h in idx.search("track", k=20, where={"module": "srs_tms"})} == {"SRS_TMS"}
+    for chapter in ("3", "Logging", "3 logging"):                                  # number, title or both
+        assert {h["meta"]["chapter"] for h in idx.search("logs", k=20, where={"chapter": chapter})} == {"3 Logging"}
+    assert idx.search("logs", where={"chapter": "3", "status": "Approved"}) == []   # every pair
+    assert idx.search("track", where={"priority": "High"}) == []
+    assert idx.meta_values()["status"] == ["Approved"] and "SRS_TMS" in idx.meta_values()["module"]
+
+    assert filters("status=Approved; verification = Test", "SRS_TMS", "3") == \
+        {"status": "Approved", "verification": "Test", "module": "SRS_TMS", "chapter": "3"}
+    assert filters("Status=Approved;") == {"status": "Approved"} and filters() == {}
+    with pytest.raises(ValueError, match="name=value"):
+        filters("Approved")
+
+    tools = DocTools(idx, Store(tmp_path))
+    found = tools.search("deletion", module="SRS_TMS", attribute="status=Approved")["results"]
+    assert [r["ref"] for r in found] == ["SRS-0004"] and found[0]["meta"]["status"] == "Approved"
+    assert "name=value" in tools.search("deletion", attribute="status")["error"]
+    missing = tools.search("deletion", attribute="priority=High")
+    assert missing["results"] == [] and missing["error"].startswith("no passage has priority")
+    assert missing["filters"]["status"] == ["Approved"] and "chapter" in missing["filters"]
+    assert "error" not in tools.search("deletion", attribute="status=Draft")      # a value: only the list
+    assert {r["meta"]["chapter"] for r in tools.search("alarm", chapter="2", k=20)["results"]} == {"2 Alarms"}
+
+    # broad: what is read whole is what matches the filters
+    res = idx.answer("Summarise all the requirements of SRS_TMS", where={"status": "Approved"})
+    assert res["scope"] == "whole" and "SRS-0004" in res["sources"][0]["excerpt"]
+    assert "SRS-0005" not in res["sources"][0]["excerpt"]
+    assert idx.answer("When is a lost track deleted?", where={"status": "Approved"})["sources"][0]["ref"] == "SRS-0004"
+
+    # an index of before: the column is added, and its records match no filter until reindexed
+    old = tmp_path / "old.db"
+    db = sqlite3.connect(old)
+    db.execute("CREATE TABLE index_records (id INTEGER PRIMARY KEY, doc TEXT, kind TEXT, section_id TEXT, "
+               "section_title TEXT, path TEXT, page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, "
+               "text TEXT, embed_text TEXT, vector BLOB)")
+    db.execute("INSERT INTO index_records (doc, kind, text) VALUES ('d', 'chunk', 'x')")
+    db.commit()
+    db.close()
+    store = IndexStore(old)
+    assert [r["name"] for r in store.db.execute("PRAGMA table_info(index_records)")][-1] == "meta"
+    assert store.allowed(where={"chapter": "1"}) == set() and store.meta_values() == {}
 
 
 def test_a_few_hits_of_each_document():
@@ -249,6 +315,7 @@ def test_whole_sources_follow_the_document(docs, tmp_path, fake_llm, fake_embedd
     module = whole_sources(idx.store, "doors:SRS_TMS")
     assert [s["section_title"] for s in module] == ["1.1 Deletion", ""]
     assert module[0]["context"].splitlines() == ["SRS-0004: The TMF shall delete a lost track within 320 ms.",
+                                                 "status: Approved",
                                                  "SRS-0005: Deleted tracks shall be logged.",
                                                  "A track is lost after three missed scans."]
 
@@ -412,6 +479,8 @@ def test_records_of_a_code_unit(samples):
                             "tracks.hour_range", "tracks.trk_db", "tracks.max_tracks"}
     delete = records["tracks.delete_track"]
     assert delete["kind"] == "code_doc" and delete["section_title"] == "tracks.delete_track · tracks.adb:11-15"
+    assert delete["meta"] == {"kind": "subprogram", "file": "tracks.adb"}
+    assert records["tracks.max_tracks"]["meta"] == {"kind": "constant", "file": "tracks.ads"}
     assert delete["text"].splitlines()[:3] == ["tracks.delete_track (subprogram, tracks.adb:11-15)",
                                                "Removes track I from the database.", "Req: SRS-0004"]
     assert 'Logger.Log ("delete");' in delete["text"] and delete["embed_text"].startswith("ada unit tracks > subprogram")

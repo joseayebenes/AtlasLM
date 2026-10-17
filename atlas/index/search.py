@@ -12,6 +12,10 @@ between scores of different kinds:
   [search] synonyms, a query that has a term of a group adds one more lexical ranking,
   of the query with the other terms of the group.
 
+A search can be narrowed to a document, to some kinds of record and by the meta of the
+records (`where`): the attributes and the module of a DOORS requirement, the chapter of a
+passage, the kind and the file of a code element (see records.py).
+
 A search over every document keeps at most `per_document` hits of each document (or code
 unit) while others have hits: otherwise the elements of one code unit, which all repeat
 its name, can take every place.
@@ -53,7 +57,7 @@ from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
 
 __all__ = ["acronyms", "answer", "answer_status", "build_context", "check_citations", "cite", "citation_warnings",
-           "diverse", "expand_synonyms", "grounded_status", "ids_in", "rewrite_question", "rrf", "search",
+           "diverse", "expand_synonyms", "filters", "grounded_status", "ids_in", "rewrite_question", "rrf", "search",
            "section_file", "status_line", "whole_sources"]
 
 log = logging.getLogger(__name__)
@@ -245,6 +249,26 @@ def citation_warnings(res: dict) -> list[str]:
     return out
 
 
+def filters(attribute: str = "", module: str = "", chapter: str = "") -> dict[str, str]:
+    """The `where` of a search from the text of its options: `attribute` is
+    "status=Approved", several separated by ";" ("status=Approved;verification=Test");
+    `module` a DOORS module and `chapter` a chapter (its number or its title). Keys in
+    lower case. ValueError if a pair has no "=", no key or no value."""
+    where: dict[str, str] = {}
+    for pair in (attribute or "").split(";"):
+        if not pair.strip():
+            continue
+        key, eq, value = pair.partition("=")
+        if not eq or not key.strip() or not value.strip():
+            raise ValueError(f"attribute '{pair.strip()}' is not name=value (e.g. status=Approved; several "
+                             f"separated by ';')")
+        where[key.strip().lower()] = value.strip()
+    for key, value in (("module", module), ("chapter", chapter)):
+        if value and value.strip():
+            where[key] = value.strip()
+    return where
+
+
 def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
     """Reciprocal Rank Fusion: merges rankings without calibrating their scores."""
     score: dict[int, float] = {}
@@ -339,15 +363,17 @@ def diverse(records: list[dict], k: int, per_document: int) -> list[dict]:
 
 def search(store: IndexStore, embedder: Embedder, query: str, k: int = 8, document: str = "",
            kinds: list[str] | None = None, llm: JsonLlm | None = None, dense: bool = True,
-           per_document: int = 0, rewritten: dict | None = None,
+           per_document: int = 0, rewritten: dict | None = None, where: dict | None = None,
            synonyms: list[list[str]] = (), id_normalize: str = "upper") -> list[dict]:
     """The k best records for `query`. `document` limits to a document (name, key or part of
-    its title) and `kinds` to some kinds of record; without `document`, `per_document` (0 =
-    no limit) is the most hits of one document while others have some. With `llm`, the
-    query is rewritten first (or `rewritten` gives it already). With dense=False there are
-    no vectors (IDs and BM25 only): no request to any model. `synonyms`: groups of
-    equivalent terms (config.read_synonyms); `id_normalize`, that of the IDs (ids_in)."""
-    allowed = store.allowed(document, kinds)
+    its title), `kinds` to some kinds of record and `where` to the records whose meta has
+    those values ({"status": "Approved", "chapter": "3"}, see IndexStore.allowed); without
+    `document`, `per_document` (0 = no limit) is the most hits of one document while others
+    have some. With `llm`, the query is rewritten first (or `rewritten` gives it already).
+    With dense=False there are no vectors (IDs and BM25 only): no request to any model.
+    `synonyms`: groups of equivalent terms (config.read_synonyms); `id_normalize`, that of
+    the IDs (ids_in)."""
+    allowed = store.allowed(document, kinds, where)
     for written, rid in ids_in(query, store.id_prefixes(), id_normalize, store.known_refs):
         query = re.sub(rf"(?<![A-Za-z0-9]){re.escape(written)}(?!\d)", rid, query)   # "srs-4": as "SRS-0004"
     if rewritten is None and llm is not None:
@@ -417,13 +443,14 @@ def _without_overlap(previous: str, chunk: str) -> str:
     return chunk
 
 
-def whole_sources(store: IndexStore, doc: str) -> list[dict]:
+def whole_sources(store: IndexStore, doc: str, allowed: set[int] | None = None) -> list[dict]:
     """A document as sources, one per section and in its order: the text of its chunks
     without their overlap; in a DOORS module, its requirements and information objects;
-    in a code unit, its elements. A section without any, its summary."""
+    in a code unit, its elements. A section without any, its summary. With `allowed`
+    (IndexStore.allowed), only those records."""
     sections: dict[str, list[dict]] = {}
     for r in store.document_records(doc):
-        if r["kind"] != "overview":
+        if r["kind"] != "overview" and (allowed is None or r["id"] in allowed):
             sections.setdefault(r["section_id"] or "", []).append(r)
     document = not doc.startswith((DOORS_PREFIX, CODE_PREFIX))
     sources = []
@@ -462,12 +489,14 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
-                 max_chars: int = SCOPE_CHARS, extra_sources: list[dict] = ()) -> dict:
+                 max_chars: int = SCOPE_CHARS, extra_sources: list[dict] = (), where: dict | None = None) -> dict:
     """The answer from whole documents ({doc, name}), after `extra_sources`: one request if
     they fit in max_chars; if not, notes from each part and a last request that combines them.
     A part that fails leaves a note ("part 2 of 4 failed: ...") at the end of the answer, the
-    answer is written with the others and its status is partial."""
-    sources = list(extra_sources) + [s for d in docs for s in whole_sources(store, d["doc"])]
+    answer is written with the others and its status is partial. With `where`, only the
+    records of the documents that match it (see IndexStore.allowed)."""
+    allowed = store.allowed(where=where) if where else None
+    sources = list(extra_sources) + [s for d in docs for s in whole_sources(store, d["doc"], allowed)]
     names = [d["name"] for d in docs]
     if not sources:
         return {**_checked(NOTHING_FOUND, [], False), "scope": "whole", "documents": names, "requests": 0}
@@ -561,7 +590,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
            extra_sources: list[dict] = (), synonyms: list[list[str]] = (), id_normalize: str = "upper",
-           context_radius: int = CONTEXT_RADIUS) -> dict:
+           context_radius: int = CONTEXT_RADIUS, where: dict | None = None) -> dict:
     """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
     sentences without a citation, "consulted": how many sources it was given (see
     answer_status), "sources": those it cites [{n, cite, doc, section, file,
@@ -574,7 +603,8 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
     the question is broad. `extra_sources` ({doc_name, section_title, kind, ref, context},
     as DocTools.route gives them) are the first sources; with them the question is not
-    rewritten (its IDs are found without it) and "auto" answers from passages."""
+    rewritten (its IDs are found without it) and "auto" answers from passages. `where`
+    narrows the passages, and what is read of whole documents, as in search."""
     extra = list(extra_sources)
     if extra:
         rewrite, scope = False, "passages" if scope == "auto" else scope
@@ -584,14 +614,14 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
     if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
-                                                   per_document=per_document, rewritten=rewritten,
+                                                   per_document=per_document, rewritten=rewritten, where=where,
                                                    synonyms=synonyms, id_normalize=id_normalize)
         docs = _scope_documents(store, document, named, hits)
         if docs:
-            res = answer_whole(store, llm, question, docs, scope_chars, extra)
+            res = answer_whole(store, llm, question, docs, scope_chars, extra, where)
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
-                  synonyms=synonyms, id_normalize=id_normalize)
+                  where=where, synonyms=synonyms, id_normalize=id_normalize)
     routed = {s["ref"].upper() for s in extra if s.get("ref")}
     hits = [h for h in hits if not (h["doc"].startswith(DOORS_PREFIX) and (h.get("ref") or "").upper() in routed)]
     used = sum(len(s["context"]) for s in extra)

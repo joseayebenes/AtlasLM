@@ -234,6 +234,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   dice el mismo ID; un resumen de sección, con los primeros fragmentos de la sección; un
   requisito o una definición de un documento, con el fragmento que lo contiene y sus vecinos.
   Antes solo se ampliaban los fragmentos.
+- Filtros en la búsqueda, por la `meta` de los registros: `attribute = "status=Approved"`
+  (varios pares con «;»), `module` (un módulo de DOORS) y `chapter` (un capítulo, por su
+  número o su título) en la herramienta `search`; `--attribute` (repetible), `--module` y
+  `--chapter` en `atlas search` y `atlas ask`; `where` en `Index.search` e `Index.answer`.
+  Se suman entre sí y con `document` y `kind`. En las muestras, «deletion» no daba ningún
+  requisito de DOORS entre sus ocho resultados; con `--attribute status=Approved`, ocho
+  requisitos aprobados. Un filtro que no casa con nada devuelve las claves y los valores que
+  hay, y una pregunta amplia con filtros lee enteros solo los registros que casan. La
+  descripción de `search` y las instrucciones del servidor MCP explican los filtros.
+- Cada registro del índice lleva su `meta` (columna `meta` de `index_records`), y cada
+  resultado de `search` la devuelve: en los requisitos de DOORS, el módulo, el capítulo y los
+  atributos de `[sources.doors] attributes`; en los fragmentos, resúmenes de sección y
+  requisitos de un documento, su capítulo (el primer elemento de su ruta); en el código, la
+  clase del elemento (`subprogram`, `test`, `type`, `variable` o `constant`) y su fichero.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -267,6 +281,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Con `embeddinggemma`, el prefijo de documento lleva el título del documento (`title: HMI
   Manual | text: …`) en vez de `title: none`, como recomienda su ficha. En las muestras, la híbrida
   pasa del 75 % al 80 % de acierto@1 (MRR de 0,83 a 0,88).
+- `[sources.doors] attributes` tiene efecto: son los atributos de DOORS que atlas enseña y por
+  los que filtra, `["status", "verification"]` por defecto. Cada uno que tenga un requisito va
+  en su texto del índice (`status: Approved; verification: Test`), así que pesa en la búsqueda
+  y el modelo lo ve con el requisito, y se puede pedir con `attribute`. No elige qué se
+  importa: eso siguen haciéndolo `attribute_columns` y el relleno de la base de intercambio.
+  Cambiar la lista solo reindexa los módulos de DOORS, sin volver a leerlos.
+- `atlas search` sangra todas las líneas de cada resultado.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -398,6 +419,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Con `embeddinggemma`, el primer `atlas run` vuelve a embeber todos los textos del índice (el
   prefijo de documento cambia y es parte de la clave de la caché). Con otros modelos, se
   reindexa desde la caché, sin peticiones.
+- El índice se reconstruye una vez (`index-2`): la siguiente `atlas run` reescribe todos sus
+  registros. Solo se embeben de nuevo los requisitos de DOORS con atributos, cuyo texto
+  cambia; lo demás sale de la caché de vectores. Un `atlas.db` anterior gana la columna `meta`
+  al abrirse, y sus registros no casan con ningún filtro hasta esa ejecución.
+- Los módulos de DOORS se vuelven a leer una vez: su huella ya no incluye `attributes`.
+- `attributes` estaba «reservada: todavía sin efecto». Si alguien la puso como lista de lo que
+  se importa, ahora decide lo que se enseña y por lo que se filtra; con `[]`, nada.
 
 ## [0.2.0] — 2026-10-16
 

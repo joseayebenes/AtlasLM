@@ -21,6 +21,12 @@ A code unit (an Ada package: its spec and its body) is one more document too: ea
 subprogram, test, type, variable and constant is a `code_doc` record, with its qualified
 name (`tracks.delete_track`) in `ref` and, as text, its header comment, the requirements it
 cites and its code.
+
+Each record also has `meta`, what a search can be narrowed by (keys in lower case, values
+as text): in a DOORS module, `module` and the attributes of [sources.doors] attributes
+(`status`, `verification` by default), which also go in its text, so that they weigh in the
+search too; `chapter`, the first heading of its path, in every record that has one; in a
+code unit, `kind` (subprogram | test | type | variable | constant) and `file`.
 """
 from __future__ import annotations
 
@@ -28,12 +34,29 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "code_records", "reflow",
-           "requirement_records"]
+__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "asks_for", "build_records", "chunk_text",
+           "code_records", "reflow", "requirement_records"]
 
 DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
 CODE_PREFIX = "code:"       # key of a code unit in the index: "code:tracks"
 KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
+ATTRIBUTES = ("status", "verification")     # [sources.doors] attributes by default
+
+
+def asks_for(wanted: str, title: str) -> bool:
+    """Whether `wanted` names a section or chapter with that title: the whole title, its
+    number ("3", "2.1") or the title without its number, in any case."""
+    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
+    wanted, title = norm(wanted), norm(title)
+    number, _, rest = title.partition(" ")
+    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
+    return bool(wanted) and wanted in names
+
+
+def _chapter(path: list[str] | str) -> dict:
+    """The meta of a record with that path: its first element, the chapter."""
+    first = (path.split(" > ")[0] if isinstance(path, str) else (path or [""])[0]).strip()
+    return {"chapter": first} if first else {}
 
 
 def reflow(text: str) -> str:
@@ -85,7 +108,8 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
         a = s.get("analysis") or {}
         path = " > ".join(s.get("path") or [s["title"]])
         base = {"section_id": s["id"], "section_title": s["title"], "path": path,
-                "page_start": s.get("page_start") or 0, "page_end": s.get("page_end") or 0}
+                "page_start": s.get("page_start") or 0, "page_end": s.get("page_end") or 0,
+                "meta": _chapter(s.get("path") or [s["title"]])}
         header = f"{title} > {path}"
 
         if a.get("summary"):
@@ -104,6 +128,7 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
                         "section_id": r["section"], "section_title": r.get("section_title", ""),
                         "path": " > ".join(sec.get("path", [])),
                         "page_start": sec.get("page_start") or 0, "page_end": sec.get("page_end") or 0,
+                        "meta": _chapter(sec.get("path", [])),
                         "embed_text": f"{title} > requirement\n{text}"})
     titles = {s["id"]: s["title"] for s in data["sections"]}
     for g in data.get("glossary", []):
@@ -122,11 +147,20 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
     return records
 
 
-def requirement_records(module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> list[dict]:
+def requirement_records(module: str, requirements: list[dict], kinds: Iterable[str] | None = None,
+                        attributes: Iterable[str] = ATTRIBUTES) -> list[dict]:
     """Records of a DOORS module from its rows in atlas.db (Store.requirements): one
     `requirement` per requirement, with its ID in `ref`, and one `chunk` per information
-    object. The headings above each one are its path; the nearest, its section."""
+    object. The headings above each one are its path; the nearest, its section. The
+    `attributes` a requirement has (by name, in any case) go in its meta and, as a line
+    "status: Approved; verification: Test", in its text."""
     by_id = {r["id"]: r for r in requirements}
+    attributes = list(dict.fromkeys(attributes))
+
+    def shown(r: dict) -> list[tuple[str, str]]:
+        values = {str(k).lower(): v for k, v in (r.get("attributes") or {}).items()}
+        return [(a, str(values[a.lower()]).strip()) for a in attributes
+                if values.get(a.lower()) is not None and str(values[a.lower()]).strip()]
     kind_of = lambda r: (r.get("attributes") or {}).get("kind", "requirement")
 
     def title(r: dict) -> str:
@@ -146,14 +180,16 @@ def requirement_records(module: str, requirements: list[dict], kinds: Iterable[s
         above.reverse()
         path = " > ".join(title(h) for h in above)
         base = {"section_id": above[-1]["id"] if above else "", "section_title": title(above[-1]) if above else "",
-                "path": path}
+                "path": path, "meta": {"module": module, **_chapter([title(h) for h in above])}}
         header = " > ".join(x for x in (module, path) if x)
         if kind_of(r) == "information":
             records.append({**base, "kind": "chunk", "seq": 0, "text": r["text"],
                             "embed_text": f"{header}\n\n{r['text']}"})
         else:
-            text = f"{r['id']}: {r['text']}"
+            values = shown(r)
+            text = f"{r['id']}: {r['text']}" + ("\n" + "; ".join(f"{a}: {v}" for a, v in values) if values else "")
             records.append({**base, "kind": "requirement", "ref": r["id"], "text": text,
+                            "meta": {**{a.lower(): v for a, v in values}, **base["meta"]},
                             "embed_text": f"{header} > requirement\n{text}"})
     if kinds is not None:
         wanted = set(kinds)
@@ -222,6 +258,7 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
         unsaid = [r for r in e["reqs"] if r not in e["doc"] and r not in code]      # the Req: tag usually says them
         body = "\n".join(x for x in (e["doc"], f"Requirements: {', '.join(unsaid)}" if unsaid else "", code) if x)
         records.append({"kind": "code_doc", "ref": ref, "section_id": ref, "section_title": f"{ref} · {e['where']}",
-                        "path": unit, "seq": n, "text": f"{ref} ({e['kind']}, {e['where']})\n{body}",
+                        "path": unit, "seq": n, "meta": {"kind": e["kind"], "file": e["where"].split(":")[0]},
+                        "text": f"{ref} ({e['kind']}, {e['where']})\n{body}",
                         "embed_text": f"{language} unit {unit} > {e['kind']} {ref}\n{body}"})
     return records

@@ -21,9 +21,11 @@
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
-                   [--k N] [--kind KIND] [--document NAME]
+                   [--k N] [--kind KIND] [--document NAME] [--module MODULE] [--chapter CHAPTER]
+                   [--attribute NAME=VALUE]   e.g. --attribute status=Approved (repeatable, or ";")
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
+                   [--module MODULE] [--chapter CHAPTER] [--attribute NAME=VALUE]
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -425,7 +427,7 @@ class IndexIncomplete(RuntimeError):
     error so that the next run embeds what is missing."""
 
 
-INDEX_VERSION = "index-1"   # change it when the records or the index tables change
+INDEX_VERSION = "index-2"   # change it when the records or the index tables change (index-2: meta)
 
 
 def index_fingerprint(ctx) -> str:
@@ -462,6 +464,18 @@ def embeddings_estimate(ctx, step: str, index, texts: list, workers: int) -> dic
     res = index.embed_missing(texts, workers, dry_run=True)
     return {**request_estimate(ctx, step, {"embeddings": res["batches"]}, None, "embeddings", workers),
             "texts": res["texts"], "cached": res["cached"]}
+
+
+def doors_attributes(cfg: Config) -> list[str]:
+    """[sources.doors] attributes: the DOORS attributes atlas shows and filters by."""
+    from atlas.index import ATTRIBUTES
+    attributes = (cfg["sources"].get("doors") or {}).get("attributes")
+    if attributes is None:
+        return list(ATTRIBUTES)
+    bad = [a for a in attributes if not isinstance(a, str) or not a.strip() or "=" in a or ";" in a]
+    if bad:
+        raise ConfigError(f"[sources.doors] attributes: {bad} are not attribute names")
+    return [a.strip() for a in attributes]
 
 
 def index_step(ctx) -> Step:
@@ -522,6 +536,7 @@ def index_requirements_step(ctx) -> Step:
     index.documents, the texts of all the modules to index are embedded first, together."""
     from atlas.index import DOORS_PREFIX, Index, module_title, requirement_records
     kinds = index_options(ctx)["kinds"]
+    attributes = doors_attributes(ctx.cfg)
     workers = step_workers(ctx, "index")
     embed_model = embed_settings(ctx)
     shared: dict = {}
@@ -538,10 +553,10 @@ def index_requirements_step(ctx) -> Step:
 
     def fingerprint(ctx, module: str) -> str:
         rows = json.dumps(ctx.store.requirements(module, in_module_order=True), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
+        return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{attributes}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds)
+        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds, attributes)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
@@ -549,7 +564,7 @@ def index_requirements_step(ctx) -> Step:
 
     def texts(modules: list[str]) -> list[tuple[str, str]]:
         return [(r["embed_text"], module_title(m)) for m in modules
-                for r in requirement_records(m, ctx.store.requirements(m, in_module_order=True), kinds)]
+                for r in requirement_records(m, ctx.store.requirements(m, in_module_order=True), kinds, attributes)]
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
@@ -1234,15 +1249,17 @@ def coverage(cfg: Config, module: str, as_json: bool = False) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
+FILTERS = {"--module": str, "--chapter": str, "--attribute": str}
 OPTIONS = {"init": {"--profile": str},
            "run": {"--until": str, "--max-minutes": int, "--max-requests": int},
            "estimate": {"--latency": float},
-           "search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
+           "search": {"--k": int, "--kind": str, "--document": str, **FILTERS},
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, **FILTERS},
            "develop": {"--check": bool, "--resume": bool},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
                                                       "comply", "link", "coverage", "impact")}}
 DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when it is not the name of the option
+REPEATABLE = {"--attribute": ";"}       # given twice: joined with this
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -1266,6 +1283,8 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
+        if name in REPEATABLE and name[2:] in options:
+            value = f"{options[name[2:]]}{REPEATABLE[name]}{value}"
         try:
             options[dest] = kind(value)
         except ValueError:
@@ -1281,26 +1300,51 @@ def _kinds(kind: str) -> list[str] | None:
     return [kind] if kind else None
 
 
-def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = "") -> int:
+def _where(attribute: str, module: str, chapter: str) -> dict | None:
+    from atlas.index import filters
+    try:
+        return filters(attribute, module, chapter) or None
+    except ValueError as e:
+        sys.exit(str(e))
+
+
+def _no_match(index, where: dict) -> None:
+    """What the filters can take, when they match nothing."""
+    known = index.meta_values()
+    unknown = [key for key in where if key not in known]
+    if unknown:
+        print(f"no passage has {', '.join(unknown)}")
+    print("filters: " + ("; ".join(f"{key} ({', '.join(values[:10])})" for key, values in known.items())
+                         or "none (has `atlas run` indexed anything since atlas 0.3?)"))
+
+
+def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = "", attribute: str = "",
+           module: str = "", chapter: str = "") -> int:
     from atlas.index import Index, cite
-    kinds = _kinds(kind)
+    kinds, where = _kinds(kind), _where(attribute, module, chapter)
     _context(cfg)
-    hits = Index.from_config(cfg).search(query, k=k, document=document, kinds=kinds)
+    index = Index.from_config(cfg)
+    hits = index.search(query, k=k, document=document, kinds=kinds, where=where)
     if not hits:
-        print("nothing found (has `atlas run` indexed any document?)")
+        print("nothing found" + (" with those filters" if where else " (has `atlas run` indexed any document?)"))
+        if where:
+            _no_match(index, where)
     for i, h in enumerate(hits, 1):
-        print(f"\n[{i}] {cite(h)}\n    {h['text'][:400]}")
+        text = h["text"][:400].replace("\n", "\n    ")
+        print(f"\n[{i}] {cite(h)}\n    {text}")
     return 0
 
 
-def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
+def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False,
+        attribute: str = "", module: str = "", chapter: str = "") -> int:
     from atlas.index import DocTools
     from atlas.index.search import citation_warnings, status_line
-    kinds = _kinds(kind)
+    kinds, where = _kinds(kind), _where(attribute, module, chapter)
     _context(cfg)
     tools = DocTools.from_config(cfg)
+    # with filters, only what they let through: no requirement routed from outside them
     res = tools.index.answer(question, k=k, document=document, kinds=kinds, scope="whole" if whole else "",
-                             extra_sources=tools.route(question))
+                             extra_sources=[] if where else tools.route(question), where=where)
     print(res["answer"])
     if res.get("truncated"):
         print("\n(The answer is cut: the model reached max_tokens even when asked again with twice the "

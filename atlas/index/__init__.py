@@ -11,6 +11,7 @@
     idx = Index.from_config(cfg)                    # the atlas.db of the workspace
     idx.embed_missing(texts, workers=4)             # optional: many documents' texts in full batches
     hits = idx.search("track deletion latency")     # [search] results, per_document
+    idx.search("deletion", where={"status": "Approved", "module": "SRS_TMS"})   # by the meta of the records
     res = idx.answer("How long does a track take to be deleted?")
     print(res["answer"], [s["cite"] for s in res["sources"]])
     idx.answer("Summarise the track management requirements", scope="whole")   # whole documents
@@ -27,19 +28,19 @@ from typing import Iterable
 import numpy as np
 
 from atlas.index.embeddings import Embedder
-from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
-                                  requirement_records)
-from atlas.index.search import answer, answer_whole, build_context, cite, search
+from atlas.index.records import (ATTRIBUTES, CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text,
+                                  code_records, requirement_records)
+from atlas.index.search import answer, answer_whole, build_context, cite, filters, search
 from atlas.index.store import DEFAULT_FTS_TOKENIZER, IndexStore
 from atlas.index.tools import DocTools
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
-           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "code_title",
-           "embed_missing", "module_title",
-           "index_code", "index_document", "index_module", "requirement_records", "search"]
+__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore",
+           "answer", "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records",
+           "code_title", "embed_missing", "filters", "index_code", "index_document", "index_module", "module_title",
+           "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -69,11 +70,11 @@ def code_title(unit: str) -> str:
 
 
 def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
-                 kinds: Iterable[str] | None = None) -> dict:
+                 kinds: Iterable[str] | None = None, attributes: Iterable[str] = ATTRIBUTES) -> dict:
     """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
-    "doors:<module>", named after the module. Same batches, cache and result as
-    index_document."""
-    records = requirement_records(module, requirements, kinds)
+    "doors:<module>", named after the module, with the `attributes` of each requirement
+    (see requirement_records). Same batches, cache and result as index_document."""
+    records = requirement_records(module, requirements, kinds, attributes)
     summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": module_title(module), "out_dir": "",
@@ -214,9 +215,10 @@ class Index:
         """See index_document (options: chunk_chars, chunk_overlap, kinds)."""
         return index_document(self.store, self.embedder, data, doc, name, out_dir, **options)
 
-    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
+    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None,
+                   attributes: Iterable[str] = ATTRIBUTES) -> dict:
         """See index_module."""
-        return index_module(self.store, self.embedder, module, requirements, kinds)
+        return index_module(self.store, self.embedder, module, requirements, kinds, attributes)
 
     def add_code(self, unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
                  chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:
@@ -234,22 +236,30 @@ class Index:
         return self.store.documents()
 
     def search(self, query: str, k: int = 0, document: str = "", kinds: list[str] | None = None,
-               rewrite: bool = False, dense: bool = True, per_document: int | None = None) -> list[dict]:
-        """k = 0 and per_document = None: those of the settings."""
+               rewrite: bool = False, dense: bool = True, per_document: int | None = None,
+               where: dict | None = None) -> list[dict]:
+        """k = 0 and per_document = None: those of the settings. `where`: the meta the
+        records must have ({"status": "Approved", "module": "SRS_TMS", "chapter": "3"});
+        see search.filters for it from the text of an option."""
         per = self.settings["per_document"] if per_document is None else per_document
         return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
-                      self.llm if rewrite else None, dense, per, synonyms=self.synonyms,
+                      self.llm if rewrite else None, dense, per, where=where, synonyms=self.synonyms,
                       id_normalize=self.id_normalize)
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
-               kinds: list[str] | None = None, scope: str = "", extra_sources: list[dict] = ()) -> dict:
+               kinds: list[str] | None = None, scope: str = "", extra_sources: list[dict] = (),
+               where: dict | None = None) -> dict:
         """scope: passages | whole | auto ("" = that of the settings); `extra_sources`, those
-        of DocTools.route; see search.answer."""
+        of DocTools.route; `where` as in search; see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
                       s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
                       extra_sources=extra_sources, synonyms=self.synonyms, id_normalize=self.id_normalize,
-                      context_radius=s["context_radius"])
+                      context_radius=s["context_radius"], where=where)
+
+    def meta_values(self) -> dict[str, list[str]]:
+        """What `where` can take: each key of the meta of the records, with some values."""
+        return self.store.meta_values()
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

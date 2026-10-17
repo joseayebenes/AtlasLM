@@ -55,6 +55,7 @@ lang = "Spanish"                       # idioma de los resúmenes
 [sources.doors]
 adapter = "exchange"                   # la base de intercambio que publica tools/doors_export
 enabled = false                        # true cuando tengas la base
+attributes = ["status", "verification"]   # los atributos que atlas enseña y por los que filtra (--attribute)
 [sources.doors.exchange]
 path = "requirements.sqlite"
 [sources.doors.convention]

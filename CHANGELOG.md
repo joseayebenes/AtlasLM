@@ -6,6 +6,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas doctor [atlas.toml]`: lo que puede fallar en un puesto nuevo, antes de un `run` que lo
+  descubriría horas después. Python y plataforma, los extras que importan los pasos y
+  herramientas configurados, cuántos ficheros da cada ruta de las fuentes, la base de
+  intercambio de DOORS (versión, módulos y fecha), los comandos del compilador y del servidor
+  de lenguaje buscados en el `PATH` y `tool_path`, las variables del entorno que faltan, el
+  workspace y la conexión. Tabla OK/WARN/FAIL, código de salida 1 si algo falla. En la
+  librería, `atlas.doctor.diagnose(cfg)`, de solo lectura.
+
 ### Corregido
 - Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
   `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.

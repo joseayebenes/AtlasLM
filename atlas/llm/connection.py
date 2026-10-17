@@ -769,33 +769,38 @@ def _check_chat(response) -> tuple[bool, str]:
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
 
 
+def check_service(name: str, cfg: ServiceConfig) -> dict:
+    """One real request to a service ("LLM": a short chat; otherwise an embedding):
+    {"ok", "detail", "seconds"}. A failure comes with the diagnosis in "detail"."""
+    t0 = time.time()
+    try:
+        client, _ = create_client(cfg)
+        if name == "LLM":
+            r = client.chat.completions.create(
+                model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
+                messages=[{"role": "user", "content": "Reply with: ok"}],
+                **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
+                **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
+            ok, detail = _check_chat(r)
+        else:
+            r = client.embeddings.create(model=cfg.model, input=["test"])
+            ok, detail = True, f"dimension {len(r.data[0].embedding)}"
+    except SystemExit:
+        raise
+    except Exception as e:
+        return {"ok": False, "detail": diagnose(e), "seconds": time.time() - t0}
+    return {"ok": ok, "detail": detail, "seconds": time.time() - t0}
+
+
 def check(conn: Connection) -> int:
     """Real chat and embeddings request. Returns 0 if everything works."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
     failures = 0
     for name, cfg in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
         print(f"\n{name}: {describe(cfg)}")
-        try:
-            client, _ = create_client(cfg)
-            t0 = time.time()
-            if name == "LLM":
-                r = client.chat.completions.create(
-                    model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
-                    messages=[{"role": "user", "content": "Reply with: ok"}],
-                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
-                    **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
-                ok, detail = _check_chat(r)
-            else:
-                r = client.embeddings.create(model=cfg.model, input=["test"])
-                ok, detail = True, f"dimension {len(r.data[0].embedding)}"
-            print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
-            if not ok:
-                failures += 1
-        except SystemExit:
-            raise
-        except Exception as e:
-            failures += 1
-            print(f"  FAILED: {diagnose(e)}")
+        res = check_service(name, cfg)
+        print(f"  {'OK' if res['ok'] else 'FAILED'} ({res['seconds']:.1f}s): {res['detail']}")
+        failures += not res["ok"]
     if conn.llm.net.insecure or conn.embeddings.net.insecure:
         print("\n[warning] insecure turns TLS verification off; use it only for diagnosis.")
     return 1 if failures else 0

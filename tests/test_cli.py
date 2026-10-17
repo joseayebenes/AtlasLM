@@ -454,3 +454,45 @@ languages = ["ada"]
     with caplog.at_level("WARNING", logger="atlas"):
         assert step.units(None) == []
     assert "no-such-src does not exist" in caplog.text
+
+
+def test_doctor_finds_a_missing_root_and_a_missing_command(toml, samples, tmp_path, fake, capsys):
+    from atlas.cli import doctor
+    from atlas.doctor import diagnose
+    cfg = load_config(toml(f'''
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+api_key = "local"
+[network]
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "code"]
+[sources.code]
+roots = ["{(samples / 'ada').as_posix()}", "{(tmp_path / 'no-such-src').as_posix()}"]
+languages = ["ada"]
+check_command = ["no-such-compiler-xyz", "-c", "{{file}}"]
+tool_path = ["{(tmp_path / 'no-such-gnat-*' / 'bin').as_posix()}"]
+'''))
+    found = {(f.where, f.level): f for f in diagnose(cfg, connect=False)}
+    assert "no-such-src does not exist" in found[("sources.code", "fail")].message
+    assert "files" in found[("sources.code", "ok")].message
+    assert "no-such-compiler-xyz" in found[("sources.code check_command", "fail")].message
+    assert found[("sources.code tool_path", "warn")].fix
+    assert ("workspace", "ok") in found and ("python", "ok") in found
+    assert not (tmp_path / "ws").exists()                   # it only reads: no workspace created
+    assert doctor(cfg) == 1
+    out = capsys.readouterr().out
+    assert "FAIL  sources.code" in out and "OK    connection llm" in out and "2 failures" in out
+    no_ca = load_config(toml(f'''
+[llm]
+base_url = "{fake[0]}"
+api_key = "local"
+[network]
+no_proxy = "*"
+ca_cert = "{(tmp_path / 'no-such-ca.pem').as_posix()}"
+[pipeline]
+steps = []
+'''))
+    found = [f for f in diagnose(no_ca) if f.where == "connection llm"]
+    assert found[0].level == "fail" and "no-such-ca.pem does not exist" in found[0].message and "1 warning," in out

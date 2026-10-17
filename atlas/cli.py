@@ -26,6 +26,8 @@
                                        is undone, and what it cannot fix goes to a person (a report)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
+    atlas doctor   [atlas.toml]     what can fail on this machine, before a run: Python, extras, sources,
+                                    the DOORS database, the compiler commands, variables, workspace and connection
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
                                     whether the server uses the reasoning that the agents give back
     atlas reference [atlas.toml]    indexes the manuals of [sources.code] reference and the declarations of
@@ -1030,6 +1032,15 @@ def check(cfg: Config) -> int:
     return check_connection(from_config(cfg))
 
 
+def doctor(cfg: Config) -> int:
+    """A table of what can fail with this configuration on this machine; 1 if something fails."""
+    from atlas.doctor import diagnose, print_findings
+    logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    findings = diagnose(cfg)
+    print_findings(findings)
+    return 1 if any(f.level == "fail" for f in findings) else 0
+
+
 def probe(cfg: Config) -> int:
     """The chat model as an agent: a tool call, its result and the reasoning given back."""
     from atlas.llm import from_config
@@ -1088,7 +1099,7 @@ def main(argv: list[str] | None = None) -> None:
     if action == "init":
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "eval": evaluate, "check": check, "probe": probe, "reference": reference, "serve": serve}
+               "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor, "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

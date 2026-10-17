@@ -131,11 +131,29 @@ atlas solo se conecta a las URL de `[llm]` y `[embeddings]`. Ver
 ## 4. Comprobar y procesar
 
 ```powershell
+atlas doctor atlas.toml     # lo que puede fallar en este puesto, antes de procesar nada
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
 atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
 atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
 ```
+
+`atlas doctor` solo lee: no crea el workspace ni toca las fuentes. Imprime una tabla con una
+línea por comprobación (`OK`, `WARN` o `FAIL`, dónde y qué; debajo, cómo arreglarlo) y sale
+con 1 si algo falla:
+
+- la versión de Python y la plataforma;
+- los extras que importan los pasos y herramientas configurados (`tree_sitter_ada`,
+  `pymupdf`, `mcp`, `google.adk`);
+- cada ruta de `[[sources.docs]] paths` y de `[sources.code] roots`: si existe y cuántos
+  ficheros daría (0 es un aviso: una raíz mal escrita no procesa nada);
+- la base de intercambio de DOORS (`[sources.doors.exchange] path`): si abre, su versión de
+  esquema, sus módulos y cuándo se rellenó;
+- los comandos de `[sources.code]` (`check_command`, `test_command`, `syntax_commands`,
+  `language_server`...) buscados en el `PATH` y en las carpetas de `tool_path`;
+- las variables de entorno que nombra el TOML y no están puestas;
+- si el workspace existe y se puede escribir;
+- y, al final, la conexión: la misma petición al chat y a los embeddings que `atlas check`.
 
 Si `check` falla, dice por qué: certificado, proxy, credenciales, URL o modelo. Con
 `C:\atlas\venv\Scripts` en el `PATH` basta con `atlas`; si no, la ruta completa.

@@ -84,6 +84,11 @@ todos los requisitos. Con las muestras:
 without code (36): SRS-0005, SRS-0006, …
 ```
 
+`atlas trace SRS-0004` imprime todo lo del requisito en Markdown, con `build_context` de
+[atlas.agents](../agents/README.md) (sin modelo y sin el extra `[agents]`) y un presupuesto de
+20 000 tokens, más holgado que el de la herramienta para no cortar en pantalla; `--json` da el
+diccionario de `trace`. `atlas matrix --json` da el de `matrix`, con todas las filas.
+
 La comparación de cifras es el primer paso de la verificación de requisitos con la
 documentación: el texto de DOORS de SRS-0004 dice 320 ms y el del PDF de ejemplo, 401 ms.
 `atlas verify` (ver [atlas.agents](../agents/README.md)) juzga el resto con el modelo.
@@ -118,4 +123,6 @@ consultas.
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
 paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
 `neighbors`, comunidades y mismo grafo que `ada_graph.py`. `tests/test_cli.py`: el paso
-`graph.build` incremental por origen, `atlas trace` y `atlas matrix`.
+`graph.build` incremental por origen, `atlas trace` (Markdown y `--json`), `atlas matrix`
+(CSV con BOM y `;`, otro delimitador, `--json`) y `--json` en `graph` y `status`;
+`write_matrix` y la hoja XLSX, en `test_graph.py`.

@@ -88,7 +88,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 
 | Pieza | Qué hace | Modelo |
 |---|---|---|
-| `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
+| `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` y la salida de `atlas trace` (con 20 000 tokens) | no |
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |
 | `atlas comply` | si el código que implementa cada requisito hace todo lo que pide, obligación a obligación: cumplida, no cumplida, en parte o imposible de saber leyendo el código. También es la herramienta `check_compliance` | `compliance_checker` |
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |

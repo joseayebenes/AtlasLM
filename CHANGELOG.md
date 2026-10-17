@@ -11,12 +11,23 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   escritura pasa a la librería: `atlas.graph.write_matrix(res, prefijo, formatos, delimitador)`.
 - Extra `[xlsx]` (openpyxl, wheel puro): `matrix-<módulo>.xlsx` con una hoja de matriz con
   filtros y anchos, una de huecos y un resumen con la fecha de la parte DOORS del grafo.
+- `--json` en `status`, `sections`, `graph`, `trace`, `matrix`, `verify`, `comply`, `link`,
+  `coverage` e `impact`: por stdout solo el diccionario de su función de librería, para el
+  Programador de tareas y los scripts; los avisos siguen por stderr. Un error sale también como
+  JSON (`{"error": ...}`), con código de salida 1.
+
+### Cambiado
+- `atlas trace ID` imprime en Markdown todo lo del requisito (`build_context`, sin modelo y sin
+  el extra `[agents]`): texto y atributos de DOORS, enlaces, las secciones que lo declaran con
+  las cifras que difieren de DOORS, el código, las pruebas, los llamadores y el código fuente.
 
 ### Al actualizar
 - El CSV de `atlas matrix` va en UTF-8 con BOM y con `;` entre columnas (`[graph]
   csv_delimiter`), para que Excel en español lo abra en columnas y con los acentos bien. Las
   listas de una celda van una por línea en vez de separadas por «; ». Un script que lea el
   CSV necesita `encoding="utf-8-sig"` y `delimiter=";"`, o `csv_delimiter = ","`.
+- `atlas trace` ya no imprime JSON sino Markdown. Un script que leía su salida necesita
+  `atlas trace ID --json`, que da el mismo diccionario de antes.
 
 ## [0.2.0] — 2026-10-16
 

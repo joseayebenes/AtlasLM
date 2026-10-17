@@ -36,7 +36,7 @@ from atlas.index.store import IndexStore
 from atlas.llm.structured import JsonLlm
 
 __all__ = ["answer", "answer_whole", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search",
-           "section_file", "whole_plan", "whole_sources"]
+           "section_file", "whole_plan", "whole_sources", "in_section", "asks_for"]
 
 log = logging.getLogger(__name__)
 
@@ -210,13 +210,42 @@ def _without_overlap(previous: str, chunk: str) -> str:
     return chunk
 
 
-def whole_sources(store: IndexStore, doc: str) -> list[dict]:
+def asks_for(wanted: str, title: str) -> bool:
+    """Whether `wanted` names a section with that title: the whole title, its number ("3",
+    "2.1") or the title without its number, in any case."""
+    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
+    wanted, title = norm(wanted), norm(title)
+    number, _, rest = title.partition(" ")
+    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
+    return bool(wanted) and wanted in names
+
+
+def in_section(r: dict, section: str) -> bool:
+    """Whether a record is in a section or below it. `section` is the ID of the section
+    ("004", or the heading of a DOORS module, "SRS-0910": only what is right under it); the
+    title, the number or the title without number of a heading on the path of the record
+    ("2.1", "Logging": with what is below it); or the start of its path, heading by heading
+    and each one named the same ways ("Track management > Deletion"). "" = every record."""
+    wanted = " ".join(section.split())
+    if not wanted:
+        return True
+    if (r.get("section_id") or "").upper() == wanted.upper():
+        return True
+    path = [p.strip() for p in (r.get("path") or r.get("section_title") or "").split(" > ") if p.strip()]
+    steps = [w.strip() for w in wanted.split(">")]
+    if len(steps) == 1:
+        return any(asks_for(wanted, t) for t in path)
+    return len(steps) <= len(path) and all(asks_for(w, t) for w, t in zip(steps, path))
+
+
+def whole_sources(store: IndexStore, doc: str, section: str = "") -> list[dict]:
     """A document as sources, one per section and in its order: the text of its chunks
     without their overlap; in a DOORS module, its requirements and information objects;
-    in a code unit, its elements. A section without any, its summary."""
+    in a code unit, its elements. A section without any, its summary. `section` keeps only
+    a section and what is below it (see in_section)."""
     sections: dict[str, list[dict]] = {}
     for r in store.document_records(doc):
-        if r["kind"] != "overview":
+        if r["kind"] != "overview" and in_section(r, section):
             sections.setdefault(r["section_id"] or "", []).append(r)
     document = not doc.startswith((DOORS_PREFIX, CODE_PREFIX))
     sources = []
@@ -262,17 +291,20 @@ def _with_minutes(plan: dict, requests_per_minute: int) -> dict:
 
 
 def whole_plan(store: IndexStore, docs: list[dict], max_chars: int = SCOPE_CHARS,
-               extra_requests: int = 0) -> tuple[list[dict], list[str], dict]:
-    """The sources of whole documents ({doc, name}), their parts of at most max_chars and
-    the plan of reading them, before any request: {documents, sections, chars, parts,
-    requests}. `requests` counts one per part and the last one that combines their notes
-    (one in all if they fit in one part), plus `extra_requests` (the rewriting)."""
-    sources = [s for d in docs for s in whole_sources(store, d["doc"])]
+               extra_requests: int = 0, section: str = "") -> tuple[list[dict], list[str], dict]:
+    """The sources of whole documents ({doc, name}), or of a section of them, their parts of
+    at most max_chars and the plan of reading them, before any request: {documents,
+    sections, chars, parts, requests} (and `section` if there is one). `requests` counts one
+    per part and the last one that combines their notes (one in all if they fit in one
+    part), plus `extra_requests` (the rewriting)."""
+    sources = [s for d in docs for s in whole_sources(store, d["doc"], section)]
     blocks = [f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1)]
     parts = _parts(blocks, max_chars)
     reading = 0 if not parts else 1 if len(parts) == 1 else len(parts) + 1
     plan = {"documents": [d["name"] for d in docs], "sections": len(sources), "chars": sum(len(b) for b in blocks),
             "parts": len(parts), "requests": reading + extra_requests}
+    if section:
+        plan["section"] = section
     return sources, parts, plan
 
 
@@ -288,15 +320,20 @@ def _chapters(sources: list[dict]) -> list[dict]:
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
                  max_chars: int = SCOPE_CHARS, max_parts: int = MAX_PARTS, requests_per_minute: int = 0,
-                 extra_requests: int = 0) -> dict:
-    """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them. With more than
-    max_parts parts it makes no request: an `error` with the plan and the chapters to
-    narrow it to. `plan` and `requests` include `extra_requests` (the rewriting)."""
-    sources, parts, plan = whole_plan(store, docs, max_chars, extra_requests)
+                 extra_requests: int = 0, section: str = "") -> dict:
+    """The answer from whole documents ({doc, name}), or from a section of them: one request
+    if they fit in max_chars; if not, notes from each part and a last request that combines
+    them. With more than max_parts parts, or a section that is not there, it makes no
+    request: an `error` with the plan and the chapters to narrow it to. `plan` and
+    `requests` include `extra_requests` (the rewriting)."""
+    sources, parts, plan = whole_plan(store, docs, max_chars, extra_requests, section)
     plan = _with_minutes(plan, requests_per_minute)
     names = plan["documents"]
     out = {"scope": "whole", "documents": names, "plan": plan}
+    if not sources and section:
+        return {**out, "error": f"there is no section '{section}' in {', '.join(names)}", "answer": "",
+                "sources": [], "requests": extra_requests,
+                "chapters": _chapters([s for d in docs for s in whole_sources(store, d["doc"])])}
     if not sources:
         return {**out, "answer": "Nothing indexed is related to the question.", "sources": [],
                 "requests": extra_requests}
@@ -360,13 +397,14 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
            max_parts: int = MAX_PARTS, scope_documents: int = SCOPE_DOCUMENTS, requests_per_minute: int = 0,
-           dry_run: bool = False) -> dict:
+           dry_run: bool = False, section: str = "") -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model,
     "plan": of reading them whole}; with too many parts, an "error" instead of the answer
     (see answer_whole). scope "passages" answers from the best k passages; "whole" reads
     whole documents (`document`, or those of the question); "auto" reads them whole if the
-    rewriting says the question is broad.
+    rewriting says the question is broad. `section` (see in_section) reads whole only that
+    section of the documents, and what is below it, whatever the scope.
     dry_run makes no request to any model (llm can be None): the plan of reading whole the
     documents the question would read, chosen without the model (`document`, the documents
     whose name it says, or a lexical search), or None if there are none."""
@@ -376,20 +414,21 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm | None, question:
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
                                                    per_document=per_document, dense=False)
         docs = _scope_documents(store, document, named, hits, scope_documents)
-        plan = _with_minutes(whole_plan(store, docs, scope_chars, int(rewrite))[2], requests_per_minute) \
+        plan = _with_minutes(whole_plan(store, docs, scope_chars, int(rewrite), section)[2], requests_per_minute) \
             if docs else None
         return {"answer": "", "sources": [], "scope": "whole" if docs else "passages",
                 "documents": [d["name"] for d in docs], "requests": 0, "plan": plan,
                 "passages_requests": int(rewrite) + 1, "max_parts": max_parts}
     rewritten = rewrite_question(llm, question, candidates) if rewrite else None
     requests = 1 if rewrite else 0
-    if scope == "whole" or (scope == "auto" and rewritten and rewritten["broad"]):
+    if scope == "whole" or section or (scope == "auto" and rewritten and rewritten["broad"]):
         named = rewritten["documents"] if rewritten else []
         hits = [] if document or named else search(store, embedder, question, k, kinds=kinds,
                                                    per_document=per_document, rewritten=rewritten)
         docs = _scope_documents(store, document, named, hits, scope_documents)
         if docs:
-            return answer_whole(store, llm, question, docs, scope_chars, max_parts, requests_per_minute, requests)
+            return answer_whole(store, llm, question, docs, scope_chars, max_parts, requests_per_minute, requests,
+                                section)
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
     sources = build_context(store, hits, context_chars)
     if not sources:

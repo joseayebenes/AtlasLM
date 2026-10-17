@@ -298,6 +298,33 @@ def test_the_plan_of_a_broad_question_and_too_many_parts(docs, tmp_path, fake_ll
     assert fake_chats() - before == 1                                         # only the rewriting
 
 
+def test_a_section_is_read_whole(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    from atlas.index import DocTools
+    from atlas.index.search import whole_sources
+    from atlas.store import Store
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE)
+    titles = lambda doc, section: [s["section_title"] for s in whole_sources(idx.store, doc, section)]
+    assert titles("test:spec_with_bookmarks.pdf", "2") == [f"2.{n} Function group 2.{n}" for n in (1, 2, 3)]
+    assert titles("test:spec_with_bookmarks.pdf", "function group 2.2") == ["2.2 Function group 2.2"]
+    assert titles("test:hmi_manual.md", "003") == titles("test:hmi_manual.md", "Alarms") == ["2 Alarms"]
+    assert titles("doors:SRS_TMS", "1") == titles("doors:SRS_TMS", "Track management > 1.1 Deletion") == \
+        titles("doors:SRS_TMS", "srs-0910") == ["1.1 Deletion"]
+    assert titles("doors:SRS_TMS", "Track") == []
+
+    before = fake_chats()
+    res = idx.answer("When does the HMI raise an alarm?", document="hmi_manual.md", section="2 Alarms")
+    assert (res["scope"], res["plan"]["section"], res["plan"]["sections"]) == ("whole", "2 Alarms", 1)
+    assert [s["section"] for s in res["sources"]] == ["003"] and fake_chats() - before == 2
+    missing = DocTools(idx, Store(tmp_path)).ask_docs("Explain it", document="hmi_manual.md", section="9")
+    assert missing["error"] == "there is no section '9' in hmi_manual.md"
+    assert ("hmi_manual.md", "2 Alarms") in {(c["document"], c["section"]) for c in missing["chapters"]}
+    dry = idx.answer("Explain it", document="SRS_TMS", section="1.1", dry_run=True)
+    assert (dry["plan"]["section"], dry["plan"]["sections"], dry["plan"]["requests"]) == ("1.1", 1, 2)
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

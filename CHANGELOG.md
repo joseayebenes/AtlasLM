@@ -13,6 +13,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
   capítulos de los documentos, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
   sin preguntar al modelo. `[search] scope_documents` (3) sustituye a la constante fija.
+- `atlas ask --section` y `section` en `ask_docs`: leer entera solo una sección y lo que
+  cuelga de ella, por su número o título («2.1», «Logging»), por su ruta («Track management >
+  Deletion») o por su ID (el de un resultado de búsqueda, o el del título en un módulo de
+  DOORS). Una sección que no está da un error con los capítulos de los documentos.
 
 ## [0.2.0] — 2026-10-16
 

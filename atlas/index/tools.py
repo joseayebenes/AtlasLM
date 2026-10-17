@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 import openai
 
 from atlas.index.records import DOORS_PREFIX, KINDS
-from atlas.index.search import cite
+from atlas.index.search import asks_for as _asks_for, cite
 from atlas.llm import model_failed
 from atlas.plugins import register_methods
 from atlas.store import Store
@@ -62,16 +62,6 @@ def _heading(f: Path) -> dict:
                     except ValueError:
                         pass
     return out
-
-
-def _asks_for(wanted: str, title: str) -> bool:
-    """Whether `wanted` names a section with that title: the whole title, its number ("3",
-    "2.1") or the title without its number, in any case."""
-    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
-    wanted, title = norm(wanted), norm(title)
-    number, _, rest = title.partition(" ")
-    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
-    return bool(wanted) and wanted in names
 
 
 class DocTools:
@@ -174,7 +164,7 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         return out
 
-    def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
+    def ask_docs(self, question: str, document: str = "", whole: bool = False, section: str = "") -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
         passages. `document` limits it to one document or DOORS module. A broad question (a
@@ -182,9 +172,11 @@ class DocTools:
         whole instead of the best passages, in parts if they are long; `whole` = true makes
         it read them whole always (`scope` in the answer says how it was read). If that takes
         more parts than allowed, the answer is an `error` with the plan and the chapters of
-        the documents: ask again with a `document`."""
+        the documents: ask again with a `document` and a `section`. `section` reads whole only
+        a section and what is below it: its number or title ("2.1", "Logging"), or its ID as a
+        search result gives it."""
         try:
-            return self.index.answer(question, document=document, scope="whole" if whole else "")
+            return self.index.answer(question, document=document, scope="whole" if whole else "", section=section)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
 

@@ -19,6 +19,7 @@
                    [--k N] [--kind KIND] [--document NAME]
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
+                   [--section S]   reads whole only a section (its number, title or ID)
                    [--dry-run]   only the plan of reading them whole, without asking the model
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
@@ -852,7 +853,7 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--dry-run": bool}}
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--section": str, "--dry-run": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -908,24 +909,26 @@ def _plan(res: dict) -> str:
         return (f"No document to read whole: the question would be answered from passages "
                 f"({res['passages_requests']} requests to the model).")
     minutes = f", at least {plan['minutes']} min of the quota" if "minutes" in plan else ""
-    lines = [f"Plan, without asking the model (if the question is broad, or with --whole):",
-             f"  read whole: {', '.join(plan['documents'])}",
+    section = f" › {plan['section']}" if plan.get("section") else ""
+    lines = [f"Plan, without asking the model (if the question is broad, or with --whole or --section):",
+             f"  read whole: {', '.join(plan['documents'])}{section}",
              f"  sections: {plan['sections']}, characters: {plan['chars']}, parts: {plan['parts']}",
              f"  requests to the model: {plan['requests']}{minutes}"]
     if plan["parts"] > res["max_parts"]:
         lines.append(f"More than [search] max_parts = {res['max_parts']}: it would not be read; narrow it "
-                     f"with --document.")
-    lines.append(f"Not broad: from passages, {res['passages_requests']} requests to the model.")
+                     f"with --document and --section.")
+    if not section:
+        lines.append(f"Not broad: from passages, {res['passages_requests']} requests to the model.")
     return "\n".join(lines)
 
 
 def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False,
-        dry_run: bool = False) -> int:
+        section: str = "", dry_run: bool = False) -> int:
     from atlas.index import Index
     kinds = _kinds(kind)
     _context(cfg)
     res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
-                                        scope="whole" if whole else "", dry_run=dry_run)
+                                        scope="whole" if whole else "", dry_run=dry_run, section=section)
     if dry_run:
         print(_plan(res))
         return 0

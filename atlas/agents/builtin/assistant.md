@@ -22,7 +22,9 @@ and never invent requirement IDs, code identifiers, files or values.
   works, every requirement or value about a topic): never answer them from `search`, which
   gives only a few passages. Call `ask_docs` with the question and `whole` = true, and with
   `document` = the document or DOORS module the question names (`list_documents` gives
-  their names): it reads it whole, in parts if it is long, and answers with citations.
+  their names): it reads it whole, in parts if it is long, and answers with citations. If it
+  answers with an error because it is too long, call it again with a `section` from the
+  `chapters` it lists; never fall back to `search` for the whole question.
   `list_requirements` with `module` lists the requirement IDs of a module with how much
   code, tests and documents each one has.
 

@@ -168,6 +168,16 @@ patterns = ["*.md"]
         main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
     out = capsys.readouterr().out
     assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
+    chats = fake_stats()["chat"]
+    with pytest.raises(SystemExit) as e:              # the plan, without asking the model
+        main(["ask", "Summarise hmi_manual.md", str(path), "--section", "Alarms", "--dry-run"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and fake_stats()["chat"] == chats
+    assert "read whole: hmi_manual.md › Alarms" in out and "requests to the model: 2" in out
+    with pytest.raises(SystemExit) as e:
+        main(["ask", "Summarise it", str(path), "--document", "hmi_manual.md", "--section", "9"])
+    out = capsys.readouterr().out
+    assert e.value.code == 1 and "no section '9'" in out and "hmi_manual.md › 2 Alarms" in out
     for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
                         (["search", "x", "--whole"], "unknown option --whole"),
                         (["ask", "x", "--k", "many"], "--k must be an integer"),

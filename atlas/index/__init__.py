@@ -221,13 +221,13 @@ class Index:
         return cfg.net.requests_per_minute if isinstance(cfg, ServiceConfig) else 0
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
-               kinds: list[str] | None = None, scope: str = "", dry_run: bool = False) -> dict:
+               kinds: list[str] | None = None, scope: str = "", dry_run: bool = False, section: str = "") -> dict:
         """scope: passages | whole | auto ("" = that of the settings); dry_run: only the plan,
-        without any request; see search.answer."""
+        without any request; section: read whole only that section; see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, None if dry_run else self.llm, question, k or s["results"], document,
                       rewrite, kinds, s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
-                      s["max_parts"], s["scope_documents"], self.requests_per_minute, dry_run)
+                      s["max_parts"], s["scope_documents"], self.requests_per_minute, dry_run, section)
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

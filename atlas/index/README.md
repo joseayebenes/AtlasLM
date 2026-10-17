@@ -100,6 +100,13 @@ capítulos de cada documento, para acotar la pregunta. `atlas ask --dry-run` imp
 sin ninguna petición: elige los documentos sin el modelo (`--document`, los que la pregunta
 nombra o una búsqueda léxica).
 
+`--section` (o `section` en `ask_docs`) lee entera solo una sección y lo que cuelga de ella:
+por su número o su título, con o sin número («2.1», «Logging»), por su ruta, título a título
+(«Track management > Deletion»), o por su ID, el de un resultado de búsqueda («004») o, en un
+módulo de DOORS, el del título («SRS-0910»: solo lo que está justo debajo). Con `--section`
+se lee entera aunque la pregunta no parezca amplia. Si la sección no está, la respuesta es un
+error con los capítulos de los documentos.
+
 Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se leyó
 (`passages` o `whole`). `--whole` (o `whole` en `ask_docs`) lee enteros los documentos aunque
 la pregunta no parezca amplia, y `[search] scope = "passages"` no los lee nunca.

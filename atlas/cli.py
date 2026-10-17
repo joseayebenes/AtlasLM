@@ -23,8 +23,9 @@
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
-                   [--check]           is undone, and what it cannot fix goes to a person (a report);
-                                       --check: the plan, check_code and the tests at the start, no model
+                   [--check] [--resume]  is undone, and what it cannot fix goes to a person (a report);
+                                       --check: the plan, check_code and the tests at the start, no model;
+                                       --resume: goes on from where an earlier run stopped (Ctrl+C)
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
     atlas check    [atlas.toml]     connection test with the LLM and the embeddings
     atlas probe    [atlas.toml]     whether the chat model works as an agent: a tool call, its result, and
@@ -853,7 +854,7 @@ def coverage(cfg: Config, module: str) -> int:
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
-           "develop": {"--check": bool}}
+           "develop": {"--check": bool, "--resume": bool}}
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -972,9 +973,9 @@ def _develop_check(cfg: Config, plan: str) -> int:
     return 0
 
 
-def develop(cfg: Config, plan: str, check: bool = False) -> int:
+def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -> int:
     """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py);
-    with `check`, only what the plan starts from."""
+    with `check`, only what the plan starts from; with `resume`, from where it stopped."""
     from atlas.agents.develop import develop as run_plan
 
     def show(s: dict) -> None:
@@ -992,9 +993,13 @@ def develop(cfg: Config, plan: str, check: bool = False) -> int:
     try:
         if check:
             return _develop_check(cfg, plan)
-        report = run_plan(plan, cfg, on_step=show)
+        report = run_plan(plan, cfg, on_step=show, resume=resume)
     except ImportError as e:            # without the [agents] extra
         sys.exit(str(e))
+    except KeyboardInterrupt:
+        print(f"\ninterrupted: the files of the step are as they were before it; `atlas develop {plan} "
+              f"{cfg.path.name} --resume` goes on from there")
+        return 130
     final, totals = report["final"], report["totals"]
     print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
           f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else "")

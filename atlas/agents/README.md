@@ -182,7 +182,20 @@ cambios que rompían lo que ya iba.
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
-   lecciones que añadir antes de la siguiente.
+   lecciones que añadir antes de la siguiente. Lo que cada encargo y cada ronda dejó en el
+   código es un **parche**, `develop-<plan>/<id>.patch` (`round-<n>.patch`), enlazado desde su
+   paso, y todos juntos en `develop-<plan>/all.patch`: para revisarlos y para llevarlos a otra
+   copia (`git apply`, o `patch -p1`).
+
+Una tanda **interrumpida** (Ctrl+C, o un fallo del propio atlas) deja los ficheros del paso en
+curso como estaban antes de él, y el paso queda `interrupted`; ningún encargo queda a medias.
+Ctrl+C mata también la prueba en marcha con lo que arrancó. `atlas develop PLAN atlas.toml
+--resume` sigue desde el informe: da por hechos los encargos terminados (uno conservado, o
+deshecho tras su reintento), repite los que tienen `error` o quedaron `interrupted`, y las
+rondas siguen por donde iban, con lo que ya se intentó en cada test. El estado es el que dicen
+los tests ahora, no el informe; los pasos anteriores se conservan, y el registro de llamadas
+sigue en el mismo fichero. Con `attempts` mayor que 1, Ctrl+C espera a que acaben las
+ejecuciones en marcha. Las tandas duran horas: antes, un corte obligaba a empezar de cero.
 
 Antes de la primera ejecución se comprueba el plan: que sus agentes existen y pueden hacer su
 parte (alguna herramienta que cambia el código; `check_code` si `[sources.code]` tiene

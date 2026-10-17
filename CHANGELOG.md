@@ -16,6 +16,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Presupuesto por intento de un encargo en el plan: `task_calls`, `task_seconds` y `task_cost`
   (0 = sin límite). Al llegar a él no se lanzan más arreglos de compilación, vueltas de
   `advances` ni reinicios, y el paso lo dice (`budget_exceeded`).
+- `atlas develop PLAN atlas.toml --resume` (`develop(..., resume=True)`): sigue una tanda
+  cortada desde su informe. Los encargos terminados no se repiten, los que tienen `error` o
+  quedaron `interrupted` sí, y las rondas siguen donde iban; el estado lo dicen los tests.
+- Parches de `atlas develop`: lo que deja cada encargo y cada ronda, en
+  `reports/develop-<plan>/<id>.patch` y `all.patch`, enlazados desde el informe.
 - Herramientas `outline` (los subprogramas de un fichero con sus líneas, su firma y sus
   requisitos, y sus `with` o `import`) y `read_subprogram` (uno solo, con su comentario). Con
   ellas, `replace_subprogram` y `add_subprogram` ya no necesitan un `read_file` del fichero
@@ -32,6 +37,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   con todo lo que arrancó (su grupo de procesos; `taskkill /T` en Windows). Antes se mataba
   solo el comando, y un envoltorio como `with_server` dejaba vivo el servidor.
 - `run_test` encuentra el ejecutable con `.exe` que GNAT deja en Windows.
+- Ctrl+C a medio encargo de `atlas develop` dejaba los ficheros a medias: ahora vuelven a como
+  estaban antes del paso, que queda `interrupted` en el informe.
 
 ## [0.2.0] — 2026-10-16
 

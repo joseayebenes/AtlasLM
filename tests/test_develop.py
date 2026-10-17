@@ -439,3 +439,67 @@ The exception went through, the most recent first:
     assert _last_lines(output) == ("AssertionError: Step 2: command 'PING', expected 'OK PONG', received 'the end of "
                                    "the connection' | raised CONSTRAINT_ERROR : controller.adb:103 length check failed")
     assert _last_lines("one\ntwo\nthree\n") == "two | three"
+
+
+def test_an_interrupted_run_leaves_the_files_as_they_were_and_resume_ends_it(project, tmp_path):
+    """Ctrl+C in the middle of a task puts its files back and leaves the step `interrupted`;
+    --resume does it again, not the task before it, and appends to the calls of the run. The
+    patch of each task applies to the code as it was before it."""
+    import shutil
+    import subprocess
+    from atlas.agents.develop import develop
+    base, cfg = project
+    original = (base / "src" / "calc.py").read_text()
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + '[[tasks]]\nid = "add"\ntext = "Implement add."\n\n'
+                                           '[[tasks]]\nid = "mul"\ntext = "Implement mul."\n')
+    client = StubClient(write(ADD) + [{"read_file": {"path": "src/calc.py"}},
+                                      {"write_file": {"path": "src/calc.py", "content": MUL + "# half done\n"}},
+                                      KeyboardInterrupt()])
+    with pytest.raises(KeyboardInterrupt):
+        develop(base / "plan.toml", cfg, client=client)
+    assert (base / "src" / "calc.py").read_text() == ADD                    # as the first task left it
+    reports = cfg.workspace / "reports"
+    report = json.loads((reports / "develop-plan.json").read_text())
+    assert [(s["kind"], s["task"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "add", "kept"), ("task", "mul", "interrupted")]
+    assert report["steps"][1]["undone"] == ["src/calc.py"] and "error" not in report["steps"][1]
+
+    client = StubClient(write(MUL))
+    report = develop(base / "plan.toml", cfg, client=client, resume=True)
+    assert client.prompts == ["Implement mul."]                             # add is not done again
+    assert [(s["kind"], s["task"], s["outcome"]) for s in report["steps"]] == [
+        ("task", "add", "kept"), ("task", "mul", "interrupted"), ("task", "mul", "kept")]
+    assert report["final"]["tests_passed"] == 1 and len(report["resumed"]) == 1
+    runs = [json.loads(l) for l in (reports / "develop-plan.calls.jsonl").read_text().splitlines()]
+    assert [(r["n"], r["task"]) for r in runs] == [(1, "add"), (3, "mul")]
+
+    assert [s.get("patch") for s in report["steps"]] == ["develop-plan/add.patch", None, "develop-plan/mul.patch"]
+    md = (reports / "develop-plan.md").read_text()
+    assert "kept ([patch](develop-plan/add.patch))" in md and "[develop-plan/all.patch](develop-plan/all.patch)" in md
+    if shutil.which("git"):                     # each patch applies to the code before its task, and all.patch to the first
+        for patches, expected in ((["add.patch"], ADD), (["add.patch", "mul.patch"], MUL), (["all.patch"], MUL)):
+            fresh = tmp_path / f"fresh-{len(patches)}-{patches[0]}"
+            (fresh / "src").mkdir(parents=True)
+            (fresh / "src" / "calc.py").write_text(original)
+            for patch in patches:
+                subprocess.run(["git", "apply", str(reports / "develop-plan" / patch)], cwd=fresh, check=True)
+            assert (fresh / "src" / "calc.py").read_text() == expected
+
+
+def test_resume_goes_on_with_the_rounds(project):
+    """A round interrupted is done again; those before it count, and so does what they tried."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 3"))
+    (base / "src" / "calc.py").write_text(ADD)
+    nothing = [{"read_file": {"path": "src/calc.py"}}, "No idea."]
+    with pytest.raises(KeyboardInterrupt):
+        develop(base / "plan.toml", cfg, client=StubClient(nothing + [KeyboardInterrupt()]))
+    client = StubClient(nothing * 2)
+    report = develop(base / "plan.toml", cfg, client=client, resume=True)
+    assert [(s["kind"], s["outcome"], s.get("round")) for s in report["steps"]] == [
+        ("round", "no progress", 1), ("round", "interrupted", None), ("round", "no progress", 2)]
+    assert "- No idea. -> no progress" in client.prompts[0]                 # the round before the interruption
+    assert report["for_a_person"]["tests/test_calc.py"]["reason"] == "no progress in 2 rounds"
+    assert len(client.turns) == 2                       # no third round: the test went to a person

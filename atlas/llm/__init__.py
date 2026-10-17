@@ -1,18 +1,23 @@
 """Connection to the LLM and embeddings APIs (proxy, TLS, limits, retries).
 
-`connection.py` is legacy/conexion.py translated to English. In atlas the configuration
-comes from the [llm], [embeddings] and [network] sections of atlas.toml via `from_config`.
+`connection.py` is legacy/conexion.py translated to English, without its standalone mode
+(its own connection.toml): the configuration comes from the [llm], [embeddings] and
+[network] sections of atlas.toml via `from_config`.
 `structured.py` asks the chat model for JSON objects and repairs broken answers.
 """
 from __future__ import annotations
 
 from dataclasses import fields, replace
 
-from atlas.llm.connection import (  # noqa: F401
+from atlas.llm.connection import (
     Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
     effective_proxy, is_connection_error, mask_credentials, rate_limiter_for, show, usage,
 )
-from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json  # noqa: F401
+from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json
+
+__all__ = ["Connection", "JsonLlm", "NetConfig", "ServiceConfig", "TruncatedResponse", "check", "create_client",
+           "describe", "diagnose", "effective_proxy", "from_config", "is_connection_error", "mask_credentials",
+           "model_failed", "parse_json", "rate_limiter_for", "repair_json", "show", "usage"]
 
 
 def model_failed(e: BaseException, cfg=None) -> dict:
@@ -24,7 +29,7 @@ def model_failed(e: BaseException, cfg=None) -> dict:
 
 
 def from_config(cfg) -> Connection:
-    """Builds the Connection from atlas.toml (same keys as connection.toml)."""
+    """Builds the Connection from the [llm], [embeddings] and [network] sections of atlas.toml."""
     net_keys = {f.name for f in fields(NetConfig)}
     service_keys = {f.name for f in fields(ServiceConfig)} - {"net"}
 

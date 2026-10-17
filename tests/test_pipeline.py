@@ -59,6 +59,17 @@ def test_errors_quarantine_and_fatal(tmp_path):
     assert rep.fatal and ledger.get("q", "after") is None         # never touched
 
 
+def test_a_configuration_error_stops_the_run_instead_of_failing_each_unit(tmp_path):
+    from atlas.config import ConfigError
+
+    def run(ctx, u):
+        raise ConfigError("CA certificate /missing.pem does not exist")
+
+    ledger = Ledger(tmp_path / "db")
+    rep = Runner(ledger, [_step("p", ["a", "b"], {"a": "1", "b": "1"}, run, parallel=False)]).run()
+    assert rep.fatal == "p: CA certificate /missing.pem does not exist" and ledger.get("p", "b") is None
+
+
 def test_prunes_vanished_units(tmp_path):
     pruned = []
     units = ["a", "b"]

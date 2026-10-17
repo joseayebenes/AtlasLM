@@ -50,6 +50,8 @@ from atlas.config import Config, ConfigError, load_config
 from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
 from atlas.store import Store
 
+__all__ = ["main", "run"]
+
 log = logging.getLogger("atlas")
 
 

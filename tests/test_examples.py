@@ -1,5 +1,8 @@
 """The examples of library use (examples/library) run as they are, so that they do not
-fall behind the code they show."""
+fall behind the code they show, and use only the public API of docs/api.md."""
+import ast
+import importlib
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -53,3 +56,28 @@ paths = ["{(docs_samples / 'hmi_manual.md').as_posix()}"]
 ''')
     out = _run("search.py", tmp_path / "atlas.toml")
     assert "hmi_manual.md" in out and "[1]" in out
+
+
+def _promised() -> dict[str, set[str]]:
+    """The table of docs/api.md: module -> the names it promises."""
+    rows = re.findall(r"^\| `(atlas[\w.]*)` \| ([^|]+) \|", (ROOT / "docs" / "api.md").read_text(encoding="utf-8"),
+                      re.MULTILINE)
+    return {module: set(re.findall(r"`(\w+)`", names)) for module, names in rows}
+
+
+def test_the_public_api_is_in_the_all_of_each_module():
+    promised = _promised()
+    assert {"atlas", "atlas.pipeline", "atlas.plugins", "atlas.mcp"} <= set(promised)
+    for module, names in promised.items():
+        exported = set(importlib.import_module(module).__all__)
+        assert names <= exported, f"{module}: {sorted(names - exported)} are not in its __all__"
+
+
+def test_the_library_examples_import_only_the_public_api():
+    promised = _promised()
+    for script in sorted((ROOT / "examples" / "library").glob("*.py")):
+        for node in ast.walk(ast.parse(script.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "atlas":
+                names = {a.name for a in node.names}
+                assert names <= promised.get(node.module, set()), \
+                    f"{script.name} imports {sorted(names - promised.get(node.module, set()))} from {node.module}"

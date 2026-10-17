@@ -24,6 +24,7 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
 | [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
+| [API pública](docs/api.md) | lo que se puede usar como librería y no cambia sin avisar |
 | [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
 | [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |
 | [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |

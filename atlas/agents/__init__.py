@@ -13,6 +13,19 @@
                      as "tool" plugins
     evaluate.py      atlas eval: questions with a known answer, scored without a model
 
-    from atlas.agents.runtime import run_agent
+    from atlas.agents import run_agent
     run_agent("assistant", "Which tests verify SRS-0004?", cfg)["answer"]
 """
+__all__ = ["build_context", "run_agent"]
+
+
+def __getattr__(name: str):
+    """On first use: importing a module of atlas.agents does not load the graph and the
+    model client that these two need."""
+    if name == "build_context":
+        from atlas.agents.context import build_context
+        return build_context
+    if name == "run_agent":
+        from atlas.agents.runtime import run_agent
+        return run_agent
+    raise AttributeError(f"module 'atlas.agents' has no attribute {name!r}")

@@ -3,9 +3,9 @@
 A `Step` declares its units, how to compute the fingerprint of each one and how to
 process it. The `Runner` checks the `Ledger` (SQLite): if the fingerprint has not changed
 and the unit is ok, it skips it; otherwise it processes it. Errors of a single unit are
-recorded and the run goes on; fatal ones (connection, credentials, exhausted quota) stop
-the run with the state saved. Running again resumes. Units that disappear are marked
-stale and, optionally, pruned.
+recorded and the run goes on; fatal ones (connection, credentials, exhausted quota, and a
+ConfigError, such as a CA certificate that does not exist) stop the run with the state
+saved. Running again resumes. Units that disappear are marked stale and, optionally, pruned.
 
 Each run leaves a time profile in its report and in the `runs` table of the ledger: per
 step, the seconds spent finding the work (units and fingerprints) and doing it, the slowest
@@ -41,6 +41,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+from atlas.config import ConfigError
+
+__all__ = ["FatalError", "Interrupted", "Ledger", "RunReport", "Runner", "Step", "WorkspaceLocked", "atomic_write",
+           "sha256_file", "sha256_text"]
 
 log = logging.getLogger(__name__)
 
@@ -92,7 +97,8 @@ class Step:
     run: Callable[[Any, str], Any]
     prune: Callable[[Any, str], None] | None = None
     depends_on: list[str] = field(default_factory=list)
-    is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, FatalError)
+    # a configuration error is the same for every unit: retrying them does not fix it
+    is_fatal: Callable[[Exception], bool] = lambda e: isinstance(e, (FatalError, ConfigError))
     parallel: bool = True
     workers: int | None = None      # units at the same time; None = those of the Runner
     # Called once with the units about to be processed, before them: to do together what

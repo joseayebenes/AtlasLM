@@ -73,6 +73,26 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
 
 
+def test_the_warnings_of_the_limiter_go_to_the_atlas_llm_logger(fake, caplog, capsys):
+    url, control = fake
+    from atlas.llm import NetConfig, ServiceConfig, create_client
+    cl, _ = create_client(ServiceConfig(base_url=url, model="fake", api_key="logger", net=NetConfig(
+        proxy="", no_proxy="*", adaptive=False, max_backoff=0.05, rate_limit_max_wait=0.1)))
+    control.write_text(json.dumps({"emb_409_after": 0}))
+    with caplog.at_level("WARNING", logger="atlas.llm"), pytest.raises(Exception):
+        cl.embeddings.create(model="fake", input=["a"])
+    assert any(r.name == "atlas.llm" and "(rate limit): waiting" in r.getMessage() for r in caplog.records)
+    assert "rate limit" not in capsys.readouterr().err          # not printed, logged
+
+
+def test_a_configuration_that_cannot_work_raises_config_error(tmp_path):
+    from atlas.config import ConfigError
+    from atlas.llm import NetConfig
+    from atlas.llm.connection import ssl_context
+    with pytest.raises(ConfigError, match="CA certificate .* does not exist"):
+        ssl_context(NetConfig(ca_cert=str(tmp_path / "missing.pem")))
+
+
 def _status_error(status: int, message: str, **metadata):
     import httpx
     from openai import OpenAI

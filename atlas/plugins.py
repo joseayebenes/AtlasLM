@@ -29,6 +29,9 @@ from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+__all__ = ["KINDS", "CodeAnalyzer", "CodeUnit", "DocumentExtractor", "Link", "Requirement", "RequirementsAdapter",
+           "Tool", "available", "describe", "get", "load_plugins", "plugin", "register", "register_methods"]
+
 log = logging.getLogger(__name__)
 
 KINDS = ("code_analyzer", "requirements", "extractor", "tool")

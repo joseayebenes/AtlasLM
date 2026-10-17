@@ -28,6 +28,9 @@ try:
 except ImportError:  # Python < 3.11
     import tomli as tomllib  # type: ignore
 
+__all__ = ["AGENT_SCHEMA", "CODE_SCHEMA", "DEFAULTS", "DOCS_SCHEMA", "DOORS_SCHEMA", "LOCAL_HOSTS", "SCHEMA",
+           "Config", "ConfigError", "literal_secrets", "load_config", "redact", "unset_hint", "unset_variables"]
+
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _URL_PASSWORD = re.compile(r"(://[^/@:]*:)([^/@]*)(@)")             # http://user:password@proxy
 _DSN_PASSWORD = re.compile(r"(?i)(\b(?:pwd|password)\s*=\s*)([^;]*)")  # ODBC: PWD=...; Password=...

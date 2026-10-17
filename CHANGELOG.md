@@ -6,6 +6,25 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `docs/api.md`: la API pública, lo que se promete de la librería. Cada módulo tiene
+  `__all__`; `atlas` exporta `load`, `Config`, `ConfigError` y `__version__`, y `atlas.agents`
+  `run_agent` y `build_context`. Una prueba comprueba que los ejemplos de `examples/library`
+  solo usan esos nombres.
+
+### Cambiado
+- `atlas.llm` ya no termina el proceso: un certificado de CA que no existe, `ca_cert =
+  "system"` sin `truststore` o el cliente `openai` sin instalar lanzan `ConfigError` con el
+  mismo texto. En `atlas run` un `ConfigError` para la ingesta (antes cada unidad), y el
+  servidor MCP sigue vivo.
+- Los avisos del limitador (rechazos por límite, reintentos) van al logger `atlas.llm` en vez
+  de escribirse en stderr: los gobierna `[project] log_level`.
+
+### Quitado
+- El modo independiente de `atlas.llm.connection` (`python -m atlas.llm.connection init |
+  show | check`, con su propio `connection.toml`): nadie lo usaba y `legacy/conexion.py` lo
+  conserva. `atlas check` hace lo mismo con `atlas.toml`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

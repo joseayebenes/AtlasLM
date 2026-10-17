@@ -5,6 +5,8 @@
 The plan is a TOML file:
 
     agent = "implementer"                    # the agent of the tasks
+    agent_command = ["opencode", "run", "{prompt}"]   # or: an agent of outside, instead of agent and fix_agent
+    command_timeout = 1800                   # seconds of each run of agent_command (0: no limit)
     fix_agent = "fixer"                      # the agent that fixes a failing test (default: agent)
     check = ["src/*.adb"]                    # check_code on these files after each task
     tests = ["tests/python/test_*.py"]       # the acceptance tests, run with run_test, in this order
@@ -73,6 +75,15 @@ now. A long conversation of failed edits does not get better with more turns.
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
+
+With agent_command, the agent is a program of outside (OpenCode, Claude Code...): each run of
+the agent runs that command in the working folder (or in the copy of an attempt), with the
+prompt in place of "{prompt}" (or on its standard input, if no argument has it), for at most
+command_timeout seconds; a run that runs out of time is one that stopped, and its process
+group is killed. Everything else is the same: check, tests, undo, advances, rounds, restarts
+and report. Its tools are its own, so the protected files are not safe by them: they are read
+before each run and put back after it if it changed them (the step says which, in
+`protected`). What it prints goes to the calls log as a single call, with its seconds.
 """
 from __future__ import annotations
 
@@ -81,8 +92,10 @@ import fnmatch
 import glob
 import json
 import math
+import os
 import re
 import shutil
+import subprocess
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import time
@@ -146,6 +159,10 @@ class Plan:
     tasks: list[dict]
     agent: str = "implementer"
     fix_agent: str = ""
+    agent_command: list[str] = field(default_factory=list)
+    # TODO: also from task_seconds, the budget of each run, when it is in develop (it is in
+    # claude/hungry-kapitsa-257889): the smaller of the two
+    command_timeout: float = 1800
     check: list[str] = field(default_factory=list)
     tests: list[str] = field(default_factory=list)
     progress: str = ""
@@ -186,7 +203,17 @@ def load_plan(path: str | Path) -> Plan:
             re.compile(data["progress"])
         except re.error as e:
             raise ConfigError(f"plan {path}: progress is not a valid regular expression: {e}") from None
+    if "agent_command" in data:
+        command = data["agent_command"]
+        if not isinstance(command, list) or not command or not all(isinstance(a, str) and a for a in command):
+            raise ConfigError(f'plan {path}: agent_command is the program and its arguments, as a list: '
+                              f'["opencode", "run", "{{prompt}}"]')
+        both = [k for k in ("agent", "fix_agent") if k in data]
+        if both:
+            raise ConfigError(f"plan {path}: agent_command or {both[0]}, not both: agent_command is the agent")
     plan = Plan(name=path.stem, tasks=tasks, **data)
+    if plan.agent_command:
+        plan.agent = Path(plan.agent_command[0]).name
     plan.fix_agent = plan.fix_agent or plan.agent
     if not plan.tests:
         raise ConfigError(f"plan {path}: no tests: they are what says whether the code works")
@@ -285,6 +312,8 @@ class Developer:
         if plan.planner:
             from atlas.agents.runtime import definition
             definition(plan.planner, cfg)                 # it exists, or a ConfigError now and not after a task
+        if plan.agent_command and not shutil.which(plan.agent_command[0]):
+            raise ConfigError(f"plan {plan.name}: agent_command: {plan.agent_command[0]} is not found")
         outside = [r for r in self.code.roots if Path.cwd().resolve() not in (r, *r.parents)]
         if plan.attempts > 1 and outside:
             raise ConfigError(f"plan {plan.name}: attempts needs the code roots inside the folder where atlas runs, "
@@ -356,7 +385,8 @@ class Developer:
             step["outcome"] = "restarted"
             self.save()
             self.on_step(step)
-            why = " without changing the code in its last steps" if step.get("stalled") else ""
+            why = (" without changing the code in its last steps" if step.get("stalled") else
+                   f" when its {self.plan.command_timeout:g} s ran out" if step.get("timed_out") else "")
             step = self._run_once(agent, RESTART.format(prompt=prompt, calls=step["calls"], why=why,
                                                         changes=changes or "(nothing)", check=check),
                                   f"{kind}-restart", task, ws)
@@ -391,9 +421,13 @@ class Developer:
         res: dict = {"calls": []}
         record: list = []
         try:
-            res = run_agent(agent, prompt, self.cfg, ws.context(), client=self.client, record=record)
+            if self.plan.agent_command and kind != "plan":     # the planner is an agent of atlas
+                res = self._command(prompt, ws, record)
+            else:
+                res = run_agent(agent, prompt, self.cfg, ws.context(), client=self.client, record=record)
             step.update({"calls": len(res["calls"]), "stopped": res["stopped"], "tokens": res.get("tokens"),
                          **({"stalled": True} if res.get("stalled") else {}),
+                         **{k: res[k] for k in ("timed_out", "protected", "error") if res.get(k)},
                          **({"cost": res["cost"]} if "cost" in res else {}), "answer": res["answer"][:MAX_ANSWER]})
         except Exception as e:                   # the model server failed: the task did not happen
             step.update({"calls": 0, "stopped": True, "error": f"{type(e).__name__}: {e}"[:MAX_ANSWER], "answer": ""})
@@ -416,6 +450,47 @@ class Developer:
                                       "calls": record, "answer": res.get("answer", "")},
                                      ensure_ascii=False, default=str) + "\n")
         return step
+
+    def _command(self, prompt: str, ws: _Workspace, record: list) -> dict:
+        """A run of the agent of agent_command in the folder of `ws` (see the module): what
+        run_agent returns, and the protected files it changed, put back."""
+        template = self.plan.agent_command
+        command = [a.replace("{prompt}", prompt) for a in template]
+        stdin = None if any("{prompt}" in a for a in template) else prompt
+        protected = self._protected(ws)
+        t0 = time.time()
+        try:
+            output, errors, code = _execute(command, ws.code.base, stdin, self.plan.command_timeout)
+        finally:                                 # also after a Ctrl+C
+            put_back = self._put_back(protected, ws)
+        result = {"exit_code": code, "output": output, **({"stderr": errors} if errors.strip() else {}),
+                  **({"protected": put_back} if put_back else {})}
+        record.append({"name": "agent_command", "args": {"command": template}, "result": result,
+                       "seconds": round(time.time() - t0, 2)})
+        error = (f"{template[0]} exited with {code}: {_last_lines(errors or output)}" if code else "")
+        return {"calls": [record[-1]], "stopped": code is None, "timed_out": code is None, "tokens": None,
+                "answer": output.strip()[-MAX_ANSWER:], "protected": put_back, "error": error}
+
+    def _protected(self, ws: _Workspace) -> dict[Path, bytes]:
+        """The protected files of the code roots of `ws` and the tests of the plan, with their content."""
+        code = ws.code
+        files = {p for root in code.roots for p in (root.rglob("*") if root.is_dir() else [])
+                 if p.is_file() and code.protected_file(p) and not code._excluded(p)}
+        files |= {code.base / t for t in _files(self.plan.tests, ws.base)}
+        return {p: p.read_bytes() for p in files}
+
+    def _put_back(self, before: dict[Path, bytes], ws: _Workspace) -> list[str]:
+        """Puts the protected files back as they were in `before`: those that changed, and
+        those that appeared or went away."""
+        now = self._protected(ws)
+        changed = sorted(p for p in before.keys() | now.keys() if before.get(p) != now.get(p))
+        for p in changed:
+            if p in before:
+                p.parent.mkdir(parents=True, exist_ok=True)
+                p.write_bytes(before[p])
+            else:
+                p.unlink()
+        return [ws.code._show(p) for p in changed]
 
     def compiled(self, agent: str, task: str, before: dict, after: dict, ws: _Workspace | None = None) -> dict:
         """`after`, or the state after the build fixes of what check finds that `before` had not."""
@@ -670,6 +745,37 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
 
 
+def _execute(command: list[str], cwd: Path, stdin: str | None, timeout: float) -> tuple[str, str, int | None]:
+    """Runs an agent of outside: (what it printed, its errors, its exit code). The exit code
+    is None when it ran out of time, and then its whole process group is killed."""
+    group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else
+             {"start_new_session": True})
+    proc = subprocess.Popen(command, cwd=cwd, stdin=subprocess.DEVNULL if stdin is None else subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace", **group)
+    try:
+        output, errors = proc.communicate(stdin, timeout=timeout or None)
+        return output, errors, proc.returncode
+    except subprocess.TimeoutExpired:
+        _kill(proc)
+        output, errors = proc.communicate()
+        return output or "", errors or "", None
+    except BaseException:                    # Ctrl+C: the agent does not go on alone
+        _kill(proc)
+        raise
+
+
+def _kill(proc: subprocess.Popen) -> None:
+    """Kills a process and those it started."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            os.killpg(proc.pid, 9)
+    except OSError:
+        proc.kill()
+
+
 def _shape(message: str) -> str:
     """A message of the compiler without its names and numbers: the same error in other places."""
     return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
@@ -716,7 +822,8 @@ def markdown(report: dict) -> str:
         if s.get("error"):
             outcome = f"{outcome} (error: {s['error'][:80]})"
         e, c = s.get("edits") or {}, s.get("compiles") or {}
-        stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
+        stop = (" (stalled)" if s.get("stalled") else " (timed out)" if s.get("timed_out") else
+                " (max_steps)" if s.get("stopped") else "")
         kind = s["kind"] + (f" #{s['attempt']}" if s.get("attempt") else "")
         out.append(f"| {s['n']} | {kind} | {s['task']} | {s['agent']} | {s['seconds'] / 60:.1f} | {s['calls']}"
                    f"{stop} | {e.get('made', 0) + e.get('failed', 0)} "
@@ -726,6 +833,11 @@ def markdown(report: dict) -> str:
     if undone:
         out += ["", "## Undone", ""]
         out += [f"- {s['n']} {s['task']}: " + "; ".join(s["broke"])[:400] for s in undone]
+    touched = [s for s in report["steps"] if s.get("protected")]
+    if touched:
+        out += ["", "## Protected files put back", "", "The agent changed these protected files; they were put "
+                "back as they were:", ""]
+        out += [f"- {s['n']} {s['task']}: {', '.join(s['protected'])}" for s in touched]
     behind = [s for s in report["steps"] if s.get("not_advanced")]
     if behind:
         out += ["", "## Did not advance", "", "Kept, but these tests did not get further with them:", ""]

@@ -6,6 +6,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas develop` con un agente de fuera: `agent_command` en el plan (por ejemplo
+  `["opencode", "run", "--format", "json", "{prompt}"]` o `["claude", "-p", "{prompt}"]`), en
+  lugar de `agent` y `fix_agent`. El comando se lanza en la carpeta de trabajo (o en la copia
+  del intento) con el mismo juez: `check`, tests, deshacer, `advances`, rondas, reinicios e
+  informe. Los ficheros protegidos y los tests del plan se comparan tras cada ejecución y, si
+  los cambió, se devuelven a como estaban («Protected files put back»). Lo que escribe va al
+  registro de llamadas como una sola llamada. `command_timeout` (1800 s) limita cada
+  ejecución. Cómo darle `atlas serve` como MCP a OpenCode, en `atlas/agents/README.md`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

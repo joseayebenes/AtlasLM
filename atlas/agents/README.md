@@ -185,6 +185,70 @@ Deshacer devuelve los ficheros de las raíces del código que un agente puede ca
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
 (`[sources.code] protected`), para que el agente no pueda cambiarlos.
 
+### Un agente de fuera bajo el mismo juez
+
+Lo que hizo funcionar a gemma no es el agente sino el juez: `check`, los tests protegidos,
+deshacer, `advances`, rondas e informe. `agent_command` pone ese juez a un agente de fuera
+(OpenCode, Claude Code...) en lugar de `agent` y `fix_agent` (si vienen los dos, el plan da
+error):
+
+```toml
+agent_command = ["opencode", "run", "--format", "json", "{prompt}"]
+# o: agent_command = ["claude", "-p", "--permission-mode", "acceptEdits", "{prompt}"]
+command_timeout = 1800                   # segundos de cada ejecución (0: sin límite)
+check = ["src/*.ad?"]
+tests = ["tests/python/test_stp_*.py"]
+```
+
+Cada ejecución del agente es ese comando, lanzado en la carpeta de trabajo (o en la copia del
+intento, con `attempts`), con el encargo en lugar de `{prompt}` (o por la entrada estándar, si
+ningún argumento lo lleva). Lo demás no cambia: `check_code` sobre `check`, los tests, deshacer
+lo que rompe algo, `advances`, rondas, reinicios e informe. El planificador, si lo hay, sigue
+siendo un agente de atlas.
+
+- **Sus herramientas son suyas**: atlas no puede negarle que edite un test protegido. Por eso
+  lee los ficheros protegidos (los de `[sources.code] protected` en las raíces del código y
+  los tests del plan) antes de cada ejecución y los compara después: si cambió alguno, o creó
+  o borró alguno, **se devuelven** a como estaban y el paso lo dice (`protected`, «Protected
+  files put back» en el informe). Ficheros fuera de las raíces del código, en cambio, no se
+  deshacen: eso queda a cargo del agente y de su configuración de permisos.
+- **El tiempo**: una ejecución que pasa de `command_timeout` se corta (con todos los procesos
+  que lanzó) y cuenta como una que se paró sin acabar: vuelve a empezar con `restarts`, como
+  una que agota `max_steps`. Una que acaba con un código de salida distinto de 0 es un error
+  del paso.
+- **El registro**: lo que el agente escribe por su salida estándar va a
+  `develop-<plan>.calls.jsonl` como una única llamada (`agent_command`, con su salida, su
+  código de salida y sus segundos); atlas no ve sus llamadas a herramientas, así que el informe
+  no cuenta sus ediciones ni sus compilaciones, ni sus tokens.
+- **Los textos** de `fix_prompt` y `advance_prompt` nombran `check_code` y `run_test`: con un
+  agente de fuera que no los tenga (ver abajo), conviene escribirlos con lo que sí tiene.
+
+Para que el agente tenga además el conocimiento de atlas (documentos, requisitos, grafo y
+compilador) durante la tanda, se le da `atlas serve` como servidor MCP. Con OpenCode, un
+`opencode.json` en la carpeta de trabajo, que es donde atlas lo lanza:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "atlas": {
+      "type": "local",
+      "command": ["atlas", "serve", "atlas.toml"],
+      "cwd": ".",
+      "enabled": true
+    }
+  }
+}
+```
+
+Con `"cwd": "."`, OpenCode arranca el servidor en esa carpeta, así que `atlas.toml` y su `workspace` se leen de
+ella. Con `attempts` mayor que 1, cada intento corre en su copia, que no lleva el workspace:
+hay que poner la ruta absoluta del `atlas.toml` (y que su `workspace` sea absoluto), y
+entonces `read_file` y `check_code` del servidor ven la carpeta de trabajo y no la copia; en
+ese caso es mejor dejar al servidor solo el conocimiento (`[mcp] tools`) y que el agente lea
+y compile con sus herramientas. Las variables del entorno que necesite atlas (el proxy, la
+clave del modelo) las hereda de `atlas develop`.
+
 Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
 `atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
 protegidos, `run_program`, `code_at` y el registro del servidor con la traza de cada excepción:

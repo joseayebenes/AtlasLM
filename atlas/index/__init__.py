@@ -80,21 +80,23 @@ def index_code(store: IndexStore, embedder: Embedder, unit: str, parts: list[dic
                                                      "overview": {"summary": f"code unit {unit}: {files}"}})
 
 
-def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1) -> dict:
+def embed_missing(store: IndexStore, embedder: Embedder, texts: Iterable[str], workers: int = 1,
+                  dry_run: bool = False) -> dict:
     """Embeds the texts that are not in the cache yet, in full batches of `embedder.batch`,
     `workers` batches at a time, and saves each batch in the cache. The texts of many
     documents go in the same batches: fewer requests than embedding each document on its
     own (index_document then finds everything in the cache). Returns how many texts there
-    were, how many were in the cache, how many were embedded and the failed batches. A
-    connection error raises FatalError; the batches that finished stay in the cache."""
+    were, how many were in the cache, the batches (one request each), how many were
+    embedded and the failed batches. A connection error raises FatalError; the batches that
+    finished stay in the cache. `dry_run` only counts: no batch is sent."""
     by_key: dict[str, str] = {}
     for t in texts:
         by_key.setdefault(embedder.key(t), t)               # each distinct text once
     cached = store.cache_get(list(by_key))
     missing = [(k, t) for k, t in by_key.items() if k not in cached]
     batches = [missing[i:i + embedder.batch] for i in range(0, len(missing), embedder.batch)]
-    out = {"texts": len(by_key), "cached": len(cached), "embedded": 0, "failed_batches": []}
-    if not batches:
+    out = {"texts": len(by_key), "cached": len(cached), "batches": len(batches), "embedded": 0, "failed_batches": []}
+    if not batches or dry_run:
         return out
     log.info("embeddings: %d texts, %d in the cache, %d to compute in %d batches of up to %d (%s)",
              len(by_key), len(cached), len(missing), len(batches), embedder.batch, embedder.model)
@@ -197,9 +199,9 @@ class Index:
         """See index_code."""
         return index_code(self.store, self.embedder, unit, parts, sources, tests, chunk_chars, kinds)
 
-    def embed_missing(self, texts: Iterable[str], workers: int = 1) -> dict:
+    def embed_missing(self, texts: Iterable[str], workers: int = 1, dry_run: bool = False) -> dict:
         """See embed_missing."""
-        return embed_missing(self.store, self.embedder, texts, workers)
+        return embed_missing(self.store, self.embedder, texts, workers, dry_run)
 
     def remove_document(self, doc: str) -> None:
         self.store.delete_document(doc)

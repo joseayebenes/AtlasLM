@@ -28,7 +28,7 @@ from atlas.llm.structured import JsonLlm, TruncatedResponse
 from atlas.pipeline import atomic_write
 
 __all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "analyze_section", "consolidate",
-           "empty_overview", "normalize", "overview", "regex_requirements", "section_cache_file", "verify"]
+           "empty_overview", "normalize", "overview", "overview_cache_file", "regex_requirements", "section_cache_file", "verify"]
 
 log = logging.getLogger(__name__)
 
@@ -254,14 +254,28 @@ def _read_cache(file: Path | None) -> dict | None:
         return None
 
 
+def _overview_items(sections: list[dict]) -> list[str]:
+    return [f"[{s['title']}] {s['analysis']['summary']}" for s in sections if s["analysis"]["summary"]]
+
+
+def overview_cache_file(cache: Path | None, model: str, sections: list[dict], doc_title: str,
+                        lang: str) -> Path | None:
+    """Cache file of the overview of a document: it depends on the summaries of its
+    sections (so they must be analysed), the title, the model, the language and
+    PROMPT_VERSION."""
+    if not cache:
+        return None
+    key = hashlib.sha256(f"{PROMPT_VERSION}|{model}|{lang}|{doc_title}|{_overview_items(sections)}"
+                         .encode("utf-8")).hexdigest()[:20]
+    return Path(cache) / f"overview_{key}.json"
+
+
 def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
              max_chars: int = 12000, cache: Path | None = None) -> dict:
     """Overview of the whole document from the section summaries. Hierarchical: if the
     summaries do not fit in one request, they are summarised in groups first."""
-    items = [f"[{s['title']}] {s['analysis']['summary']}" for s in sections if s["analysis"]["summary"]]
-    key = hashlib.sha256(f"{PROMPT_VERSION}|{llm.model}|{lang}|{doc_title}|{items}"
-                         .encode("utf-8")).hexdigest()[:20]
-    file = Path(cache) / f"overview_{key}.json" if cache else None
+    items = _overview_items(sections)
+    file = overview_cache_file(cache, llm.model, sections, doc_title, lang)
     cached = _read_cache(file)
     if cached is not None:
         return cached

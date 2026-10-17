@@ -111,6 +111,26 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `ollama`), la de siempre.
 - `atlas check` (y `atlas doctor`) avisa cuando el modelo razona y `reasoning_effort` está
   vacío: los documentos se analizan mucho más despacio.
+- `atlas estimate [atlas.toml] [--latency S]`: lo que haría `atlas run` ahora, sin hacerlo.
+  Por paso, las unidades pendientes, las peticiones a las API (en `docs.process`, las
+  secciones que no están en la caché más un resumen por documento; en el índice, los lotes
+  de los textos sin vector) y el tiempo: máx(peticiones / `requests_per_minute`, peticiones ×
+  latencia / a la vez), con la latencia del último perfil del paso o `--latency`. La misma
+  línea sale al empezar cada paso de `atlas run` y en `atlas status`. En el proyecto grande da
+  540 peticiones de chat y 237 de embeddings, como las medidas. En la librería,
+  `Runner(dry_run=True)` y `Step.estimate`.
+- Presupuesto en `atlas run`: `--until HH:MM` (la de mañana si ya pasó), `--max-minutes N`,
+  `--max-requests N` y las claves `[pipeline] max_minutes` y `max_requests` (0 = sin
+  límite). Al llegar al límite no empieza ninguna unidad más, un documento a medias deja de
+  pedir secciones y queda para la próxima ejecución, los pasos siguientes no empiezan, el
+  informe dice `stopped_by = "budget"` y sale con el código 3; relanzarlo sigue sin repetir
+  lo hecho. Sin hilo temporizador: el `Runner` mira el presupuesto antes de cada unidad y
+  cada vez que una unidad larga consulta `stopping` (`atlas.pipeline.Stopping`).
+- Progreso en `atlas run`: una línea por stderr cada 30 s o cada 25 unidades de un paso, con
+  lo que queda según la estimación («docs.process 120/2080 units, 35 min, ~2 h 10 min
+  left»).
+- `docs/instalacion.md`: cómo programar la ingesta de noche con el Programador de tareas de
+  Windows, y los códigos de salida de `atlas run` (0, 1, 2 y el nuevo 3).
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,

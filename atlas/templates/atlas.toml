@@ -40,6 +40,8 @@ requests_per_minute = 0                # 0 = sin límite; p. ej. 28 si el gatewa
 [pipeline]
 workers = 4                            # unidades a la vez; en docs, también peticiones al modelo
 steps = ["doors", "code", "docs", "graph", "index"]
+max_minutes = 0                        # para y guarda el estado pasados N minutos (0 = sin límite)
+max_requests = 0                       # o tras N peticiones a las API; `atlas run` sigue después
 
 # --- Fuentes: activa las que tengas ------------------------------------------------
 [[sources.docs]]

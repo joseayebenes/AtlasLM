@@ -168,6 +168,76 @@ Si `check` falla, dice por qué: certificado, proxy, credenciales, URL o modelo.
 `atlas run` se puede interrumpir (Ctrl+C, un corte de red, un apagado): al relanzarlo sigue
 donde se quedó. Una segunda ejecución sin cambios no hace ninguna petición al modelo.
 
+### Cuánto va a tardar
+
+Con el gateway (28 peticiones por minuto, unos 30 s cada una) la primera ingesta de un
+proyecto real son horas. Antes de lanzarla:
+
+```powershell
+atlas estimate atlas.toml               # por paso: unidades, peticiones y tiempo
+atlas estimate atlas.toml --latency 30  # sin ninguna ejecución anterior que mida la latencia
+```
+
+```
+docs.process: 80 units, 2160 chat requests, about 77-85 min at 28/min
+index.documents: after docs.process
+```
+
+Las peticiones de `docs.process` son las secciones que no están en la caché más un resumen
+por documento; el tiempo va de esa cifra a la misma con un 10 % más (secciones que se
+dividen). Los pasos que dependen de otros con trabajo pendiente («after docs.process») no
+se pueden estimar hasta que esos terminen. `atlas status` repite la estimación y `atlas
+run` la escribe al empezar cada paso y, mientras trabaja, una línea de progreso cada 30 s o
+cada 25 unidades:
+
+```
+docs.process 12/80 units, 15 min, ~1 h 10 min left
+```
+
+### De noche, con un límite
+
+`atlas run` puede parar solo, con el estado guardado, y seguir la próxima vez:
+
+```powershell
+atlas run atlas.toml --until 07:00      # no empieza nada después de las 7:00 (de mañana, si ya pasó)
+atlas run atlas.toml --max-minutes 300  # o pasadas 5 horas
+atlas run atlas.toml --max-requests 5000
+```
+
+También en `atlas.toml`, `[pipeline] max_minutes` y `max_requests` (ver
+[configuración](configuracion.md#pipeline)). Al llegar al límite no empieza ninguna unidad
+más, un documento a medias deja de pedir secciones (las que ya tiene quedan en la caché) y
+sale con el código 3; la siguiente ejecución lo retoma sin repetir lo hecho.
+
+Para lanzarla cada noche en Windows, con el **Programador de tareas**:
+
+1. *Crear tarea…* (no «tarea básica»), con un nombre como `atlas nocturno`; marca
+   «Ejecutar tanto si el usuario inició sesión como si no» si el puesto se queda bloqueado.
+2. *Desencadenadores*: diario, a las 21:00.
+3. *Acciones*: iniciar un programa.
+   - Programa: `C:\atlas\venv\Scripts\atlas.exe`
+   - Argumentos: `run atlas.toml --until 07:00`
+   - Iniciar en: la carpeta del proyecto, la del `atlas.toml` (las rutas de las fuentes son
+     relativas a ella).
+4. *Configuración*: «Detener la tarea si se ejecuta durante más de» 12 horas, como red de
+   seguridad. Aunque el Programador la mate, el motor sobrevive: la próxima ejecución
+   rehace solo la unidad que estaba en marcha.
+
+Las variables de la clave y del proxy tienen que estar en el entorno del usuario de la
+tarea (variables de usuario de Windows, no las de una consola abierta). Para guardar el
+registro, una acción con `cmd.exe` y los argumentos
+`/c atlas run atlas.toml --until 07:00 >> logs\atlas-run.log 2>&1`. Por la mañana,
+`atlas status atlas.toml` dice qué se hizo y qué queda.
+
+### Códigos de salida de `atlas run`
+
+| Código | Qué pasó | Qué hacer |
+|---|---|---|
+| 0 | todo al día | nada |
+| 1 | alguna unidad falló (se anota y se sigue) | `atlas status` dice cuáles y por qué; la próxima ejecución las reintenta |
+| 2 | un error fatal paró la ejecución (conexión, credenciales, cupo agotado) | corregir la causa y relanzar: sigue donde se quedó |
+| 3 | se alcanzó el límite (`--until`, `--max-minutes`, `max_requests`) | relanzar cuando toque: sigue donde se quedó |
+
 ## 5. Conectar el editor
 
 `atlas serve atlas.toml` es un servidor MCP por stdio. Conviene que el editor lo arranque en

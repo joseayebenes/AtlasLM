@@ -53,7 +53,7 @@ run-openrouter:     ## las muestras con un modelo de OpenRouter: make run-openro
 	$(PY) -m atlas.cli run atlas.openrouter.toml
 
 eval-openrouter:    ## atlas run y atlas eval con un modelo de OpenRouter; informes en workspace-openrouter/<modelo>
-	$(PY) -m atlas.cli run atlas.openrouter.toml || test $$? -eq 1      # 1: alguna unidad falló; 2: error fatal
+	$(PY) -m atlas.cli run atlas.openrouter.toml || test $$? -eq 1      # 1: alguna unidad falló; 2: error fatal; 3: límite (docs/instalacion.md)
 	$(PY) -m atlas.cli eval atlas.openrouter.toml
 
 compare-openrouter: ## lo mismo con cada modelo de MODELS="a b c" y una tabla que los compara

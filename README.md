@@ -87,7 +87,9 @@ sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md
 ```bash
 atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml (--profile gateway: la del gateway)
 atlas run      atlas.dev.toml # procesamiento incremental y reanudable
-atlas status   atlas.dev.toml # libro de registro, datos y perfil de tiempos
+atlas run atlas.dev.toml --until 07:00   # o --max-minutes N, --max-requests N: para con el estado guardado (código 3)
+atlas estimate atlas.dev.toml # qué haría `atlas run`: unidades, peticiones y tiempo, sin hacerlo
+atlas status   atlas.dev.toml # libro de registro, datos, lo que queda y perfil de tiempos
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
 atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
@@ -115,7 +117,9 @@ atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
 atlas --version
 ```
 
-Toda la configuración está en el TOML; la línea de comandos solo elige acción y fichero.
+Toda la configuración está en el TOML; la línea de comandos elige acción y fichero y, en
+unas pocas acciones, opciones de esa ejecución (`--k` de `search`, `--until` de `run`...).
+Programar `atlas run` de noche y sus códigos de salida: [instalación](docs/instalacion.md#de-noche-con-un-límite).
 Sin instalar, `python -m atlas.cli` en vez de `atlas`.
 
 Prueba el motor sin modelo:

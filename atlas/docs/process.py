@@ -30,7 +30,7 @@ from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError, Interrupted, atomic_write
 
-__all__ = ["DocsOptions", "preview", "process_document"]
+__all__ = ["DocsOptions", "pending_requests", "preview", "process_document"]
 
 log = logging.getLogger("atlas.docs")
 
@@ -85,6 +85,33 @@ def preview(path: str | Path, options: DocsOptions | None = None, disabled: Iter
     if info["oversized"] or not info["source"].startswith("PDF bookmarks"):
         out["headings"] = diagnose_headings(text)
     return out
+
+
+def pending_requests(path: str | Path, options: DocsOptions, model: str, cache_dir: str | Path,
+                     disabled: Iterable[str] = ()) -> dict:
+    """What processing a document now would ask the model, without asking it: its sections
+    (as preview finds them), those whose analysis is not in the cache of `cache_dir` (the
+    `cache_dir` of process_document) and whether the overview is missing too. It is 1
+    request per section, unless an answer comes cut or broken and the section is split
+    (one more per split), plus 1 for the overview (more for a document whose summaries do
+    not fit in one request)."""
+    path = Path(path)
+    text, _ = clean_headers(read_text(path, disabled))
+    doc_title = document_title(text, path)
+    sections = prepare_sections(text, options.max_chars, options.min_chars, options.heading_regex or None,
+                                path, options.structure, {})
+    if options.analysis != "llm":
+        return {"sections": len(sections), "to_analyse": 0, "overview": False}
+    files = [an.section_cache_file(Path(cache_dir), model, s, doc_title, options.lang) for s in sections]
+    analyses = [an._read_cache(f) for f in files]
+    missing = sum(a is None for a in analyses)
+    overview = bool(missing)              # its key depends on the summaries: not known before them
+    if not missing:
+        for s, a in zip(sections, analyses):
+            s["analysis"] = a              # as _analyze_all takes it from the cache
+        f = an.overview_cache_file(Path(cache_dir), model, sections, doc_title, options.lang)
+        overview = an._read_cache(f) is None
+    return {"sections": len(sections), "to_analyse": missing, "overview": overview}
 
 
 def _replace_dir(tmp: Path, out: Path) -> None:

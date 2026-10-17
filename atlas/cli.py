@@ -1,7 +1,10 @@
 """Minimal command line: the configuration lives in the TOML file.
 
-    atlas run      [atlas.toml]     incremental, resumable processing
-    atlas status   [atlas.toml]     state of the ledger and of the data
+    atlas run      [atlas.toml]     incremental, resumable processing; with a budget it stops cleanly
+                   [--until HH:MM] [--max-minutes N] [--max-requests N]   (exit 3) and goes on next time
+    atlas estimate [atlas.toml]     what `atlas run` would do now: units, requests to the APIs and time,
+                   [--latency S]    with the seconds per request of the last run (or S)
+    atlas status   [atlas.toml]     state of the ledger and of the data, and what is left to do
     atlas sections [atlas.toml]     sections each document would have, without the model
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
@@ -45,16 +48,18 @@ from __future__ import annotations
 import fnmatch
 import json
 import logging
+import math
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from atlas import plugins
 from atlas.config import Config, ConfigError, load_config
-from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
+from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, Stopping, clock, sha256_file, sha256_text
 from atlas.store import Store
 
 if TYPE_CHECKING:
@@ -69,7 +74,66 @@ def _context(cfg: Config) -> SimpleNamespace:
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
     return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
-                           stopping=threading.Event())     # set by the Runner when the run is interrupted
+                           stopping=Stopping(),            # set by the Runner when the run is interrupted
+                                                           # or its budget is spent
+                           latency=None)                   # seconds per request for the estimates; None = measured
+
+
+# --------------------------------------------------------------------------
+# Estimates: what the pending units of a step will ask the APIs, and how long it takes
+# --------------------------------------------------------------------------
+
+def measured_latency(ctx, step: str) -> float | None:
+    """Seconds per request of `step` in the last run that made requests in it (api_seconds
+    of its profile between its requests), or the --latency given; None if none did."""
+    if ctx.latency:
+        return ctx.latency
+    for r in Ledger(ctx.store.path).runs(20):
+        api = r["report"].get("profile", {}).get(step, {}).get("api", {})
+        requests = sum(api.get(k, 0) for k in ("chat", "embeddings", "other"))
+        if requests and api.get("api_seconds"):
+            return api["api_seconds"] / requests
+    return None
+
+
+def request_estimate(ctx, step: str, requests: dict[str, int], most: dict[str, int] | None, service: str,
+                     workers: int) -> dict:
+    """The Step.estimate of `requests` ({"chat": 540}), or up to `most` of them, to the
+    service "llm" or "embeddings": time = max(requests / requests_per_minute, requests x
+    latency / requests at a time), with the latency of measured_latency."""
+    from atlas.llm import from_config
+    conn = from_config(ctx.cfg)
+    net = (conn.llm if service == "llm" else conn.embeddings).net
+    rpm, at_once = net.requests_per_minute, max(1, min(workers, net.max_concurrent or workers))
+    latency = measured_latency(ctx, step)
+    most = most or requests
+    low, high = sum(requests.values()), sum(most.values())
+    what = ", ".join(f"{n} {kind}" for kind, n in requests.items()) + " requests"
+    out: dict = {"requests": requests, "most": most}
+    if not high:
+        return {**out, "seconds": [0, 0], "text": "no requests"}
+
+    def seconds(n: int) -> float | None:
+        bounds = ([n / rpm * 60] if rpm else []) + ([n * latency / at_once] if latency is not None else [])
+        return max(bounds) if bounds else None
+
+    lo, hi = seconds(low), seconds(high)
+    if lo is None:
+        return {**out, "text": f"{what}; time unknown: no run has measured the latency yet (--latency SECONDS)"}
+    how = (f"at {rpm}/min" if rpm and (latency is None or low / rpm * 60 >= low * latency / at_once)
+           else f"with {latency:.2g} s per request, {at_once} at a time")
+    return {**out, "seconds": [round(lo, 1), round(hi, 1)], "text": f"{what}, {time_span(lo, hi)} {how}"}
+
+
+def time_span(low: float, high: float) -> str:
+    """'about 45-55 min', 'about 2 h 10 min to 2 h 30 min', 'under 1 min'."""
+    a, b = clock(low), clock(high)
+    if a == b:
+        return a if a.startswith("under") else f"about {a}"
+    if high < 90 * 60:
+        lo, hi = max(1, round(low / 60)), round(high / 60)
+        return f"about {hi} min" if lo == hi else f"about {lo}-{hi} min"
+    return f"about {a} to {b}"
 
 
 # --------------------------------------------------------------------------
@@ -220,7 +284,7 @@ def docs_step(ctx) -> Step | None:
     sources = doc_sources(ctx)
     if not sources:
         return None
-    from atlas.docs import extractor_for, process_document
+    from atlas.docs import extractor_for, pending_requests, process_document
     from atlas.docs.analysis import PROMPT_VERSION
     from atlas.llm import JsonLlm, from_config
     by_name = {d["name"]: (d, options) for d, options in sources}
@@ -286,9 +350,32 @@ def docs_step(ctx) -> Step | None:
             shutil.rmtree(known["out_dir"], ignore_errors=True)
             ctx.store.delete_document(unit)
 
+    def estimate(ctx, units: list[str]) -> dict:
+        # the sections that are not in the cache, +10 % for those whose answer comes cut and
+        # are split, and the overview of each document whose sections or overview are missing
+        sections = to_analyse = overviews = unreadable = 0
+        for unit in units:
+            name, f = unit.split(":", 1)
+            d, options = by_name[name]
+            if options.analysis != "llm":
+                continue
+            try:
+                r = pending_requests(ctx.cfg.resolve(f), options, model, root / ".cache", ctx.disabled)
+            except Exception as e:
+                log.warning("%s: cannot be estimated: %s", f, e)
+                unreadable += 1
+                continue
+            sections, to_analyse, overviews = sections + r["sections"], to_analyse + r["to_analyse"], \
+                overviews + r["overview"]
+        est = request_estimate(ctx, "docs.process", {"chat": to_analyse + overviews},
+                               {"chat": math.ceil(to_analyse * 1.1) + overviews}, "llm", workers)
+        return {**est, "sections": sections, "to_analyse": to_analyse, "overviews": overviews,
+                **({"unreadable": unreadable} if unreadable else {})}
+
     # documents in parallel, and the sections of all of them `workers` at a time (llm()):
     # the extraction of a PDF goes on while the model answers about the sections of others
-    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune)
+    return Step(name="docs.process", units=units, fingerprint=fingerprint, run=run, prune=prune,
+                estimate=estimate)
 
 
 class IndexIncomplete(RuntimeError):
@@ -310,6 +397,14 @@ def index_options(ctx) -> dict:
         raise ConfigError("[index] chunk_chars must be at least 200 and chunk_overlap between 0 and "
                           "half of chunk_chars")
     return {"chunk_chars": ic["chunk_chars"], "chunk_overlap": ic["chunk_overlap"], "kinds": ic["kinds"]}
+
+
+def embeddings_estimate(ctx, step: str, index, texts: list[str], workers: int) -> dict:
+    """The Step.estimate of an index step: the batches of the texts that have no vector
+    in the cache (embed_missing without sending them)."""
+    res = index.embed_missing(texts, workers, dry_run=True)
+    return {**request_estimate(ctx, step, {"embeddings": res["batches"]}, None, "embeddings", workers),
+            "texts": res["texts"], "cached": res["cached"]}
 
 
 def index_step(ctx) -> Step:
@@ -350,14 +445,15 @@ def index_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def prepare(ctx, units: list[str]) -> None:
-        texts = [r["embed_text"] for unit in units for r in build_records(
+    def texts(units: list[str]) -> list[str]:
+        return [r["embed_text"] for unit in units for r in build_records(
             json.loads(structure(unit).read_text(encoding="utf-8")), options["chunk_chars"],
             options["chunk_overlap"], options["kinds"])]
-        index().embed_missing(texts, workers)
 
     return Step(name="index.documents", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, unit: index().remove_document(unit), prepare=prepare,
+                prune=lambda ctx, unit: index().remove_document(unit),
+                prepare=lambda ctx, units: index().embed_missing(texts(units), workers),
+                estimate=lambda ctx, units: embeddings_estimate(ctx, "index.documents", index(), texts(units), workers),
                 depends_on=["docs.process"])
 
 
@@ -393,12 +489,14 @@ def index_requirements_step(ctx) -> Step:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def prepare(ctx, modules: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for m in modules
-                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+    def texts(modules: list[str]) -> list[str]:
+        return [r["embed_text"] for m in modules for r in requirement_records(m, ctx.store.requirements(m), kinds)]
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,
+                prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module),
+                prepare=lambda ctx, modules: index().embed_missing(texts(modules), workers),
+                estimate=lambda ctx, modules: embeddings_estimate(ctx, "index.requirements", index(), texts(modules),
+                                                                  workers),
                 depends_on=["doors.requirements"])
 
 
@@ -458,11 +556,13 @@ def index_code_step(ctx) -> Step | None:
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
-    def prepare(ctx, pending: list[str]) -> None:
-        index().embed_missing([r["embed_text"] for unit in pending for r in records(unit)], workers)
+    def texts(pending: list[str]) -> list[str]:
+        return [r["embed_text"] for unit in pending for r in records(unit)]
 
     return Step(name="index.code", units=units, fingerprint=fingerprint, run=run,
-                prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit), prepare=prepare,
+                prune=lambda ctx, unit: index().remove_document(CODE_PREFIX + unit),
+                prepare=lambda ctx, pending: index().embed_missing(texts(pending), workers),
+                estimate=lambda ctx, pending: embeddings_estimate(ctx, "index.code", index(), texts(pending), workers),
                 depends_on=["code.parse"])
 
 
@@ -586,20 +686,89 @@ def steps(ctx) -> list[Step]:
 # Actions
 # --------------------------------------------------------------------------
 
-def run(cfg: Config) -> int:
+def _runner(ctx, **options) -> Runner:
     from atlas import __version__
     from atlas.llm import usage
+    pc = ctx.cfg["pipeline"]
+    return Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
+                  on_error=pc["on_error"], max_attempts=pc["max_attempts"],
+                  retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
+                  meters=usage, version=__version__, stopping=ctx.stopping, **options)
+
+
+def print_estimate(rep: RunReport, indent: str = "") -> None:
+    """One line per step of a dry run (Runner(dry_run=True)), and the total."""
+    totals: dict[str, int] = {}
+    low = high = 0.0
+    known = True
+    for step, n in rep.pending.items():
+        est = rep.estimate.get(step, {})
+        after = ", ".join(est.get("after", []))
+        if n:
+            line = f"{n} unit{'s' if n > 1 else ''}" + (f", {est['text']}" if est.get("text") else "") + (f"; more after {after}" if after else "")
+        else:
+            line = f"after {after}" if after else "up to date"
+        print(f"{indent}{step}: {line}")
+        for kind, k in est.get("requests", {}).items():
+            totals[kind] = totals.get(kind, 0) + k
+        if est.get("requests") and sum(est["requests"].values()):
+            if "seconds" in est:
+                low, high = low + est["seconds"][0], high + est["seconds"][1]
+            else:
+                known = False
+    if sum(totals.values()):
+        print(f"{indent}total: " + ", ".join(f"{n} {kind}" for kind, n in totals.items() if n) + " requests"
+              + (f", {time_span(low, high)}" if known else "; time unknown (--latency SECONDS)"))
+
+
+def estimate(cfg: Config, latency: float = 0.0) -> int:
+    """What `atlas run` would do now, without doing it: the units to process of each step,
+    the requests to the APIs and how long they take."""
     ctx = _context(cfg)
+    ctx.latency = latency or None
+    print_estimate(_runner(ctx, dry_run=True).run())
+    return 0
+
+
+def deadline(until: str = "", minutes: int = 0, now: float | None = None) -> float | None:
+    """The instant (time.time()) after which `atlas run` starts no more units: the earliest
+    of `until` ("HH:MM", today or, if that time has passed, tomorrow) and `minutes` from
+    now; None without either."""
+    from datetime import datetime, timedelta
+    now = time.time() if now is None else now
+    out = [now + minutes * 60] if minutes > 0 else []
+    if until:
+        try:
+            hh, mm = (int(x) for x in until.split(":"))
+            at = datetime.fromtimestamp(now).replace(hour=hh, minute=mm, second=0, microsecond=0)
+        except ValueError:
+            raise ConfigError(f"--until must be a time HH:MM, not '{until}'") from None
+        if at.timestamp() <= now:
+            at += timedelta(days=1)
+        out.append(at.timestamp())
+    return min(out) if out else None
+
+
+def run(cfg: Config, until: str = "", max_minutes: int = 0, max_requests: int = 0) -> int:
+    """Exit code: 0 all done; 1 some unit failed (retried on the next run); 2 a fatal error
+    stopped it; 3 the budget (--until, --max-minutes, max_requests) stopped it. With 2 and 3
+    the state is saved and running it again goes on."""
     pc = cfg["pipeline"]
-    runner = Runner(Ledger(ctx.store.path), steps(ctx), context=ctx, workers=pc["workers"],
-                    on_error=pc["on_error"], max_attempts=pc["max_attempts"],
-                    retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
-                    meters=usage, version=__version__, stopping=ctx.stopping)
-    rep = runner.run()
+    for key, value in (("max_minutes", max_minutes or pc["max_minutes"]),
+                       ("max_requests", max_requests or pc["max_requests"])):
+        if value < 0:
+            raise ConfigError(f"[pipeline] {key} must be 0 (no limit) or more, not {value}")
+    ctx = _context(cfg)
+    rep = _runner(ctx, deadline=deadline(until, max_minutes or pc["max_minutes"]),
+                  max_requests=max_requests or pc["max_requests"],
+                  progress=lambda line: print(line, file=sys.stderr, flush=True)).run()
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
         return 2
+    if rep.stopped_by == "budget":
+        print("budget reached; the state is saved: run `atlas run` again", file=sys.stderr)
+        return 3
     return 1 if rep.errors or rep.quarantined else 0
 
 
@@ -615,7 +784,8 @@ def print_profile(run: dict) -> None:
     """The time profile of a run (Ledger.runs): one line per step."""
     rep = run["report"]
     print(f"last run: {run['started']}, atlas {run['version'] or '?'}, {run['seconds']:.1f} s"
-          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else ""))
+          + (f", stopped: {rep['fatal']}" if rep.get("fatal") else "")
+          + (", stopped by the budget: run `atlas run` again to go on" if rep.get("stopped_by") == "budget" else ""))
     print(f"  {'step':20s} {'seconds':>8s} {'scan':>6s} {'units':>6s} {'ran':>6s}  slowest unit; API")
     for step, p in rep.get("profile", {}).items():
         slowest = p.get("slowest", [])
@@ -640,6 +810,15 @@ def status(cfg: Config) -> int:
         print(f"  {p['status']:11s} {p['step']:20s} {p['unit'][:60]}  {p['error'] or ''}")
     if len(pending) > 30:
         print(f"  … and {len(pending) - 30} more")
+    try:
+        rep = _runner(ctx, dry_run=True).run()
+        if any(rep.pending.values()):
+            print("to do now:")
+            print_estimate(rep, "  ")
+        else:
+            print("to do now: nothing, everything is up to date")
+    except Exception as e:                          # e.g. the DOORS database is not reachable
+        print(f"to do now: unknown ({e})")
     runs = ledger.runs(6)
     if runs:
         print_profile(runs[0])
@@ -884,6 +1063,8 @@ def coverage(cfg: Config, module: str) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 OPTIONS = {"init": {"--profile": str},
+           "run": {"--until": str, "--max-minutes": int, "--max-requests": int},
+           "estimate": {"--latency": float},
            "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
            "develop": {"--check": bool, "--resume": bool}}
@@ -903,16 +1084,17 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
         kind = allowed[name]
         if kind is bool:
-            options[name[2:]] = True
+            options[name[2:].replace("-", "_")] = True
             continue
         if not has_value:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
         try:
-            options[name[2:]] = kind(value)
+            options[name[2:].replace("-", "_")] = kind(value)
         except ValueError:
-            sys.exit(f"atlas {action}: {name} must be {'an integer' if kind is int else 'a text'}")
+            sys.exit(f"atlas {action}: {name} must be "
+                     + {int: "an integer", float: "a number"}.get(kind, "a text"))
     return positional, options
 
 
@@ -1174,8 +1356,9 @@ def main(argv: list[str] | None = None) -> None:
     if action == "init":
         rest, options = _options(action, rest)
         sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
-    actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,
-               "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor, "probe": probe, "reference": reference, "serve": serve}
+    actions = {"run": run, "estimate": estimate, "status": status, "sections": sections, "graph": graph,
+               "plugins": list_plugins, "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor,
+               "probe": probe, "reference": reference, "serve": serve}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
@@ -1193,7 +1376,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         if action in with_text:
             sys.exit(with_text[action](load_config(rest[1] if len(rest) > 1 else "atlas.toml"), rest[0], **options))
-        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml")))
+        sys.exit(actions[action](load_config(rest[0] if rest else "atlas.toml"), **options))
     except ConfigError as e:
         sys.exit(f"configuration: {e}")
     except FatalError as e:

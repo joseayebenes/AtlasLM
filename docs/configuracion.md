@@ -96,7 +96,7 @@ los límites.
 | `client_cert`, `client_key` | ruta | `""` | certificado y clave de cliente (TLS mutuo); la contraseña de la clave, en `RAG_CLIENT_KEY_PASSWORD` |
 | `insecure` | sí/no | `false` | `true` no verifica TLS: solo para diagnosticar |
 | `timeout` | número | `600` | segundos por petición |
-| `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30 |
+| `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30. `atlas develop` compara con él los agentes que lanza a la vez (`parallel` × `attempts` del plan, una vuelta cada unos 30 s) y avisa si van a llenarlo |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |
 | `max_concurrent` | entero | `0` | peticiones simultáneas al servidor; 0 = sin límite |
@@ -302,6 +302,18 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
 | `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos |
 | `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `atlas develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
+
+### El plan de `atlas develop`
+
+El plan no va en `atlas.toml`: es su propio TOML, descrito en
+[atlas/agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests). Dos de sus claves
+dependen de esta configuración:
+
+- `attempts` y `parallel` (encargos a la vez, los que ya tienen hechos los de su `after`)
+  copian la carpeta de trabajo: las raíces de `[sources.code]` tienen que estar dentro de ella.
+- `parallel` × `attempts` agentes a la vez piden una vuelta cada unos 30 s cada uno; se
+  comparan con `[network] requests_per_minute` (o el de `[llm.network]`) y el plan avisa si van
+  a llenarlo. Hasta que el cupo se comparta entre procesos, `parallel` es como mucho 2.
 
 ### [agents.eval]
 

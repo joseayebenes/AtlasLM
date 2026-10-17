@@ -22,6 +22,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `wall_seconds` en el informe de `atlas develop`: el tiempo de pared de la tanda, que no es la
   suma de los `seconds` de las ejecuciones (los tests van aparte y los intentos a la vez
   solapan).
+- Encargos a la vez en `atlas develop`: `after = ["T01", "T02"]` en un encargo (los que necesita
+  hechos; sin él, el anterior, como hasta ahora) y `parallel` en el plan. Los encargos que ya
+  pueden ir van a la vez, cada uno en su copia con sus intentos, arreglos y reintento; al
+  acabar, solo los ficheros que cambió pasan a la carpeta de trabajo y los tests se pasan de
+  nuevo. Si dos cambiaron el mismo fichero, o juntos rompen algo, el segundo se deshace
+  (`conflict`) y se repite solo sobre el código nuevo. Un `after` a un encargo que no existe o
+  un ciclo son un error al leer el plan. El informe guarda `schedule` (tiempo de los encargos
+  uno tras otro, de pared y aceleración), y se avisa si `parallel` × `attempts` agentes van a
+  llenar `[network] requests_per_minute`. `parallel` es como mucho 2 hasta que el cupo se
+  comparta entre procesos.
 - Parches de `atlas develop`: lo que deja cada encargo y cada ronda, en
   `reports/develop-<plan>/<id>.patch` y `all.patch`, enlazados desde el informe.
 - Herramientas `outline` (los subprogramas de un fichero con sus líneas, su firma y sus

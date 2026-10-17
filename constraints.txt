@@ -1,11 +1,13 @@
 # Versiones exactas con las que pasan las pruebas de atlaslm 0.1.0 (instalación limpia
 # de atlaslm[all,dev] en Python 3.10, 3.11, 3.12, 3.13, 2026-10-11). Uso:
 #     pip install "atlaslm[all]" -c constraints.txt
-# Generado con tools/constraints.py; no se edita a mano.
+# Generado con tools/constraints.py; no se edita a mano. Excepción: ruff y mypy (extra dev) y
+# sus dependencias, añadidos el 2026-10-17 sin tocar las demás versiones.
 aiosqlite==0.22.1
 annotated-doc==0.0.5
 annotated-types==0.8.0
 anyio==4.15.1
+ast-serialize==0.6.0
 attrs==26.1.0
 authlib==1.8.0
 backports-tarfile==1.2.0; python_version < "3.12"
@@ -45,6 +47,7 @@ joserfc==1.7.5
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 keyring==25.7.0
+librt==0.13.0
 magika==0.6.3
 markdown-it-py==4.2.0
 markdownify==1.2.3
@@ -54,6 +57,8 @@ mcp-types==2.3.0
 mdurl==0.1.2
 more-itertools==11.1.0
 mpmath==1.3.0; python_version < "3.11"
+mypy==2.3.0
+mypy-extensions==1.1.0
 networkx==3.4.2; python_version < "3.11"
 networkx==3.6.1; python_version >= "3.11" and python_version < "3.12"
 networkx==3.7; python_version >= "3.12"
@@ -68,6 +73,7 @@ opentelemetry-api==1.42.1
 opentelemetry-sdk==1.42.1
 opentelemetry-semantic-conventions==0.63b1
 packaging==26.3
+pathspec==1.1.1
 pdfminer-six==20260107
 pdfplumber==0.11.10
 pillow==12.3.0
@@ -95,6 +101,7 @@ rfc3986==2.0.0
 rich==15.0.0
 rpds-py==0.30.0; python_version < "3.11"
 rpds-py==2026.9.1; python_version >= "3.11"
+ruff==0.16.1
 six==1.17.0
 sniffio==1.3.1
 soupsieve==2.10; python_version < "3.11"

@@ -24,7 +24,7 @@ code = ["tree-sitter>=0.23,<0.27", "tree-sitter-ada>=0.1,<0.2", "networkx>=3,<4"
 mcp = ["mcp>=2.3,<3"]
 agents = ["google-adk>=2.11,<2.12"]
 all = ["atlaslm[docs,code,mcp,agents]"]
-dev = ["pytest>=8", "pymupdf>=1.24,<2", "build>=1"]
+dev = ["pytest>=8", "pymupdf>=1.24,<2", "build>=1", "ruff>=0.16,<0.17", "mypy>=2.3,<3"]
 
 [project.scripts]
 atlas = "atlas.cli:main"
@@ -49,3 +49,64 @@ testpaths = ["tests"]
 markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)"]
 filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning",       # notices of ADK about its own features
                   "ignore:builtin type [Ss]wig.* has no __module__:DeprecationWarning"]   # pymupdf on Python 3.13
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+extend-exclude = ["legacy"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "UP"]
+# The style of the project: names of one letter, lambdas assigned, several statements on a line.
+ignore = ["E501", "E741", "E731", "E701", "E702",
+          # Not cleaned yet: each one leaves this list when the code is corrected.
+          "UP035", "UP037", "UP012", "UP031", "B905", "B023", "B007"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/fakes/*" = ["E401"]                   # the fakes, a few lines each: imports on one line too
+"tests/*" = ["B017"]                         # pytest.raises(Exception) where any failure will do
+
+[tool.mypy]
+# python_version is the one that runs mypy: with 3.10 fixed, the stubs of numpy for Python 3.12
+# and later (type statements) do not parse. The CI runs it on 3.10, 3.12 and 3.13.
+ignore_missing_imports = true
+warn_unused_ignores = true
+
+# Modules with errors still: each one leaves this list when it is cleaned, package by package.
+[[tool.mypy.overrides]]
+module = [
+    "atlas.agents.comply",
+    "atlas.agents.context",
+    "atlas.agents.develop",
+    "atlas.agents.evaluate",
+    "atlas.agents.link",
+    "atlas.agents.model",
+    "atlas.agents.runtime",
+    "atlas.agents.verify",
+    "atlas.cli",
+    "atlas.code.ada",
+    "atlas.code.build",
+    "atlas.code.library",
+    "atlas.code.lsp",
+    "atlas.code.procedures",
+    "atlas.code.python",
+    "atlas.code.reference",
+    "atlas.code.symbols",
+    "atlas.code.tools",
+    "atlas.docs",
+    "atlas.docs.analysis",
+    "atlas.docs.process",
+    "atlas.docs.structure",
+    "atlas.doors",
+    "atlas.graph.build",
+    "atlas.graph.knowledge",
+    "atlas.index",
+    "atlas.index.embeddings",
+    "atlas.index.records",
+    "atlas.index.search",
+    "atlas.llm.connection",
+    "atlas.mcp",
+    "atlas.pipeline",
+    "atlas.plugins",
+]
+ignore_errors = true

@@ -38,7 +38,7 @@ class AgentTools:
         tools = getattr(context, "_agent_tools", None)
         if tools is None:
             tools = cls(GraphTools.for_context(context), context.cfg, context)
-            setattr(context, "_agent_tools", tools)
+            context._agent_tools = tools
         return tools
 
     def build_context(self, target: str, budget_tokens: int = 4000) -> dict:

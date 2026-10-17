@@ -1,6 +1,7 @@
 """check_code and run_test: the compiler and the tests of the project for coding agents. With
 a fake compiler everywhere, and with GNAT when it is installed (Alire's toolchain or PATH)."""
 import glob
+import json
 import os
 import shutil
 import sys
@@ -12,6 +13,20 @@ from atlas.code import BuildTools
 from atlas.config import load_config
 
 GNAT_PATH = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
+q = lambda *args: json.dumps([str(a) for a in args])      # a TOML list of strings, Windows paths too
+# what test_command builds is a Python script: Windows does not run it by its name
+RUN_EXE = [sys.executable, "{exe}"] if os.name == "nt" else ["{exe}"]
+
+
+def executable(path: Path, code: str) -> None:
+    """A Python script that runs by its name: with a shebang, or on Windows (which ignores it)
+    as a .cmd beside it."""
+    if os.name == "nt":
+        path.with_name(path.name + ".py").write_text(code)
+        path.with_name(path.name + ".cmd").write_text(f'@"{sys.executable}" "%~dp0{path.name}.py" %*\n')
+    else:
+        path.write_text(f"#!{sys.executable}\n" + code)
+        path.chmod(0o755)
 FAKE_CC = '''import sys
 from pathlib import Path
 args = sys.argv[1:]
@@ -43,7 +58,7 @@ def project(tmp_path, toml, samples):
     cc.parent.mkdir()
     cc.write_text(FAKE_CC)
 
-    def make(check=None, test=None, tool_path=None, timeout=None, extra="") -> BuildTools:
+    def make(check=None, test=None, tool_path=None, timeout=None, run=None, extra="") -> BuildTools:
         cfg = load_config(toml(f'''
 [sources.code]
 roots = ["{ada.as_posix()}"]
@@ -52,6 +67,7 @@ check_command = {check if check is not None else [sys.executable, str(cc), "{inc
 test_command = {test if test is not None else [sys.executable, str(cc), "{include}", "{file}", "-o", "{exe}"]}
 tool_path = {tool_path or []}
 command_timeout = {timeout or 30}
+run_command = {run or RUN_EXE}
 {extra}
 '''.replace("'", '"')))
         return BuildTools.from_config(cfg)
@@ -94,8 +110,7 @@ def test_tool_path_timeout_and_missing_compiler(project, tmp_path):
     ada, make = project
     fake = tmp_path / "bin2" / "fakecc"
     fake.parent.mkdir()
-    fake.write_text(f"#!{sys.executable}\nimport sys\nsys.exit(0)\n")
-    fake.chmod(0o755)
+    executable(fake, "import sys\nsys.exit(0)\n")
     # tool_path (with a glob) goes before PATH: "fakecc" is found there
     tools = make(check=["fakecc", "{file}"], tool_path=[str(tmp_path / "bin*")])
     assert tools.check_code(str(ada / "src" / "tracks.adb"))["ok"] is True
@@ -114,14 +129,12 @@ def test_a_test_runs_through_a_wrapper_and_python_tests_just_run(project, tmp_pa
     ada, make = project
     scripts = tmp_path / "scripts"
     scripts.mkdir()
-    (scripts / "with_server").write_text(f"#!{sys.executable}\n" + WRAPPER)
-    (scripts / "with_server").chmod(0o755)
+    executable(scripts / "with_server", WRAPPER)
     monkeypatch.chdir(tmp_path)                 # a relative tool_path is relative to where atlas runs
-    tools = make(tool_path=["scripts"], extra='''
-run_command = ["with_server", "{exe}"]
+    tools = make(tool_path=["scripts"], run=["with_server", *RUN_EXE], extra=f'''
 [sources.code.test_commands]
-py = ["with_server", "PYTHON", "{file}"]
-'''.replace("PYTHON", sys.executable))
+py = {q("with_server", sys.executable, "{file}")}
+''')
     res = tools.run_test(str(ada / "tests" / "test_tracks.adb"))
     assert res["built"] and res["passed"] and res["output"].split() == ["service", "started", "ran"]
     test = ada / "tests" / "test_session.py"
@@ -139,7 +152,7 @@ def test_check_commands_by_extension(project):
     """GNAT checks a spec alone with -gnatc, and a body generating code (more errors)."""
     ada, make = project
     cc = ada.parent / "bin1" / "fakecc.py"
-    tools = make(extra=f'[sources.code.check_commands]\nads = ["{sys.executable}", "{cc}", "-gnatc", "{{file}}"]\n')
+    tools = make(extra=f'[sources.code.check_commands]\nads = {q(sys.executable, cc, "-gnatc", "{file}")}\n')
     assert tools.check_code(str(ada / "src" / "tracks.ads"))["ok"]
     assert "-gnatc" in (tools.build_dir / "args.txt").read_text().splitlines()
     assert tools.check_code(str(ada / "src" / "tracks.adb"))["ok"]
@@ -162,10 +175,10 @@ def test_run_program_and_the_code_its_output_cites(project, tmp_path):
     ada, make = project
     program = tmp_path / "program.py"
     program.write_text(PROGRAM.replace("TEST", str(ada / "tests" / "test_tracks.adb")))
-    tools = make(extra=f'program_command = ["{sys.executable}", "{program}"]\nprotected = ["**/tests/**"]\n')
+    tools = make(extra=f'program_command = {q(sys.executable, program)}\nprotected = ["**/tests/**"]\n')
     res = tools.run_program(["ping", "hello tester"])
     assert res == {"exit_code": 0, "output": "< PING\n< HELLO TESTER\n"}
-    crash = make(extra=f'program_command = ["{sys.executable}", "{program}", "crash"]\nprotected = ["**/tests/**"]\n')
+    crash = make(extra=f'program_command = {q(sys.executable, program, "crash")}\nprotected = ["**/tests/**"]\n')
     res = crash.run_program([])
     assert res["exit_code"] == 1 and "length check failed" in res["output"]
     # the line of tracks.adb, once; not the protected test, nor "127.0.0.1:5555", nor a line past the end
@@ -176,7 +189,7 @@ def test_run_program_and_the_code_its_output_cites(project, tmp_path):
     # run_test shows it too
     test = ada / "tests" / "test_crash.py"
     test.write_text("import sys\nprint('Step 4: received nothing; server: raised at tracks.adb:2')\nsys.exit(1)\n")
-    tools = make(extra=f'protected = ["**/tests/**"]\n[sources.code.test_commands]\npy = ["{sys.executable}", "{{file}}"]\n')
+    tools = make(extra=f'protected = ["**/tests/**"]\n[sources.code.test_commands]\npy = {q(sys.executable, "{file}")}\n')
     res = tools.run_test(str(test))
     assert res["passed"] is False and res["code_at"][0]["line"] == 2
     assert "error" in make().run_program(["x"])                                 # nothing configured
@@ -186,7 +199,6 @@ def test_run_program_and_the_code_its_output_cites(project, tmp_path):
 def test_offered_by_the_mcp_server(project, toml):
     from atlas.mcp import default_tools
     ada, make = project
-    tools = make()
     cfg = load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\ncheck_command = ["cc", "{{file}}"]\n'))
     assert "check_code" in default_tools(cfg) and "run_test" not in default_tools(cfg)     # run_test runs code
     assert "run_program" not in default_tools(cfg)
@@ -231,7 +243,7 @@ end Tracks;"""))
 @gnat
 def test_gnat_builds_and_runs_a_test(project):
     ada, make = project
-    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH, run=["{exe}"],
                  test=["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"])
     res = tools.run_test(str(ada / "tests" / "test_tracks.adb"))
     assert (res["built"], res["passed"], res["output"].strip()) == (True, True, "delete"), res
@@ -294,7 +306,7 @@ def test_gnat_on_the_test_a_small_model_wrote_and_on_the_model_of_tester_md(proj
     ada, make = project
     (ada / "src" / "speeds.ads").write_text(SPEEDS_ADS)
     (ada / "src" / "speeds.adb").write_text(SPEEDS_ADB)
-    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH, run=["{exe}"],
                  test=["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"])
     test = ada / "tests" / "test_speeds.adb"
     test.write_text("with Speeds;\nprocedure Test_Speeds is\n   -- Req: SRS-0160\nbegin\n" + "".join(
@@ -334,7 +346,7 @@ def test_a_change_that_breaks_the_syntax_is_not_made_and_each_change_is_checked(
     ada, make = project
     syntax = tmp_path / "bin1" / "syntax.py"
     syntax.write_text(FAKE_SYNTAX)
-    build = make(extra=f'[sources.code.syntax_commands]\nadb = ["{sys.executable}", "{syntax}", "{{file}}"]\n')
+    build = make(extra=f'[sources.code.syntax_commands]\nadb = {q(sys.executable, syntax, "{file}")}\n')
     files = build.files
     build.hook()                                         # what CodeTools.for_context does in an agent
     f = str(ada / "src" / "tracks.adb")
@@ -370,7 +382,7 @@ def test_a_change_that_breaks_the_syntax_is_not_made_and_each_change_is_checked(
 @gnat
 def test_gnat_rejects_a_begin_left_open(project):
     ada, make = project
-    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH,
+    tools = make(check=["gcc", "-c", "-gnatc", "{include}", "{file}"], tool_path=GNAT_PATH, run=["{exe}"],
                  extra='[sources.code.syntax_commands]\nadb = ["gcc", "-c", "-gnats", "{file}"]\n')
     tools.hook()
     f = str(ada / "src" / "tracks.adb")

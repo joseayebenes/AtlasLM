@@ -18,15 +18,16 @@ import hashlib
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-try:
+if sys.version_info >= (3, 11):
     import tomllib
-except ImportError:  # Python < 3.11
-    import tomli as tomllib  # type: ignore
+else:
+    import tomli as tomllib
 
 _VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 _URL_PASSWORD = re.compile(r"(://[^/@:]*:)([^/@]*)(@)")             # http://user:password@proxy

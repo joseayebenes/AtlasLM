@@ -92,7 +92,7 @@ class DocTools:
         tools = getattr(context, "_doc_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg, getattr(context, "store", None))
-            setattr(context, "_doc_tools", tools)
+            context._doc_tools = tools
         return tools
 
     def list_documents(self) -> dict:

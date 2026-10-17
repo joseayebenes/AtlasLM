@@ -24,7 +24,6 @@ import json
 import logging
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from pathlib import Path
 from typing import Any
 
 from atlas.agents.definitions import AgentDef

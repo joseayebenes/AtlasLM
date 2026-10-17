@@ -91,9 +91,9 @@ dirs = ["{(tmp_path / 'agents').as_posix()}"]
 roots = ["src", "tests"]
 exclude = ["**/__pycache__/**"]
 protected = ["tests/**"]
-check_command = ["{sys.executable}", "-m", "py_compile", "{{file}}"]
+check_command = [{json.dumps(sys.executable)}, "-m", "py_compile", "{{file}}"]
 [sources.code.test_commands]
-py = ["{sys.executable}", "{{file}}"]
+py = [{json.dumps(sys.executable)}, "{{file}}"]
 [sources.code.syntax_commands]
 py = []                                 # off: these tests write code that does not compile on purpose
 '''))

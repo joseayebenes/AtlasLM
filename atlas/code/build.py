@@ -74,6 +74,7 @@ import ast
 import glob
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Iterable
@@ -183,6 +184,15 @@ def _relative(cfg, path: str) -> Path:
     return p if p.is_absolute() else cfg.path.parent / p
 
 
+def on_path(args: list[str], path: str) -> list[str]:
+    """`args` with its program looked up in `path` (tool_path, then PATH). Windows looks for it in
+    the PATH of atlas, not in the one given to the process, and would not see tool_path; there
+    `which` also finds the .exe, .cmd or .bat of a name."""
+    if os.name != "nt" or not args or os.path.dirname(args[0]):
+        return args
+    return [shutil.which(args[0], path=path) or args[0], *args[1:]]
+
+
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
@@ -247,7 +257,7 @@ class BuildTools:
         tools = getattr(context, "_build_tools", None)
         if tools is None:
             tools = cls.from_config(context.cfg, CodeTools.for_context(context))
-            setattr(context, "_build_tools", tools)
+            context._build_tools = tools
             tools.hook()
         return tools
 
@@ -323,7 +333,7 @@ class BuildTools:
         self.build_dir.mkdir(parents=True, exist_ok=True)
         env = {**os.environ, "PATH": os.pathsep.join([*self.tool_path, os.environ.get("PATH", "")])}
         try:
-            return subprocess.run(args, cwd=self.build_dir, env=env, capture_output=True, text=True,
+            return subprocess.run(on_path(args, env["PATH"]), cwd=self.build_dir, env=env, capture_output=True, text=True,
                                   timeout=self.timeout, input=input,
                                   stdin=None if input is not None else subprocess.DEVNULL)
         except FileNotFoundError:

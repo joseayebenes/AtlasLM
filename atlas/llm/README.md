@@ -115,6 +115,18 @@ También funciona solo, con su propio `connection.toml`:
 
 ## Pruebas
 
-`tests/test_fake_api.py` (cliente, `check` con modelos que razonan, contadores de uso),
-`tests/test_llm_structured.py` (reparación de JSON, servidores sin salida estructurada,
-razonamiento, límite de concurrencia) y `tests/test_config.py` (secretos y enmascarado).
+`tests/test_fake_api.py` (cliente, `check` con modelos que razonan y el escalón de salida
+estructurada, contadores de uso, la espera por `Retry-After` y por las cabeceras
+`x-ratelimit-*` por HTTP, reintentos de los 5xx, un cupo que no se libera, `usage` del tamaño
+real, `atlas probe` contra un servidor que llama a herramientas), `tests/test_llm_structured.py`
+(reparación y validación de JSON, la corrección que cita el error, los escalones
+`json_schema → json_object → none` compartidos entre instancias, `finish_reason` en
+`ask_text`, razonamiento, límite de concurrencia) y `tests/test_config.py` (secretos y
+enmascarado).
+
+Todas usan el servidor falso (`tests/fakes/fake_api.py`), cuyo fichero de control, releído en
+cada petición, inyecta los fallos: `chat_429_after`, `chat_status_once: [500, 503]`,
+`retry_after` y `ratelimit_headers: {remaining, reset}` en los rechazos, `tool_call: {name,
+args}`, `usage_chars_per_token` (con él, una respuesta más larga que `max_tokens` sale cortada
+con `finish_reason` `length`) y `no_structured_output` (`true`, o `"json_schema"` para aceptar
+`json_object`), además de los de antes. La lista completa está al principio del fichero.

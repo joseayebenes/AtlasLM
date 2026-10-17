@@ -131,3 +131,39 @@ def test_concurrency_caps_the_requests_in_flight(fake_llm):
         answers = list(pool.map(lambda _: llm.ask_text("system", "Reply with: ok"), range(6)))
     assert answers == ["ok"] * 6 and state["max"] == 2
 
+
+def test_a_server_without_json_schema_gets_json_object(fake_llm, fake_stats):
+    service, control = fake_llm
+    control.write_text(json.dumps({"no_structured_output": "json_schema"}))
+    llm = JsonLlm(service)
+    assert llm.structured == "json_schema"
+    d = llm.ask_json("system", "<section>Req: SRS-0001 The TMF shall work.</section>", SCHEMA, "section")
+    assert d["requirements"][0]["id"] == "SRS-0001" and llm.structured == "json_object"
+    assert fake_stats()["last_chat"]["response_format"] == {"type": "json_object"}
+    before = fake_stats()["chat"]                 # another instance, same server: no rejected request
+    JsonLlm(service).ask_json("system", "<section>x</section>", SCHEMA, "section")
+    assert fake_stats()["chat"] - before == 1 and fake_stats()["last_chat"]["response_format"]["type"] == "json_object"
+    other = JsonLlm(type(service)(**{**service.__dict__, "model": "another"}))   # another model starts again
+    assert other.structured == "json_schema"
+
+
+def test_ask_text_asks_again_when_the_answer_is_cut(fake_llm, fake_chats):
+    from dataclasses import replace
+    service, control = fake_llm
+    control.write_text(json.dumps({"usage_chars_per_token": 4}))
+    question = "Sources:\n\n[1] Some text.\n\nQuestion: what?"      # "Answer taken from the sources [1]." is 9 tokens
+    before = fake_chats()
+    text = JsonLlm(replace(service, max_tokens=5)).ask_text("system", question)   # cut at 5, whole at 10
+    assert (text, text.truncated, text.requests) == ("Answer taken from the sources [1].", False, 2)
+    assert fake_chats() - before == 2
+    text = JsonLlm(replace(service, max_tokens=2)).ask_text("system", question)   # cut at 2 and at 4
+    assert (text, text.truncated, text.requests) == ("Answer taken fro", True, 2)
+    text = JsonLlm(replace(service, max_tokens=50)).ask_text("system", question)  # whole: one request
+    assert (text.truncated, text.requests) == (False, 1)
+
+    # a reasoning model that spends the whole budget thinking: empty, and asked again with twice
+    control.write_text(json.dumps({"reasoning_tokens": 80}))
+    text = JsonLlm(replace(service, max_tokens=50)).ask_text("system", "Reply with: ok")
+    assert (text, text.truncated) == ("ok", False)
+    text = JsonLlm(replace(service, max_tokens=20)).ask_text("system", "Reply with: ok")
+    assert (text, text.truncated) == ("", True)

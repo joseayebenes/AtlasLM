@@ -6,6 +6,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- El servidor falso (`tests/fakes/fake_api.py`) inyecta más fallos, sin cambiar la forma de su
+  fichero de control: 429 en el chat (`chat_429_after`), 5xx puntuales (`chat_status_once`),
+  `Retry-After` y cabeceras `x-ratelimit-*` en los rechazos, llamadas a herramientas
+  (`tool_call`), `usage` calculado del tamaño real (`usage_chars_per_token`, que también corta
+  las respuestas más largas que `max_tokens`) y servidores que aceptan `json_object` pero no
+  `json_schema` (`no_structured_output: "json_schema"`). Con ellos se prueban por HTTP la
+  espera por `Retry-After`, los escalones de salida estructurada, `finish_reason` y `atlas
+  probe`.
+
 ### Cambiado
 - La salida estructurada va por escalones: `json_schema`, `json_object` y ninguno. Antes, un
   servidor que rechazaba el esquema se quedaba sin `response_format`, cuando casi todos

@@ -123,3 +123,86 @@ def test_extra_body_goes_as_is_in_every_chat_request(fake, fake_stats, capsys, t
         "summary": {"type": "string"}}}, "overview")
     last = fake_stats()["last_chat"]
     assert last["provider"] == provider and last["response_format"]["type"] == "json_schema"
+
+
+def _client(url, key, **net):
+    from atlas.llm import NetConfig, ServiceConfig, create_client
+    return create_client(ServiceConfig(base_url=url, model="fake", api_key=key, net=NetConfig(
+        proxy="", no_proxy="*", adaptive=False, **net)))[0]
+
+
+OK = [{"role": "user", "content": "Reply with: ok"}]
+
+
+def test_the_wait_follows_retry_after_and_the_ratelimit_headers(fake):
+    import time
+    from atlas.llm import usage
+    url, control = fake
+    cl = _client(url, "retry-after", max_backoff=0.05)
+    control.write_text(json.dumps({"chat_status_once": [429], "retry_after": 1}))
+    before, t0 = usage(), time.monotonic()
+    assert cl.chat.completions.create(model="fake", messages=OK).choices[0].message.content == "ok"
+    assert time.monotonic() - t0 >= 1 and usage()["rejected"] - before["rejected"] == 1
+
+    # no Retry-After, but no requests left until the reset: everything waits for it
+    control.write_text(json.dumps({"chat_status_once": [503], "ratelimit_headers": {"remaining": 0, "reset": 1}}))
+    t0 = time.monotonic()
+    assert cl.chat.completions.create(model="fake", messages=OK).choices[0].message.content == "ok"
+    assert time.monotonic() - t0 >= 0.9
+
+
+def test_server_errors_are_retried_and_a_rate_limit_that_lasts_is_given_up(fake, fake_stats):
+    from openai import RateLimitError
+    from atlas.llm import usage
+    url, control = fake
+    cl = _client(url, "statuses", max_backoff=0.05, rate_limit_max_wait=0.3)
+    control.write_text(json.dumps({"chat_status_once": [500, 503], "retry_after": 0}))
+    before = usage()
+    assert cl.chat.completions.create(model="fake", messages=OK).choices[0].message.content == "ok"
+    assert usage()["retried"] - before["retried"] == 2 and fake_stats()["rejections"] == 2
+
+    control.write_text(json.dumps({"chat_429_after": fake_stats()["chat"] + 1, "retry_after": 0.1}))
+    cl.chat.completions.create(model="fake", messages=OK)                        # the last one let through
+    with pytest.raises(RateLimitError):
+        cl.chat.completions.create(model="fake", messages=OK)
+    assert fake_stats()["rejections"] >= 2 + 3
+
+
+def test_usage_comes_from_the_size_of_the_request_and_the_answer(fake):
+    import math
+    url, control = fake
+    cl = _client(url, "usage-size")
+    control.write_text(json.dumps({"usage_chars_per_token": 4}))
+    r = cl.chat.completions.create(model="fake", messages=OK)
+    assert r.usage.prompt_tokens == math.ceil(len(json.dumps(OK)) / 4) and r.usage.completion_tokens == 1
+    e = cl.embeddings.create(model="fake", input=["abcdefgh", "abc"])
+    assert e.usage.prompt_tokens == 2 + 1
+
+
+def test_probe_against_a_server_that_calls_tools(fake):
+    from atlas.llm.probe import probe
+    url, control = fake
+    control.write_text(json.dumps({"tool_call": {"name": "word_length", "args": {"word": "atlas"}},
+                                   "reasoning_tokens": 10, "usage_chars_per_token": 4}))
+    lines = []
+    assert probe(_service(url), out=lines.append) == 0
+    out = "\n".join(lines)
+    assert '1 OK' in out and 'word_length({"word": "atlas"})' in out and "it reasoned" in out
+    assert '2 OK' in out and '"letters": 5' in out
+    assert "3 OK: the server puts the reasoning back" in out
+
+
+def test_check_says_which_structured_output_the_server_accepts(fake, capsys):
+    url, control = fake
+    from atlas.llm import Connection, check
+    assert check(Connection(llm=_service(url), embeddings=_service(url))) == 0
+    assert "structured output: json_schema" in capsys.readouterr().out
+    control.write_text(json.dumps({"no_structured_output": "json_schema"}))
+    service = _service(url)
+    service.model = "fake-without-schema"
+    assert check(Connection(llm=service, embeddings=_service(url))) == 0
+    assert "structured output: json_object" in capsys.readouterr().out
+    control.write_text(json.dumps({"no_structured_output": True}))
+    service.model = "fake-without-any"
+    assert check(Connection(llm=service, embeddings=_service(url))) == 0
+    assert "structured output: none" in capsys.readouterr().out

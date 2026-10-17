@@ -9,6 +9,7 @@ modelo a las preguntas de trazabilidad e impacto. Viene de `legacy/ada_graph.py`
 | `build.py` | construcción de las tres partes del grafo |
 | `sources.py` | los nombres de documentos y de elementos de código que se buscan en el texto |
 | `store.py` | `GraphStore`: el grafo en `atlas.db`, por origen |
+| `export.py` | `write_matrix`: la matriz en CSV, Markdown y XLSX |
 | `knowledge.py` | `KnowledgeGraph`: consultas de código y de trazabilidad, exportación |
 | `tools.py` | `GraphTools`: las herramientas del grafo para agentes y MCP |
 
@@ -82,14 +83,22 @@ Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta
 implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
 enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
 
-`atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.csv` (para una
-hoja de cálculo) y `.md`, y muestra el resumen y los huecos; `atlas matrix "*"` la hace con
+`atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.*`, en los
+formatos de `[graph] matrix_formats` (`export.py`, `write_matrix`): `.csv` para Excel (UTF-8 con
+BOM, `;` entre columnas por defecto, `csv_delimiter`; las listas de una celda, una por línea),
+`.md` y, con el extra `[xlsx]`, `.xlsx` (matriz con filtros, huecos y resumen con la fecha de
+DOORS). Muestra el resumen y los huecos; `atlas matrix "*"` la hace con
 todos los requisitos. Con las muestras:
 
 ```
 40 requirements: 4 with code, 1 with tests, 40 in documents.
 without code (36): SRS-0005, SRS-0006, …
 ```
+
+`atlas trace SRS-0004` imprime todo lo del requisito en Markdown, con `build_context` de
+[atlas.agents](../agents/README.md) (sin modelo y sin el extra `[agents]`) y un presupuesto de
+20 000 tokens, más holgado que el de la herramienta para no cortar en pantalla; `--json` da el
+diccionario de `trace`. `atlas matrix --json` da el de `matrix`, con todas las filas.
 
 La comparación de cifras es el primer paso de la verificación de requisitos con la
 documentación: el texto de DOORS de SRS-0004 dice 320 ms y el del PDF de ejemplo, 401 ms.
@@ -126,4 +135,6 @@ consultas.
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
 paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
 `neighbors`, comunidades y mismo grafo que `ada_graph.py`. `tests/test_cli.py`: el paso
-`graph.build` incremental por origen, `atlas trace` y `atlas matrix`.
+`graph.build` incremental por origen, `atlas trace` (Markdown y `--json`), `atlas matrix`
+(CSV con BOM y `;`, otro delimitador, `--json`) y `--json` en `graph` y `status`;
+`write_matrix` y la hoja XLSX, en `test_graph.py`.

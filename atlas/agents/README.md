@@ -94,7 +94,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 
 | Pieza | Qué hace | Modelo |
 |---|---|---|
-| `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` | no |
+| `build_context` | todo lo de un requisito, un elemento de código o un paquete en un Markdown de como mucho 4000 tokens: requisitos con su texto, firmas, llamadores, pruebas, documentos y código. Es una herramienta de `atlas serve` y la salida de `atlas trace` (con 20 000 tokens) | no |
 | `context_at` | `build_context` del código de una línea de un fichero (`path`, `line`): lo que el editor tiene abierto. También vale `build_context("src/tracks.adb:12")` | no |
 | `similar_requirements` | hasta `k` (3) requisitos parecidos a uno que ya tienen código, como ejemplo de cómo se implementa y se etiqueta uno en el proyecto: su texto, por qué se parece, el subprograma que lo implementa con su firma, la línea de su etiqueta `Req:` y, del primero, las 20 primeras líneas de su cuerpo. Primero los enlazados en DOORS (en los dos sentidos, y su padre) y los que declaran las mismas secciones; después, si hay índice, los que encuentra la búsqueda por su texto (ID y palabras, sin vectores). `build_context` de un requisito los trae en su último bloque, el primero que se recorta | no |
 | `atlas verify` | cada requisito con documentación contra los documentos: veredicto e incongruencias (valor, condición, contradicción, alcance, sin definir) con las palabras de cada texto y su fuente. También es la herramienta `verify_requirement` | `requirement_verifier` |

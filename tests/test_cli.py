@@ -176,7 +176,8 @@ patterns = ["*.md"]
     for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
                         (["search", "x", "--whole"], "unknown option --whole"),
                         (["ask", "x", "--k", "many"], "--k must be an integer"),
-                        (["status", "--k", "3"], "it takes none")):
+                        (["status", "--k", "3"], "unknown option --k (valid: --json)"),
+                        (["plugins", "--json"], "it takes none")):
         with pytest.raises(SystemExit) as e:
             main(args + [str(path)])
         assert error in str(e.value.code)
@@ -254,6 +255,7 @@ def test_graph_of_doors_code_and_documents(toml, samples, docs_samples, tmp_path
     """The three parts of the graph, each rebuilt only when what it is built from changes,
     and the traceability commands."""
     import shutil
+    from pathlib import Path
     import pytest
     from atlas.cli import graph, matrix, trace
     from atlas.graph import KnowledgeGraph
@@ -302,17 +304,52 @@ communities = true
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
-    assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
-    assert trace(cfg, "SRS-9999") == 1
-    capsys.readouterr()
+    assert trace(cfg, "srs-0004") == 0                  # Markdown, without a model
+    out = capsys.readouterr().out
+    assert out.startswith("# Context of SRS-0004 (requirement)") and "## Code that implements it" in out
+    assert "`tracks.delete_track`" in out and "## Tests" in out and "test_tracks.test_tracks" in out
+    assert trace(cfg, "SRS-9999") == 1 and "requirement 'SRS-9999' is not in the graph" in capsys.readouterr().out
+    assert trace(cfg, "srs-0004", as_json=True) == 0     # --json: the dictionary of KnowledgeGraph.trace
+    res = json.loads(capsys.readouterr().out)
+    assert res["id"] == "SRS-0004" and [i["id"] for i in res["implemented_by"]["items"]] == ["tracks.delete_track"]
+    assert trace(cfg, "SRS-9999", as_json=True) == 1 and "error" in json.loads(capsys.readouterr().out)
     assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
-    assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
-                                                  "documents"
+    raw = written.read_bytes()                          # for Excel in Spanish: a BOM and ";"
+    assert raw.startswith(b"\xef\xbb\xbf") and raw[3:].decode().splitlines()[0] == \
+        "id;text;status;verification;derived;code;tests;covering_tests;documents"
+    import csv
+    rows = {r["id"]: r for r in csv.DictReader(written.open(encoding="utf-8-sig", newline=""), delimiter=";")}
+    assert rows["SRS-0004"]["code"] == "tracks.delete_track" and rows["SRS-0004"]["tests"] == "test_tracks.test_tracks"
     assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+    assert go(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')))["skipped"]["graph.build"] == 3
+    assert matrix(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')), "SRS_TMS") == 0
+    assert "id,text," in written.read_text(encoding="utf-8-sig") and "matrix-SRS_TMS.md" not in capsys.readouterr().out
     assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
     assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()
     capsys.readouterr()
+
+    # --json: only the dictionary of the library function on stdout, for scripts
+    from atlas.cli import main
+    toml_path = str(cfg.path)
+
+    def as_json(*args, code=0):
+        with pytest.raises(SystemExit) as e:
+            main([*args, toml_path, "--json"])
+        assert e.value.code == code
+        return json.loads(capsys.readouterr().out)
+
+    res = as_json("matrix", "SRS_TMS")
+    assert res["summary"]["requirements"] == 40 and len(res["rows"]) == 40 and "without_code" in res["gaps"]
+    assert as_json("matrix", "NOPE", code=1)["modules"] == ["SRS_TMS", "SRS_TMS_OLD", "SSS_MISSION"]
+    assert as_json("trace", "SRS-0004")["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    res = as_json("graph")
+    assert set(res["builds"]) == {"code", "doors", "docs"} and res["gaps"]["requirements_without_code"]["count"] > 0
+    res = as_json("status")
+    assert res["data"]["requirements"] > 0 and res["graph"]["nodes"] > 0 and res["runs"][0]["report"]["processed"] == {}
+    assert set(res) == {"workspace", "data", "graph", "index", "ledger", "pending", "runs"}
+    res = as_json("sections")
+    assert [(d["source"], Path(d["file"]).name) for d in res["documents"]] == [("manuals", "hmi_manual.md")]
 
     manual.unlink()                                     # no documents: their part of the graph goes
     assert go()["pruned"] == {"docs.process": 1, "graph.build": 1}

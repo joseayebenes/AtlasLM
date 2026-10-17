@@ -90,7 +90,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
                  "max_requests": int},
     "plugins": {"modules": list, "disabled": list},
     "sources": {"docs": list, "doors": dict, "code": dict},
-    "graph": {"exports": list, "communities": bool},
+    "graph": {"exports": list, "communities": bool, "matrix_formats": list, "csv_delimiter": str},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
@@ -100,6 +100,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
 
 SEARCH_SCOPES = ("auto", "passages", "whole")     # [search] scope: what ask reads (atlas.index.search)
 MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of atlas serve (atlas.mcp)
+MATRIX_FORMATS = ("csv", "md", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
+GRAPH_BUILD_KEYS = ("exports", "communities")     # the keys of [graph] that change the graph built
 
 DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "req_regex": str,
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
@@ -123,7 +125,8 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"], "max_minutes": 0, "max_requests": 0},
     "plugins": {"modules": [], "disabled": []},
-    "graph": {"exports": ["graphml", "json"], "communities": False},
+    "graph": {"exports": ["graphml", "json"], "communities": False, "matrix_formats": ["csv", "md"],
+              "csv_delimiter": ";"},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
@@ -194,6 +197,14 @@ def _validate_search(search: dict) -> None:
 def _validate_mcp(mcp: dict) -> None:
     if mcp.get("profile", "") not in ("", *MCP_PROFILES):
         raise ConfigError(f"[mcp] profile must be one of {', '.join(MCP_PROFILES)}")
+
+
+def _validate_graph(graph: dict) -> None:
+    unknown = sorted(set(graph.get("matrix_formats", [])) - set(MATRIX_FORMATS))
+    if unknown:
+        raise ConfigError(f"[graph] unknown matrix_formats {unknown} (valid: {', '.join(MATRIX_FORMATS)})")
+    if len(graph.get("csv_delimiter", ";")) != 1:
+        raise ConfigError("[graph] csv_delimiter must be one character, such as \";\" or \",\"")
 
 
 @dataclass
@@ -326,6 +337,7 @@ def load_config(path: str | Path) -> Config:
     stream = data.get("llm", {}).get("stream", "")
     if isinstance(stream, str) and stream.strip().lower() not in ("", "auto", "true", "false"):
         raise ConfigError("[llm] stream must be true, false or \"\" (streamed unless the server cannot)")
+    _validate_graph(data.get("graph", {}))
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

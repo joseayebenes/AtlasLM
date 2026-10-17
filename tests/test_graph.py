@@ -365,6 +365,39 @@ def test_matrix_and_gaps(unified):
     assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
 
 
+def test_the_matrix_as_files_for_excel(unified, tmp_path):
+    import csv
+    from atlas.graph import write_matrix
+    store, g, _ = unified
+    res = g.matrix("SRS", limit=10**9)
+    res["rows"][0]["text"] = "=1+1 is not a formula"                 # a cell that starts with "="
+    files = write_matrix(res, tmp_path / "out" / "matrix-SRS", ["csv", "md"], ",")
+    assert [f.name for f in files] == ["matrix-SRS.csv", "matrix-SRS.md"]
+    rows = list(csv.reader(files[0].open(encoding="utf-8-sig", newline="")))
+    assert rows[0][:2] == ["id", "text"] and rows[4][0] == "SRS-0004"
+    res["rows"][3]["code"] = ["tracks.delete_track", "tracks.update"]    # a list: one per line in its cell
+    write_matrix(res, tmp_path / "out" / "matrix-SRS", ["csv"])
+    rows = list(csv.reader(files[0].open(encoding="utf-8-sig", newline=""), delimiter=";"))
+    assert rows[4][5] == "tracks.delete_track\ntracks.update"
+    assert "| tracks.delete_track; tracks.update |" not in files[1].read_text()      # not rewritten
+    with pytest.raises(ValueError, match="unknown matrix formats"):
+        write_matrix(res, tmp_path / "x", ["docx"])
+
+    openpyxl = pytest.importorskip("openpyxl")
+    [xlsx] = write_matrix(res, tmp_path / "out" / "matrix-SRS", ["xlsx"], builds=store.builds())
+    wb = openpyxl.load_workbook(xlsx)
+    assert wb.sheetnames == ["Matrix", "Gaps", "Summary"]
+    ws = wb["Matrix"]
+    assert [c.value for c in ws[1]][:3] == ["id", "text", "status"] and ws.auto_filter.ref == "A1:I5"
+    assert ws.freeze_panes == "A2" and ws["B2"].value == "=1+1 is not a formula" and ws["B2"].data_type == "s"
+    assert ws["F5"].value == "tracks.delete_track\ntracks.update" and ws["F5"].alignment.wrap_text
+    assert [[c.value for c in r] for r in wb["Gaps"].iter_rows(min_row=2)] == \
+        [["Without tests", "SRS-0001"], ["Without tests", "SRS-0002"], ["Without tests", "SRS-0003"]]
+    summary = {r[0].value: r[1].value for r in wb["Summary"].iter_rows()}
+    assert summary["Requirements"] == 4 and summary["With tests"] == 1
+    assert summary["DOORS read into the graph"] == store.builds()["doors"]["built_at"][:19].replace("T", " ")
+
+
 def test_neighbors_and_communities(unified, tmp_path):
     from atlas.graph import find_communities
     _, g, _ = unified

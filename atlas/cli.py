@@ -7,8 +7,10 @@
     atlas status   [atlas.toml]     state of the ledger and of the data, and what is left to do
     atlas sections [atlas.toml]     sections each document would have, without the model
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
-    atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
-    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas trace    ID [atlas.toml]     everything about a requirement in Markdown: DOORS, documents (with the
+                                       values that differ), code, tests, callers and source
+    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module ([graph] matrix_formats: CSV
+                                       for Excel, Markdown, XLSX); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
     atlas comply   ID|MODULE [atlas.toml]  whether the code of each requirement does all it asks, obligation
                                            by obligation, with the model; * = all
@@ -42,6 +44,10 @@
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
                    [--profile ollama|gateway]   for a local model (the default) or the corporate gateway
     atlas --version
+
+    --json         status, sections, graph, trace, matrix, verify, comply, link, coverage and impact
+                   print only the result as JSON on stdout (the dictionary of their library
+                   function), for scripts; warnings stay on stderr. trace prints Markdown otherwise
 """
 from __future__ import annotations
 
@@ -58,7 +64,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from atlas import plugins
-from atlas.config import Config, ConfigError, load_config
+from atlas.config import GRAPH_BUILD_KEYS, Config, ConfigError, load_config
 from atlas.pipeline import FatalError, Ledger, RunReport, Runner, Step, Stopping, clock, sha256_file, sha256_text
 from atlas.store import Store
 
@@ -585,7 +591,10 @@ def graph_step(ctx) -> Step:
     test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
     id_normalize = ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {}).get("id_normalize", "upper")
     normalize = lambda rid: normalize_id(rid, id_normalize)
-    settings = f"{ctx.cfg.fingerprint('graph')}|{test_patterns}|{id_normalize}|{GRAPH_VERSION}"
+    # only what changes the graph built: the matrix formats ([graph] matrix_formats...) do not
+    built = {k: v for k, v in ctx.cfg["graph"].items() if k in GRAPH_BUILD_KEYS}
+    settings = (f"{sha256_text(json.dumps(built, sort_keys=True, ensure_ascii=False, default=str))[:16]}|"
+                f"{test_patterns}|{id_normalize}|{GRAPH_VERSION}")
 
     def documents(ctx) -> list[dict]:
         docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
@@ -685,6 +694,16 @@ def steps(ctx) -> list[Step]:
 # --------------------------------------------------------------------------
 # Actions
 # --------------------------------------------------------------------------
+
+def _print_json(data) -> None:
+    """--json: the result alone on stdout."""
+    print(json.dumps(data, ensure_ascii=False, indent=1, default=str))
+
+
+def _json_result(res: dict) -> int:
+    _print_json(res)
+    return 1 if "error" in res else 0
+
 
 def _runner(ctx, **options) -> Runner:
     from atlas import __version__
@@ -795,13 +814,18 @@ def print_profile(run: dict) -> None:
               + "; ".join(notes))
 
 
-def status(cfg: Config) -> int:
-    ctx = _context(cfg)
-    ledger = Ledger(ctx.store.path)
-    print(f"workspace: {cfg.workspace}")
-    print("data:", ctx.store.counts())
+def status(cfg: Config, as_json: bool = False) -> int:
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
+    ctx = _context(cfg)
+    ledger = Ledger(ctx.store.path)
+    if as_json:
+        _print_json({"workspace": str(cfg.workspace), "data": ctx.store.counts(),
+                     "graph": GraphStore(ctx.store.path).counts(), "index": IndexStore(ctx.store.path).counts(),
+                     "ledger": ledger.summary(), "pending": ledger.pending(), "runs": ledger.runs(6)})
+        return 0
+    print(f"workspace: {cfg.workspace}")
+    print("data:", ctx.store.counts())
     print("graph:", GraphStore(ctx.store.path).counts())
     print("index:", IndexStore(ctx.store.path).counts())
     print("ledger:", json.dumps(ledger.summary(), ensure_ascii=False))
@@ -834,11 +858,15 @@ def status(cfg: Config) -> int:
     return 0
 
 
-def sections(cfg: Config) -> int:
+def sections(cfg: Config, as_json: bool = False) -> int:
     """The sections of every document of [[sources.docs]], without analysing them: to
     tune structure, heading_regex, max_chars and min_chars before a run."""
     from atlas.docs import preview
     ctx = _context(cfg)
+    if as_json:
+        _print_json({"documents": [{"source": d["name"], "file": str(f), **preview(f, options, ctx.disabled)}
+                                   for d, options in doc_sources(ctx) for f in doc_files(ctx, d)]})
+        return 0
     for d, options in doc_sources(ctx):
         for f in doc_files(ctx, d):
             p = preview(f, options, ctx.disabled)
@@ -860,14 +888,20 @@ def sections(cfg: Config) -> int:
     return 0
 
 
-def graph(cfg: Config) -> int:
+def graph(cfg: Config, as_json: bool = False) -> int:
     """The report of the last build of every part of the graph, and of its gaps."""
     from atlas.graph import GraphStore, KnowledgeGraph
     ctx = _context(cfg)
     builds = GraphStore(ctx.store.path).builds()
     if not builds:
-        print("no graph yet: run `atlas run` with \"graph\" in [pipeline] steps")
+        message = "no graph yet: run `atlas run` with \"graph\" in [pipeline] steps"
+        if as_json:
+            return _json_result({"error": message})
+        print(message)
         return 1
+    if as_json:
+        return _json_result({"builds": builds, "gaps": KnowledgeGraph.open(ctx.store.path, cfg.home).gaps(),
+                             "exported_to": str(cfg.workspace / "graph")})
     s = builds.get("code")
     if s:
         print(f"code graph of {s['built_at'][:19]}: {s['nodes']} nodes, {s['edges']} edges ({s['subprograms']} "
@@ -906,51 +940,60 @@ def graph(cfg: Config) -> int:
     return 0
 
 
-def trace(cfg: Config, req_id: str) -> int:
+TRACE_BUDGET = 20000     # tokens of `atlas trace`: more room than the build_context tool, not to cut on screen
+
+
+def trace(cfg: Config, req_id: str, as_json: bool = False) -> int:
+    """Everything about a requirement: in Markdown (build_context, without a model) or, with
+    --json, the dictionary of KnowledgeGraph.trace."""
+    from atlas.agents.context import build_context
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
-    res = KnowledgeGraph.open(ctx.store.path, cfg.home).trace(req_id)
-    print(json.dumps(res, ensure_ascii=False, indent=1))
-    return 1 if "error" in res else 0
+    g = KnowledgeGraph.open(ctx.store.path, cfg.home)
+    res = g.trace(req_id)
+    if as_json:
+        return _json_result(res)
+    if "error" in res:
+        print(res["error"] + (f"; similar: {', '.join(res['similar'])}" if res.get("similar") else ""))
+        return 1
+    print(build_context(g, res["id"], budget_tokens=TRACE_BUDGET)["markdown"].rstrip())
+    return 0
 
 
-def matrix(cfg: Config, module: str) -> int:
-    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph,
-    as CSV (for a spreadsheet) and Markdown, and its summary and gaps on the screen."""
-    import csv
-    from atlas.graph import KnowledgeGraph
+def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
+    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph, in
+    the formats of [graph] matrix_formats (atlas.graph.export), and its summary and gaps on
+    the screen."""
+    from atlas.graph import GraphStore, KnowledgeGraph, write_matrix
+    from atlas.graph.export import summary_line
     ctx = _context(cfg)
     module = "" if module == "*" else module
     res = KnowledgeGraph.open(ctx.store.path, cfg.home).matrix(module, limit=10**9)
     if "error" in res:
+        if as_json:
+            return _json_result(res)
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
-    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
-    cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
-    prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    with open(prefix.with_suffix(".csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(columns)
-        w.writerows([cell(row.get(c, "")) for c in columns] for row in res["rows"])
-    sm, gaps = res["summary"], res["gaps"]
-    md = [f"# Traceability matrix: {res['module']}", "",
-          f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
-          f"{sm['with_documents']} in documents.", "",
-          "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
-    md += ["| " + " | ".join(cell(row.get(c, "")).replace("|", "\\|") for c in columns) + " |" for row in res["rows"]]
-    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
-        md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
-    prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(md[2])
+    gc = cfg["graph"]
+    try:
+        files = write_matrix(res, cfg.workspace / "graph" / f"matrix-{module or 'all'}", gc["matrix_formats"],
+                             gc["csv_delimiter"], builds=GraphStore(ctx.store.path).builds())
+    except ImportError as e:            # "xlsx" without the [xlsx] extra
+        sys.exit(str(e))
+    except PermissionError as e:        # Windows: the file is open in Excel
+        sys.exit(f"cannot write {e.filename}: close it (Excel keeps it locked) and run again")
+    if as_json:
+        return _json_result(res)
+    gaps = res["gaps"]
+    print(summary_line(res))
     for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
         items = gaps[key]["items"]
         print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
-    print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
+    print(f"written {', '.join(str(f) for f in files)}" if files else "nothing written: [graph] matrix_formats is empty")
     return 0
 
 
-def verify(cfg: Config, target: str) -> int:
+def verify(cfg: Config, target: str, as_json: bool = False) -> int:
     """Each requirement against the documentation: the inconsistencies on the screen, and the
     report in <workspace>/reports."""
     from atlas.agents.verify import verify_all
@@ -958,6 +1001,8 @@ def verify(cfg: Config, target: str) -> int:
     ctx = _context(cfg)
     index = Index.from_config(cfg) if ctx.store.documents() else None
     res = verify_all(target, cfg, index=index)
+    if as_json:
+        return _json_result(res)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
@@ -973,11 +1018,13 @@ def verify(cfg: Config, target: str) -> int:
     return 0
 
 
-def comply(cfg: Config, target: str) -> int:
+def comply(cfg: Config, target: str, as_json: bool = False) -> int:
     """Whether the code of each requirement does all it asks, judged by the agent
     compliance_checker: the verdicts on the screen and the report in <workspace>/reports."""
     from atlas.agents.comply import comply_all
     res = comply_all(target, cfg)
+    if as_json:
+        return _json_result(res)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
@@ -996,7 +1043,7 @@ def comply(cfg: Config, target: str) -> int:
     return 0
 
 
-def link(cfg: Config, target: str) -> int:
+def link(cfg: Config, target: str, as_json: bool = False) -> int:
     """The code that may implement the requirements without code, judged by the agent
     req_linker: the proposals on the screen and the report in <workspace>/reports. Nothing
     is written in the code."""
@@ -1005,6 +1052,8 @@ def link(cfg: Config, target: str) -> int:
     ctx = _context(cfg)
     index = Index.from_config(cfg) if ctx.store.code_units() else None
     res = link_all(target, cfg, index=index)
+    if as_json:
+        return _json_result(res)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
@@ -1039,10 +1088,12 @@ def tests(cfg: Config, target: str) -> int:
     return 1 if res["errors"] else 0
 
 
-def impact(cfg: Config, name: str) -> int:
+def impact(cfg: Config, name: str, as_json: bool = False) -> int:
     from atlas.agents.reports import impact_report
     _context(cfg)
     res = impact_report(name, cfg)
+    if as_json:
+        return _json_result(res)
     if "error" in res:
         print(res["error"] + (f"; similar: {', '.join(res['similar'])}" if res.get("similar") else ""))
         return 1
@@ -1050,10 +1101,12 @@ def impact(cfg: Config, name: str) -> int:
     return 0
 
 
-def coverage(cfg: Config, module: str) -> int:
+def coverage(cfg: Config, module: str, as_json: bool = False) -> int:
     from atlas.agents.reports import coverage_report
     _context(cfg)
     res = coverage_report("" if module == "*" else module, cfg)
+    if as_json:
+        return _json_result(res)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
@@ -1067,11 +1120,15 @@ OPTIONS = {"init": {"--profile": str},
            "estimate": {"--latency": float},
            "search": {"--k": int, "--kind": str, "--document": str},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool},
-           "develop": {"--check": bool, "--resume": bool}}
+           "develop": {"--check": bool, "--resume": bool},
+           **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
+                                                      "comply", "link", "coverage", "impact")}}
+DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when it is not the name of the option
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
-    """The positional arguments and the --options of an action ({"k": 5, "whole": True})."""
+    """The positional arguments and the --options of an action ({"k": 5, "whole": True,
+    "as_json": True})."""
     allowed, positional, options = OPTIONS.get(action, {}), [], {}
     it = iter(args)
     for arg in it:
@@ -1082,16 +1139,16 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
         if name not in allowed:
             sys.exit(f"atlas {action}: unknown option {name}"
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
-        kind = allowed[name]
+        kind, dest = allowed[name], DESTINATIONS.get(name, name[2:].replace("-", "_"))
         if kind is bool:
-            options[name[2:].replace("-", "_")] = True
+            options[dest] = True
             continue
         if not has_value:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
         try:
-            options[name[2:].replace("-", "_")] = kind(value)
+            options[dest] = kind(value)
         except ValueError:
             sys.exit(f"atlas {action}: {name} must be "
                      + {int: "an integer", float: "a number"}.get(kind, "a text"))

@@ -576,6 +576,9 @@ def test_a_requirement_against_its_documentation(documented, capsys):
     assert "## SRS-0001" in (documented.workspace / "reports" / "verify-SRS_TMS.md").read_text()
     assert "neither a requirement nor a module" in verify_all("NOPE", documented, llm=judge, graph=g)["error"]
     assert verify_command(documented, "SSS-0001") == 0 and "1 requirements: 0 inconsistent" in capsys.readouterr().out
+    assert verify_command(documented, "SSS-0001", as_json=True) == 0       # --json: only the dictionary
+    res = json.loads(capsys.readouterr().out)
+    assert res["target"] == "SSS-0001" and res["counts"]["inconsistent"] == 0 and len(res["files"]) == 2
 
 
 def test_links_are_proposed_and_the_code_is_not_changed(workspace, samples, capsys):
@@ -614,6 +617,9 @@ def test_links_are_proposed_and_the_code_is_not_changed(workspace, samples, caps
     out = capsys.readouterr().out
     assert "SRS-0005 -> tracks.delete_track (low)" in out and "nothing changed in the code" in out
     assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
+    assert link_command(workspace, "SRS-0005", as_json=True) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["results"][0]["links"][0]["code"] == "tracks.delete_track" and res["counts"]["proposed"] == 1
 
 
 def test_the_code_of_a_requirement_is_judged_obligation_by_obligation(workspace, capsys):
@@ -651,6 +657,8 @@ def test_the_code_of_a_requirement_is_judged_obligation_by_obligation(workspace,
     assert "neither a requirement nor a module" in comply_all("NOPE", workspace, llm=judge, graph=g)["error"]
     assert comply_command(workspace, "SRS-0004") == 0
     assert "SRS-0004 (tracks.delete_track): cannot_tell" in capsys.readouterr().out
+    assert comply_command(workspace, "SRS-0004", as_json=True) == 0
+    assert json.loads(capsys.readouterr().out)["results"][0]["verdict"] == "cannot_tell"
 
 
 # --- reports written by an agent from the graph -----------------------------------------------
@@ -690,6 +698,21 @@ def test_impact_and_coverage_reports(workspace):
     assert "- SRS-0005" in data and "- … and 21 more" in data and "SRS-0040" not in data      # 15 of 36
     assert "- SRS-0040" in (workspace.workspace / "reports" / "coverage-SRS_TMS.md").read_text()
     assert coverage_report("NOPE", workspace, llm=writer)["modules"] == ["SRS_TMS", "SRS_TMS_OLD", "SSS_MISSION"]
+
+
+def test_the_report_commands_print_json(workspace, monkeypatch, capsys):
+    from atlas.agents import reports
+    from atlas.cli import coverage, impact
+    monkeypatch.setattr(reports, "_writer", lambda name, cfg, llm: (SimpleNamespace(instruction=""),
+                                                                    StubWriter("**Report**")))
+    assert coverage(workspace, "SRS_TMS") == 0 and capsys.readouterr().out.startswith("**Report**")
+    assert coverage(workspace, "SRS_TMS", as_json=True) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["module"] == "SRS_TMS" and res["gaps"]["requirements_without_code"] == 36
+    assert impact(workspace, "Logger.Log", as_json=True) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["node"] == "logger.log" and res["report"] == "**Report**" and res["file"].endswith(".md")
+    assert impact(workspace, "nothing", as_json=True) == 1 and "error" in json.loads(capsys.readouterr().out)
 
 
 def test_ask_atlas_is_the_assistant_as_a_tool(workspace, monkeypatch):

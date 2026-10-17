@@ -92,8 +92,9 @@ atlas estimate atlas.dev.toml # qué haría `atlas run`: unidades, peticiones y 
 atlas status   atlas.dev.toml # libro de registro, datos, lo que queda y perfil de tiempos
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
-atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas
-atlas matrix SRS_TMS atlas.dev.toml   # matriz de trazabilidad de un módulo, en CSV y Markdown
+atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito, en Markdown: DOORS, documentos, código, pruebas
+atlas trace SRS-0004 atlas.dev.toml --json   # lo mismo como JSON, para scripts
+atlas matrix SRS_TMS atlas.dev.toml   # matriz de un módulo: CSV para Excel (; y BOM), Markdown y, con [xlsx], .xlsx
 atlas search "track deletion latency" atlas.dev.toml   # búsqueda en documentos, requisitos y código
 atlas ask "¿Cuánto tarda en borrarse una traza?" atlas.dev.toml   # respuesta con citas
 atlas ask "Resume los requisitos de SRS_TMS" atlas.dev.toml   # una pregunta amplia lee el módulo entero
@@ -120,6 +121,15 @@ atlas --version
 Toda la configuración está en el TOML; la línea de comandos elige acción y fichero y, en
 unas pocas acciones, opciones de esa ejecución (`--k` de `search`, `--until` de `run`...).
 Programar `atlas run` de noche y sus códigos de salida: [instalación](docs/instalacion.md#de-noche-con-un-límite).
+`--json` en `status`, `sections`, `graph`, `trace`, `matrix`, `verify`, `comply`, `link`,
+`coverage` e `impact` escribe por stdout solo el resultado en JSON (el diccionario de la
+función de la librería), para el Programador de tareas de Windows o un script; los avisos van
+por stderr y un error sale como `{"error": ...}` con código 1:
+
+```bash
+atlas status atlas.dev.toml --json > estado.json
+```
+
 Sin instalar, `python -m atlas.cli` en vez de `atlas`.
 
 Prueba el motor sin modelo:

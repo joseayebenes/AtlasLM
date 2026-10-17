@@ -131,6 +131,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   left»).
 - `docs/instalacion.md`: cómo programar la ingesta de noche con el Programador de tareas de
   Windows, y los códigos de salida de `atlas run` (0, 1, 2 y el nuevo 3).
+- `atlas matrix` escribe los formatos de `[graph] matrix_formats` (`csv`, `md` y `xlsx`). La
+  escritura pasa a la librería: `atlas.graph.write_matrix(res, prefijo, formatos, delimitador)`.
+- Extra `[xlsx]` (openpyxl, wheel puro): `matrix-<módulo>.xlsx` con una hoja de matriz con
+  filtros y anchos, una de huecos y un resumen con la fecha de la parte DOORS del grafo.
+- `--json` en `status`, `sections`, `graph`, `trace`, `matrix`, `verify`, `comply`, `link`,
+  `coverage` e `impact`: por stdout solo el diccionario de su función de librería, para el
+  Programador de tareas y los scripts; los avisos siguen por stderr. Un error sale también como
+  JSON (`{"error": ...}`), con código de salida 1.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -148,6 +156,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - El `atlas.toml` de producción del repositorio sigue la plantilla del gateway: pone
   `reasoning_effort = "none"`, `max_concurrent`, una `[[sources.docs]]` y `[search]`, y lee la
   clave de `ATLAS_API_KEY`, como la plantilla y la guía de instalación (antes, `GW_KEY`).
+- `atlas trace ID` imprime en Markdown todo lo del requisito (`build_context`, sin modelo y sin
+  el extra `[agents]`): texto y atributos de DOORS, enlaces, las secciones que lo declaran con
+  las cifras que difieren de DOORS, el código, las pruebas, los llamadores y el código fuente.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -221,6 +232,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Un `atlas.toml` copiado del ejemplo de producción lee la clave de `GW_KEY`: cámbialo a
   `${ATLAS_API_KEY}` (y la variable), o deja `GW_KEY` puesta. Si no tiene `reasoning_effort`,
   `atlas check` lo avisa; ponerlo no reprocesa nada.
+- El CSV de `atlas matrix` va en UTF-8 con BOM y con `;` entre columnas (`[graph]
+  csv_delimiter`), para que Excel en español lo abra en columnas y con los acentos bien. Las
+  listas de una celda van una por línea en vez de separadas por «; ». Un script que lea el
+  CSV necesita `encoding="utf-8-sig"` y `delimiter=";"`, o `csv_delimiter = ","`.
+- `atlas trace` ya no imprime JSON sino Markdown. Un script que leía su salida necesita
+  `atlas trace ID --json`, que da el mismo diccionario de antes.
 
 ## [0.2.0] — 2026-10-16
 

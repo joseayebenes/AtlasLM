@@ -353,3 +353,157 @@ The exception went through, the most recent first:
     assert _last_lines(output) == ("AssertionError: Step 2: command 'PING', expected 'OK PONG', received 'the end of "
                                    "the connection' | raised CONSTRAINT_ERROR : controller.adb:103 length check failed")
     assert _last_lines("one\ntwo\nthree\n") == "two | three"
+
+
+ANCHORED = '''agent = "implementer"
+check = ["src/*.py"]
+tests = ["tests/test_*.py"]
+progress = 'Step (\\d+)'
+advance_fixes = 0
+fix_rounds = 0
+require_tags = true
+
+[[tasks]]
+id = "add"
+text = "Implement add."
+requirements = ["SRS-0001"]
+
+[[tasks]]
+id = "mul"
+text = "Implement mul."
+requirements = ["srs-0002"]
+'''
+TEST_ADD = '''import sys
+sys.path.insert(0, "SRC")
+import calc
+# Req: SRS-0001
+def check(step, got, want):
+    if got != want:
+        print(f"Step {step}: expected {want}, received {got}")
+        sys.exit(1)
+check(1, calc.add(1, 2), 3)
+'''
+TEST_STP = '''import sys
+sys.path.insert(0, "SRC")
+import calc
+if getattr(calc, "mul", lambda a, b: None)(2, 3) != 6:
+    print("Step 1: expected 6")
+    sys.exit(1)
+'''
+
+
+@pytest.fixture
+def anchored(project):
+    """The project with DOORS (SRS-0001, SRS-0002 and STP-0101, which verifies SRS-0002) and
+    its graph built by atlas run: test_calc.py cites SRS-0001, and test_stp_0101.py is the test
+    of the procedure, named after it, as atlas tests writes them."""
+    import contextlib
+    import io
+    import sqlite3
+    from atlas.cli import run
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(TEST_ADD.replace("SRC", str(base / "src")))
+    (base / "tests" / "test_stp_0101.py").write_text(TEST_STP.replace("SRC", str(base / "src")))
+    db = sqlite3.connect(base / "doors.sqlite")
+    db.executescript("""
+        CREATE TABLE requirements (id TEXT, module TEXT, text TEXT);
+        CREATE TABLE links (source_id TEXT, source_module TEXT, target_id TEXT, link_type TEXT);
+        INSERT INTO requirements VALUES ('SRS-0001', 'SRS_CALC', 'The calculator shall add two integers.'),
+            ('SRS-0002', 'SRS_CALC', 'The calculator shall multiply two integers.'),
+            ('STP-0101', 'STP_CALC', 'Test of the product. 1. Multiply 2 by 3; expect 6.');
+        INSERT INTO links VALUES ('STP-0101', 'STP_CALC', 'SRS-0002', 'verifies');
+    """)
+    db.commit()
+    db.close()
+    text = cfg.path.read_text()
+    doors = text.index("[sources.doors]")
+    (base / "atlas.toml").write_text(text[:doors] + f'''[sources.doors]
+adapter = "database"
+[sources.doors.database]
+driver = "sqlite"
+path = "{(base / 'doors.sqlite').as_posix()}"
+modules_query = "SELECT DISTINCT module FROM requirements ORDER BY module"
+requirements_query = "SELECT * FROM requirements WHERE module = :module ORDER BY id"
+links_query = "SELECT source_id, target_id, link_type FROM links WHERE source_module = :module"
+[sources.doors.convention]
+id_pattern = "^(?:SRS|STP)-\\\\d{{4}}$"
+[pipeline]
+steps = ["doors", "code", "graph"]
+''' + text[text.index("[agents]"):].replace("[sources.code]", '[sources.code]\nlanguages = ["python"]\n'
+                                                                 'test_patterns = ["tests/**"]'))
+    cfg = load_config(base / "atlas.toml")
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    return base, cfg
+
+
+TAGGED_ADD = "# Req: SRS-0001\ndef add(a, b):\n    return a + b\n"
+TAGGED_MUL = TAGGED_ADD + "\n\n# Req: SRS-0002\ndef mul(a, b):\n    return a * b\n"
+
+
+def test_tasks_anchored_to_requirements(anchored):
+    """requirements: the agent gets their text, the tests that verify them are the advances of
+    the task, and a kept task whose requirements no changed subprogram cites goes back once."""
+    from atlas.agents.develop import develop
+    base, cfg = anchored
+    (base / "plan.toml").write_text(ANCHORED)
+    client = StubClient(write(ADD)                                    # add: passes, but cites nothing
+                        + write(TAGGED_ADD)                           # told so, it tags it
+                        + write(TAGGED_MUL))                          # mul: tagged at once
+    steps = []
+    report = develop(base / "plan.toml", cfg, client=client, on_step=steps.append)
+    assert report["requirements"] == {
+        "add": {"requirements": ["SRS-0001"], "advances": ["tests/test_calc.py"], "advances_from": "requirements"},
+        "mul": {"requirements": ["SRS-0002"], "advances": ["tests/test_stp_0101.py"],      # through STP-0101
+                "advances_from": "requirements"}}
+    assert [(s["kind"], s["task"], s["outcome"], s.get("untagged")) for s in report["steps"]] == [
+        ("task", "add", "kept", ["SRS-0001"]), ("tag-fix", "add", "tagged", []), ("task", "mul", "kept", [])]
+    first = client.prompts[0]
+    assert first.startswith("The requirements of this task, as the project states them. Cite their IDs in a `Req:`")
+    assert "SRS-0001 (SRS_CALC): The calculator shall add two integers.\n  No code cites it yet." in first
+    assert first.endswith("The task:\nImplement add.")
+    assert client.prompts[1].startswith("No subprogram you changed cites SRS-0001 in its `Req:` comment")
+    assert "SRS-0002 (SRS_CALC): The calculator shall multiply" in client.prompts[2]
+    assert (base / "src" / "calc.py").read_text() == TAGGED_MUL and report["final"]["tests_passed"] == 2
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## Untagged" in md and "- 1 add: SRS-0001" in md
+
+
+def test_the_code_that_already_cites_a_requirement_and_untagged_without_require_tags(anchored):
+    from atlas.agents.develop import Developer, load_plan
+    import contextlib
+    import io
+    from atlas.cli import run
+    base, cfg = anchored
+    (base / "src" / "calc.py").write_text(TAGGED_ADD)
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert run(cfg) == 0
+    (base / "plan.toml").write_text(ANCHORED.replace("require_tags = true", "").replace(
+        'requirements = ["SRS-0001"]', 'requirements = ["SRS-0001"]\nadvances = ["test_stp_0101.py"]'))
+    dev = Developer(load_plan(base / "plan.toml"), cfg)
+    assert dev.plan.tasks[0]["advances"] == ["tests/test_stp_0101.py"]        # those of the plan stay
+    assert "advances_from" not in dev.report["requirements"]["add"]
+    text = dev.task_text(dev.plan.tasks[0])
+    assert "Code that already cites it: calc.add (src/calc.py, lines 2-3)" in text
+    dev.plan.requirement_chars = 200
+    assert len(dev.requirement("SRS-0001")) <= 200
+    before = dev.files.snapshot()
+    (base / "src" / "calc.py").write_text(TAGGED_ADD + "\n\ndef mul(a, b):\n    return a * b\n")
+    assert dev.untagged(["SRS-0001", "SRS-0002"], before) == ["SRS-0001", "SRS-0002"]   # add did not change
+    (base / "src" / "calc.py").write_text(TAGGED_ADD.replace("a + b", "b + a"))
+    assert dev.untagged(["SRS-0001", "SRS-0002"], before) == ["SRS-0002"]
+
+
+def test_requirements_that_are_not_in_the_graph(anchored):
+    from atlas.agents.develop import Developer, load_plan
+    base, cfg = anchored
+    (base / "bad.toml").write_text(ANCHORED.replace('"srs-0002"', '"SRS-0003"'))
+    with pytest.raises(ConfigError, match="task mul: requirement 'SRS-0003' is not in the graph"):
+        Developer(load_plan(base / "bad.toml"), cfg)
+    (base / "bad.toml").write_text(ANCHORED.replace('requirements = ["SRS-0001"]', 'requirements = "SRS-0001"'))
+    with pytest.raises(ConfigError, match="requirements \\(a list of IDs\\)"):
+        load_plan(base / "bad.toml")
+    (base / "plan.toml").write_text(ANCHORED)
+    cfg["project"]["workspace"] = str(base / "empty")                    # no atlas run
+    with pytest.raises(ConfigError, match="has no graph with requirements: atlas run first"):
+        Developer(load_plan(base / "plan.toml"), cfg)

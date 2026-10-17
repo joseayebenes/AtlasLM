@@ -307,6 +307,22 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice y consultas del grafo |
 | `runs` | entero | `1` | veces que se hace cada pregunta a un agente: los modelos no responden siempre igual |
 
+## El plan de `atlas develop`
+
+El plan no va en `atlas.toml`: es un TOML aparte, `atlas develop PLAN atlas.toml` (ver
+[atlas.agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests)). Una clave
+desconocida es un error, como aquí.
+
+| Clave | Tipo | Por defecto | Qué hace |
+|---|---|---|---|
+| `agent`, `fix_agent`, `planner` | texto | `implementer`, el de `agent`, `""` | los agentes de los encargos, de las rondas y el que planifica cada encargo |
+| `check`, `tests` | lista | `[]`; `tests` obligatoria | los ficheros que compilar tras cada encargo, y los tests que lo juzgan |
+| `progress` | texto | `""` | expresión regular de hasta dónde llega un test que falla (el último número) |
+| `build_fixes`, `advance_fixes`, `fix_rounds`, `stuck_rounds`, `restarts`, `attempts` | entero | 2, 2, 12, 2, 1, 1 | vueltas de cada clase |
+| `require_tags` | sí/no | `false` | un encargo conservado cuyos `requirements` no cita ningún subprograma cambiado vuelve una vez al agente |
+| `requirement_chars` | entero | `1200` | caracteres de cada requisito que van delante del encargo |
+| `[[tasks]]` | tabla | — | `id`, `text` (obligatorio), `advances` (tests que hace avanzar) y `requirements` (IDs del grafo: hace falta `atlas run`; con ellos, el encargo recibe su texto y, sin `advances`, los tests que los verifican) |
+
 ## [mcp]
 
 | Clave | Tipo | Por defecto | Qué hace |

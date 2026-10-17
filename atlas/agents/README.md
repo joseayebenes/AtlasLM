@@ -120,10 +120,13 @@ stuck_rounds = 2                         # rondas sin avanzar antes de dejar un 
 restarts = 1                             # veces que una ejecución parada vuelve a empezar, limpia
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
+require_tags = false                     # un encargo cuyos requisitos no cita nada de lo cambiado vuelve una vez
+requirement_chars = 1200                 # caracteres de cada requisito delante del encargo
 
 [[tasks]]
 id = "ping-bye"
 text = "In Controller.Execute, for SRS-0113 and SRS-0114: PING is answered OK PONG ..."
+requirements = ["SRS-0113", "SRS-0114"]  # opcional: los requisitos que implementa, del grafo
 advances = ["test_stp_0101.py"]          # opcional: los tests que este encargo hace avanzar
 ```
 
@@ -180,6 +183,34 @@ cambios que rompían lo que ya iba.
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
    lecciones que añadir antes de la siguiente.
+
+### Encargos anclados a requisitos
+
+Sin `requirements`, la trazabilidad entra en la tanda solo porque `implementer.md` pide poner
+`-- Req:`, y nada lo comprueba; el encargo nombra los requisitos en texto libre y el agente no
+recibe su texto oficial. Con `requirements` (IDs del grafo, así que antes `atlas run`), un
+encargo recibe tres cosas sin modelo:
+
+1. **Su texto, delante.** Por cada requisito, su texto oficial, las secciones que lo declaran
+   (con el texto del documento) y el código que ya lo cita, de `trace`, como mucho
+   `requirement_chars` caracteres cada uno: no el `build_context` entero, que es para un
+   requisito solo y gasta 4000 tokens. El planificador, si lo hay, lo recibe igual.
+2. **Sus tests, si no trae `advances`.** Los tests del plan que lo citan (`verified_by` de
+   `trace`, los que lo nombran en un comentario) y los de los procedimientos de prueba
+   enlazados con él por `verifies` en DOORS (STP-0101 `verifies` SRS-0113): los que citan el
+   procedimiento y los que llevan su nombre, como los escribe `atlas tests`
+   (`test_stp_0101.py`). Cuando DOORS tenga la semántica de los tipos de enlace (6.1 del
+   análisis), el tipo saldrá de ahí; hoy se busca el tipo `verifies` tal cual.
+3. **Si quedan sin etiquetar.** Tras un encargo conservado, se analizan los ficheros cambiados
+   con el analizador de su lenguaje (`[sources.code] languages`, sin el motor incremental) y el
+   paso dice qué requisitos del encargo no cita ningún subprograma cambiado (`untagged`, y
+   «Untagged» en el informe). Cuenta la etiqueta de la declaración en la especificación cuando
+   cambió el cuerpo. Con `require_tags = true`, el encargo vuelve una vez al agente con ese aviso
+   (`tag-fix`); si esa vuelta rompe algo, se deshace ella sola.
+
+Un ID que no está en el grafo, o un workspace sin `atlas run`, es un error de configuración
+antes de empezar, no a mitad de la tanda. El informe guarda en `requirements` los de cada
+encargo y sus `advances` (con `advances_from = "requirements"` cuando salen del grafo).
 
 Deshacer devuelve los ficheros de las raíces del código que un agente puede cambiar (ni
 excluidos ni protegidos); no se hace ningún commit. Los tests deben estar protegidos
@@ -431,7 +462,8 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
-que se deshacen, arreglos de compilación, rondas y lo que se deja a una persona).
+que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona y encargos
+anclados a requisitos, con DOORS y el grafo de verdad).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
 agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.

@@ -13,6 +13,14 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   (`[agents.implementer]`, `[agents.fixer]`, `[agents.planner]`: razonamiento `low`,
   temperatura 1,0, `top_p` 0,95, `top_k` 64). `tests/test_examples.py` comprueba que cargan y
   que sus herramientas existen.
+- Encargos anclados a requisitos en `atlas develop`: `requirements = ["SRS-0113"]` en cada
+  encargo, comprobados contra el grafo al arrancar (un ID que no está, o un workspace sin
+  `atlas run`, para la tanda antes de empezar). El encargo lleva delante el texto oficial de
+  cada requisito, las secciones que lo declaran y el código que ya lo cita (`requirement_chars`);
+  sin `advances`, se rellenan con los tests del plan que lo citan y con los de los
+  procedimientos enlazados por `verifies` (`test_stp_0101.py`); y tras conservarlo, el paso dice
+  qué requisitos no cita ningún subprograma cambiado (`untagged`). Con `require_tags = true`,
+  el encargo vuelve una vez al agente para etiquetarlos.
 
 ### Cambiado
 - `examples/agents/implementer.md` es el medido: `replace_subprogram`, `add_subprogram`,

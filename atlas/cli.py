@@ -962,6 +962,7 @@ def develop(cfg: Config, plan: str) -> int:
               f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
+              + (f"\n      untagged: {', '.join(s['untagged'])}" if s.get("untagged") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
 
     _context(cfg)

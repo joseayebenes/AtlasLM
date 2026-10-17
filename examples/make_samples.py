@@ -8,7 +8,8 @@ documents, code or DOORS:
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
-                                            (atlas.doors.exchange), with headings and hierarchy
+                                            (atlas.doors.exchange), with headings and hierarchy, and
+                                            a module of test procedures (STP_TMS) that verify some
 
 Requires: pip install pymupdf
 """
@@ -211,6 +212,19 @@ def exchange() -> None:
                       "target_module": l["target_module"]}
                      for l in source.execute("SELECT * FROM links WHERE source_module = ?", (module,))]
             w.replace_module(module, reqs, links, source=f"/Mission/{module}")
+        # test procedures: requirements of DOORS that verify others, not tests of the code
+        procedures = {"STP-0001": ("Deletion of a lost track", ["SRS-0004"],
+                                   "1. Create track 1. 2. Delete track 1. 3. Check that track 1 is not listed."),
+                      "STP-0002": ("Update of a track", ["SRS-0002", "SRS-0003"],
+                                   "1. Create track 1. 2. Update track 1 at hour 5. 3. Check its azimuth.")}
+        reqs = [{"id": "STP-0900", "heading": "Test procedures", "kind": "heading", "level": 1, "outline": "1",
+                 "source_key": "0"}]
+        reqs += [{"id": pid, "heading": title, "text": steps, "parent": "STP-0900", "level": 2, "outline": f"1.{n}",
+                  "source_key": str(n), "attributes": {"status": "Approved"}}
+                 for n, (pid, (title, _, steps)) in enumerate(procedures.items(), 1)]
+        links = [{"source": pid, "target": target, "type": "verifies", "target_module": "SRS_TMS"}
+                 for pid, (_, targets, _) in procedures.items() for target in targets]
+        w.replace_module("STP_TMS", reqs, links, source="/Mission/STP_TMS")
     source.close()
     print("created", path)
 

@@ -75,6 +75,21 @@ def test_matrix_settings(toml):
         load_config(toml('[graph]\ncsv_delimiter = ";;"'))
 
 
+def test_link_semantics(toml):
+    conv = "link_semantics = "               # the extra of toml() goes inside [sources.doors.convention]
+    cfg = load_config(toml(conv + '{ derives = ["satisfies"], verifies = ["verifies"], ignore = ["references"] }'))
+    assert cfg["sources"]["doors"]["convention"]["link_semantics"]["derives"] == ["satisfies"]
+    with pytest.raises(ConfigError, match="unknown key 'tests'"):
+        load_config(toml(conv + '{ tests = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="'verifies' is in derives and in verifies"):
+        load_config(toml(conv + '{ derives = ["verifies"], verifies = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="must be a list"):
+        load_config(toml(conv + '{ derives = "satisfies" }'))
+    assert load_config(toml('top_modules = ["SSS"]'))["sources"]["doors"]["convention"]["top_modules"] == ["SSS"]
+    with pytest.raises(ConfigError, match="top_modules must be a list"):
+        load_config(toml('top_modules = "SSS"'))
+
+
 def test_wrong_type(toml):
     with pytest.raises(ConfigError, match="integer"):
         load_config(toml('[pipeline]\nworkers = "many"'))

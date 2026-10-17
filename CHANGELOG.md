@@ -139,6 +139,27 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `coverage` e `impact`: por stdout solo el diccionario de su función de librería, para el
   Programador de tareas y los scripts; los avisos siguen por stderr. Un error sale también como
   JSON (`{"error": ...}`), con código de salida 1.
+- `[sources.doors.convention] link_semantics`: qué es cada tipo de enlace de DOORS para el
+  grafo. `derives` (por defecto, todos los tipos que no están en las otras dos) hace del
+  origen un requisito derivado del destino; `verifies` (`["verifies"]`), un procedimiento de
+  prueba del destino; `ignore` (`["references"]` y el `inline_reference_type`) lo deja como
+  simple referencia.
+- Procedimientos de prueba de DOORS, aparte de las pruebas del código: `procedures` en
+  `trace`, en cada fila de `matrix` (y una columna en el CSV y el Markdown de `atlas
+  matrix`) y en `impact`; `with_procedures` en el resumen de la matriz;
+  `without_test_procedure` en sus huecos y `requirements_without_test_procedure` en `gaps`.
+- Consultas de una revisión de asignación, sin herramientas nuevas: `gaps` tiene
+  `requirements_without_derivation`, los requisitos sin ningún enlace de derivación hacia
+  otro módulo, con su recuento por módulo (`by_module`), y `linked_to_modules_not_read`, los
+  IDs que DOORS enlaza en módulos que no se han leído, con quién los enlaza y con qué tipo.
+  `[sources.doors.convention] top_modules` deja fuera los módulos de sistema; los de
+  procedimientos de prueba quedan fuera siempre. `atlas graph` imprime los dos recuentos.
+- `ancestors` en `trace`: la cadena de requisitos de los que deriva en otros módulos, hasta
+  el de sistema (5 niveles), cada salto con su tipo, su nivel, desde qué requisito se llega
+  y el texto corto.
+- Las muestras tienen un módulo de procedimientos de prueba, `STP_TMS`, con dos enlaces
+  `verifies` a SRS_TMS, y `atlas.test.toml`, `atlas.dev.toml` y `atlas.openrouter.toml` lo
+  leen.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -206,6 +227,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   o Python 3.12 en vez de pedir la CA corporativa.
 - Una raíz de `[sources.code] roots` que no existe avisa («does not exist»), como las rutas de
   `[[sources.docs]]`; antes daba 0 ficheros sin decir nada.
+- Un procedimiento de prueba de DOORS (`STP-0101 -verifies-> SRS-0004`) salía en la columna
+  de pruebas de la matriz como si fuera una prueba del código, en `derived` como si fuera
+  un requisito derivado, y `impact` del SRS lo subía como requisito derivado. Las pruebas
+  del código son ahora solo los nodos `test`, y la derivación (`derived`, la cobertura a
+  través de los derivados y las subidas de `impact`) solo sigue los tipos de `derives`.
+- Las referencias (`references`) entre módulos ya no cuentan como derivación.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,
@@ -238,6 +265,18 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   CSV necesita `encoding="utf-8-sig"` y `delimiter=";"`, o `csv_delimiter = ","`.
 - `atlas trace` ya no imprime JSON sino Markdown. Un script que leía su salida necesita
   `atlas trace ID --json`, que da el mismo diccionario de antes.
+- Vuelve a generar las muestras (`python examples/make_samples.py`) para tener el módulo
+  `STP_TMS`; las pruebas no lo necesitan.
+- La forma de `matrix` cambia: cada fila tiene `procedures`, el resumen `with_procedures` y
+  los huecos `without_test_procedure`; el CSV de `atlas matrix` gana la columna
+  `procedures` antes de `documents`. `trace` tiene `procedures` y `ancestors`, y
+  `verified_by` ya no incluye los procedimientos de DOORS. `gaps` tiene
+  `requirements_without_test_procedure`, `requirements_without_derivation` y
+  `linked_to_modules_not_read`. Pon los módulos de sistema en `top_modules`, o
+  `requirements_without_derivation` los listará enteros.
+- Si el proyecto usa en DOORS tipos de enlace que no son derivación ni verificación
+  (`traces`, `relates_to`...), ponlos en `link_semantics.ignore`, o da la lista de
+  `derives`. El siguiente `atlas run` reconstruye la parte de DOORS del grafo.
 
 ## [0.2.0] — 2026-10-16
 

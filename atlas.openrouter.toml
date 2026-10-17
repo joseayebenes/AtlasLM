@@ -54,17 +54,19 @@ min_chars = 300
 
 [sources.doors]
 adapter = "exchange"                        # la base de intercambio de requisitos (atlas.doors.exchange)
-modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
+modules = ["SSS_MISSION", "SRS_TMS", "STP_TMS"]   # SRS_TMS_OLD queda fuera
 
 [sources.doors.exchange]
 path = "examples/samples/requirements.sqlite"   # la rellena tools/doors_export (aquí, make_samples.py)
 kinds = ["requirement", "heading", "information"]
 
 [sources.doors.convention]                  # cómo casan los IDs con documentos y código
-id_pattern = "^(?:SRS|SSS)-\\d{4}$"
+id_pattern = "^(?:SRS|SSS|STP)-\\d{4}$"
 id_normalize = "upper"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
 inline_reference_type = "references"
+link_semantics = { derives = ["satisfies", "refines", "derives_from"], verifies = ["verifies"], ignore = ["references"] }
+top_modules = ["SSS_MISSION"]               # los requisitos de sistema: no derivan de nada
 
 [sources.code]
 roots = ["examples/samples/ada"]

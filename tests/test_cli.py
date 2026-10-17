@@ -304,6 +304,7 @@ communities = true
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
+    assert "requirements without derivation" in out and "    0  linked to modules not read" in out
     assert trace(cfg, "srs-0004") == 0                  # Markdown, without a model
     out = capsys.readouterr().out
     assert out.startswith("# Context of SRS-0004 (requirement)") and "## Code that implements it" in out
@@ -317,7 +318,7 @@ communities = true
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
     raw = written.read_bytes()                          # for Excel in Spanish: a BOM and ";"
     assert raw.startswith(b"\xef\xbb\xbf") and raw[3:].decode().splitlines()[0] == \
-        "id;text;status;verification;derived;code;tests;covering_tests;documents"
+        "id;text;status;verification;derived;code;tests;covering_tests;procedures;documents"
     import csv
     rows = {r["id"]: r for r in csv.DictReader(written.open(encoding="utf-8-sig", newline=""), delimiter=";")}
     assert rows["SRS-0004"]["code"] == "tracks.delete_track" and rows["SRS-0004"]["tests"] == "test_tracks.test_tracks"

@@ -60,11 +60,11 @@ Sin modelo:
 
 | Consulta | Devuelve |
 |---|---|
-| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; el código que lo implementa; las pruebas que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código) |
+| `trace(req)` | texto y atributos de DOORS; padre, hijos y enlaces; las secciones que lo declaran, con su texto y las cifras que difieren de DOORS; los requisitos de los que deriva en otros módulos, hasta el de sistema (`ancestors`, 5 niveles, con el tipo de cada salto); el código que lo implementa; las pruebas del código que lo verifican (lo citan) o lo cubren (llaman, directa o indirectamente, a ese código), en `verified_by`; los procedimientos de prueba de DOORS que lo verifican, en `procedures` |
 | `trace_code(nombre)` | requisitos, llamadores, llamados, pruebas y secciones de un elemento de código; de una prueba, el código que ejercita y los requisitos que cubre |
-| `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas y secciones afectados, incluidos los requisitos que esos satisfacen en DOORS; de un requisito: los que derivan de él, su código, pruebas y secciones |
-| `matrix(módulo)` | requisito → código → pruebas → documentos, con resumen y huecos |
-| `gaps(módulo)` | requisitos sin código o sin pruebas; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; cifras distintas entre DOORS y los documentos |
+| `impact(nombre)` | de código: lo que depende de él (lo llama, convierte a su tipo, usa su variable), y los requisitos, pruebas, procedimientos de prueba y secciones afectados, incluidos los requisitos de los que esos derivan en DOORS; de un requisito: los que derivan de él, su código, pruebas, procedimientos y secciones |
+| `matrix(módulo)` | requisito → código → pruebas → procedimientos de prueba → documentos, con resumen y huecos |
+| `gaps(módulo)` | requisitos sin código, sin pruebas o sin procedimiento de prueba; requisitos sin enlace de derivación hacia otro módulo, por módulo; subprogramas sin requisito; IDs del código o de los documentos que no están en DOORS; IDs que DOORS enlaza en módulos que no se han leído, con quién los enlaza y con qué tipo; cifras distintas entre DOORS y los documentos |
 | `neighbors(nodo)` | el subgrafo alrededor de un nodo, en JSON o en Mermaid |
 | `communities()` | grupos de código que trabajan juntos, con sus unidades y requisitos |
 | `at(fichero, línea)` | el elemento de código que contiene esa línea: el subprograma o la prueba más interior, si no el tipo, la variable o la constante declarados en ella, si no la unidad del fichero |
@@ -79,9 +79,46 @@ por su nombre, para que las líneas añadidas desde el último `atlas run` no lo
 fichero no se puede leer, valen las líneas del grafo. Un fichero que no está en el grafo
 responde con los del grafo que se llaman igual.
 
+**Tipos de enlace.** Lo que significa cada tipo de enlace de DOORS lo dice
+`[sources.doors.convention] link_semantics` (ver la
+[guía de configuración](../../docs/configuracion.md#sourcesdoorsconvention)):
+
+| Clase | Por defecto | Qué hace en las consultas |
+|---|---|---|
+| `derives` | todos los tipos que no están en las otras dos | el origen deriva del destino: un SRS que satisface un SSS. Columna `derived`, cobertura a través de los derivados, subida de `impact` |
+| `verifies` | `verifies` | el origen es un procedimiento de prueba del destino: un STP que verifica un SRS. Columna `procedures` y su hueco; nunca entre las pruebas del código |
+| `ignore` | `references` y el `inline_reference_type` | solo referencias: se ven en `trace` (`links_out`, `links_in`) y no cuentan |
+
+La convención va en las estadísticas de la construcción de la parte de DOORS, así que todas
+las consultas (`atlas`, el servidor MCP, los agentes) usan la misma; cambiarla reconstruye
+esa parte.
+
 Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta como
-implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
-enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
+implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Lo
+mismo con las pruebas y los procedimientos de prueba. Los enlaces dentro de un mismo módulo
+(refinamientos) no cuentan como derivación.
+
+**Revisión de la asignación.** `gaps` lista en `requirements_without_derivation` los
+requisitos que no tienen ningún enlace de un tipo de `derives` a un requisito de otro
+módulo (un SRS que no satisface ningún SSS), con su recuento por módulo en `by_module`.
+Deja fuera los módulos de `[sources.doors.convention] top_modules` (los de sistema, que no
+derivan de nada) y los de procedimientos de prueba (aquellos cuyos enlaces a otros módulos
+son todos de un tipo de `verifies`). `linked_to_modules_not_read` lista los destinos de
+enlaces a módulos que no se han leído (`[sources.doors] modules` los deja fuera), con
+`linked_by`: el ID que los enlaza y el tipo. `trace` da en `ancestors` la cadena hacia
+arriba: cada salto con su `id`, `type`, `level`, el requisito desde el que se llega
+(`via`) y el texto corto. Con las muestras, `atlas trace SRS-0004`:
+
+```
+"ancestors": [{"id": "SSS-0005", "type": "satisfies", "level": 1, "via": "SRS-0004",
+               "module": "SSS_MISSION", "text": "The mission system shall provide capability 5."}]
+```
+
+Las pruebas son dos cosas distintas: las **pruebas del código** (`tests`, `covering_tests`;
+subprogramas de los ficheros de `[sources.code] test_patterns`) y los **procedimientos de
+prueba** de DOORS (`procedures`; requisitos de un módulo STP con un enlace de tipo
+`verifies`). El resumen de la matriz las cuenta por separado (`with_tests`,
+`with_procedures`), y los huecos también (`without_tests`, `without_test_procedure`).
 
 `atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.*`, en los
 formatos de `[graph] matrix_formats` (`export.py`, `write_matrix`): `.csv` para Excel (UTF-8 con
@@ -91,8 +128,18 @@ DOORS). Muestra el resumen y los huecos; `atlas matrix "*"` la hace con
 todos los requisitos. Con las muestras:
 
 ```
-40 requirements: 4 with code, 1 with tests, 40 in documents.
+40 requirements: 4 with code, 1 with tests, 3 with test procedures, 40 in documents.
 without code (36): SRS-0005, SRS-0006, …
+without tests (39): SRS-0001, SRS-0002, SRS-0003, SRS-0005, …
+without a test procedure (37): SRS-0001, SRS-0005, …
+```
+
+En el CSV, SRS-0004 tiene la prueba del código en `tests` y el procedimiento de prueba de
+DOORS en `procedures`:
+
+```
+id,text,status,verification,derived,code,tests,covering_tests,procedures,documents
+SRS-0004,The TMF shall process track event 4 within 320 ms.,Approved,Inspection,,tracks.delete_track,test_tracks.test_tracks,,STP-0001,…
 ```
 
 `atlas trace SRS-0004` imprime todo lo del requisito en Markdown, con `build_context` de
@@ -133,7 +180,8 @@ consultas.
 ## Pruebas
 
 `tests/test_graph.py`: almacenamiento, exportación, consultas, nombres repetidos en dos
-paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`,
+paquetes, los tres orígenes juntos, `trace`, `trace_code`, `impact`, `matrix`, `gaps`, los
+procedimientos de prueba de DOORS y `link_semantics`,
 `neighbors`, comunidades y mismo grafo que `ada_graph.py`. `tests/test_cli.py`: el paso
 `graph.build` incremental por origen, `atlas trace` (Markdown y `--json`), `atlas matrix`
 (CSV con BOM y `;`, otro delimitador, `--json`) y `--json` en `graph` y `status`;

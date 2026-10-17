@@ -13,18 +13,27 @@ A requirement, by its ID in any case; a module, document or section, by its iden
 
 Code: find_symbol -> node -> callers / callees / impact -> read_source.
 Traceability, without the model:
-    trace(req)          text and attributes in DOORS, parent, children and links; the
-                        sections that state it (and the values that differ); code; tests
+    trace(req)          text and attributes in DOORS, parent, children and links; the chain
+                        of requirements it derives from; the sections that state it (and the
+                        values that differ); code; tests; the test procedures that verify it
     trace_code(name)    requirements, callers, callees, tests and sections of an element
     impact(name)        what a change of a code element or of a requirement affects
-    matrix(module)      requirement -> code -> tests -> documents, and its gaps
-    gaps(module)        requirements without code or tests, code without requirements, IDs
-                        that are not in DOORS, values that differ between DOORS and documents
+    matrix(module)      requirement -> code -> tests -> procedures -> documents, and its gaps
+    gaps(module)        requirements without code, tests, test procedure or derivation, code
+                        without requirements, IDs that are not in DOORS or that DOORS links
+                        in modules not read, values that differ between DOORS and documents
     neighbors(name)     the subgraph around a node, as JSON or Mermaid
     communities()       groups of code that work together (Louvain)
 
 A test verifies a requirement when it cites it in its comments ("tag"), and covers it when
 it calls, directly or not, code that implements it ("calls").
+
+The links of DOORS mean what [sources.doors.convention] link_semantics says (it travels in
+the statistics of the build of "doors"; see sources.graph_convention): a link of a
+`derives` type makes its source a requirement derived from its target (an SRS that
+satisfies an SSS); one of a `verifies` type makes its source a test procedure of its
+target (an STP that verifies an SRS), which is not a test of the code; the `ignore` types
+(references) are only shown as links.
 """
 from __future__ import annotations
 
@@ -37,11 +46,13 @@ from pathlib import Path, PureWindowsPath
 import networkx as nx
 
 from atlas.graph.build import CODE_KINDS, find_communities
+from atlas.graph.sources import graph_convention
 from atlas.graph.store import GraphStore, to_mermaid
 
 __all__ = ["KnowledgeGraph"]
 
 MAX_LIST = 40        # cap of the items of a list
+MAX_ANCESTORS = 5    # levels of the chain of trace up to the system requirement
 MAX_LINES = 300      # cap of the lines of a source read
 REQUIREMENT_KINDS = ("requirement", "heading", "information")
 DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v affects u
@@ -61,10 +72,15 @@ def _values(text: str) -> set[str]:
 
 
 class KnowledgeGraph:
-    def __init__(self, G: nx.DiGraph, root: str | Path = ".", stats: dict | None = None):
+    def __init__(self, G: nx.DiGraph, root: str | Path = ".", stats: dict | None = None,
+                 convention: dict | None = None):
+        """`convention`: link_semantics and top_modules ([sources.doors.convention]); by
+        default, those of the build of DOORS (in `stats`)."""
         self.G = G
         self.root = Path(root)          # the relative file paths of the graph start here
         self.build_stats = stats or {}
+        self.convention = graph_convention(convention if convention is not None
+                                           else self.build_stats.get("doors"))
         self._lower = {n.lower(): n for n in G.nodes}
         self._by_name: dict[str, list[str]] = defaultdict(list)
         for n, d in G.nodes(data=True):
@@ -78,6 +94,20 @@ class KnowledgeGraph:
         for u, v, e in G.edges(data=True):
             if is_req(u) and is_req(v):
                 (self._tree if e.get("kind") == "contains" else self._links).add_edge(u, v, kind=e.get("kind"))
+        semantics = self.convention["link_semantics"]
+        self._verify_types = set(semantics["verifies"])
+        derives, ignore = set(semantics["derives"]), set(semantics["ignore"])
+        self._derives = nx.DiGraph()      # the links of a derives type: source derives from target
+        self._derives.add_edges_from(
+            (u, v, e) for u, v, e in self._links.edges(data=True)
+            if e["kind"] not in self._verify_types and e["kind"] not in ignore and (not derives or e["kind"] in derives))
+        # modules of test procedures: every link of theirs to another module verifies
+        crossing: dict[str, set[bool]] = defaultdict(set)
+        for u, v, e in self._links.edges(data=True):
+            mu = G.nodes[u].get("module")
+            if mu and G.nodes[v].get("module") != mu:
+                crossing[mu].add(e["kind"] in self._verify_types)
+        self._procedure_modules = {m for m, verifies in crossing.items() if verifies == {True}}
         self.doors = any(d.get("kind") == "module" for _, d in G.nodes(data=True))
         self._covering: dict[str, set[str]] | None = None
         self._groups: list[set[str]] | None = None
@@ -245,7 +275,15 @@ class KnowledgeGraph:
         return self._linked(r, {"implements"}, incoming=True)
 
     def _tests_of(self, r: str) -> list[str]:
-        return self._linked(r, {"verifies"}, incoming=True)
+        """The tests of the code that cite `r` (not the test procedures of DOORS)."""
+        return [t for t in self._linked(r, {"verifies"}, incoming=True) if self._kind(t) == "test"]
+
+    def _procedures_of(self, r: str) -> list[str]:
+        """The requirements of DOORS (test procedures) linked to `r` with a verifies type."""
+        if r not in self._links:
+            return []
+        return sorted({u for u, _, e in self._links.in_edges(r, data=True) if e["kind"] in self._verify_types},
+                      key=_natural)
 
     def covering_tests(self, nodes) -> list[str]:
         """Tests that call, directly or not, any of these code elements (or convert to
@@ -265,13 +303,51 @@ class KnowledgeGraph:
             [{"id": t, "how": "calls"} for t in self.covering_tests(self._code_of(r)) if t not in tagged]
 
     def _derived(self, r: str) -> list[str]:
-        """The requirements of other modules linked to `r` (the SRS that satisfy an SSS).
-        Links inside a module (references, refinements) are not a level of derivation."""
+        """The requirements of other modules linked to `r` with a derives type (the SRS that
+        satisfy an SSS). Links inside a module (refinements) are not a level of derivation,
+        and neither are references nor test procedures."""
         module = self.G.nodes[r].get("module")
-        if not module or r not in self._links:
+        if not module or r not in self._derives:
             return []
-        return sorted({u for u in self._links.predecessors(r)
+        return sorted({u for u in self._derives.predecessors(r)
                        if self.G.nodes[u].get("module") not in ("", None, module)}, key=_natural)
+
+    def _ancestors(self, r: str, depth: int = MAX_ANCESTORS) -> list[dict]:
+        """The requirements `r` derives from in other modules (an SRS -> the SSS it
+        satisfies), level after level up to `depth`: each one with the type of the link,
+        its level, the requirement it is reached from (`via`) and a short text."""
+        out, seen, frontier = [], {r}, [r]
+        for level in range(1, depth + 1):
+            following = []
+            for m in frontier:
+                if m not in self._derives:
+                    continue
+                module = self.G.nodes[m].get("module")
+                for _, up, e in sorted(self._derives.out_edges(m, data=True), key=lambda e: _natural(e[1])):
+                    d = self.G.nodes[up]
+                    if up in seen or d.get("module") == module:
+                        continue
+                    seen.add(up)
+                    following.append(up)
+                    out.append({"id": up, "type": e["kind"], "level": level, "via": m,
+                                **({"module": d["module"]} if d.get("module") else {"in_doors": False}),
+                                "text": (d.get("text") or "")[:120]})
+            frontier = following
+        return out
+
+    def _without_derivation(self, reqs: list[str]) -> list[str]:
+        """The requirements with no link of a derives type to a requirement of another
+        module, out of the top_modules and the modules of test procedures."""
+        skip = set(self.convention["top_modules"]) | self._procedure_modules
+        out = []
+        for r in reqs:
+            module = self.G.nodes[r].get("module")
+            if not module or module in skip:
+                continue
+            ups = self._derives.successors(r) if r in self._derives else ()
+            if not any(self.G.nodes[up].get("module") != module for up in ups):
+                out.append(r)
+        return out
 
     def _through(self, r: str) -> list[str]:
         """`r` and every requirement derived from it, level after level."""
@@ -381,10 +457,12 @@ class KnowledgeGraph:
         """What a change affects. Of a code element: every element that depends on it
         (calls it, converts to its type, uses its variable), directly or transitively, up
         to `depth` levels, nearest first; the requirements they implement and those these
-        satisfy in DOORS; the tests that exercise it or verify those requirements; and the
-        sections that state the requirements or mention the code. Of a requirement: the
-        requirements that derive from it (its children and those linked to it, up to
-        `depth` levels), the code that implements them, their tests and their sections."""
+        derive from in DOORS (satisfy, refine...); the tests that exercise it or verify those
+        requirements, and the test procedures of DOORS that verify them; and the sections
+        that state the requirements or mention the code. Of a requirement: the requirements
+        that derive from it (its children and those linked to it with a derives type, up to
+        `depth` levels), the code that implements them, their tests and procedures, and
+        their sections."""
         n, err = self.resolve(name)
         if err:
             return err
@@ -404,7 +482,7 @@ class KnowledgeGraph:
             for r in self._linked(m, {"implements"}, incoming=False):
                 via[r].append(m)
         for r in list(via):                                  # and those they satisfy, refine...
-            for up in sorted(nx.descendants(self._links, r), key=_natural) if r in self._links else ():
+            for up in sorted(nx.descendants(self._derives, r), key=_natural) if r in self._derives else ():
                 if up not in via:
                     via[up].append(r)
         tests = set(self.covering_tests([n]))
@@ -412,11 +490,12 @@ class KnowledgeGraph:
             tests.update(self._tests_of(r))
         res["requirements"] = [{**self.summary(r), "via": v[:5]} for r, v in list(via.items())[:limit]]
         res["tests"] = sorted(tests)[:limit]
+        res["procedures"] = sorted({p for r in via for p in self._procedures_of(r)}, key=_natural)[:limit]
         res["documents"] = self._affected_sections(via, affected, limit)
         return res
 
     def _requirement_impact(self, r: str, depth: int, limit: int) -> dict:
-        derived = nx.compose(self._links.reverse(copy=False), self._tree)    # an edge a -> b: b derives from a
+        derived = nx.compose(self._derives.reverse(copy=False), self._tree)  # an edge a -> b: b derives from a
         levels = nx.single_source_shortest_path_length(derived, r, cutoff=depth) if r in derived else {r: 0}
         reqs = sorted(levels, key=lambda m: (levels[m], _natural(m)))
         code = sorted({c for m in reqs for c in self._code_of(m)})
@@ -424,6 +503,7 @@ class KnowledgeGraph:
         res = {"node": r, "kind": self._kind(r),
                "requirements": [{**self.summary(m), "distance": levels[m]} for m in reqs if m != r][:limit],
                **self.listing(code, limit), "tests": sorted(tests)[:limit],
+               "procedures": sorted({p for m in reqs for p in self._procedures_of(m)}, key=_natural)[:limit],
                "documents": self._affected_sections({m: [] for m in reqs}, [], limit)}
         return res
 
@@ -515,9 +595,12 @@ class KnowledgeGraph:
     # --- traceability -----------------------------------------------------------
     def trace(self, req_id: str, limit: int = MAX_LIST) -> dict:
         """Everything about a requirement: its text and attributes in DOORS, its parent,
-        children and links; the document sections that state it, with their text and the
-        values (deadlines, limits) that differ from DOORS; the code that implements it; and
-        the tests that verify it (citing it, "tag") or cover it (calling that code, "calls")."""
+        children and links; the requirements it derives from in other modules, up to the
+        system requirement (`ancestors`: up to 5 levels, with the type of each link); the
+        document sections that state it, with their text and the values (deadlines,
+        limits) that differ from DOORS; the code that implements it; the
+        tests of the code that verify it (citing it, "tag") or cover it (calling that code,
+        "calls"); and the test procedures of DOORS that verify it (a link of a verifies type)."""
         r, err = self._requirement(req_id)
         if err:
             return err
@@ -534,9 +617,13 @@ class KnowledgeGraph:
             "children": sorted(self._tree.successors(r), key=_natural)[:limit] if r in self._tree else [],
             "links_out": links(self._links.out_edges(r, data=True), 1)[:limit] if r in self._links else [],
             "links_in": links(self._links.in_edges(r, data=True), 0)[:limit] if r in self._links else [],
+            "ancestors": self._ancestors(r)[:limit],
             "documents": self._documents(r)[:limit],
             "implemented_by": self.listing(self._code_of(r), limit),
             "verified_by": self._tests_for(r)[:limit],
+            "procedures": [{"id": u, "type": e["kind"], "text": (self.G.nodes[u].get("text") or "")[:120]}
+                           for u, _, e in sorted(self._links.in_edges(r, data=True), key=lambda e: _natural(e[0]))
+                           if e["kind"] in self._verify_types][:limit] if r in self._links else [],
         })
         return out
 
@@ -578,23 +665,27 @@ class KnowledgeGraph:
     def matrix(self, module: str = "", limit: int = 50, offset: int = 0) -> dict:
         """Traceability matrix of a DOORS module (with no module, of every requirement in
         the graph): for each requirement, the requirements of other modules derived from it,
-        its code, its tests (citing it, or covering it by calling that code) and the
-        sections that state it; a summary; and the gaps, the requirements without code and
-        those without tests. A requirement whose derived requirements have code (an SSS
-        through its SRS) is implemented through them. `limit` and `offset` page the rows;
-        the gaps are always complete (up to 200 IDs each)."""
+        its code, the tests of the code (citing it, or covering it by calling that code),
+        the test procedures of DOORS that verify it and the sections that state it; a
+        summary; and the gaps, the requirements without code, without tests and without a
+        test procedure. A requirement whose derived requirements have code (an SSS through
+        its SRS) is implemented through them, and the same with tests and procedures.
+        `limit` and `offset` page the rows; the gaps are always complete (up to 200 IDs each)."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
         rows = [self._row(r) for r in reqs]
         no_code, no_tests = self._without_code(reqs), self._without_tests(reqs)
+        no_procedure = self._without_procedure(reqs)
         gap = lambda ids: {"count": len(ids), "items": ids[:200], "truncated": len(ids) > 200}
         return {"module": module or "(all)",
                 "summary": {"requirements": len(rows), "with_code": len(rows) - len(no_code),
                             "with_tests": len(rows) - len(no_tests),
+                            "with_procedures": len(rows) - len(no_procedure),
                             "with_documents": sum(1 for r in rows if r["documents"])},
                 "rows": rows[offset:offset + limit], "offset": offset, "truncated": offset + limit < len(rows),
-                "gaps": {"without_code": gap(no_code), "without_tests": gap(no_tests)}}
+                "gaps": {"without_code": gap(no_code), "without_tests": gap(no_tests),
+                         "without_test_procedure": gap(no_procedure)}}
 
     def _row(self, r: str) -> dict:
         d = self.G.nodes[r]
@@ -605,6 +696,7 @@ class KnowledgeGraph:
                 "derived": self._derived(r), "code": self._code_of(r),
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],
+                "procedures": self._procedures_of(r),
                 "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)]}
 
     def _without_code(self, reqs: list[str]) -> list[str]:
@@ -613,12 +705,18 @@ class KnowledgeGraph:
     def _without_tests(self, reqs: list[str]) -> list[str]:
         return [r for r in reqs if not any(self._tests_for(x) for x in self._through(r))]
 
+    def _without_procedure(self, reqs: list[str]) -> list[str]:
+        return [r for r in reqs if not any(self._procedures_of(x) for x in self._through(r))]
+
     def gaps(self, module: str = "", limit: int = MAX_LIST) -> dict:
         """What traceability lacks: the requirements (of a DOORS module, or all) without
-        code or without tests, neither their own nor through the requirements derived from
-        them; the subprograms that cite no requirement; the IDs cited in the code or stated
-        in the documents that are not in DOORS; and the requirements whose values
-        (deadlines, limits) differ between DOORS and a document."""
+        code, without tests of the code or without a test procedure of DOORS, neither their
+        own nor through the requirements derived from them; the requirements that derive
+        from nothing in another module (by module; neither those of [sources.doors.convention]
+        top_modules nor test procedures); the subprograms that cite no requirement; the IDs
+        cited in the code or stated in the documents that are not in DOORS, and those that
+        DOORS links in modules that were not read (who links them, with what type); and the
+        requirements whose values (deadlines, limits) differ between DOORS and a document."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
@@ -628,6 +726,8 @@ class KnowledgeGraph:
         out = {"module": module or "(all)",
                "requirements_without_code": part(self._without_code(reqs)),
                "requirements_without_tests": part(self._without_tests(reqs)),
+               "requirements_without_test_procedure": part(self._without_procedure(reqs)),
+               **({"requirements_without_derivation": self._derivation_gap(reqs, part)} if self.doors else {}),
                "code_without_requirement": part(sorted(n for n, d in self.G.nodes(data=True)
                                                        if d.get("kind") == "subprogram"
                                                        and not self._linked(n, {"implements"}, incoming=False)))}
@@ -640,6 +740,14 @@ class KnowledgeGraph:
             out["stated_in_documents_not_in_doors"] = part(
                 [{"id": r, "documents": [f"{x['document']} §{x['title']}" for x in self._documents(r)][:5]}
                  for r in outside if self._linked(r, {"declares"}, incoming=True)])
+            linked = []
+            for r in outside:
+                by = [{"id": u, "type": e["kind"]}
+                      for u, _, e in sorted(self._links.in_edges(r, data=True), key=lambda e: (_natural(e[0]), e[2]["kind"]))
+                      if not module or self.G.nodes[u].get("module") == module] if r in self._links else []
+                if by:
+                    linked.append({"id": r, "linked_by": by[:5]})
+            out["linked_to_modules_not_read"] = part(linked)
         differ = []
         for r in reqs:
             for x in self._documents(r):
@@ -647,6 +755,11 @@ class KnowledgeGraph:
                     differ.append({"id": r, "section": f"{x['document']} §{x['title']}", **x["values_differ"]})
         out["values_differ"] = part(differ)
         return out
+
+    def _derivation_gap(self, reqs: list[str], part) -> dict:
+        found = self._without_derivation(reqs)
+        by_module = Counter(self.G.nodes[r]["module"] for r in found)
+        return {**part(found), "by_module": dict(sorted(by_module.items()))}
 
     def neighbors(self, name: str, depth: int = 1, kinds: str = "", limit: int = 60, format: str = "json") -> dict:
         """The subgraph around a node (code element, requirement, module, document or

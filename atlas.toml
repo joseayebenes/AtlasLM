@@ -40,6 +40,10 @@ path = "C:/atlas/tms/requirements.sqlite"
 [sources.doors.convention]
 id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
+# qué es cada tipo de enlace: deriva (SRS -> SSS), verifica (procedimiento de prueba -> SRS) o
+# solo referencia; por defecto todo deriva salvo verifies y references
+# link_semantics = { derives = ["satisfies", "refines"], verifies = ["verifies"], ignore = ["references"] }
+# top_modules = ["SSS"]                # los módulos de sistema, que no derivan de nada
 # Para leer otra base con consultas propias: adapter = "database" y [sources.doors.database]
 # (driver sqlite u odbc, modules_query, requirements_query...; ver atlas/doors/__init__.py).
 

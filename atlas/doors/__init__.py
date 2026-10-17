@@ -40,6 +40,9 @@ tools/doors_export, or any other import). Nothing of the source is configured he
     link_columns = { source = "source_id", target = "target_id", type = "link_type" }
     inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # references inside the text
     inline_reference_type = "references"
+    # for the graph (atlas.graph): what each type of link means
+    link_semantics = { derives = ["satisfies"], verifies = ["verifies"], ignore = ["references"] }
+    top_modules = ["SSS"]                  # derive from nothing: out of requirements_without_derivation
 
 Use as a library:
     from atlas.doors import ExchangeAdapter, diff_requirements

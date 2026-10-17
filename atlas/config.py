@@ -186,6 +186,33 @@ def _validate_tests(tests: dict) -> None:
             raise ConfigError(f"[{where}] the code of each language must be a string")
 
 
+LINK_SEMANTICS = ("derives", "verifies", "ignore")   # [sources.doors.convention] link_semantics (atlas.graph)
+
+
+def _validate_convention(convention: dict) -> None:
+    """The keys of [sources.doors.convention] that the graph reads; the rest are the
+    adapter's (atlas.doors)."""
+    where = "sources.doors.convention"
+    semantics = convention.get("link_semantics", {})
+    if not isinstance(semantics, dict):
+        raise ConfigError(f"[{where}] link_semantics must be a table ({{ derives = [...], verifies = [...], "
+                          f"ignore = [...] }})")
+    for key, value in semantics.items():
+        if key not in LINK_SEMANTICS:
+            raise ConfigError(f"[{where}] link_semantics: unknown key '{key}' (valid: {', '.join(LINK_SEMANTICS)})")
+        if not isinstance(value, list) or not all(isinstance(t, str) for t in value):
+            raise ConfigError(f"[{where}] link_semantics.{key} must be a list of link types")
+    seen: dict[str, str] = {}
+    for key in LINK_SEMANTICS:
+        for t in semantics.get(key, []):
+            if t in seen:
+                raise ConfigError(f"[{where}] link_semantics: '{t}' is in {seen[t]} and in {key}")
+            seen[t] = key
+    top = convention.get("top_modules", [])
+    if not isinstance(top, list) or not all(isinstance(m, str) for m in top):
+        raise ConfigError(f"[{where}] top_modules must be a list of modules")
+
+
 def _validate_search(search: dict) -> None:
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
@@ -329,6 +356,7 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError(f"[sources.docs[{i}]] 'name' or 'paths' is missing")
     if "doors" in sources:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
+        _validate_convention(sources["doors"].get("convention") or {})
     if "code" in sources:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))

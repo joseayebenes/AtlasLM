@@ -22,10 +22,12 @@ from atlas.pipeline import atomic_write
 
 __all__ = ["MATRIX_COLUMNS", "write_matrix"]
 
-MATRIX_COLUMNS = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
+MATRIX_COLUMNS = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "procedures",
+                  "documents"]
 WIDTHS = {"id": 14, "text": 60, "status": 12, "verification": 14, "derived": 16, "code": 32, "tests": 30,
-          "covering_tests": 30, "documents": 40}
-GAPS = (("without_code", "Without code"), ("without_tests", "Without tests"))
+          "covering_tests": 30, "procedures": 18, "documents": 40}
+GAPS = (("without_code", "Without code"), ("without_tests", "Without tests"),
+        ("without_test_procedure", "Without a test procedure"))
 
 
 def _cell(value, separator: str) -> str:
@@ -47,15 +49,18 @@ def _markdown(res: dict) -> str:
           "| " + " | ".join(MATRIX_COLUMNS) + " |", "|" + "---|" * len(MATRIX_COLUMNS)]
     md += ["| " + " | ".join(cell(row.get(c, "")) for c in MATRIX_COLUMNS) + " |" for row in res["rows"]]
     for key, title in GAPS:
+        if key not in gaps:
+            continue
         md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
     return "\n".join(md) + "\n"
 
 
 def summary_line(res: dict) -> str:
-    """'40 requirements: 4 with code, 1 with tests, 40 in documents.'"""
+    """'40 requirements: 4 with code, 1 with tests, 0 with test procedures, 40 in documents.'"""
     sm = res["summary"]
+    procedures = f"{sm['with_procedures']} with test procedures, " if "with_procedures" in sm else ""
     return (f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
-            f"{sm['with_documents']} in documents.")
+            f"{procedures}{sm['with_documents']} in documents.")
 
 
 def _text(ws, row: int, column: int, value):
@@ -90,7 +95,9 @@ def _xlsx(res: dict, path: Path, builds: dict) -> None:
     gaps.column_dimensions["A"].width, gaps.column_dimensions["B"].width = 18, 18
     i = 2
     for key, title in GAPS:
-        part = res["gaps"][key]
+        part = res["gaps"].get(key)
+        if part is None:
+            continue
         for item in part["items"]:
             _text(gaps, i, 1, title)
             _text(gaps, i, 2, item)
@@ -105,9 +112,11 @@ def _xlsx(res: dict, path: Path, builds: dict) -> None:
     summary = wb.create_sheet("Summary")
     sm, doors = res["summary"], builds.get("doors") or {}
     rows = [("Module", res["module"]), ("Requirements", sm["requirements"]), ("With code", sm["with_code"]),
-            ("With tests", sm["with_tests"]), ("In documents", sm["with_documents"]),
+            ("With tests", sm["with_tests"]), ("With test procedures", sm.get("with_procedures", 0)),
+            ("In documents", sm["with_documents"]),
             ("Without code", res["gaps"]["without_code"]["count"]),
             ("Without tests", res["gaps"]["without_tests"]["count"]),
+            ("Without a test procedure", (res["gaps"].get("without_test_procedure") or {}).get("count", 0)),
             ("DOORS read into the graph", (doors.get("built_at") or "-")[:19].replace("T", " ")),
             ("Written", datetime.now().isoformat(sep=" ", timespec="seconds")), ("atlas", __version__)]
     for i, (name, value) in enumerate(rows, 1):

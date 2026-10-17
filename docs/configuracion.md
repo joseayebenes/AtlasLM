@@ -42,6 +42,7 @@ de ella:
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
+| `[sources.doors] attributes` | el índice de los módulos de DOORS, sin volver a leerlos |
 | `[graph]` | el grafo |
 | una clave o una contraseña | nada |
 
@@ -163,7 +164,17 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 | `exchange` | tabla | — | `[sources.doors.exchange]` |
 | `database` | tabla | — | `[sources.doors.database]` |
 | `convention` | tabla | — | `[sources.doors.convention]` |
-| `attributes` | lista | — | reservada: todavía sin efecto (los atributos que pasan los elige el relleno de la base) |
+| `attributes` | lista | `["status", "verification"]` | los atributos de DOORS que atlas enseña y por los que filtra (ver abajo); `[]`, ninguno |
+
+`attributes` no elige qué atributos se leen: eso lo deciden el relleno de la base de
+intercambio (con `exchange`) o `attribute_columns` (con `database`). Dice cuáles de los
+leídos enseña atlas y por cuáles se puede filtrar. Cada uno que tenga un requisito va:
+- en su texto del índice, como una línea `status: Approved; verification: Test`, así que
+  también pesa en la búsqueda y llega al modelo con el requisito;
+- en su `meta` del índice (columna `meta` de `index_records`).
+
+El nombre se busca en cualquier caso (`Status` casa con `status`). Cambiar la lista solo
+reindexa los módulos de DOORS, sin volver a leerlos.
 
 ### [sources.doors.exchange]
 

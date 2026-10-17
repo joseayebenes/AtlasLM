@@ -72,6 +72,8 @@ def doors_step(ctx) -> Step | None:
         return None
     adapter = plugins.get("requirements", sd.get("adapter", "database"), ctx.disabled)(sd)
     from atlas.doors import hash_requirement
+    # what changes the reading: not `attributes`, which only changes what the index shows of it
+    reading = ctx.cfg.fingerprint(*(f"sources.doors.{key}" for key in sorted(sd) if key != "attributes"))
 
     def run(ctx, module: str):
         reqs = list(adapter.requirements(module))
@@ -87,7 +89,7 @@ def doors_step(ctx) -> Step | None:
     return Step(
         name="doors.requirements",
         units=lambda ctx: adapter.modules(),
-        fingerprint=lambda ctx, m: f"{adapter.snapshot(m)}|{ctx.cfg.fingerprint('sources.doors')}",
+        fingerprint=lambda ctx, m: f"{adapter.snapshot(m)}|{reading}",
         run=run,
         prune=lambda ctx, m: ctx.store.delete_module(m),
         parallel=False,
@@ -266,7 +268,7 @@ class IndexIncomplete(RuntimeError):
     error so that the next run embeds what is missing."""
 
 
-INDEX_VERSION = "index-1"   # change it when the records or the index tables change
+INDEX_VERSION = "index-2"   # change it when the records or the index tables change (index-2: meta)
 
 
 def index_options(ctx) -> dict:
@@ -280,6 +282,18 @@ def index_options(ctx) -> dict:
         raise ConfigError("[index] chunk_chars must be at least 200 and chunk_overlap between 0 and "
                           "half of chunk_chars")
     return {"chunk_chars": ic["chunk_chars"], "chunk_overlap": ic["chunk_overlap"], "kinds": ic["kinds"]}
+
+
+def doors_attributes(cfg: Config) -> list[str]:
+    """[sources.doors] attributes: the DOORS attributes atlas shows and filters by."""
+    from atlas.index import ATTRIBUTES
+    attributes = (cfg["sources"].get("doors") or {}).get("attributes")
+    if attributes is None:
+        return list(ATTRIBUTES)
+    bad = [a for a in attributes if not isinstance(a, str) or not a.strip() or "=" in a or ";" in a]
+    if bad:
+        raise ConfigError(f"[sources.doors] attributes: {bad} are not attribute names")
+    return [a.strip() for a in attributes]
 
 
 def index_step(ctx) -> Step:
@@ -338,6 +352,7 @@ def index_requirements_step(ctx) -> Step:
     from atlas.index import DOORS_PREFIX, Index, requirement_records
     from atlas.llm import from_config
     kinds = index_options(ctx)["kinds"]
+    attributes = doors_attributes(ctx.cfg)
     workers = step_workers(ctx, "index")
     embed_model = from_config(ctx.cfg).embeddings.model
     shared: dict = {}
@@ -354,10 +369,10 @@ def index_requirements_step(ctx) -> Step:
 
     def fingerprint(ctx, module: str) -> str:
         rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
-        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{embed_model}|{INDEX_VERSION}"
+        return f"{sha256_text(rows)}|{ctx.cfg.fingerprint('index')}|{attributes}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        res = index().add_module(module, ctx.store.requirements(module), kinds, attributes)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
@@ -365,7 +380,8 @@ def index_requirements_step(ctx) -> Step:
 
     def prepare(ctx, modules: list[str]) -> None:
         index().embed_missing([r["embed_text"] for m in modules
-                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+                               for r in requirement_records(m, ctx.store.requirements(m), kinds, attributes)],
+                              workers)
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,

@@ -6,6 +6,30 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Cada registro del índice lleva su `meta` (columna `meta` de `index_records`): en los
+  requisitos de DOORS, el módulo, el capítulo y los atributos de `[sources.doors]
+  attributes`; en los fragmentos, resúmenes de sección y requisitos de un documento, su
+  capítulo (el primer elemento de su ruta); en el código, la clase del elemento
+  (`subprogram`, `test`, `type`, `variable` o `constant`) y su fichero.
+
+### Cambiado
+- `[sources.doors] attributes` tiene efecto: son los atributos de DOORS que atlas enseña y por
+  los que filtra, `["status", "verification"]` por defecto. Cada uno que tenga un requisito va
+  en su texto del índice (`status: Approved; verification: Test`), así que pesa en la búsqueda
+  y el modelo lo ve con el requisito. No elige qué se importa: eso siguen haciéndolo
+  `attribute_columns` y el relleno de la base de intercambio. Cambiar la lista solo reindexa
+  los módulos de DOORS, sin volver a leerlos.
+
+### Al actualizar
+- El índice se reconstruye una vez (`index-2`): la siguiente `atlas run` reescribe todos sus
+  registros. Solo se embeben de nuevo los requisitos de DOORS con atributos, cuyo texto
+  cambia; lo demás sale de la caché de vectores. Un `atlas.db` anterior gana la columna `meta`
+  al abrirse.
+- Los módulos de DOORS se vuelven a leer una vez: su huella ya no incluye `attributes`.
+- `attributes` estaba «reservada: todavía sin efecto». Si alguien la puso como lista de lo que
+  se importa, ahora decide lo que se enseña; con `[]` no se enseña ningún atributo.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

@@ -181,8 +181,15 @@ def test_doors_requirements_in_the_index(docs, tmp_path, fake_llm, fake_embeddin
     assert records[0]["path"] == "1 Track management > 1.1 Deletion" and records[0]["section_id"] == "SRS-0910"
     assert records[1]["section_title"] == "1.1 Deletion"            # under a requirement: the heading above it
     assert records[0]["embed_text"] == ("SRS_TMS > 1 Track management > 1.1 Deletion > requirement\n"
-                                        "SRS-0004: The TMF shall delete a lost track within 320 ms.")
+                                        "SRS-0004: The TMF shall delete a lost track within 320 ms.\n"
+                                        "status: Approved")            # [sources.doors] attributes weigh in
+    assert records[0]["meta"] == {"module": "SRS_TMS", "chapter": "1 Track management", "status": "Approved"}
+    assert records[1]["text"] == "SRS-0005: Deleted tracks shall be logged." and "status" not in records[1]["meta"]
     assert records[3]["path"] == "" and records[3]["embed_text"].startswith("SRS_TMS > requirement\n")
+    assert records[3]["meta"] == {"module": "SRS_TMS"} and records[2]["meta"]["chapter"] == "1 Track management"
+    named = requirement_records("SRS_TMS", MODULE, attributes=["Status", "verification"])   # any case
+    assert named[0]["text"].endswith("\nStatus: Approved") and named[0]["meta"]["status"] == "Approved"
+    assert requirement_records("SRS_TMS", MODULE, attributes=[])[0]["text"].endswith("320 ms.")
     assert [r["kind"] for r in requirement_records("SRS_TMS", MODULE, kinds=["chunk"])] == ["chunk"]
 
     idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
@@ -240,6 +247,7 @@ def test_whole_sources_follow_the_document(docs, tmp_path, fake_llm, fake_embedd
     module = whole_sources(idx.store, "doors:SRS_TMS")
     assert [s["section_title"] for s in module] == ["1.1 Deletion", ""]
     assert module[0]["context"].splitlines() == ["SRS-0004: The TMF shall delete a lost track within 320 ms.",
+                                                 "status: Approved",
                                                  "SRS-0005: Deleted tracks shall be logged.",
                                                  "A track is lost after three missed scans."]
 
@@ -292,6 +300,8 @@ def test_records_of_a_code_unit(samples):
                             "tracks.hour_range", "tracks.trk_db", "tracks.max_tracks"}
     delete = records["tracks.delete_track"]
     assert delete["kind"] == "code_doc" and delete["section_title"] == "tracks.delete_track · tracks.adb:11-15"
+    assert delete["meta"] == {"kind": "subprogram", "file": "tracks.adb"}
+    assert records["tracks.max_tracks"]["meta"] == {"kind": "constant", "file": "tracks.ads"}
     assert delete["text"].splitlines()[:3] == ["tracks.delete_track (subprogram, tracks.adb:11-15)",
                                                "Removes track I from the database.", "Req: SRS-0004"]
     assert 'Logger.Log ("delete");' in delete["text"] and delete["embed_text"].startswith("ada unit tracks > subprogram")

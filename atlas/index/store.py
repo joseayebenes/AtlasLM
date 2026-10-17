@@ -3,7 +3,8 @@ same records, and the embeddings cache.
 
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
-    index_records     the records (see records.py) with their vector
+    index_records     the records (see records.py) with their vector and their meta (JSON:
+                      module, chapter, attributes...)
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
     embed_cache       vector by key (model + prefix + text): what has been embedded once
                       is never embedded again, whatever document it comes from
@@ -33,14 +34,19 @@ CREATE TABLE IF NOT EXISTS index_documents (
     embed_model TEXT, indexed_at TEXT);
 CREATE TABLE IF NOT EXISTS index_records (
     id INTEGER PRIMARY KEY, doc TEXT, kind TEXT, section_id TEXT, section_title TEXT, path TEXT,
-    page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB);
+    page_start INTEGER, page_end INTEGER, ref TEXT, seq INTEGER, text TEXT, embed_text TEXT, vector BLOB,
+    meta TEXT);
 CREATE INDEX IF NOT EXISTS idx_index_records_doc ON index_records(doc);
 CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB);
 """
 
 _RECORD_COLUMNS = "r.id, r.doc, r.kind, r.section_id, r.section_title, r.path, r.page_start, r.page_end, " \
-                  "r.ref, r.seq, r.text, r.embed_text"
+                  "r.ref, r.seq, r.text, r.embed_text, r.meta"
+
+
+def _record(row: sqlite3.Row) -> dict:
+    return {**dict(row), "meta": json.loads(row["meta"] or "{}")}
 
 
 class IndexStore:
@@ -51,6 +57,8 @@ class IndexStore:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=30000")
         self.db.executescript(SCHEMA)
+        if "meta" not in {r["name"] for r in self.db.execute("PRAGMA table_info(index_records)")}:
+            self.db.execute("ALTER TABLE index_records ADD COLUMN meta TEXT")   # an index of before 0.3
         try:
             self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
                             "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
@@ -104,10 +112,11 @@ class IndexStore:
             for r, v in zip(records, vectors):
                 cur = self.db.execute(
                     "INSERT INTO index_records (doc, kind, section_id, section_title, path, page_start, "
-                    "page_end, ref, seq, text, embed_text, vector) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "page_end, ref, seq, text, embed_text, vector, meta) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (doc["doc"], r["kind"], r.get("section_id", ""), r.get("section_title", ""),
                      r.get("path", ""), r.get("page_start", 0), r.get("page_end", 0), r.get("ref", ""),
-                     r.get("seq", 0), r["text"], r["embed_text"], v.astype(np.float32).tobytes()))
+                     r.get("seq", 0), r["text"], r["embed_text"], v.astype(np.float32).tobytes(),
+                     json.dumps(r.get("meta") or {}, ensure_ascii=False)))
                 if self.fts:
                     self.db.execute("INSERT INTO index_fts (rowid, embed_text, ref) VALUES (?, ?, ?)",
                                     (cur.lastrowid, r["embed_text"], r.get("ref", "")))
@@ -199,13 +208,13 @@ class IndexStore:
         rows = self._query(f"SELECT {_RECORD_COLUMNS}, d.name AS doc_name, d.title AS doc_title, d.out_dir "
                            f"FROM index_records r JOIN index_documents d ON d.doc = r.doc "
                            f"WHERE r.id IN ({','.join('?' * len(ids))})", ids)
-        by_id = {r["id"]: dict(r) for r in rows}
+        by_id = {r["id"]: _record(r) for r in rows}
         return [by_id[i] for i in ids if i in by_id]
 
     def document_records(self, doc: str) -> list[dict]:
         """Every record of a document (by its key), in the order it was indexed: that of the
         document."""
-        return [dict(r) for r in self._query(
+        return [_record(r) for r in self._query(
             f"SELECT {_RECORD_COLUMNS}, d.name AS doc_name, d.title AS doc_title, d.out_dir "
             f"FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE r.doc = ? ORDER BY r.id", (doc,))]
 

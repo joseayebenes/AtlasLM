@@ -27,8 +27,8 @@ from typing import Iterable
 import numpy as np
 
 from atlas.index.embeddings import Embedder
-from atlas.index.records import (CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text, code_records,
-                                  requirement_records)
+from atlas.index.records import (ATTRIBUTES, CODE_PREFIX, DOORS_PREFIX, KINDS, build_records, chunk_text,
+                                  code_records, requirement_records)
 from atlas.index.search import answer, answer_whole, build_context, cite, search
 from atlas.index.store import IndexStore
 from atlas.index.tools import DocTools
@@ -36,9 +36,9 @@ from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
 from atlas.llm.structured import JsonLlm
 from atlas.pipeline import FatalError
 
-__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore", "answer",
-           "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records", "embed_missing",
-           "index_code", "index_document", "index_module", "requirement_records", "search"]
+__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "DocTools", "Embedder", "Index", "IndexStore",
+           "answer", "answer_whole", "build_context", "build_records", "chunk_text", "cite", "code_records",
+           "embed_missing", "index_code", "index_document", "index_module", "requirement_records", "search"]
 
 log = logging.getLogger(__name__)
 
@@ -58,11 +58,11 @@ def index_document(store: IndexStore, embedder: Embedder, data: dict, doc: str, 
 
 
 def index_module(store: IndexStore, embedder: Embedder, module: str, requirements: list[dict],
-                 kinds: Iterable[str] | None = None) -> dict:
+                 kinds: Iterable[str] | None = None, attributes: Iterable[str] = ATTRIBUTES) -> dict:
     """Indexes the requirements of a DOORS module (Store.requirements) as one more document,
-    "doors:<module>", named after the module. Same batches, cache and result as
-    index_document."""
-    records = requirement_records(module, requirements, kinds)
+    "doors:<module>", named after the module, with the `attributes` of each requirement
+    (see requirement_records). Same batches, cache and result as index_document."""
+    records = requirement_records(module, requirements, kinds, attributes)
     summary = f"DOORS module {module}: {sum(r['kind'] == 'requirement' for r in records)} requirements"
     return _index_records(store, embedder, records, {"doc": DOORS_PREFIX + module, "name": module,
                                                      "title": f"{module} (DOORS)", "out_dir": "",
@@ -188,9 +188,10 @@ class Index:
         """See index_document (options: chunk_chars, chunk_overlap, kinds)."""
         return index_document(self.store, self.embedder, data, doc, name, out_dir, **options)
 
-    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> dict:
+    def add_module(self, module: str, requirements: list[dict], kinds: Iterable[str] | None = None,
+                   attributes: Iterable[str] = ATTRIBUTES) -> dict:
         """See index_module."""
-        return index_module(self.store, self.embedder, module, requirements, kinds)
+        return index_module(self.store, self.embedder, module, requirements, kinds, attributes)
 
     def add_code(self, unit: str, parts: list[dict], sources: dict[str, str], tests: Iterable[str] = (),
                  chunk_chars: int = 1200, kinds: Iterable[str] | None = None) -> dict:

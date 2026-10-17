@@ -26,7 +26,9 @@ El paso `index.documents` indexa cada documento procesado a varias granularidade
 Los requisitos de DOORS también se indexan (paso `index.requirements`): cada módulo es un
 documento más del índice, con el nombre del módulo. Cada requisito es un registro de tipo
 `requirement` con los encabezados que tiene encima como ruta, y cada objeto de información,
-un fragmento. Así, `search` encuentra un requisito aunque no aparezca en ningún documento, y
+un fragmento. Los atributos de `[sources.doors] attributes` (`status` y `verification` por
+defecto) van en una última línea del texto del requisito (`status: Approved; verification:
+Test`): pesan en la búsqueda y el modelo los ve con el requisito. Así, `search` encuentra un requisito aunque no aparezca en ningún documento, y
 su cita queda como `SRS_TMS › 1.1 Deletion (requirement)`. `get_requirement` sigue dando el
 texto oficial aparte, y en sus documentos no repite el de DOORS.
 
@@ -41,6 +43,18 @@ palabras. Un fichero cambiado solo reindexa su unidad, y de ella solo se embeben
 que cambian.
 
 `[index] kinds` elige qué se indexa; sin `code_doc`, el código no entra en el índice.
+
+Cada registro lleva además su `meta` (JSON en la columna `meta` de `index_records`): lo que
+dice de él su fuente.
+
+| Registros | `meta` |
+|---|---|
+| requisitos y objetos de información de DOORS | `module`, `chapter` (el primer encabezado de su ruta) y, en los requisitos, los atributos de `attributes` que tengan |
+| fragmentos, resúmenes de sección y requisitos de un documento | `chapter`: el primer elemento de su ruta (`2 Alarms`) |
+| `code_doc` | `kind` (`subprogram`, `test`, `type`, `variable` o `constant`) y `file` (`tracks.adb`) |
+
+Las claves van en minúsculas y los valores, como texto. El resumen global, las definiciones
+y los pendientes no tienen `meta`.
 
 ## Embeddings
 
@@ -131,6 +145,6 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas amplias
-en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
+documentos, cambio de modelo, herramientas, DOORS y su `meta`, límite por documento,
+preguntas amplias en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

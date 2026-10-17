@@ -230,6 +230,10 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     from atlas.graph import build_doors_graph, document_names
     store, g, stats = unified
     G = g.G
+    assert stats["doors"].pop("id_shapes") == [{"prefix": "SRS", "separator": "-", "digits": 4, "count": 4,
+                                                "example": "SRS-0001"},
+                                               {"prefix": "SSS", "separator": "-", "digits": 4, "count": 2,
+                                                "example": "SSS-0005"}]          # the heading SSS-0900 is not one
     assert stats["doors"] == {"nodes": 10, "edges": 11, "modules": 2, "requirements": 6, "headings": 1,
                               "information": 0, "linked_outside": 1, "duplicate_links": 1,
                               "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3}}

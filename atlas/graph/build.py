@@ -29,7 +29,7 @@ from typing import Callable, Iterable
 import networkx as nx
 
 from atlas.code.ada import PREDEFINED_TYPES
-from atlas.doors import normalize_id
+from atlas.doors import id_shapes, normalize_id
 from atlas.plugins import CodeUnit
 
 __all__ = ["CODE_KINDS", "build_code_graph", "find_communities", "is_test_file"]
@@ -165,6 +165,7 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
                     G.add_edge(sid, t, kind=kind)
                 counts[kind] += 1
 
+    raw_ids = [r for u in units for item in (*u.declarations, *u.types, *u.subprograms) for r in item.get("reqs", [])]
     nodes_of = lambda kind: [(n, d) for n, d in G.nodes(data=True) if d.get("kind") == kind]
     subs = nodes_of("subprogram")
     stats = {
@@ -188,6 +189,7 @@ def build_code_graph(units: Iterable[CodeUnit | dict], test_patterns: Iterable[s
                               for n, _ in subs), key=lambda kv: (-kv[1], kv[0]))[:15],
         "top_requirements": sorted(((n, G.in_degree(n)) for n, _ in nodes_of("requirement")),
                                    key=lambda kv: (-kv[1], kv[0]))[:15],
+        "id_shapes": id_shapes(raw_ids),      # as written in the tags, before normalising them
     }
     return G, stats
 

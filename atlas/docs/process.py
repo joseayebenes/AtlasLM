@@ -45,6 +45,7 @@ class DocsOptions:
     lang: str = ""                  # language of summaries; "" = the one of the document
     max_chars: int = 12000          # largest section sent to the model
     min_chars: int = 300            # shorter sections are merged with the previous one
+    id_regex: str = ""              # the IDs of a requirement (with regex): [sources.doors.convention]
 
     def __post_init__(self):
         if self.analysis not in an.ANALYSES:
@@ -53,7 +54,7 @@ class DocsOptions:
             raise ValueError(f"structure must be one of {', '.join(STRUCTURES)}, not '{self.structure}'")
         if self.max_chars < 500:
             raise ValueError(f"max_chars must be at least 500, not {self.max_chars}")
-        for key in ("req_regex", "heading_regex"):
+        for key in ("req_regex", "heading_regex", "id_regex"):
             try:
                 re.compile(getattr(self, key))
             except re.error as e:
@@ -139,7 +140,8 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
         elif options.analysis == "regex":
             pattern = re.compile(options.req_regex)
             for s in sections:
-                s["analysis"] = an.normalize({"requirements": an.regex_requirements(s["body"], pattern)})
+                s["analysis"] = an.normalize({"requirements": an.regex_requirements(s["body"], pattern,
+                                                                                    options.id_regex or None)})
         else:
             cache = Path(cache_dir) if cache_dir else out.parent / ".cache"
             errors = _analyze_all(llm, sections, doc_title, options.lang, cache, tmp / "_llm_failures", workers,

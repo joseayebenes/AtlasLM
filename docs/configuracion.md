@@ -187,12 +187,15 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 ### [sources.doors.convention]
 
 Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan `id_pattern`,
-`id_normalize` y las referencias en el texto; el resto son columnas de `database`.
+`id_normalize`, `id_regex`, `id_canonical` y las referencias en el texto; el resto son
+columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada origen.
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `id_pattern` | texto | `""` | expresión de un ID válido; se avisan los requisitos que no casan (los títulos y la información, no) |
 | `id_normalize` | texto | `"upper"` | `upper` o `none`; los espacios se quitan siempre. Se aplica igual a DOORS, código y documentos |
+| `id_regex` | texto | `""` | la expresión de un ID dentro de un texto: los IDs de una etiqueta `Req:` del código (todos los del resto de la línea: `Req: SRS-0004 and SRS-0005`, `see SRS-0004`, `SRS-0004 / SRS-0005`), los de un requisito de un documento con `analysis = "regex"` (los que van seguidos al principio) y los que da el modelo a uno con `llm`. Vacía: `id_pattern` sin `^` ni `$`, sin distinguir mayúsculas y sin casar dentro de una palabra más larga; sin las dos, las etiquetas se leen palabra a palabra hasta la primera que no parece un ID. Cambiarla vuelve a analizar el código y esos documentos |
+| `id_canonical` | tabla | `{}` | la forma de los IDs del código y de los documentos, para que casen con DOORS: `{ regex = "^(SRS\|SSS)[-_ ]?0*(\\d+)$", format = "{1}-{2:04d}" }` hace `SRS-0004` de `srs-4` y de `SRS 0004`. `format` es un `str.format` de Python con los grupos de `regex` por número (`{0}`, el ID entero); un grupo de cifras es un número. Se aplica tras `id_normalize`; los IDs de DOORS no se tocan. Para encontrar `SRS 0004` en una etiqueta hace falta además un `id_regex` que lo admita |
 | `inline_reference_regex` | texto | `""` | IDs citados dentro del texto, que pasan a ser enlaces |
 | `inline_reference_type` | texto | `"references"` | tipo de esos enlaces |
 | `id_column`, `text_column`, `module_column`, `parent_column` | texto | `id`, `text`, `module`, `""` | columnas de `requirements_query`; `parent_column` da la jerarquía |

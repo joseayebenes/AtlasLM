@@ -43,7 +43,22 @@ que lo cita lo verifica (`verifies`).
 
 **Requisitos.** Un requisito es el mismo nodo en las tres partes. Sus IDs se normalizan
 igual que los de DOORS (`[sources.doors.convention] id_normalize`; mayúsculas por
-defecto), así que `Req: srs-0004` en el código y `SRS-0004` en DOORS se encuentran.
+defecto), así que `Req: srs-0004` en el código y `SRS-0004` en DOORS se encuentran. Con
+`id_canonical`, las variantes del código y de los documentos (`SRS-4`, `SRS 0004`) toman la
+forma de DOORS; los IDs de DOORS no cambian. El ID que el modelo da a un requisito de un
+documento se separa con la expresión de un ID de la convención: «SRS-0004 / SRS-0005» son
+dos requisitos.
+
+Las estadísticas de cada parte llevan `id_shapes`, las formas de ID tal como se escriben
+(prefijo, separador, cifras y cuántas veces se escribe cada una), y `atlas graph` las
+enseña. Con `atlas.test.toml`:
+
+```
+ID shapes as written, by origin (N = a digit; how many times each one is written):
+  code   6 SRS-NNNN
+  docs   336 SRS-NNNN
+  doors  40 SRS-NNNN, 12 SSS-NNNN
+```
 
 **Documentos.** Una sección nombra un elemento de código cuando escribe su nombre completo
 (`Tracks.Delete_Track`) o un nombre con guion bajo que solo tiene un elemento

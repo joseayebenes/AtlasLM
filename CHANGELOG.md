@@ -6,6 +6,31 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[sources.doors.convention] id_regex`: la expresión de un ID dentro de un texto. Una
+  etiqueta `Req:` del código da todos los IDs del resto de su línea, y un requisito de un
+  documento (`analysis = "regex"`) los que se escriben seguidos al principio. Si falta, sale
+  de `id_pattern` sin `^` ni `$`, sin distinguir mayúsculas y sin casar dentro de una
+  palabra más larga; sin ninguna de las dos, las etiquetas se leen como antes. La sonda del
+  análisis de 2026-10: `Req: SRS-0004 and SRS-0005` daba solo `SRS-0004`, `see SRS-0004`
+  nada y `SRS-0004 / SRS-0005` perdía el segundo; ahora dan los dos, uno y los dos. Los IDs
+  que da el modelo a un requisito de un documento («SRS-0004 / SRS-0005», «Req. SRS-0006»)
+  también se separan con ella al construir el grafo.
+- `[sources.doors.convention] id_canonical = { regex, format }`: las variantes de un ID en
+  el código y los documentos se escriben como en DOORS (`srs-4` y `SRS 0004` → `SRS-0004`
+  con `regex = "^(SRS|SSS)[-_ ]?0*(\\d+)$"` y `format = "{1}-{2:04d}"`). Los IDs de DOORS no
+  se reescriben.
+- `atlas graph` enseña las formas de ID por origen (código, DOORS, documentos): prefijo,
+  separador y número de cifras, con cuántos IDs tienen cada una. Están también en las
+  estadísticas de cada parte del grafo (`id_shapes`). Responden a qué convención sigue de
+  verdad el proyecto en cuanto se procese.
+
+### Al actualizar
+- Con `id_pattern` (o `id_regex`) en `[sources.doors.convention]`, el código y los documentos
+  con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los
+  IDs que antes se perdían: pueden aparecer requisitos implementados nuevos y, en `gaps`,
+  IDs citados que no están en DOORS. El grafo se reconstruye entero.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

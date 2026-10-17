@@ -18,7 +18,9 @@ build_docs_graph (origin "docs"): the documents processed by atlas.docs.
   too common to tell).
 
 A requirement is the same node in the three origins (code, docs, doors): GraphStore.load
-merges them, and the kind of DOORS (heading, information) prevails.
+merges them, and the kind of DOORS (heading, information) prevails. The statistics of each
+origin have its `id_shapes`: the forms of the IDs as they are written (prefix, separator,
+digits), to see which convention the project follows.
 """
 from __future__ import annotations
 
@@ -30,7 +32,7 @@ from typing import Callable, Iterable
 import networkx as nx
 
 from atlas.code.common import REQ_ID_SHAPE
-from atlas.doors import normalize_id
+from atlas.doors import id_shapes, normalize_id
 from atlas.plugins import CodeUnit
 
 __all__ = ["build_docs_graph", "build_doors_graph", "code_names", "document_names"]
@@ -77,7 +79,9 @@ def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tu
                "modules": sum(1 for _, d in G.nodes(data=True) if d["kind"] == "module"),
                "requirements": count("requirement"), "headings": count("heading"),
                "information": count("information"), "linked_outside": missing,
-               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items()))}
+               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items())),
+               "id_shapes": id_shapes(r.get("raw_id") or r["id"] for r in reqs
+                                      if G.nodes[r["id"]]["kind"] == "requirement")}
 
 
 def code_names(units: Iterable[CodeUnit | dict]) -> dict[str, str]:
@@ -109,13 +113,17 @@ def document_names(documents: Iterable[dict]) -> dict[str, str]:
 
 
 def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = None,
-                     normalize: Callable[[str], str] = normalize_id) -> tuple[nx.DiGraph, dict]:
+                     normalize: Callable[[str], str] = normalize_id,
+                     ids: re.Pattern | None = None) -> tuple[nx.DiGraph, dict]:
     """(graph, statistics) from the processed documents: each one a dict with `name` (as in
     document_names), `path`, `source`, `out_dir` and `structure` (its structure.json).
-    `names` (code_names) are the code elements a section can mention."""
+    `names` (code_names) are the code elements a section can mention. With `ids` (the
+    expression of an ID), the ID that the analysis gives a requirement is the IDs it finds in
+    it ("SRS-0004 / SRS-0005" is two, "Req. SRS-0004" is SRS-0004)."""
     names = names or {}
     G = nx.DiGraph()
     stats = {"documents": 0, "sections": 0, "requirements": 0, "mentions": 0}
+    raw_ids: list[str] = []
     for d in documents:
         st = d["structure"]
         doc = f"doc:{d['name']}"
@@ -127,9 +135,15 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
             analysis = s.get("analysis") if isinstance(s.get("analysis"), dict) else {}
             reqs = {}
             for r in analysis.get("requirements") or []:
-                rid = normalize(str(r.get("id") or "")) if isinstance(r, dict) else ""
-                if rid and REQ_ID_SHAPE.match(rid) and rid not in reqs:
-                    reqs[rid] = " ".join(str(r.get("text") or "").split())
+                if not isinstance(r, dict):
+                    continue
+                given = str(r.get("id") or "")
+                for raw in ([m.group(0) for m in ids.finditer(given)] if ids is not None else [given]):
+                    rid = normalize(raw)
+                    if rid and REQ_ID_SHAPE.match(rid):
+                        raw_ids.append(raw)
+                        if rid not in reqs:
+                            reqs[rid] = " ".join(str(r.get("text") or "").split())
             G.add_node(sec, kind="section", name=s.get("title", ""), document=d["name"], section=s["id"],
                        path=s.get("path", []), page_start=s.get("page_start") or 0, page_end=s.get("page_end") or 0,
                        file=str(Path(d["out_dir"]) / s["file"]) if s.get("file") else "",
@@ -147,4 +161,4 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
                 G.add_edge(sec, code, kind="mentions")
                 stats["mentions"] += 1
     stats["requirements"] = sum(1 for _, d in G.nodes(data=True) if d.get("kind") == "requirement")
-    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats}
+    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats, "id_shapes": id_shapes(raw_ids)}

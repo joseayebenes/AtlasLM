@@ -298,25 +298,63 @@ def _overview(llm: JsonLlm, items: list[str], doc_title: str, lang: str, max_cha
 _SENTENCE_END = re.compile(r"[.!?][\"')\]]*\s*$")
 
 
-def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
+# What may come between the IDs of one statement: "SRS-0004, SRS-0005", "SRS-0004 / SRS-0005",
+# "SRS-0004 and SRS-0005", "[SRS-0002]:"
+_CLOSING = re.compile(r"[\])}]*")
+_BETWEEN_IDS = re.compile(r"(?:[\s,;/&:()\[\]]|\b(?:and|or|y|o)\b)*", re.IGNORECASE)
+
+
+def _leading_ids(body: str, start: int, ids: re.Pattern) -> tuple[list[str], int]:
+    """The IDs written one after the other from `start` (only separators between them), and
+    where the text after them starts. None at the start: the first ID of the rest of the
+    line after a word or two ("Req: see SRS-0004"), not one that the statement cites ("Req:
+    The TMF shall log as SRS-0100 says")."""
+    found, pos = [], start
+    while True:
+        gap = _BETWEEN_IDS.match(body, pos)
+        m = ids.match(body, gap.end())
+        if not m or m.end() == m.start():
+            break
+        found.append(m.group(0))
+        pos = m.end()
+    if not found:
+        line_end = body.find("\n", start)
+        m = ids.search(body, start, len(body) if line_end < 0 else line_end)
+        if m and len(body[start:m.start()].split()) <= 2:
+            found, pos = [m.group(0)], m.end()
+    return found, _CLOSING.match(body, pos).end()      # "[SRS-0002]: The TMF..." -> ": The TMF..."
+
+
+def regex_requirements(body: str, pattern: re.Pattern | str, ids: re.Pattern | str | None = None) -> list[dict]:
     """Requirements marked by a regular expression, without a model.
 
     Each match starts a requirement. Its ID is the first word of group 1 (without
     brackets or punctuation); without groups, it has no ID and the text starts at the
-    match. The text runs from the ID to the next match, a blank line or the end of a line
-    that closes a sentence, whichever comes first, with the lines joined. A blank line
-    does not end an unfinished sentence that goes on in lower case after it (a page break
-    in the middle of the sentence)."""
+    match. With `ids` (the expression of an ID, from [sources.doors.convention]), its IDs
+    are the ones written one after the other from group 1 ("Req: SRS-0004 and SRS-0005 The
+    TMF shall..." gives the same requirement twice, one per ID), or the first one of group 1
+    if it does not start with one. The text runs from the IDs to the next match, a blank
+    line or the end of a line that closes a sentence, whichever comes first, with the lines
+    joined. A blank line does not end an unfinished sentence that goes on in lower case
+    after it (a page break in the middle of the sentence)."""
     pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
+    ids = re.compile(ids) if isinstance(ids, str) and ids else (ids or None)
     matches = list(pattern.finditer(body))
     out = []
     for k, m in enumerate(matches):
-        if pattern.groups and (m.group(1) or "").split():
+        rids = [""]
+        if pattern.groups and ids is not None and m.group(1) is not None:
+            found, start = _leading_ids(body, m.start(1), ids)
+            if found:
+                rids = list(dict.fromkeys(found))
+            else:
+                start = m.start(1)
+        elif pattern.groups and (m.group(1) or "").split():
             token = m.group(1).split()[0]
-            rid = token.strip(".,;:()[]")
+            rids = [token.strip(".,;:()[]")]
             start = m.start(1) + m.group(1).find(token) + len(token)
         else:
-            rid, start = "", m.start()
+            start = m.start()
         end = matches[k + 1].start() if k + 1 < len(matches) else len(body)
         lines: list[str] = []
         chunk = body[start:end].split("\n")
@@ -336,7 +374,7 @@ def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
             i += 1
         text = " ".join(lines).lstrip(" -–—:")
         if text:
-            out.append({"id": rid, "text": text})
+            out.extend({"id": rid, "text": text} for rid in rids)
     return out
 
 

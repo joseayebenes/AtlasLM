@@ -26,7 +26,13 @@ El paso `code.parse` analiza cada fichero y guarda en `atlas.db`:
 - sus tipos, variables, constantes y `with`.
 
 Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
-otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los ficheros que casan con
+otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los IDs de una etiqueta son los
+que casan con la expresión de un ID de `[sources.doors.convention]` (`id_regex`, o
+`id_pattern` sin anclas) en el resto de su línea: `Req: SRS-0004 and SRS-0005`, `Req: see
+SRS-0004` y `Req: SRS-0004 / SRS-0005` dan los IDs que se esperan. El paso `code.parse` la
+pasa a cada analizador en su configuración (`id_regex`, que `requirement_ids` compila) y la
+incluye en su huella. Sin convención, las palabras que parecen un ID se leen hasta la primera
+que no lo parece. Los ficheros que casan con
 `test_patterns` son pruebas. Con eso, el paso `graph` construye el grafo de código (ver
 [atlas.graph](../graph/README.md)).
 

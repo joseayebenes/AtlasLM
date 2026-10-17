@@ -38,6 +38,52 @@ def test_requirement_tags():
     assert extract_requirements("-- Req: none here", requirement_pattern({})) == []
 
 
+def test_requirement_ids_of_the_convention():
+    """The probe of the analysis of 2026-10: without the expression of an ID, a tag is read
+    token by token and loses what follows a word or a slash."""
+    import re
+    from atlas.doors import Canonical, id_regex, id_shapes, normalize_id
+    tag = requirement_pattern({})
+    assert extract_requirements("-- Req: SRS-0004 and SRS-0005", tag) == ["SRS-0004"]       # as before
+    ids = re.compile(id_regex({"id_pattern": "^(?:SRS|SSS)-\\d{4}$"}))   # id_pattern without anchors
+    assert extract_requirements("-- Req: SRS-0004 and SRS-0005", tag, ids) == ["SRS-0004", "SRS-0005"]
+    assert extract_requirements("-- Req: see SRS-0004", tag, ids) == ["SRS-0004"]
+    assert extract_requirements("-- Req: SRS-0004 / SRS-0005", tag, ids) == ["SRS-0004", "SRS-0005"]
+    assert extract_requirements("-- Req: srs-0004, SRS-00045, XSRS-0006", tag, ids) == ["srs-0004"]
+    assert extract_requirements("-- SRS-0007 without a tag", tag, ids) == []
+    assert id_regex({"id_regex": r"\bR\d+\b", "id_pattern": "^X$"}) == r"\bR\d+\b" and id_regex({}) == ""
+    assert re.compile(id_regex({"id_pattern": "(?i)^srs-\\d+$"})).findall("Req: SRS-1, srs-2") == ["SRS-1", "srs-2"]
+
+    # "SRS 0004" and "srs-4": a looser id_regex finds them and id_canonical makes them SRS-0004
+    loose = re.compile(r"(?i)\b(?:SRS|SSS)[-_ ]?\d+\b")
+    canonical = Canonical({"regex": r"^(SRS|SSS)[-_ ]?0*(\d+)$", "format": "{1}-{2:04d}"})
+    found = extract_requirements("-- Req: SRS 0004, srs-4, SSS_12", tag, loose)
+    assert {normalize_id(r) for r in found} == {"SRS0004", "SRS-4", "SSS_12"}       # three nodes before
+    assert {normalize_id(r, "upper", canonical) for r in found} == {"SRS-0004", "SSS-0012"}
+    assert normalize_id("SRS - 0004", "upper", canonical) == "SRS-0004"
+    assert normalize_id("srs-4", "none", canonical) == "srs-4" and normalize_id("TBD", "upper", canonical) == "TBD"
+    for bad in ({"regex": "^(SRS)$"}, {"regex": "^(SRS)$", "format": "{2}"}, {"regex": "(", "format": "x"},
+                {"regex": "x", "format": "x", "case": "upper"}):
+        with pytest.raises(ValueError, match="id_canonical"):
+            Canonical(bad)
+    assert id_shapes(["SRS-0004", "srs-4", "SRS 0004", "SRS-0005", "TBD"]) == [
+        {"prefix": "SRS", "separator": "-", "digits": 4, "count": 2, "example": "SRS-0004"},
+        {"prefix": "SRS", "separator": " ", "digits": 4, "count": 1, "example": "SRS 0004"},
+        {"prefix": "other", "separator": "", "digits": 0, "count": 1, "example": "TBD"},
+        {"prefix": "srs", "separator": "-", "digits": 1, "count": 1, "example": "srs-4"}]
+
+    # the analyzers take it in their configuration (code.parse puts it there)
+    src = b"package body P is\n   -- Req: SRS-0004 and SRS-0005\n   procedure Run is\n   begin\n      null;" \
+          b"  -- Req: see SRS-0006 / SRS-0007\n   end Run;\nend P;\n"
+    run = AdaAnalyzer({"id_regex": ids.pattern}).analyze_file(Path("p.adb"), src).subprograms[0]
+    assert run["reqs"] == ["SRS-0004", "SRS-0005", "SRS-0006", "SRS-0007"]
+    assert AdaAnalyzer({}).analyze_file(Path("p.adb"), src).subprograms[0]["reqs"] == ["SRS-0004"]
+    from atlas.code import PythonAnalyzer
+    py = b"def run():\n    # Req: SRS-0004 and SRS-0005\n    pass\n"
+    assert PythonAnalyzer({"id_regex": ids.pattern}).analyze_file(Path("p.py"), py).subprograms[0]["reqs"] == \
+        ["SRS-0004", "SRS-0005"]
+
+
 def test_ada_bodies_calls_comments_and_requirements(tmp_path):
     f = tmp_path / "radar-filters.adb"
     unit = AdaAnalyzer({}).analyze_file(f, SOURCE)

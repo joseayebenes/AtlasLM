@@ -21,7 +21,7 @@ from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
 
-from atlas.code.common import extract_requirements, requirement_pattern
+from atlas.code.common import extract_requirements, requirement_ids, requirement_pattern
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
 __all__ = ["AdaAnalyzer", "PREDEFINED_TYPES", "analyze_ada"]
@@ -184,7 +184,7 @@ def unit_name(path: Path) -> str:
     return path.stem.lower().replace("-", ".")
 
 
-def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
+def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern, req_ids: re.Pattern | None = None) -> dict:
     """Everything the analysis finds in a file (see the module docstring)."""
     g = _grammar()
     lines = src.decode("utf-8", errors="replace").splitlines()
@@ -199,7 +199,7 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
             decl = caps["decl"][0]
             doc = _leading_comment(decl, lines)
             declarations.append({"name": _norm(_text(caps["name"][0], src)), "line": decl.start_point[0] + 1,
-                                 "doc": doc, "reqs": extract_requirements(doc + "\n" + _text(decl, src), req_pattern)})
+                                 "doc": doc, "reqs": extract_requirements(doc + "\n" + _text(decl, src), req_pattern, req_ids)})
 
     types = []
     if g.type:
@@ -210,7 +210,7 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
             source = _text(decl, src)
             doc = _leading_comment(decl, lines)
             types.append({"name": _norm(_text(ident, src)), "line": decl.start_point[0] + 1, "doc": doc,
-                          "reqs": extract_requirements(doc, req_pattern), "source": source[:MAX_SOURCE_CHARS],
+                          "reqs": extract_requirements(doc, req_pattern, req_ids), "source": source[:MAX_SOURCE_CHARS],
                           "record": "record" in source.lower(), "local": _inside_subprogram(decl)})
 
     variables = []
@@ -255,7 +255,7 @@ def analyze_ada(path: Path, src: bytes, req_pattern: re.Pattern) -> dict:
         doc = _leading_comment(node, lines)
         subprograms.append({"name": b["name"], "start_line": b["start_line"], "end_line": b["end_line"],
                             "calls": sorted(calls), "doc": doc,
-                            "reqs": extract_requirements(doc + "\n" + _inner_comments(node, src), req_pattern)})
+                            "reqs": extract_requirements(doc + "\n" + _inner_comments(node, src), req_pattern, req_ids)})
 
     return {"file": str(path), "unit": unit_name(path), "withs": withs, "declarations": declarations,
             "subprograms": subprograms, "types": types, "variables": variables}
@@ -268,9 +268,10 @@ class AdaAnalyzer(CodeAnalyzer):
     def __init__(self, config: dict):
         super().__init__(config)
         self.req_pattern = requirement_pattern(config)
+        self.req_ids = requirement_ids(config)
 
     def analyze_file(self, path: Path, source: bytes) -> CodeUnit:
-        a = analyze_ada(Path(path), source, self.req_pattern)
+        a = analyze_ada(Path(path), source, self.req_pattern, self.req_ids)
         return CodeUnit(file=str(path), unit=a["unit"], language="ada", imports=a["withs"],
                         declarations=a["declarations"], subprograms=a["subprograms"],
                         types=[{k: v for k, v in t.items() if k != "local"} for t in a["types"] if not t["local"]],

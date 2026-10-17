@@ -25,7 +25,7 @@ import re
 import tokenize
 from pathlib import Path
 
-from atlas.code.common import extract_requirements, requirement_pattern
+from atlas.code.common import extract_requirements, requirement_ids, requirement_pattern
 from atlas.plugins import CodeAnalyzer, CodeUnit
 
 __all__ = ["PythonAnalyzer", "analyze_python", "module_name"]
@@ -102,7 +102,8 @@ def _first_line(node: ast.AST) -> int:
     return min([node.lineno, *(d.lineno for d in decorators)])
 
 
-def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) -> dict:
+def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=(),
+                   req_ids: re.Pattern | None = None) -> dict:
     """Everything the analysis finds in a file (see the module docstring)."""
     text = src.decode("utf-8", errors="replace")
     unit = module_name(path, roots)
@@ -142,7 +143,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
                         if called and called not in BUILTINS:
                             calls.add(called)
                 subprograms.append({"name": name, "start_line": start, "end_line": end, "calls": sorted(calls),
-                                    "doc": doc, "reqs": extract_requirements(doc + "\n" + inner, req_pattern)})
+                                    "doc": doc, "reqs": extract_requirements(doc + "\n" + inner, req_pattern, req_ids)})
                 visit(child, [*scope, child.name])
             elif isinstance(child, ast.ClassDef):
                 start = _first_line(child)
@@ -150,7 +151,7 @@ def analyze_python(path: Path, src: bytes, req_pattern: re.Pattern, roots=()) ->
                                             ast.get_docstring(child) or "") if x)
                 source = ast.get_source_segment(text, child) or ""
                 types.append({"name": ".".join([*scope, child.name]), "line": start, "doc": doc,
-                              "reqs": extract_requirements(doc, req_pattern), "source": source[:MAX_SOURCE_CHARS],
+                              "reqs": extract_requirements(doc, req_pattern, req_ids), "source": source[:MAX_SOURCE_CHARS],
                               "record": False})
                 visit(child, [*scope, child.name])
 
@@ -176,10 +177,11 @@ class PythonAnalyzer(CodeAnalyzer):
     def __init__(self, config: dict):
         super().__init__(config)
         self.req_pattern = requirement_pattern(config)
+        self.req_ids = requirement_ids(config)
         self.roots = list(config.get("roots", []))
 
     def analyze_file(self, path: Path, source: bytes) -> CodeUnit:
-        a = analyze_python(Path(path), source, self.req_pattern, self.roots)
+        a = analyze_python(Path(path), source, self.req_pattern, self.roots, self.req_ids)
         return CodeUnit(file=str(path), unit=a["unit"], language="python", imports=a["imports"],
                         subprograms=a["subprograms"], types=a["types"], variables=a["variables"])
 

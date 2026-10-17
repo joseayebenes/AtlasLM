@@ -297,6 +297,15 @@ communities = true
     out = capsys.readouterr().out
     assert "1 tests" in out and "DOORS of" in out and "3 requirements stated" in out
     assert "requirements without code" in out and "    1  cited in code not in doors" in out   # SRS-0103
+    assert "ID shapes as written" in out and "  code   6 SRS-NNNN" in out and "  doors  " in out
+    # the expression of an ID goes to the analysis of the code and of the documents
+    loose = 'id_regex = "(?i)\\\\b(?:SRS|SSS)[-_ ]?\\\\d+\\\\b"\n'
+    assert go(load_config(toml(loose + extra)))["processed"] == \
+        {"doors.requirements": 3, "code.parse": 5, "docs.process": 1, "graph.build": 3}
+    canonical = 'id_canonical = { regex = "^(SRS|SSS)[-_ ]?0*(\\\\d+)$", format = "{1}-{2:04d}" }\n'
+    assert go(load_config(toml(loose + canonical + extra)))["processed"] == \
+        {"doors.requirements": 3, "graph.build": 3}           # the code and the documents are not read again
+    go()
     assert trace(cfg, "srs-0004") == 0 and '"implemented_by"' in capsys.readouterr().out
     assert trace(cfg, "SRS-9999") == 1
     capsys.readouterr()

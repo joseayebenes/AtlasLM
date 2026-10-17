@@ -44,6 +44,19 @@ id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"   # "see SSS-0012" en el texto es un enlace
 ```
 
+`id_pattern` sirve también, sin sus anclas, para encontrar los IDs en las etiquetas `Req:` del
+código y en los requisitos de los documentos; `id_regex` la sustituye si el código los escribe
+de otra forma. Si el código escribe variantes (`srs-4`, `SRS 0004`), `id_canonical` las lleva
+a la forma de DOORS sin tocar los IDs de DOORS:
+
+```toml
+id_regex = "(?i)\\b(?:SRS|SSS)[-_ ]?\\d+\\b"
+id_canonical = { regex = "^(SRS|SSS)[-_ ]?0*(\\d+)$", format = "{1}-{2:04d}" }
+```
+
+Qué formas hay de verdad lo dice `atlas graph`: las formas de ID de cada origen (código,
+DOORS, documentos), con su prefijo, su separador y sus cifras.
+
 Para leer directamente otra base con consultas propias queda el adaptador `database`
 (`[sources.doors.database]`, SQLite u ODBC). Sus claves están en la
 [guía de configuración](../../docs/configuracion.md).

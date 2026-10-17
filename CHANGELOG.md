@@ -15,6 +15,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   los cambió, se devuelven a como estaban («Protected files put back»). Lo que escribe va al
   registro de llamadas como una sola llamada. `command_timeout` (1800 s) limita cada
   ejecución. Cómo darle `atlas serve` como MCP a OpenCode, en `atlas/agents/README.md`.
+- El juez de `atlas develop` en el editor: `run_tests(plan)` (por test, si pasa, hasta dónde
+  llega y lo que dijo, de un plan de `atlas develop` o de `[tests]`) y `judge_changes(paths)`
+  (qué cambió frente a git o a la llamada anterior, si compila y qué test avanzó o retrocedió;
+  su estado, en `<workspace>/judge.json`). Ejecutan código: solo se ofrecen si se piden en
+  `[mcp] tools`, marcadas como destructivas.
+
+### Corregido
+- Las instrucciones del servidor MCP incluyen el párrafo del compilador (`check_code`,
+  `run_test`...) cuando ofrece alguna de esas herramientas; antes no salía nunca.
 
 ## [0.2.0] — 2026-10-16
 

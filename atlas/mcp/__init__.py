@@ -14,7 +14,9 @@ traceability tools of the graph (trace, matrix, gaps...) when "graph" is a step;
 build_context with the graph. ask_atlas, verify_requirement, link_requirement and
 check_compliance (which need the model, and ask_atlas also ADK) are only offered when listed.
 So are the tools that write (edit_file, write_file, replace_subprogram, add_subprogram: atlas
-provides knowledge and the editor edits) and run_test, which runs code.
+provides knowledge and the editor edits) and run_test, run_tests and judge_changes, which run
+code (the last two are the judge of `atlas develop`: which tests pass, which got further and
+what a change broke).
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
@@ -64,7 +66,10 @@ INSTRUCTIONS = {
             "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
     "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
              "every change; `run_test` builds a test procedure and runs it; `library_spec` gives the real "
-             "declarations of a package of the runtime or of the project.",
+             "declarations of a package of the runtime or of the project. `run_tests` runs the tests of a plan of "
+             "atlas develop and says how far each one gets, and `judge_changes` says after a change what changed, "
+             "whether it compiles and which tests got further or went back: call it after each change, and undo "
+             "what makes a test go back.",
 }
 
 
@@ -125,9 +130,13 @@ def tool_names(cfg: Config) -> list[str]:
 
 def instructions(names: list[str]) -> str:
     """What the server tells the client about its tools."""
+    from atlas.code.judge import JUDGE_TOOL_NAMES
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS, "build": ("check_code", "run_test", "library_spec"),
+    # TODO: with feature/instrucciones-del-grafo in develop, "build" is BUILD_TOOL_NAMES + JUDGE_TOOL_NAMES,
+    # and run_tests and judge_changes go with the editor profile, still only when asked for
+    groups = {"docs": DOC_TOOLS, "files": FILE_TOOLS, "edit": WRITING_TOOLS,
+              "build": ("check_code", "run_test", "library_spec", *JUDGE_TOOL_NAMES),
               "context": ("build_context",),
               "agents": ("ask_atlas", "verify_requirement", "link_requirement", "check_compliance")}
     try:
@@ -135,7 +144,8 @@ def instructions(names: list[str]) -> str:
         groups["graph"] = GRAPH_TOOLS
     except ImportError:
         pass
-    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "agents", "files", "edit")
+    parts = [INSTRUCTIONS[""]] + [INSTRUCTIONS[g] for g in ("docs", "graph", "context", "agents", "files", "edit",
+                                                            "build")
                                   if g in groups and set(groups[g]) & set(names)]
     return "\n\n".join(parts)
 

@@ -5,7 +5,7 @@
     atlas sections [atlas.toml]     sections each document would have, without the model
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
-    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV, Markdown, JSON); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
     atlas comply   ID|MODULE [atlas.toml]  whether the code of each requirement does all it asks, obligation
                                            by obligation, with the model; * = all
@@ -447,6 +447,21 @@ def index_code_step(ctx) -> Step | None:
                 depends_on=["code.parse"])
 
 
+def code_revision(roots: list[str]) -> str:
+    """`git rev-parse HEAD` in the first code root; "" without git or outside a repository."""
+    import subprocess
+    if not roots:
+        return ""
+    try:
+        out = subprocess.run(["git", "rev-parse", "HEAD"], cwd=roots[0], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as e:
+        log.info("no code revision: %s", e)
+        return ""
+    if out.returncode:
+        log.info("no code revision: %s", out.stderr.strip()[:200])
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
 def _exports(store: Store) -> dict[str, dict]:
     """When and from where each DOORS module was exported, without the run that read it."""
     return {m: {"exported_at": i["exported_at"], "source": i["source"]} for m, i in store.modules_info().items()}
@@ -499,6 +514,10 @@ def graph_step(ctx) -> Step:
     def build(ctx, unit: str):
         if unit == "code":
             G, stats = build_code_graph(ctx.store.code_units(), test_patterns, normalize)
+            if ctx.cfg["graph"]["code_revision"]:
+                revision = code_revision((ctx.cfg["sources"].get("code") or {}).get("roots", []))
+                if revision:
+                    stats["code_revision"] = revision
             if ctx.cfg["graph"]["communities"]:          # in the node, for the exports (Gephi colours)
                 groups = find_communities(G)
                 for n, group in groups.items():
@@ -700,7 +719,7 @@ def graph(cfg: Config) -> int:
                 print(f"\n{title}:")
                 for name, n in s[key]:
                     print(f"  {n:5d}  {name}")
-    g = KnowledgeGraph.open(ctx.store.path)
+    g = KnowledgeGraph.from_config(cfg)
     s = builds.get("doors")
     if s:
         from atlas.doors import describe_exports
@@ -727,24 +746,25 @@ def graph(cfg: Config) -> int:
 def trace(cfg: Config, req_id: str) -> int:
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
-    res = KnowledgeGraph.open(ctx.store.path).trace(req_id)
+    res = KnowledgeGraph.from_config(cfg).trace(req_id)
     print(json.dumps(res, ensure_ascii=False, indent=1))
     return 1 if "error" in res else 0
 
 
 def matrix(cfg: Config, module: str) -> int:
     """The traceability matrix of a module ("*": every requirement) in <workspace>/graph,
-    as CSV (for a spreadsheet) and Markdown, and its summary and gaps on the screen."""
+    as CSV (for a spreadsheet), Markdown (with where it comes from in the header) and JSON
+    (rows, summary, gaps and meta), and its summary and gaps on the screen."""
     import csv
     from atlas.graph import KnowledgeGraph
     ctx = _context(cfg)
     module = "" if module == "*" else module
-    g = KnowledgeGraph.open(ctx.store.path)
+    g = KnowledgeGraph.from_config(cfg)
     res = g.matrix(module, limit=10**9)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
-    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
+    columns = ["id", "text", *g.attributes, "derived", "code", "tests", "covering_tests", "documents"]
     cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
     meta = res["meta"]
     exported = {m: x["exported_at"] for m, x in meta["modules"].items()}
@@ -765,24 +785,31 @@ def matrix(cfg: Config, module: str) -> int:
     for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
         md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
     prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    prefix.with_suffix(".json").write_text(json.dumps({k: v for k, v in res.items() if k not in ("offset", "truncated")},
+                                                      ensure_ascii=False, indent=1), encoding="utf-8")
     for line in header:
         print(line.removeprefix("- "))
     print(next(line for line in md if line.endswith("in documents.")))
     for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
         items = gaps[key]["items"]
         print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
-    print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
+    print(f"written {prefix.with_suffix('.csv')}, {prefix.with_suffix('.md')} and {prefix.with_suffix('.json')}")
     return 0
 
 
 def _matrix_header(meta: dict) -> list[str]:
-    """Where a matrix comes from, as Markdown lines: the DOORS export of each module."""
+    """Where a matrix comes from, as Markdown lines: the DOORS export of each module, the
+    version of atlas, the builds of the graph and the revision of the code."""
     from atlas.doors import days_ago, export_age
     lines = []
     for m, x in meta["modules"].items():
         ago = days_ago(export_age(x["exported_at"]))
         lines.append(f"- DOORS {m}: " + (f"exported {x['exported_at'][:10]} ({ago})" if x["exported_at"]
                                           else "export date unknown") + (f", from {x['source']}" if x["source"] else ""))
+    built = ", ".join(f"{origin} {at[:19]}" for origin, at in meta.get("built_at", {}).items())
+    lines.append(f"- atlas {meta.get('atlas_version', '?')}" + (f"; graph built: {built}" if built else ""))
+    if meta.get("code_revision"):
+        lines.append(f"- code revision: {meta['code_revision']}")
     return lines
 
 

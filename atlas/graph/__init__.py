@@ -16,10 +16,10 @@
 from __future__ import annotations
 
 from atlas.graph.build import build_code_graph, find_communities
-from atlas.graph.knowledge import KnowledgeGraph
+from atlas.graph.knowledge import KnowledgeGraph, display_attributes
 from atlas.graph.sources import build_docs_graph, build_doors_graph, code_names, document_names
 from atlas.graph.store import GraphStore, export_graph, to_mermaid
 from atlas.graph.tools import GraphTools
 
 __all__ = ["GraphStore", "GraphTools", "KnowledgeGraph", "build_code_graph", "build_docs_graph", "build_doors_graph",
-           "code_names", "document_names", "export_graph", "find_communities", "to_mermaid"]
+           "code_names", "display_attributes", "document_names", "export_graph", "find_communities", "to_mermaid"]

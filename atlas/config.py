@@ -85,7 +85,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
                  "retry_quarantined": bool, "prune_missing": bool, "steps": list},
     "plugins": {"modules": list, "disabled": list},
     "sources": {"docs": list, "doors": dict, "code": dict},
-    "graph": {"exports": list, "communities": bool},
+    "graph": {"exports": list, "communities": bool, "code_revision": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
@@ -104,7 +104,7 @@ AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": in
                 "temperature": float, "top_p": float, "top_k": int,
                 "keep_tool_results": int, "stall_steps": int}     # what [agents.<name>] can retouch
 CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str, "req_regex": str,
-               "test_patterns": list, "summaries": str, "enabled": bool, "check_command": list,
+               "test_patterns": list, "enabled": bool, "check_command": list,
                "test_command": list, "tool_path": list, "command_timeout": int, "run_command": list,
                "test_commands": dict, "check_commands": dict, "program_command": list, "protected": list,
                "syntax_commands": dict, "check_on_edit": bool, "hints": list, "library": list,
@@ -116,7 +116,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"]},
     "plugins": {"modules": [], "disabled": []},
-    "graph": {"exports": ["graphml", "json"], "communities": False},
+    "graph": {"exports": ["graphml", "json"], "communities": False, "code_revision": False},
     "index": {"chunk_chars": 1200, "chunk_overlap": 200,
               "kinds": ["overview", "section_summary", "chunk", "requirement", "definition", "open_issue",
                         "code_doc"]},
@@ -289,6 +289,8 @@ def load_config(path: str | Path) -> Config:
             raise ConfigError(f"[sources.docs[{i}]] 'name' or 'paths' is missing")
     if "doors" in sources:
         _validate(sources["doors"], DOORS_SCHEMA, "sources.doors")
+        if not all(isinstance(a, str) and a.strip() for a in sources["doors"].get("attributes", [])):
+            raise ConfigError("[sources.doors] 'attributes' must be a list of attribute names")
         if sources["doors"].get("max_age_days", 0) < 0:
             raise ConfigError("[sources.doors] 'max_age_days' must be 0 (no warning) or more")
     if "code" in sources:

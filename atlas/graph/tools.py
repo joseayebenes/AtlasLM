@@ -27,7 +27,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from atlas.graph.knowledge import MAX_LIST, KnowledgeGraph
+from atlas.graph.knowledge import DEFAULT_ATTRIBUTES, MAX_LIST, KnowledgeGraph, display_attributes
 from atlas.graph.store import GraphStore
 from atlas.plugins import register_methods
 
@@ -42,9 +42,10 @@ NO_GRAPH = "there is no graph yet: run `atlas run` with \"graph\" in [pipeline] 
 
 
 class GraphTools:
-    def __init__(self, db: str | Path, root: str | Path = "."):
+    def __init__(self, db: str | Path, root: str | Path = ".", attributes=DEFAULT_ATTRIBUTES):
         self.store = GraphStore(db)
         self.root = root
+        self.attributes = list(attributes)
         self._graph: KnowledgeGraph | None = None
         self._builds: dict | None = None
         self._lock = threading.Lock()
@@ -53,7 +54,7 @@ class GraphTools:
     def from_config(cls, cfg) -> "GraphTools":
         """Over the atlas.db of the workspace; file paths from the current directory, as the
         code roots of atlas.toml."""
-        return cls(cfg.workspace / "atlas.db")
+        return cls(cfg.workspace / "atlas.db", attributes=display_attributes(cfg))
 
     @classmethod
     def for_context(cls, context: Any) -> "GraphTools":
@@ -69,7 +70,7 @@ class GraphTools:
         builds = self.store.builds()
         with self._lock:
             if builds != self._builds:
-                self._graph = KnowledgeGraph(self.store.load(), self.root, builds) if builds else None
+                self._graph = KnowledgeGraph(self.store.load(), self.root, builds, self.attributes) if builds else None
                 self._builds = builds
             return self._graph
 
@@ -161,7 +162,8 @@ class GraphTools:
 
     def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:
         """Requirements of the graph (optionally those whose ID starts with `prefix`, or
-        those of a DOORS module), with how many code elements, tests and sections each has."""
+        those of a DOORS module), with their DOORS attributes (status, verification...) and
+        how many code elements, tests and sections each has."""
         return self._ask(lambda g: g.list_requirements(prefix, module, limit))
 
     def untraced(self, kind: str = "subprogram", limit: int = MAX_LIST) -> dict:

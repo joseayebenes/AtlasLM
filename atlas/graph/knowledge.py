@@ -47,6 +47,8 @@ DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
 ID_LIKE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+\b")     # SRS-0001: not a value
 NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
+DEFAULT_ATTRIBUTES = ("status", "verification")    # [sources.doors] attributes: what is shown and filtered by
+NODE_FIELDS = ("heading", "outline", "level")      # attributes of the exchange database kept in the node
 
 
 def _natural(text: str) -> list:
@@ -59,11 +61,19 @@ def _values(text: str) -> set[str]:
     return {n.replace(",", ".") for n in NUMBER.findall(ID_LIKE.sub(" ", text or ""))}
 
 
+def display_attributes(cfg) -> list[str]:
+    """[sources.doors] attributes: the DOORS attributes atlas shows (the columns of the
+    matrix, list_requirements) and filters by, as the filler names them."""
+    return list((cfg["sources"].get("doors") or {}).get("attributes", DEFAULT_ATTRIBUTES))
+
+
 class KnowledgeGraph:
-    def __init__(self, G: nx.DiGraph, root: str | Path = ".", stats: dict | None = None):
+    def __init__(self, G: nx.DiGraph, root: str | Path = ".", stats: dict | None = None,
+                 attributes: list[str] | tuple[str, ...] = DEFAULT_ATTRIBUTES):
         self.G = G
         self.root = Path(root)          # the relative file paths of the graph start here
         self.build_stats = stats or {}
+        self.attributes = list(attributes)  # the DOORS attributes of the matrix rows (any case)
         self._lower = {n.lower(): n for n in G.nodes}
         self._by_name: dict[str, list[str]] = defaultdict(list)
         for n, d in G.nodes(data=True):
@@ -82,15 +92,16 @@ class KnowledgeGraph:
         self._groups: list[set[str]] | None = None
 
     @classmethod
-    def open(cls, db: str | Path, root: str | Path = ".") -> "KnowledgeGraph":
+    def open(cls, db: str | Path, root: str | Path = ".",
+             attributes: list[str] | tuple[str, ...] = DEFAULT_ATTRIBUTES) -> "KnowledgeGraph":
         store = GraphStore(db)
-        return cls(store.load(), root, store.builds())
+        return cls(store.load(), root, store.builds(), attributes)
 
     @classmethod
     def from_config(cls, cfg) -> "KnowledgeGraph":
         """The graph of <workspace>/atlas.db; file paths from the current directory, as the
-        code roots of atlas.toml."""
-        return cls.open(cfg.workspace / "atlas.db")
+        code roots of atlas.toml; the attributes of [sources.doors] attributes."""
+        return cls.open(cfg.workspace / "atlas.db", attributes=display_attributes(cfg))
 
     # --- helpers --------------------------------------------------------------
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
@@ -422,14 +433,14 @@ class KnowledgeGraph:
 
     def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:
         """Requirements of the graph (optionally those whose ID starts with `prefix`, or
-        those of a DOORS module), with how many code elements, tests and sections each one
-        has."""
+        those of a DOORS module), with their attributes of [sources.doors] attributes and how
+        many code elements, tests and sections each one has."""
         reqs, err = self._module_requirements(module)
         if err:
             return err
         reqs = [r for r in reqs if r.upper().startswith(prefix.upper())]
         items = [{"id": r, **({"module": self.G.nodes[r]["module"]} if self.G.nodes[r].get("module") else {}),
-                  "code": len(self._code_of(r)), "tests": len(self._tests_for(r)),
+                  **self.shown_attributes(r), "code": len(self._code_of(r)), "tests": len(self._tests_for(r)),
                   "documents": len(self._linked(r, {"declares"}, incoming=True))} for r in reqs[:limit]]
         return {"count": len(reqs), "items": items, "truncated": len(reqs) > limit}
 
@@ -526,22 +537,38 @@ class KnowledgeGraph:
 
     def _matrix_meta(self, module: str, reqs: list[str]) -> dict:
         """Where a matrix comes from: the DOORS export of its modules (with no module, the
-        oldest one is `exported_at`)."""
+        oldest one is `exported_at`), the version of atlas, when each part of the graph was
+        built and, if the build recorded it ([graph] code_revision), the git revision of the
+        code."""
         exports = self.exports()
         modules = {m: exports[m] for m in sorted({self.G.nodes[r].get("module") for r in reqs} - {None, ""})
                    if m in exports}
         dates = [x["exported_at"] for x in modules.values() if x["exported_at"]]
         one = modules.get(module, {})
-        return {"module": module or "(all)",
+        from atlas import __version__
+        meta = {"module": module or "(all)",
                 "exported_at": one.get("exported_at", "") if module else min(dates, default=""),
-                "source": one.get("source", ""), "modules": modules}
+                "source": one.get("source", ""), "modules": modules, "atlas_version": __version__,
+                "built_at": {o: b.get("built_at", "") for o, b in sorted(self.build_stats.items())},
+                "attributes": self.attributes}
+        revision = (self.build_stats.get("code") or {}).get("code_revision")
+        if revision:
+            meta["code_revision"] = revision
+        return meta
+
+    def shown_attributes(self, r: str) -> dict:
+        """The attributes of `attributes` that the requirement has (not empty), by the name
+        they have in `attributes`; the names are compared in any case."""
+        d = self.G.nodes[r]
+        values = {k.lower(): v for k, v in (d.get("attributes") or {}).items()}
+        values.update({k: d[k] for k in NODE_FIELDS if d.get(k) not in (None, "") and k not in values})
+        return {name: str(values[name.lower()]) for name in self.attributes
+                if values.get(name.lower()) not in (None, "")}
 
     def _row(self, r: str) -> dict:
         d = self.G.nodes[r]
-        attributes = {k.lower(): v for k, v in (d.get("attributes") or {}).items()}
         tests = self._tests_for(r)
-        return {"id": r, "text": (d.get("text") or "")[:120],
-                **{k: str(attributes[k]) for k in ("status", "verification") if attributes.get(k)},
+        return {"id": r, "text": (d.get("text") or "")[:120], **self.shown_attributes(r),
                 "derived": self._derived(r), "code": self._code_of(r),
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],

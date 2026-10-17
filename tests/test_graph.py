@@ -318,8 +318,11 @@ def test_matrix_and_gaps(unified):
                             "tests": ["test_tracks.test_tracks"], "covering_tests": [],
                             "documents": ["spec.pdf §1 Tracks"]}
     assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
-    assert m["meta"] == {"module": "SRS", "exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS",
-                         "modules": {"SRS": EXPORTS["SRS"]}}
+    assert {k: m["meta"][k] for k in ("module", "exported_at", "source", "modules")} == {
+        "module": "SRS", "exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS",
+        "modules": {"SRS": EXPORTS["SRS"]}}
+    assert m["meta"]["atlas_version"] and set(m["meta"]["built_at"]) == {"code", "doors", "docs"}
+    assert m["meta"]["attributes"] == ["status", "verification"] and "code_revision" not in m["meta"]
     assert g.matrix()["meta"]["exported_at"] == "2026-10-14T08:00:00+00:00"       # all: the oldest date known
     assert g.matrix()["meta"]["modules"]["SSS"] == {"exported_at": "", "source": ""}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
@@ -328,6 +331,13 @@ def test_matrix_and_gaps(unified):
                                                                       ("SSS-0006", ["SRS-0002"], [])]
     assert m["summary"]["with_code"] == 2 and m["gaps"]["without_tests"]["items"] == ["SSS-0006"]
     assert g.matrix("NOPE")["modules"] == ["SRS", "SSS"]
+    shown = KnowledgeGraph(g.G, attributes=["VERIFICATION", "outline", "Criticality"])   # [sources.doors] attributes
+    row = shown.matrix("SRS")["rows"][3]
+    assert (row["VERIFICATION"], row["outline"]) == ("Test", "2") and "Criticality" not in row and "verification" not in row
+    assert shown.list_requirements(module="SRS")["items"][3] == {"id": "SRS-0004", "module": "SRS", "VERIFICATION": "Test",
+                                                                 "outline": "2", "code": 1, "tests": 1, "documents": 1}
+    assert "status" not in KnowledgeGraph(g.G, attributes=[]).matrix("SSS")["rows"][0]
+    assert g.list_requirements(module="SSS")["items"][0]["status"] == "Approved"
     page = g.matrix("SRS", limit=2, offset=2)
     assert [r["id"] for r in page["rows"]] == ["SRS-0003", "SRS-0004"] and not page["truncated"]
 

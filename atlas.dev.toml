@@ -65,7 +65,6 @@ languages = ["ada"]
 exclude = ["**/build/**"]
 req_tag = "Req:"
 test_patterns = ["**/tests/**"]
-summaries = "none"
 # el compilador para los agentes (check_code, run_test): GNAT instalado con Alire
 #   alr toolchain --select gnat_native gprbuild
 check_command = ["gcc", "-c", "-gnatc", "{include}", "{file}"]

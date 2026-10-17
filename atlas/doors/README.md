@@ -55,6 +55,14 @@ módulo: un módulo que no cambia no se vuelve a leer. Al leerlo, guarda en `atl
 requisitos y enlaces, y anota cuántos se han añadido, quitado o cambiado. Después, el grafo
 y el índice toman de ahí lo que necesitan.
 
+## Los atributos que se enseñan
+
+Qué atributos de DOORS entran en atlas lo decide el relleno (en el exportador, `[attributes]`
+de `mapping.toml`; en el adaptador `database`, `attribute_columns`). De esos, `[sources.doors]
+attributes` dice cuáles enseña atlas: las columnas de `atlas matrix` y lo que dan `matrix` y
+`list_requirements` de cada requisito (por defecto `status` y `verification`). Los nombres no
+distinguen mayúsculas. La búsqueda usará la misma lista para filtrar.
+
 ## La fecha de la exportación
 
 Cada módulo de la base de intercambio lleva cuándo y de dónde se exportó

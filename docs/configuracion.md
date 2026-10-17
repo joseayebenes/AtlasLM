@@ -163,7 +163,7 @@ Los requisitos oficiales. atlas los lee de una base de intercambio (ver
 | `exchange` | tabla | — | `[sources.doors.exchange]` |
 | `database` | tabla | — | `[sources.doors.database]` |
 | `convention` | tabla | — | `[sources.doors.convention]` |
-| `attributes` | lista | — | reservada: todavía sin efecto (los atributos que pasan los elige el relleno de la base) |
+| `attributes` | lista | `["status", "verification"]` | los atributos de DOORS que atlas enseña y por los que filtra: las columnas de `atlas matrix` (CSV, Markdown y JSON) y lo que dan `matrix` y `list_requirements` de cada requisito. Se escriben como los nombra el relleno de la base, sin distinguir mayúsculas (`["Status", "Verification Method"]`), y salen con el nombre que se escribe aquí. No es una lista blanca de importación: qué atributos entran en atlas lo deciden `attribute_columns` (adaptador `database`) y el `mapping.toml` del exportador. La búsqueda usará la misma lista para filtrar (tarea «Índice: filtros por metadatos») |
 | `max_age_days` | entero | `0` | días que puede tener la exportación de un módulo antes de que `atlas run` y `atlas serve` avisen en el registro de que los requisitos pueden estar desfasados; 0 = sin aviso. La fecha es la que escribe el relleno de la base de intercambio (`exchange_modules.filled_at`); el adaptador `database` no la tiene |
 
 `attributes` y `max_age_days` solo cambian lo que se enseña: cambiarlas no vuelve a leer los
@@ -213,7 +213,6 @@ Cómo casan los IDs con los documentos y el código. Con `exchange` solo cuentan
 | `req_tag` | texto | `"Req:"` | la etiqueta de trazabilidad en los comentarios |
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |
 | `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos |
-| `summaries` | texto | — | reservada: todavía sin efecto (resúmenes de subprogramas con el modelo) |
 | `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código y `{build}` la carpeta `<workspace>/build`. Vacía: sin `check_code` |
 | `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
 | `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza |
@@ -248,6 +247,7 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 |---|---|---|---|
 | `exports` | lista | `["graphml", "json"]` | formatos del grafo completo en `<workspace>/graph/atlas.*` |
 | `communities` | sí/no | `false` | `true`: cada elemento de código lleva su grupo (Louvain), para colorearlo en Gephi |
+| `code_revision` | sí/no | `false` | `true`: al construir la parte del código del grafo se guarda `git rev-parse HEAD` de la primera raíz del código, y `meta` de la matriz la lleva (la cabecera del `.md` y el `.json` de `atlas matrix`). Es la revisión de la última construcción: un commit que no cambia el código no la mueve. Sin git o fuera de un repositorio, no hay revisión |
 
 ## [index]
 

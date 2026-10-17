@@ -71,13 +71,22 @@ Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta
 implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
 enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
 
+Cada fila de la matriz lleva los atributos de DOORS de `[sources.doors] attributes` (por
+defecto `status` y `verification`), con el nombre que se escribe allí y sin distinguir
+mayúsculas al buscarlos; `list_requirements` también. `meta` dice de dónde sale la matriz:
+`module`, `exported_at` y `source` (la exportación de DOORS; con todos los módulos, la más
+antigua, y cada una en `modules`), `atlas_version`, `built_at` por origen del grafo,
+`attributes` y, con `[graph] code_revision = true` y git, `code_revision`.
+
 `atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.csv` (para una
-hoja de cálculo; la última columna, `exported_at`, es la fecha de la exportación del módulo
-de cada fila) y `.md` (con esa fecha y el origen en la cabecera), y muestra el resumen y los
-huecos; `atlas matrix "*"` la hace con
+hoja de cálculo: una columna por atributo y, la última, `exported_at`, la fecha de la
+exportación del módulo de cada fila), `.md` (con `meta` en la cabecera) y `.json` (filas,
+resumen, huecos y `meta`), y muestra el resumen y los huecos; `atlas matrix "*"` la hace con
 todos los requisitos. Con las muestras:
 
 ```
+DOORS SRS_TMS: exported 2026-10-17 (today), from /Mission/SRS_TMS
+atlas 0.2.0; graph built: code 2026-10-17T10:02:11, docs 2026-10-17T10:02:11, doors 2026-10-17T10:02:11
 40 requirements: 4 with code, 1 with tests, 40 in documents.
 without code (36): SRS-0005, SRS-0006, …
 ```

@@ -19,7 +19,23 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   exportados hace más de esos días (0, por defecto: sin aviso). Cambiarla no vuelve a leer
   nada. `tools/doors_export/README.md` dice quién exporta y cada cuánto.
 
+- `[sources.doors] attributes` tiene efecto: son los atributos de DOORS que atlas enseña y
+  por los que filtra. Van a las filas de `matrix`, a `list_requirements` y a las columnas del
+  CSV y del Markdown de `atlas matrix`; no distinguen mayúsculas y por defecto son `status` y
+  `verification`, así que sin tocar la configuración nada cambia. No es una lista blanca de
+  importación (eso lo hacen `attribute_columns` y el `mapping.toml` del exportador).
+- `matrix` devuelve `meta`: el módulo, la exportación de DOORS, la versión de atlas, la fecha
+  de construcción de cada parte del grafo y, con `[graph] code_revision = true` y git, la
+  revisión del código (`git rev-parse HEAD` al construir el grafo del código). `atlas matrix`
+  la escribe en la cabecera del Markdown y en un `matrix-<módulo>.json`.
+
+### Quitado
+- `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.
+
 ### Al actualizar
+- `[sources.code] summaries` ya no existe: una configuración que la tenga deja de cargar
+  (`unknown key: 'summaries'`). Basta con borrar la línea.
+- El CSV de `atlas matrix` tiene una columna más al final, `exported_at`.
 - Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
   lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
   hay peticiones al modelo ni a los embeddings.

@@ -145,6 +145,13 @@ la usen muchos hilos; sin darlo, es el de `[llm] concurrency`. Así comparten la
 todos los documentos que se procesan juntos `[llm] concurrency` peticiones (o, si es 0,
 `[pipeline] workers`).
 
+`ask_json` y `ask_text` aceptan `model` y `reasoning_effort` para una petición, en vez de
+los de `[llm]`, por el mismo cliente, limitador y límite de peticiones a la vez;
+`llm.using(model, reasoning_effort)` devuelve el mismo `JsonLlm` con ellos en todas sus
+peticiones. Así van con su propio modelo el análisis de los documentos de una fuente
+(`[[sources.docs]] analysis_model`), la reescritura de las preguntas (`[search.rewrite]`) y las
+respuestas (`[search.answer]`).
+
 ## Contadores de uso
 
 `usage()` devuelve lo que ha pedido el proceso desde que empezó: peticiones por destino
@@ -173,6 +180,8 @@ llm = JsonLlm(conn.llm, concurrency=4)
 data = llm.ask_json("Answer in JSON.", "List two colours.", {"type": "object", "properties":
                     {"colours": {"type": "array", "items": {"type": "string"}}}}, "colours")
 print(data["colours"], usage()["chat"])
+llm.ask_text("Answer briefly.", "Why is the sky blue?", model="gemma4:e4b", reasoning_effort="none")
+small = llm.using("gemma4:e4b", "none")             # el mismo cliente, otro modelo en cada petición
 ```
 
 ## Pruebas

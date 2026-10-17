@@ -6,7 +6,7 @@ import pytest
 
 from atlas.docs import DocsOptions, process_document
 from atlas.index import Index, build_records, chunk_text
-from atlas.pipeline import FatalError
+from atlas.pipeline import FatalError, Ledger
 
 
 @pytest.fixture
@@ -128,6 +128,26 @@ def test_a_long_lived_index_sees_what_another_connection_indexes(docs, tmp_path,
     assert len(before) < len(after) == total
     runner.remove_document("test:spec_with_bookmarks.pdf")
     assert len(server.store.dense(qvec, server.embedder.model, 10_000, None)) == len(before)
+    loaded = server.store._matrix
+    Ledger(tmp_path / "atlas.db").mark("docs.process", "x.pdf", "ok")    # the ledger of the run: not the index
+    server.store.cache_put({"k": qvec})                                   # nor the embeddings cache
+    server.store.dense(qvec, server.embedder.model, 5, None)
+    assert server.store._matrix is loaded
+
+
+def test_dense_takes_the_best_among_the_allowed(docs, tmp_path, fake_embeddings):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    _add(idx, docs["hmi_manual.md"])
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    qvec = idx.embedder.queries(["track deletion"])[0]
+    ids, m = idx.store._load_matrix(idx.embedder.model)
+    score = dict(zip(ids.tolist(), (m @ qvec).tolist()))
+    assert len(set(score.values())) < len(score)                  # the fake vectors tie: ties by id
+    for allowed in (None, set(ids[::3].tolist())):
+        pool = sorted(sorted(allowed if allowed is not None else score), key=lambda i: -score[i])
+        for n in (1, 7, 40, len(ids) + 5):
+            assert idx.store.dense(qvec, idx.embedder.model, n, allowed) == pool[:n]
+    assert idx.store.dense(qvec, idx.embedder.model, 5, set()) == []
 
 
 def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):
@@ -307,6 +327,53 @@ def test_a_few_hits_of_each_document():
     assert [r["id"] for r in diverse(records, 4, 2)] == [0, 1, 5, 6]
     assert [r["id"] for r in diverse(records, 8, 2)] == [0, 1, 2, 3, 4, 5, 6, 8]    # few documents: the rest
     assert [r["id"] for r in diverse(records, 3, 9)] == [0, 1, 2]
+
+
+def test_rrf_weights_each_kind_of_list():
+    from atlas.index.search import rrf
+    assert rrf([[1, 2, 3], [3, 2]]) == [3, 2, 1]                        # as atlas/code/reference.py calls it
+    assert rrf([("dense", [1, 2, 3]), ("lexical", [3, 2])]) == [3, 2, 1]  # weights 1: the same
+    assert rrf([("dense", [1, 2, 3]), ("lexical", [3, 2])], weights={"dense": 3.0}) == [2, 3, 1]
+    assert rrf([("dense", [1, 2]), ("lexical", [3])], weights={"lexical": 0}) == [1, 2]   # 0: left out
+    assert rrf([("dense", [1]), ("lexical", [2])], k=1, weights={"lexical": 1.5}) == [2, 1]
+    assert rrf([("dense", [1, 2]), ("lexical", [2, 1])], k=1) == [1, 2]                   # ties: first seen
+
+
+def test_search_takes_rrf_k_and_weights_from_the_settings(docs, tmp_path, fake_llm, fake_embeddings, monkeypatch):
+    import importlib
+    search_module = importlib.import_module("atlas.index.search")      # atlas.index.search is also a function
+    seen = []
+    rrf = search_module.rrf
+    monkeypatch.setattr(search_module, "rrf", lambda r, k, w: seen.append(([x[0] for x in r], k, w)) or rrf(r, k, w))
+    weights = {"dense": 2.0, "lexical": 0.5}
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"rrf_k": 10, "weights": weights})
+    _add(idx, docs["hmi_manual.md"])
+    idx.search("SRS-0102 alarm")
+    assert seen[-1][1:] == (10, weights) and set(seen[-1][0]) <= {"ids", "dense", "lexical"}
+    idx.search("alarm", dense=False)
+    assert "dense" not in seen[-1][0]
+
+
+def test_rewrite_and_answer_with_their_own_model(docs, tmp_path, fake_llm, fake_embeddings, monkeypatch):
+    from atlas.llm import JsonLlm
+    sent, create = [], JsonLlm._create
+    monkeypatch.setattr(JsonLlm, "_create", lambda self, **kw: sent.append(
+        ("rewrite" if "search queries" in kw["messages"][0]["content"] else "answer", kw["model"],
+         kw.get("reasoning_effort"))) or create(self, **kw))
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0],
+                {"rewrite": {"model": "rewriter", "reasoning_effort": "none"}, "answer": {"model": "writer"}})
+    _add(idx, docs["hmi_manual.md"])
+    idx.answer("How long are the logs kept?", scope="passages")
+    assert sent == [("rewrite", "rewriter", "none"), ("answer", "writer", None)]
+    sent.clear()
+    idx.answer("Summarise every requirement", scope="whole")
+    assert sent[0] == ("rewrite", "rewriter", "none") and {s[1:] for s in sent[1:]} == {("writer", None)}
+    sent.clear()
+    idx.search("logs", rewrite=True)
+    assert sent == [("rewrite", "rewriter", "none")]
+    sent.clear()
+    Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0]).answer("How long are the logs kept?")
+    assert {s[1] for s in sent} == {"fake"}                            # empty: those of [llm]
 
 
 def test_search_keeps_a_few_hits_of_each_document(docs, tmp_path, fake_llm, fake_embeddings):

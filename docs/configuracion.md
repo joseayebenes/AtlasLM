@@ -41,7 +41,8 @@ de ella:
 |---|---|
 | una `[[sources.docs]]` (análisis, estructura, tamaños, idioma) | los documentos de esa fuente; del modelo, solo las secciones cuyo texto o prompt cambie |
 | `[[sources.docs]] authority` | el grafo |
-| `[llm] model` | los documentos con `analysis = "llm"` |
+| `[llm] model` | los documentos con `analysis = "llm"` de las fuentes sin `analysis_model` propio |
+| `analysis_model` de una `[[sources.docs]]` | los documentos de esa fuente (sus secciones, con ese modelo) |
 | `[embeddings] model`, `family` o los prefijos | los vectores del índice, sin volver a analizar nada |
 | `[index]` | el índice |
 | `[index] fts_tokenizer` | solo la tabla de texto, al abrir el índice, sin embeber |
@@ -67,7 +68,10 @@ de ella:
 ## [llm]
 
 El modelo de chat: análisis de documentos, respuestas y agentes. Cualquier API compatible
-con OpenAI.
+con OpenAI. Cada tarea puede usar otro modelo o razonamiento por la misma conexión: el
+análisis de los documentos de una fuente (`model` y `reasoning_effort` de
+`[[sources.docs]]`), la reescritura de las preguntas y las respuestas (`[search.rewrite]` y
+`[search.answer]`) y cada agente (`[agents.<nombre>]`).
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
@@ -206,6 +210,8 @@ Cada tabla es un grupo de documentos con su forma de procesarlos. Puede haber va
 | `tables` | sí/no | `false` | las tablas de los PDF como filas Markdown (`page.find_tables` de pymupdf) |
 | `table_requirements` | tabla | `{}` | un requisito por fila de las tablas con esas columnas: `{ id = "ID", text = "Requirement" }` |
 | `authority` | entero | `0` | autoridad del grupo frente a otros: `1` = normativo, `2`..., `0` = ninguna. Solo la usa el grafo |
+| `analysis_model` | texto | `""` | el modelo que analiza los documentos de esta fuente; vacío = el de `[llm]`. Entra en la huella: cambiarlo vuelve a analizar los documentos de la fuente (las secciones se guardan por modelo, así que volver al anterior las toma de la caché) |
+| `reasoning_effort` | texto | `""` | el razonamiento de ese análisis; vacío = el de `[llm]`. Como el de `[llm]`, no vuelve a preguntar por las secciones ya analizadas |
 | `enabled` | sí/no | `true` | `false` la deja fuera sin borrarla |
 
 `atlas sections atlas.toml` muestra qué secciones saldrían de cada documento, sin llamar al
@@ -507,6 +513,10 @@ configuran aquí: van en cada búsqueda (ver [atlas.index](../atlas/index/README
 | `max_parts` | entero | `12` | partes de documentos enteros que se leen como mucho para una pregunta. Antes de pedir nada, `atlas ask` calcula el plan (documentos, secciones, caracteres, partes y peticiones; y minutos del cupo si hay `[network] requests_per_minute`); con más partes no lee nada y pide acotar la pregunta a un documento. `atlas ask --dry-run` imprime el plan sin preguntar al modelo |
 | `scope_documents` | entero | `3` | documentos que lee enteros, como mucho, una pregunta amplia que no nombra ninguno: los que más salen al buscarla en los resúmenes de los documentos y de sus secciones |
 | `part_workers` | entero | `4` | partes de documentos enteros que se leen a la vez |
+| `rrf_k` | entero | `60` | la `k` de Reciprocal Rank Fusion, que junta las listas de una búsqueda: cada resultado suma `peso / (k + puesto)` de cada lista. Menor, más cuentan los primeros puestos frente a los siguientes |
+| `rewrite` | tabla | `{}` | `[search.rewrite]`: `model` y `reasoning_effort` de la reescritura de las preguntas (vacíos: los de `[llm]`) |
+| `answer` | tabla | `{}` | `[search.answer]`: `model` y `reasoning_effort` de las respuestas, también de las que leen documentos enteros por partes (vacíos: los de `[llm]`) |
+| `weights` | tabla | `{ids = 1.0, dense = 1.0, lexical = 1.0, keywords = 1.0}` | el peso de cada lista: `ids` (los IDs exactos de la pregunta), `dense` (los vectores), `lexical` (BM25 con la pregunta y sus reescrituras), `keywords` (BM25 con las palabras exactas de la reescritura). La que no se da pesa 1; con 0 no cuenta |
 | `synonyms` | ruta | `""` | un fichero TOML de grupos de términos equivalentes del proyecto, relativo a este fichero (abajo) |
 
 `synonyms` apunta a un fichero como `examples/synonyms.toml`:
@@ -536,6 +546,25 @@ partes se leen de `part_workers` en `part_workers`; `[llm] concurrency` y `[netw
 max_concurrent` lo limitan. En un Mac de 24 GB
 con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
 caracteres en partes de 5000 tardó 11 minutos.
+
+La reescritura es una petición corta que solo devuelve consultas y palabras clave, y las
+respuestas necesitan leer bien las fuentes: cada una puede ir con su modelo y su
+razonamiento, por la misma conexión, cupo y límite de peticiones a la vez que el resto:
+
+```toml
+[search.rewrite]
+model = "gemma4:e4b"               # un modelo pequeño para la reescritura, sin razonar
+reasoning_effort = "none"
+
+[search.answer]
+reasoning_effort = "low"           # el modelo de [llm], razonando poco
+```
+
+Los pesos se ajustan solo con un conjunto de evaluación escrito sobre el proyecto real
+(`atlas eval`, ver [atlas/agents](../atlas/agents/README.md)), no con las muestras: son
+sintéticas y repetitivas. En ellas, con `embeddinggemma`, `dense = 2.0` (o `lexical = 0.5`)
+sube el MRR de la búsqueda híbrida de 0,83 a 0,93, pero eso dice más de las muestras que
+del proyecto.
 
 ## [agents]
 

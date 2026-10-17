@@ -83,6 +83,7 @@ scope = "auto"                         # auto: una pregunta amplia lee sus docum
 scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
 context_radius = 1                     # vecinos de cada pasaje de una respuesta (fragmentos, requisitos de DOORS)
 # synonyms = "synonyms.toml"            # grupos de términos equivalentes del proyecto ([[groups]] terms = [...])
+# weights = {dense = 1.0, lexical = 1.0}   # peso de cada lista de la búsqueda; ajustarlo solo con atlas eval
 max_parts = 12                         # más partes: no se lee y se pide acotar (atlas ask --dry-run da el plan)
 
 # [index]

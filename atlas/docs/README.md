@@ -70,6 +70,7 @@ procesarlos:
 | `tables` | `true` | las tablas de los PDF como filas Markdown (apagado por defecto) |
 | `table_requirements` | `{ id = "ID", text = "Requirement" }` | un requisito por fila de las tablas con esas columnas |
 | `ocr_command` | `["ocrmypdf", "--skip-text", "{file}", "{out}"]` | OCR de los PDF con páginas sin texto, sobre una copia |
+| `analysis_model`, `reasoning_effort` | vacíos | el modelo y el razonamiento del análisis de esta fuente (vacíos: los de `[llm]`); por la misma conexión, cupo y límite de peticiones a la vez que el resto |
 
 La referencia completa está en la [guía de configuración](../../docs/configuracion.md).
 

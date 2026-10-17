@@ -394,13 +394,14 @@ def docs_step(ctx) -> Step | None:
 
     def fingerprint(ctx, unit: str) -> str:
         # the extractor too: another one gives another text (and other sections)
+        # and the model of its source, or that of [llm]
         name, f = unit.split(":", 1)
         d, options = by_name[name]
         d = {k: v for k, v in d.items() if k not in GRAPH_ONLY_KEYS}
         f = ctx.cfg.resolve(f)
         return (f"{sha256_file(f)}|{sha256_text(json.dumps(d, sort_keys=True))[:16]}|{DOCS_VERSION}|"
                 f"{extractor_for(f, ctx.disabled).name}|"
-                + (f"{model}|{PROMPT_VERSION}" if options.analysis == "llm" else "")
+                + (f"{options.analysis_model or model}|{PROMPT_VERSION}" if options.analysis == "llm" else "")
                 + (f"|{options.id_regex}" if options.id_regex else ""))
 
     def out_dir(ctx, unit: str) -> Path:

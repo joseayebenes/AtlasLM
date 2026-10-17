@@ -471,6 +471,12 @@ def test_matrix_and_gaps(unified):
     assert g.list_requirements(module="SSS")["items"][0]["status"] == "Approved"
     page = g.matrix("SRS", limit=2, offset=2)
     assert [r["id"] for r in page["rows"]] == ["SRS-0003", "SRS-0004"] and not page["truncated"]
+    built, row = [], g._row
+    g._row = lambda r: built.append(r) or row(r)                 # only the rows of the page are built
+    assert g.matrix("SRS", limit=1, offset=1)["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1,
+                                                             "with_procedures": 0, "with_documents": 1}
+    assert built == ["SRS-0002"]
+    del g._row
 
     gaps = g.gaps()
     assert gaps["requirements_without_code"]["count"] == 0

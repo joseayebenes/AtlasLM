@@ -268,3 +268,22 @@ def test_a_streamed_answer_holds_its_slot_until_its_last_chunk(fake_llm, fake_st
     assert sem._value == 0
     thread.join(5)
     assert sem._value == 1
+
+
+def test_model_and_reasoning_effort_by_request(fake_llm, monkeypatch):
+    from dataclasses import replace
+    sent, create = [], JsonLlm._create
+    monkeypatch.setattr(JsonLlm, "_create", lambda self, **kw: sent.append((kw["model"], kw.get("reasoning_effort")))
+                        or create(self, **kw))
+    llm = JsonLlm(replace(fake_llm[0], reasoning_effort="low"))
+    llm.ask_text("system", "Reply with: ok")
+    llm.ask_text("system", "Reply with: ok", model="small", reasoning_effort="none")
+    llm.ask_json("system", "<section>x</section>", SCHEMA, "section", model="big")
+    small = llm.using("small")
+    assert small.model == "small" and small.ask_text("system", "Reply with: ok") == "ok"
+    small.ask_json("system", "<section>x</section>", SCHEMA, "section", reasoning_effort="high")
+    small.using(reasoning_effort="none").ask_text("system", "Reply with: ok")
+    assert sent == [("fake", "low"), ("small", "none"), ("big", "low"), ("small", "low"), ("small", "high"),
+                    ("small", "none")]
+    assert llm.using() is llm and llm.using("", "") is llm and llm.model == "fake"
+    assert small.structured == llm.structured and small.client is llm.client      # one connection

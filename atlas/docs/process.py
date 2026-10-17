@@ -32,7 +32,7 @@ from atlas.docs.structure import (STRUCTURES, clean_headers, diagnose_headings, 
                                   prepare_sections)
 from atlas.docs.writer import pages, write_document
 from atlas.llm.connection import ServiceConfig, diagnose, is_connection_error
-from atlas.llm.structured import JsonLlm
+from atlas.llm.structured import JsonLlm, using
 from atlas.pipeline import FatalError, Interrupted, atomic_write, sha256_file, sha256_text
 
 __all__ = ["DocsOptions", "ScannedDocument", "pending_requests", "preview", "process_document"]
@@ -57,6 +57,8 @@ class DocsOptions:
     date_regex: str = ""
     tables: bool = False            # PDF tables as Markdown rows (page.find_tables)
     table_requirements: dict = field(default_factory=dict)     # {"id": "ID", "text": "Requirement"}: one per row
+    analysis_model: str = ""        # the model of the analysis; "" = that of the llm ([llm])
+    reasoning_effort: str = ""      # the same for the reasoning effort
 
     def __post_init__(self):
         if self.analysis not in an.ANALYSES:
@@ -245,6 +247,7 @@ def process_document(path: str | Path, out: str | Path, options: DocsOptions | N
             raise ValueError("analysis = 'llm' needs the model: pass llm=ServiceConfig or JsonLlm")
         if isinstance(llm, ServiceConfig):
             llm = JsonLlm(llm)
+        llm = using(llm, options.analysis_model, options.reasoning_effort)       # those of the source, if any
     t0 = time.time()
 
     raw, extracted, pdf = extract(path, options, disabled, Path(ocr_dir) if ocr_dir else out.parent / ".ocr")

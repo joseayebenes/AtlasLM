@@ -100,7 +100,8 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list, "fts_tokenizer": str},
     "search": {"results": int, "per_document": int, "context_chars": int, "context_radius": int, "scope": str,
                "scope_chars": int, "synonyms": str, "max_parts": int, "scope_documents": int,
-               "part_workers": int},
+               "part_workers": int,
+               "rrf_k": int, "weights": dict, "rewrite": dict, "answer": dict},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list, "profile": str, "usage_log": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -111,6 +112,8 @@ MCP_PROFILES = ("editor", "trace", "all")         # [mcp] profile: the tools of 
 MATRIX_FORMATS = ("csv", "md", "json", "xlsx")            # [graph] matrix_formats: atlas matrix (atlas.graph.export)
 GRAPH_BUILD_KEYS = ("exports", "communities", "code_revision")     # the keys of [graph] that change the graph built
 EMBED_FAMILIES = ("embeddinggemma", "nomic", "e5", "none")   # [embeddings] family (atlas.index.embeddings)
+SEARCH_LISTS = ("ids", "dense", "lexical", "keywords")    # [search] weights: the lists that RRF merges
+TASK_SCHEMA = {"model": str, "reasoning_effort": str}       # [search.rewrite] and [search.answer]
 CHARS_PER_TOKEN = 4         # until a calibration with the usage of the server
 CONTEXT_SHARE = 0.6         # of the input that a request can take (the prompt and the question take the rest)
 
@@ -124,7 +127,7 @@ DOCS_SCHEMA = {"name": str, "paths": list, "patterns": list, "analysis": str, "r
                "structure": str, "heading_regex": str, "lang": str, "max_chars": int,
                "min_chars": int, "ocr_command": list, "doc_id_regex": str, "version_regex": str,
                "date_regex": str, "authority": int, "tables": bool, "table_requirements": dict,
-               "enabled": bool, "model": str}
+               "enabled": bool, "model": str, "analysis_model": str, "reasoning_effort": str}
 DOORS_SCHEMA = {"adapter": str, "enabled": bool, "database": dict, "exchange": dict, "convention": dict,
                 "modules": list, "attributes": list, "max_age_days": int, "model": str, "local_only": list}
 AGENT_SCHEMA = {"description": str, "tools": list, "model": str, "max_steps": int, "reasoning_effort": str,
@@ -155,7 +158,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",
                "scope_chars": 100000, "synonyms": "", "max_parts": 12, "scope_documents": 3,
-               "part_workers": 4},
+               "part_workers": 4,
+               "rrf_k": 60, "weights": {"ids": 1.0, "dense": 1.0, "lexical": 1.0, "keywords": 1.0},
+               "rewrite": {}, "answer": {}},     # [search.rewrite], [search.answer]: model, reasoning_effort
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": [], "profile": "", "usage_log": "counts"},     # profile "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
@@ -296,9 +301,16 @@ def _validate_search(search: dict, base: Path) -> None:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
     for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("context_radius", 0),
                        ("scope_chars", 1000), ("max_parts", 1), ("scope_documents", 1),
-                       ("part_workers", 1)):
+                       ("part_workers", 1), ("rrf_k", 1)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
+    for name, weight in search.get("weights", {}).items():
+        if name not in SEARCH_LISTS:
+            raise ConfigError(f"[search.weights] unknown list: '{name}' (valid: {', '.join(SEARCH_LISTS)})")
+        if not isinstance(weight, (int, float)) or isinstance(weight, bool) or weight < 0:
+            raise ConfigError(f"[search.weights] '{name}' must be a number, 0 or more")
+    for task in ("rewrite", "answer"):                  # empty: the model and effort of [llm]
+        _validate(search.get(task, {}), TASK_SCHEMA, f"search.{task}")
     if search.get("synonyms"):
         path = Path(search["synonyms"]).expanduser()
         search["synonyms"] = str(path if path.is_absolute() else (base / path).resolve())

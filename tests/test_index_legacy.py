@@ -47,6 +47,10 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
                                                      monkeypatch):
     rag, ps, cx = legacy
     monkeypatch.setattr(rag, "construir_registros", _with_path(rag.construir_registros))
+    # the fake vectors tie often: atlas takes equal scores in the order of the records, and
+    # doc_rag.py in the order of np.argsort (quicksort), which is arbitrary among ties
+    argsort = rag.np.argsort
+    monkeypatch.setattr(rag.np, "argsort", lambda a, kind="stable", **kw: argsort(a, kind=kind, **kw))
     llm = fake_llm[0]
     net = cx.NetConfig(proxy="", no_proxy="*")
     old_llm = cx.ServiceConfig(base_url=llm.base_url, model="fake", api_key="x", net=net)

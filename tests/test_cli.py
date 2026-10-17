@@ -26,7 +26,8 @@ languages = ["ada"]
     assert "last run:" in out and "previous runs:" in out and "code.parse" in out
 
 
-def test_docs_step_is_incremental_retries_and_prunes(toml, docs_samples, tmp_path, fake, fake_chats, capsys):
+def test_docs_step_is_incremental_retries_and_prunes(toml, docs_samples, tmp_path, fake, fake_chats, capsys,
+                                                     monkeypatch):
     import shutil
     import pytest
     from atlas.cli import sections
@@ -98,6 +99,21 @@ lang = "Spanish"
     assert rep["pruned"] == {"docs.process": 1}
     assert not (ws / "docs" / "standards" / "spec_with_bookmarks_pdf").exists()
     assert Store(ws).counts()["documents"] == 1
+
+    # a model of its own for a source: its documents are analysed again, with it
+    from atlas.llm import JsonLlm
+    sent, create = [], JsonLlm._create
+    monkeypatch.setattr(JsonLlm, "_create", lambda self, **kw: sent.append((kw["model"], kw.get("reasoning_effort")))
+                        or create(self, **kw))
+    own = load_config(toml(sources.replace('lang = "Spanish"', 'lang = "Spanish"\nanalysis_model = "analyst"\n'
+                                                                'reasoning_effort = "low"')))
+    assert run(own) == 0 and json.loads(capsys.readouterr().out)["processed"] == {"docs.process": 1}
+    assert sent and set(sent) == {("analyst", "low")}
+    assert run(own) == 0 and json.loads(capsys.readouterr().out)["processed"] == {}
+    sent.clear()
+    same = sources.replace('lang = "Spanish"', 'lang = "Spanish"\nreasoning_effort = "low"')
+    assert run(load_config(toml(same))) == 0 and json.loads(capsys.readouterr().out)["processed"] == {"docs.process": 1}
+    assert set(sent) <= {("fake", "low")}           # back to the model of [llm]: from the cache of its sections
 
     assert sections(cfg) == 0
     assert "[manuals]" in capsys.readouterr().out

@@ -15,6 +15,8 @@ same records, and the embeddings cache.
                       embedded once is never embedded again, whatever document it comes
                       from. With a shared cache (atlas.cache.SharedCache), what the local
                       one lacks is looked up there and copied here
+    index_meta        the version of the index: one more each time a document is
+                      replaced or deleted
 
 A document is replaced in a single transaction. Dense search only uses vectors of the
 current embeddings model, so changing the model never mixes vectors of two models; the
@@ -53,6 +55,8 @@ CREATE TABLE IF NOT EXISTS index_records (
 CREATE INDEX IF NOT EXISTS idx_index_records_doc ON index_records(doc);
 CREATE INDEX IF NOT EXISTS idx_index_records_ref ON index_records(ref);
 CREATE TABLE IF NOT EXISTS embed_cache (key TEXT PRIMARY KEY, vector BLOB, model TEXT);
+CREATE TABLE IF NOT EXISTS index_meta (key TEXT PRIMARY KEY, value INTEGER);
+INSERT OR IGNORE INTO index_meta VALUES ('version', 0);
 """
 
 DEFAULT_FTS_TOKENIZER = "unicode61 remove_diacritics 2"
@@ -207,6 +211,7 @@ class IndexStore:
 
     # --- documents ----------------------------------------------------------
     def _delete(self, doc: str) -> None:
+        self.db.execute("UPDATE index_meta SET value = value + 1 WHERE key = 'version'")
         if self.fts:
             self.db.execute("DELETE FROM index_fts WHERE rowid IN (SELECT id FROM index_records WHERE doc = ?)",
                             (doc,))
@@ -260,13 +265,19 @@ class IndexStore:
                 "local_documents": self._query("SELECT COUNT(*) FROM index_local")[0][0]}
 
     # --- search -------------------------------------------------------------
+    def version(self) -> int:
+        """One more each time a document is replaced or deleted, by any connection."""
+        rows = self._query("SELECT value FROM index_meta WHERE key = 'version'")
+        return rows[0][0] if rows else 0
+
     def _load_matrix(self, model: str) -> tuple[np.ndarray, np.ndarray]:
         """The vectors of a model, loaded again when the index changed: through this store
-        (which drops them) or through another connection, such as an `atlas run` while a
-        long-lived process (the MCP server) searches. data_version only changes with the
-        commits of other connections."""
+        or through another connection, such as an `atlas run` while a long-lived process
+        (the MCP server) searches. Only a replaced or deleted document counts, not the
+        other writes to atlas.db (the ledger of a run, the embeddings cache), which
+        PRAGMA data_version would count too."""
         with self.lock:
-            version = self.db.execute("PRAGMA data_version").fetchone()[0]
+            version = self.version()
             if self._matrix is None or self._matrix[:2] != (model, version):
                 rows = self.db.execute("SELECT r.id, r.vector FROM index_records r JOIN index_documents d "
                                        "ON d.doc = r.doc WHERE d.embed_model = ? AND r.vector IS NOT NULL ORDER BY r.id",
@@ -313,18 +324,22 @@ class IndexStore:
         return out
 
     def dense(self, qvec: np.ndarray, model: str, n: int, allowed: set[int] | None) -> list[int]:
+        """The ids of the n records nearest to `qvec`, best first, among `allowed`; equal
+        scores in the order of the ids (as a stable sort of every record)."""
         ids, m = self._load_matrix(model)
-        if len(ids) == 0:
+        scores = m @ qvec if len(ids) else np.zeros(0, dtype=np.float32)
+        if allowed is not None:
+            keep = np.isin(ids, np.fromiter(allowed, dtype=np.int64, count=len(allowed)), assume_unique=True)
+            ids, scores = ids[keep], scores[keep]
+        if n <= 0 or len(ids) == 0:
             return []
-        scores = m @ qvec
-        out = []
-        for i in np.argsort(-scores):
-            rid = int(ids[i])
-            if allowed is None or rid in allowed:
-                out.append(rid)
-                if len(out) >= n:
-                    break
-        return out
+        if n < len(ids):            # the n best without sorting them all; ties at the cut, by id
+            kth = scores[np.argpartition(-scores, n - 1)[n - 1]]
+            above = np.flatnonzero(scores > kth)
+            top = np.concatenate([above, np.flatnonzero(scores == kth)[:n - len(above)]])
+        else:
+            top = np.arange(len(ids))
+        return [int(i) for i in ids[top[np.argsort(-scores[top], kind="stable")]]]
 
     def lexical(self, query: str, n: int, allowed: set[int] | None) -> list[int]:
         if not self.fts:

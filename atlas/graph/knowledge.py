@@ -133,6 +133,15 @@ class KnowledgeGraph:
         self._paths: dict[str, str] = {}                     # file -> its key (_path_key)
         self._in_file: dict[str, list[str]] | None = None    # key of a file -> the nodes in it
         self.local_files: set[Path] = set()     # files of local-only code: not read (see for_model)
+        # per instance: a new build of the graph is a new KnowledgeGraph (GraphTools.graph)
+        self._derived_of: dict[str, list[str]] = {}
+        self._through_of: dict[str, list[str]] = {}
+        self._tests_for_of: dict[str, list[dict]] = {}
+        self._documents_of: dict[str, list[dict]] = {}
+        self._modules: dict[str, tuple[list[str], dict | None]] = {}
+        self._traced: tuple[set[str], set[str], set[str]] | None = None  # requirements with code, with
+                                                                          # tests; code that implements
+        self._module_gaps: dict[str, tuple[list[str], list[str]]] = {}
 
     @classmethod
     def open(cls, db: str | Path, root: str | Path = ".",
@@ -356,19 +365,22 @@ class KnowledgeGraph:
         return sorted({t for n in nodes for t in self._covering.get(n, ())})
 
     def _tests_for(self, r: str) -> list[dict]:
-        tagged = self._tests_of(r)
-        return [{"id": t, "how": "tag"} for t in tagged] + \
-            [{"id": t, "how": "calls"} for t in self.covering_tests(self._code_of(r)) if t not in tagged]
+        if r not in self._tests_for_of:
+            tagged = self._tests_of(r)
+            self._tests_for_of[r] = [{"id": t, "how": "tag"} for t in tagged] + \
+                [{"id": t, "how": "calls"} for t in self.covering_tests(self._code_of(r)) if t not in tagged]
+        return self._tests_for_of[r]
 
     def _derived(self, r: str) -> list[str]:
         """The requirements of other modules linked to `r` with a derives type (the SRS that
         satisfy an SSS). Links inside a module (refinements) are not a level of derivation,
         and neither are references nor test procedures."""
-        module = self.G.nodes[r].get("module")
-        if not module or r not in self._derives:
-            return []
-        return sorted({u for u in self._derives.predecessors(r)
-                       if self.G.nodes[u].get("module") not in ("", None, module)}, key=_natural)
+        if r not in self._derived_of:
+            module = self.G.nodes[r].get("module")
+            self._derived_of[r] = [] if not module or r not in self._derives else \
+                sorted({u for u in self._derives.predecessors(r)
+                        if self.G.nodes[u].get("module") not in ("", None, module)}, key=_natural)
+        return self._derived_of[r]
 
     def _ancestors(self, r: str, depth: int = MAX_ANCESTORS) -> list[dict]:
         """The requirements `r` derives from in other modules (an SRS -> the SSS it
@@ -409,13 +421,15 @@ class KnowledgeGraph:
 
     def _through(self, r: str) -> list[str]:
         """`r` and every requirement derived from it, level after level."""
-        seen, todo = [r], [r]
-        while todo:
-            for d in self._derived(todo.pop()):
-                if d not in seen:
-                    seen.append(d)
-                    todo.append(d)
-        return seen
+        if r not in self._through_of:
+            seen, todo = [r], [r]
+            while todo:
+                for d in self._derived(todo.pop()):
+                    if d not in seen:
+                        seen.append(d)
+                        todo.append(d)
+            self._through_of[r] = seen
+        return self._through_of[r]
 
     def _section(self, s: str, requirement: str = "") -> dict:
         """A section, with the version of its document and its first page; for a requirement
@@ -459,11 +473,20 @@ class KnowledgeGraph:
         return min(ranked, key=lambda s: (self._authority(s), _natural(s))) if ranked else None
 
     def _documents(self, r: str) -> list[dict]:
-        return [self._section(s, r) for s in self._linked(r, {"declares"}, incoming=True)]
+        if r not in self._documents_of:
+            self._documents_of[r] = [self._section(s, r) for s in self._linked(r, {"declares"}, incoming=True)]
+        return self._documents_of[r]
+
+    def _declared(self, r: str) -> bool:
+        """Whether a document section states `r` (without building the sections)."""
+        return any(e.get("kind") == "declares" for _, _, e in self.G.in_edges(r, data=True))
 
     def _module_requirements(self, module: str) -> tuple[list[str], dict | None]:
         """The requirements (not headings) of a DOORS module, in the order of the module;
-        with no module, every requirement of the graph."""
+        with no module, every requirement of the graph. Sorted once per module: the list
+        is shared, do not change it."""
+        if module in self._modules:
+            return self._modules[module]
         nodes = self.G.nodes
         if module:
             reqs = [n for n, d in nodes(data=True) if d.get("kind") == "requirement" and d.get("module") == module]
@@ -472,8 +495,10 @@ class KnowledgeGraph:
                 return [], {"error": f"module '{module}' is not in the graph", "modules": modules}
         else:
             reqs = [n for n, d in nodes(data=True) if d.get("kind") == "requirement"]
-        return sorted(reqs, key=lambda n: (nodes[n].get("module", "~"), _natural(nodes[n].get("outline", "")),
-                                           _natural(n))), None
+        self._modules[module] = sorted(reqs, key=lambda n: (nodes[n].get("module", "~"),
+                                                            _natural(nodes[n].get("outline", "")),
+                                                            _natural(n))), None
+        return self._modules[module]
 
     def _lines(self, file: str, start: int, end: int) -> dict:
         path = Path(file)
@@ -799,16 +824,16 @@ class KnowledgeGraph:
         reqs, err = self._module_requirements(module)
         if err:
             return err
-        rows = [self._row(r) for r in reqs]
-        no_code, no_tests = self._without_code(reqs), self._without_tests(reqs)
+        no_code, no_tests = self._gaps_of(module, reqs)
         no_procedure = self._without_procedure(reqs)
         gap = lambda ids: {"count": len(ids), "items": ids[:200], "truncated": len(ids) > 200}
         return {"module": module or "(all)", "meta": self._matrix_meta(module, reqs),
-                "summary": {"requirements": len(rows), "with_code": len(rows) - len(no_code),
-                            "with_tests": len(rows) - len(no_tests),
-                            "with_procedures": len(rows) - len(no_procedure),
-                            "with_documents": sum(1 for r in rows if r["documents"])},
-                "rows": rows[offset:offset + limit], "offset": offset, "truncated": offset + limit < len(rows),
+                "summary": {"requirements": len(reqs), "with_code": len(reqs) - len(no_code),
+                            "with_tests": len(reqs) - len(no_tests),
+                            "with_procedures": len(reqs) - len(no_procedure),
+                            "with_documents": sum(1 for r in reqs if self._declared(r))},
+                "rows": [self._row(r) for r in reqs[offset:offset + limit]], "offset": offset,
+                "truncated": offset + limit < len(reqs),
                 "gaps": {"without_code": gap(no_code), "without_tests": gap(no_tests),
                          "without_test_procedure": gap(no_procedure)}}
 
@@ -846,17 +871,44 @@ class KnowledgeGraph:
         d = self.G.nodes[r]
         tests = self._tests_for(r)
         return {"id": r, "text": (d.get("text") or "")[:120], **self.shown_attributes(r),
-                "derived": self._derived(r), "code": self._code_of(r),
+                "derived": list(self._derived(r)), "code": self._code_of(r),
                 "tests": [t["id"] for t in tests if t["how"] == "tag"],
                 "covering_tests": [t["id"] for t in tests if t["how"] == "calls"],
                 "procedures": self._procedures_of(r),
                 "documents": [_cite(x) for x in self._documents(r)]}
 
+    def _with_code_and_tests(self) -> tuple[set[str], set[str], set[str]]:
+        """The requirements with code of their own, those with tests of the code of their own
+        (that cite them, or that call their code; not the test procedures of DOORS, see
+        _tests_of) and the code that implements some requirement, from the edges: once per
+        graph."""
+        if self._traced is None:
+            self.covering_tests([])
+            code, tests, implementing = set(), set(), set()
+            for u, v, kind in self.G.edges(data="kind"):
+                if kind == "implements":
+                    code.add(v)
+                    implementing.add(u)
+                    if self._covering.get(u):
+                        tests.add(v)
+                elif kind == "verifies" and self._kind(u) == "test":       # not a test procedure of DOORS
+                    tests.add(v)
+            self._traced = code, tests, implementing
+        return self._traced
+
     def _without_code(self, reqs: list[str]) -> list[str]:
-        return [r for r in reqs if not any(self._code_of(x) for x in self._through(r))]
+        code = self._with_code_and_tests()[0]
+        return [r for r in reqs if not any(x in code for x in self._through(r))]
 
     def _without_tests(self, reqs: list[str]) -> list[str]:
-        return [r for r in reqs if not any(self._tests_for(x) for x in self._through(r))]
+        tests = self._with_code_and_tests()[1]
+        return [r for r in reqs if not any(x in tests for x in self._through(r))]
+
+    def _gaps_of(self, module: str, reqs: list[str]) -> tuple[list[str], list[str]]:
+        """(without code, without tests) of the requirements of a module: once per module."""
+        if module not in self._module_gaps:
+            self._module_gaps[module] = self._without_code(reqs), self._without_tests(reqs)
+        return self._module_gaps[module]
 
     def _without_procedure(self, reqs: list[str]) -> list[str]:
         return [r for r in reqs if not any(self._procedures_of(x) for x in self._through(r))]
@@ -878,15 +930,16 @@ class KnowledgeGraph:
             return err
         if self.doors and not module:
             reqs = [r for r in reqs if self.G.nodes[r].get("module")]
+        no_code, no_tests = self._gaps_of(module or ("\0in doors" if self.doors else ""), reqs)
         part = lambda items: {"count": len(items), "items": items[:limit], "truncated": len(items) > limit}
         out = {"module": module or "(all)",
-               "requirements_without_code": part(self._without_code(reqs)),
-               "requirements_without_tests": part(self._without_tests(reqs)),
+               "requirements_without_code": part(no_code),
+               "requirements_without_tests": part(no_tests),
                "requirements_without_test_procedure": part(self._without_procedure(reqs)),
                **({"requirements_without_derivation": self._derivation_gap(reqs, part)} if self.doors else {}),
-               "code_without_requirement": part(sorted(n for n, d in self.G.nodes(data=True)
-                                                       if d.get("kind") == "subprogram"
-                                                       and not self._linked(n, {"implements"}, incoming=False)))}
+               "code_without_requirement": part(sorted(n for n, kind in self.G.nodes(data="kind")
+                                                       if kind == "subprogram"
+                                                       and n not in self._with_code_and_tests()[2]))}
         if self.doors:
             outside = sorted((n for n, d in self.G.nodes(data=True)
                               if d.get("kind") == "requirement" and not d.get("module")), key=_natural)

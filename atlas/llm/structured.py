@@ -23,6 +23,8 @@ every JsonLlm of the process that goes to the same `base_url` and model
     from atlas.llm import JsonLlm
     llm = JsonLlm(conn.llm)
     d = llm.ask_json(system, user, schema, "overview")
+    d = llm.ask_json(system, user, schema, "overview", model="other", reasoning_effort="low")
+    small = llm.using("other", "low")       # the same for every request, on the same connection
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ from atlas.llm.chat import complete
 from atlas.llm.connection import ServiceConfig, create_client
 
 __all__ = ["JsonLlm", "TextAnswer", "TruncatedResponse", "parse_json", "repair_json", "structured_output",
-           "validate"]
+           "using", "validate"]
 
 log = logging.getLogger(__name__)
 
@@ -204,7 +206,10 @@ class JsonLlm:
     accepts. Thread-safe: one instance can be shared by the workers that
     analyse sections in parallel, and `concurrency` (0 = no limit) caps how many requests
     of all of them are in flight at once (e.g. the sections of several documents that are
-    processed at the same time); None takes [llm] concurrency."""
+    processed at the same time); None takes [llm] concurrency. Each request can take another
+    model or reasoning effort than those of `cfg` (`model`, `reasoning_effort`), on the same
+    connection, rate limiter and slots: so do the different tasks of a run (analysing
+    documents, rewriting questions, answering)."""
 
     # How servers say they do not support response_format: 400 (most), 422 (some vLLM
     # versions), 501 "structured output is unavailable" (Ollama with some models)
@@ -225,12 +230,14 @@ class JsonLlm:
         with self._slots:
             return complete(self.client, self.cfg, kwargs)
 
-    def _kwargs(self, messages: list[dict]) -> dict:
-        kwargs = dict(model=self.model, temperature=self.temperature, messages=messages)
+    def _kwargs(self, messages: list[dict], model: str | None = None, reasoning_effort: str | None = None) -> dict:
+        """The arguments of a request: those of cfg, with `model` and `reasoning_effort`
+        instead of its own when they are given (None or "": those of cfg)."""
+        kwargs = dict(model=model or self.model, temperature=self.temperature, messages=messages)
         if self.cfg.max_tokens:
             kwargs["max_tokens"] = self.cfg.max_tokens
-        if self.cfg.reasoning_effort:
-            kwargs["reasoning_effort"] = self.cfg.reasoning_effort
+        if reasoning_effort or self.cfg.reasoning_effort:
+            kwargs["reasoning_effort"] = reasoning_effort or self.cfg.reasoning_effort
         if self.cfg.extra_body:
             kwargs["extra_body"] = self.cfg.extra_body
         return kwargs
@@ -240,12 +247,20 @@ class JsonLlm:
         """The response_format tier used with this server: json_schema, json_object or none."""
         return structured_output(self.cfg)
 
-    def ask_text(self, system: str, user: str) -> TextAnswer:
+    def using(self, model: str = "", reasoning_effort: str = "") -> "JsonLlm":
+        """This client with another model or reasoning effort in every request ("": that of
+        cfg), for code that does not pass them request by request (the analysis of the
+        documents of a source)."""
+        return using(self, model, reasoning_effort)
+
+    def ask_text(self, system: str, user: str, model: str | None = None,
+                 reasoning_effort: str | None = None) -> TextAnswer:
         """A plain text answer (e.g. a cited answer for a person). If it comes empty or cut
         by max_tokens, it is asked once more with twice the budget (twice the tokens the
         first one spent if no max_tokens is set); if that one is cut too, the answer says
-        `truncated`."""
-        kwargs = self._kwargs([{"role": "system", "content": system}, {"role": "user", "content": user}])
+        `truncated`. `model` and `reasoning_effort` replace those of cfg in this request."""
+        kwargs = self._kwargs([{"role": "system", "content": system}, {"role": "user", "content": user}],
+                              model, reasoning_effort)
         resp = self._create(**kwargs)
         ch = resp.choices[0]
         text, finish = (ch.message.content or "").strip(), ch.finish_reason or ""
@@ -267,9 +282,10 @@ class JsonLlm:
             log.warning("the answer is still cut by max_tokens (%s)", kwargs.get("max_tokens", "unset"))
         return TextAnswer(text, truncated=finish == "length", requests=2)
 
-    def _call(self, messages: list[dict], schema: dict, name: str) -> tuple[str, str]:
+    def _call(self, messages: list[dict], schema: dict, name: str, model: str | None = None,
+              reasoning_effort: str | None = None) -> tuple[str, str]:
         while True:
-            kwargs = self._kwargs(messages)
+            kwargs = self._kwargs(messages, model, reasoning_effort)
             tier = self.structured
             if tier == "json_schema":
                 kwargs["response_format"] = {"type": "json_schema", "json_schema": {"name": name, "schema": schema}}
@@ -292,17 +308,19 @@ class JsonLlm:
         return self.structured
 
     def ask_json(self, system: str, user: str, schema: dict, name: str,
-                 on_failure: Callable[[int, str, str], None] | None = None) -> dict:
+                 on_failure: Callable[[int, str, str], None] | None = None, model: str | None = None,
+                 reasoning_effort: str | None = None) -> dict:
         """Asks for a JSON object. If the answer is not valid: repairs it if it is a detail,
         raises TruncatedResponse if it was cut by length (so the input can be split), and
         otherwise asks the model for a correction quoting its first error (instead of
         repeating the same request). An object that still breaks the schema after the
         correction is returned as it is (the correction only if it has fewer errors): the callers make it
         fit. `on_failure(attempt, text, finish_reason)` is called with every answer that is
-        thrown away, to keep it for diagnosis."""
+        thrown away, to keep it for diagnosis. `model` and `reasoning_effort` replace those of
+        cfg in this request (see _kwargs)."""
         keys = schema.get("required") or list(schema.get("properties", {}))
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        text, finish = self._call(messages, schema, name)
+        text, finish = self._call(messages, schema, name, model, reasoning_effort)
         best: tuple[int, dict] | None = None             # (errors, object) of the best answer so far
         for attempt in (1, 2):
             if finish == "length":                        # a cut answer is never taken as good
@@ -333,9 +351,42 @@ class JsonLlm:
                 {"role": "assistant", "content": text[:3000]},
                 {"role": "user", "content": f"{error}. Reply again with ONLY the JSON object, nothing before "
                                             f"or after it."}]
-            text, finish = self._call(messages, schema, name)
+            text, finish = self._call(messages, schema, name, model, reasoning_effort)
         if best is not None:
             log.warning("the model answered a JSON object that does not follow the schema %s: %s",
                         name, validate(best[1], schema)[0])
             return best[1]
         raise RuntimeError(f"the model did not return valid JSON, not even after asking for a correction: {error}")
+
+
+class _Using:
+    """A JsonLlm that asks with its own model and reasoning effort; everything else (the
+    connection, the limiter, the slots, `schema_ok`) is that of the JsonLlm it wraps."""
+
+    def __init__(self, llm: JsonLlm, model: str, reasoning_effort: str):
+        self._llm = llm
+        self.model = model or llm.model
+        self.reasoning_effort = reasoning_effort or llm.cfg.reasoning_effort
+
+    def ask_json(self, system: str, user: str, schema: dict, name: str,
+                 on_failure: Callable[[int, str, str], None] | None = None, model: str | None = None,
+                 reasoning_effort: str | None = None) -> dict:
+        return self._llm.ask_json(system, user, schema, name, on_failure, model or self.model,
+                                  reasoning_effort or self.reasoning_effort)
+
+    def ask_text(self, system: str, user: str, model: str | None = None, reasoning_effort: str | None = None) -> str:
+        return self._llm.ask_text(system, user, model or self.model, reasoning_effort or self.reasoning_effort)
+
+    def using(self, model: str = "", reasoning_effort: str = "") -> JsonLlm:
+        return using(self._llm, model or self.model, reasoning_effort or self.reasoning_effort)
+
+    def __getattr__(self, name: str):
+        return getattr(self._llm, name)
+
+
+def using(llm: JsonLlm, model: str = "", reasoning_effort: str = "") -> JsonLlm:
+    """`llm` with another model or reasoning effort in every request ("": its own); `llm`
+    itself if neither is given."""
+    if not model and not reasoning_effort:
+        return llm
+    return _Using(llm, model, reasoning_effort)  # type: ignore[return-value]

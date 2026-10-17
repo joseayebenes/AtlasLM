@@ -115,11 +115,17 @@ reindexa sus documentos.
 
 ## Búsqueda
 
-Una búsqueda combina tres listas con Reciprocal Rank Fusion:
-- los IDs exactos que aparecen en la consulta, y las definiciones del glosario de sus siglas
-  (de 2 a 6 mayúsculas: «TMF»);
-- la similitud de los vectores;
-- BM25 sobre el mismo texto (FTS5 de SQLite).
+Una búsqueda combina varias listas con Reciprocal Rank Fusion:
+- `ids`: los IDs exactos que aparecen en la consulta, y las definiciones del glosario de sus
+  siglas (de 2 a 6 mayúsculas: «TMF»);
+- `dense`: la similitud de los vectores, de la consulta y de cada reescritura;
+- `lexical`: BM25 sobre el mismo texto (FTS5 de SQLite), de la consulta y de cada
+  reescritura (y, con `[search] synonyms`, de la consulta con los sinónimos);
+- `keywords`: BM25 con las palabras exactas de la reescritura, si las hay.
+
+Cada resultado suma `peso / (k + puesto)` de cada lista. `[search] rrf_k` (60) y `[search]
+weights` (1 cada lista) los cambian; ajustarlos solo tiene sentido con un conjunto de
+evaluación del proyecto real (ver más abajo).
 
 Un ID escrito de otra forma se busca como está en el índice: «srs0004», «SRS_0004», «SRS 0004»
 y «srs-4» dan lo mismo que «SRS-0004». `ids_in` toma los prefijos de los requisitos indexados
@@ -263,7 +269,9 @@ Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se 
 la pregunta no parezca amplia, y `[search] scope = "passages"` no los lee nunca.
 
 Un proceso que vive mucho (el servidor MCP) ve lo que indexa otro: los vectores se vuelven
-a leer cuando cambia la base.
+a leer cuando cambia el índice. Lo dice un contador propio (`index_meta`), que solo sube al
+reemplazar o borrar un documento; el resto de escrituras en `atlas.db` (el libro de
+registro de un `atlas run`, la caché de vectores) no obligan a releerlos.
 
 `Index.search(..., dense=False)` busca solo con los IDs y BM25: no hace ninguna petición a
 ningún modelo. `atlas eval` compara las dos formas (ver [atlas.agents](../agents/README.md)).
@@ -275,6 +283,23 @@ El código compite con los documentos. En las muestras, «show the tracks on the
 screen» bajó de la primera a la cuarta posición al indexar el código, porque el código de
 `tracks` habla de *tracks*. Para buscar solo en una clase de texto, `--kind` en `atlas
 search` y `atlas ask`, `kind` en la herramienta `search` (o `kinds` en `Index.search`).
+
+Comprobado de nuevo el 17-10-2026 con `per_document = 3` (`atlas eval` con
+`embeddinggemma` de Ollama y el servidor falso para el análisis): sigue cuarta en la
+híbrida y quinta en la léxica; los tres primeros puestos son elementos de `tracks`, justo
+los que deja `per_document`. Con las demás búsquedas igual que antes (75 % a la primera,
+90 % entre las tres primeras, MRR 0,83), probando pesos sobre ese conjunto:
+
+| `[search]` | puesto de «operator screen» | acierto@1 | @3 | MRR |
+|---|---|---|---|---|
+| por defecto (`rrf_k = 60`, pesos 1) | 4 | 75 % | 90 % | 0,83 |
+| `rrf_k = 20` | 4 | 75 % | 90 % | 0,83 |
+| `weights = {dense = 2.0}` | 1 | 90 % | 95 % | 0,93 |
+| `weights = {lexical = 0.5}` | 1 | 90 % | 95 % | 0,93 |
+| `weights = {ids = 2.0}` | 4 | 75 % | 85 % | 0,83 |
+
+Los pesos se quedan en 1: las muestras son sintéticas y repetitivas, y el ajuste se hace
+con un conjunto escrito sobre el proyecto real.
 
 Con Ollama (`atlas.dev.toml`), indexar los tres documentos de ejemplo con `embeddinggemma`
 lleva segundos. Una respuesta de `gemma4:12b` tarda de 50 s a 2 min, según la longitud del
@@ -314,6 +339,44 @@ los aprobados del módulo, no el módulo entero.
 
 El filtro es una condición `json_extract` sobre las filas del índice, sin índice propio: con
 20 000 requisitos basta.
+
+## Rendimiento de la búsqueda densa
+
+`python examples/dense_search.py [DEST] [--dim 768]` cronometra `Index.search(dense=True)`
+sobre el índice de `make large` (15 120 registros): en frío (la primera búsqueda de un
+proceso, que carga los vectores en una matriz), en caliente, y mientras otro proceso
+escribe en el libro de registro de la misma `atlas.db` cada 50 ms, como un `atlas run`
+mientras el servidor MCP responde. Los vectores del servidor falso tienen 64 dimensiones;
+con `--dim 768` (las de `embeddinggemma`) mide una copia con cada vector repetido hasta
+768.
+
+Medido el 17-10-2026, la mediana de tres tandas alternando la versión anterior y la nueva,
+en una máquina con una carga media de 15 a 35 (milisegundos de pared):
+
+| | 64 dim. antes | después | 768 dim. antes | después |
+|---|---|---|---|---|
+| primera búsqueda (carga la matriz) | 113 | 99 | 174 | 127 |
+| cargar la matriz | 89 | 51 | 145 | 212 |
+| búsqueda en caliente | 19 | 20 | 17 | 20 |
+| búsqueda en caliente, un documento | 45 | 43 | 28 | 32 |
+| búsqueda sin vectores | 22 | 19 | 18 | 21 |
+| solo `dense` | 1,4 | 0,7 | 2,8 | 1,6 |
+| solo `dense`, un documento | 1,2 | 0,4 | 2,1 | 1,4 |
+| búsqueda con otro proceso escribiendo | 73 | 28 | 165 | 21 |
+
+Antes, cada commit de otra conexión cambiaba `PRAGMA data_version` y la búsqueda siguiente
+volvía a cargar la matriz: con un `atlas run` en marcha, cada búsqueda pagaba la carga. Ahora
+solo cuenta el contador del índice, y la búsqueda cuesta lo mismo que en caliente. `dense`
+toma los mejores con `np.argpartition` (las puntuaciones iguales, en el orden de los
+registros) y filtra por documento con una máscara de numpy en vez de recorrer todos los
+registros ordenados en Python; es menos del 10 % de una búsqueda,
+que se va en BM25 y en leer los registros de SQLite. Las diferencias de las demás filas
+están dentro del ruido de la máquina.
+
+Los vectores siguen leyéndose fila a fila: cargar la matriz cuesta de 0,1 a 0,2 s con
+15 000 registros de 768 dimensiones y ahora solo ocurre cuando cambia el índice, así que
+guardarlos en un BLOB contiguo por documento no compensa (juntar los BLOB con `b"".join` en
+vez de `np.vstack` tampoco mejoró la carga).
 
 ## Como librería
 

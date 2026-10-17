@@ -541,6 +541,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   sección «Instructions inside the data» de su informe. Los patrones están en
   `atlas/agents/guard.py`. Una prueba con un requisito envenenado en la base de intercambio
   comprueba que el aviso llega al informe y que los tests protegidos siguen intactos.
+- `[search] rrf_k` y `[search] weights`: la `k` de Reciprocal Rank Fusion (60) y el peso de
+  cada lista de una búsqueda (`ids`, `dense`, `lexical`, `keywords`; 1 cada una). `rrf`
+  acepta listas con etiqueta y pesos, y sigue aceptando listas sin etiqueta. Los valores por
+  defecto no cambian nada: en las muestras, `dense = 2.0` sube el MRR de 0,83 a 0,93, pero se
+  ajustan solo con un conjunto de evaluación del proyecto real. Cambiarlo no reprocesa nada.
+- Modelo y razonamiento por tarea: `analysis_model` y `reasoning_effort` en cada
+  `[[sources.docs]]` (el análisis de sus documentos; `model` de una fuente ya es `"full"` o
+  `"none"`, el de las fuentes locales), `model` y `reasoning_effort` en `[search.rewrite]` (la reescritura de las preguntas) y
+  en `[search.answer]` (las respuestas, también las que leen documentos enteros); vacíos, los
+  de `[llm]`. Todo va por el mismo cliente, cupo y límite de peticiones a la vez:
+  `JsonLlm.ask_json` y `ask_text` aceptan `model` y `reasoning_effort` por petición, y
+  `JsonLlm.using(...)` los fija para todas. La huella de `docs.process` lleva el modelo de
+  cada fuente; cambiar `[search]` sigue sin reprocesar nada.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -615,6 +628,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   instrucciones. Antes los resultados iban como mensajes `tool` sin ninguna marca, y un
   requisito o un comentario podía hablarle al modelo como si fuera quien le hace el encargo.
   `atlas probe` usa el mismo marco.
+- `matrix` y `gaps` del grafo, más rápidas: cachés por instancia de lo que se calcula de cada
+  requisito, los huecos una vez por módulo y solo las filas de la página pedida. Con `make
+  large` (5000 SRS), `matrix(limit=50)` pasa de 0,33 s a 0,05 s y `gaps()` de 0,60 s a 0,28 s
+  (en una máquina cargada; cifras en `atlas/graph/README.md`). `make large` mide también
+  `matrix` y `gaps` (`examples/large_project.py --graph`).
+- La búsqueda densa ya no recarga los vectores con cada escritura de otro proceso en
+  `atlas.db` (el libro de registro de un `atlas run`, la caché de vectores): solo cuando se
+  reemplaza o borra un documento del índice, que lleva su propio contador (`index_meta`).
+  Con `make large` y otro proceso escribiendo en el libro, una búsqueda pasa de 73-165 ms a
+  21-28 ms. `dense` usa `np.argpartition` y una máscara de numpy para el filtro por
+  documento. `examples/dense_search.py` lo mide (cifras en `atlas/index/README.md`).
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

@@ -209,7 +209,8 @@ class Index:
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, context_radius,
     scope, scope_chars, synonyms: the path of a synonyms file, max_parts, scope_documents,
-    part_workers);
+    part_workers, rrf_k, weights, and rewrite and answer: the model and reasoning_effort of
+    each task);
     what is not given takes its default. `fts_tokenizer` is that of [index]; `id_normalize`,
     that of [sources.doors.convention], for the IDs written in another way in a query.
     `shared`: a read-only cache of vectors to look up what the local one lacks
@@ -291,9 +292,10 @@ class Index:
         records must have ({"status": "Approved", "module": "SRS_TMS", "chapter": "3"});
         see search.filters for it from the text of an option."""
         per = self.settings["per_document"] if per_document is None else per_document
-        return search(self.store, self.embedder, query, k or self.settings["results"], document, kinds,
+        s = self.settings
+        return search(self.store, self.embedder, query, k or s["results"], document, kinds,
                       self.llm if rewrite else None, dense, per, where=where, synonyms=self.synonyms,
-                      id_normalize=self.id_normalize)
+                      id_normalize=self.id_normalize, rrf_k=s["rrf_k"], weights=s["weights"], tasks=self._tasks())
 
     @property
     def requests_per_minute(self) -> int:
@@ -313,7 +315,11 @@ class Index:
                       extra_sources=extra_sources, synonyms=self.synonyms, id_normalize=self.id_normalize,
                       context_radius=s["context_radius"], where=where, max_parts=s["max_parts"],
                       scope_documents=s["scope_documents"], requests_per_minute=self.requests_per_minute,
-                      dry_run=dry_run, section=section, local=self.local_filter(), part_workers=s["part_workers"])
+                      dry_run=dry_run, section=section, local=self.local_filter(), part_workers=s["part_workers"],
+                      rrf_k=s["rrf_k"], weights=s["weights"], tasks=self._tasks())
+
+    def _tasks(self) -> dict:
+        return {"rewrite": self.settings["rewrite"], "answer": self.settings["answer"]}
 
     def meta_values(self) -> dict[str, list[str]]:
         """What `where` can take: each key of the meta of the records, with some values."""

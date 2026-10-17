@@ -71,6 +71,22 @@ def test_search_settings(toml):
         load_config(toml('[search]\nresults = 0'))
     # what search and ask take changes nothing of the index
     assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
+    assert cfg["search"]["rrf_k"] == 60 and cfg["search"]["weights"] == {"ids": 1.0, "dense": 1.0, "lexical": 1.0,
+                                                                           "keywords": 1.0}
+    cfg = load_config(toml('[search]\nrrf_k = 20\nweights = {dense = 1.5, lexical = 0}'))
+    assert cfg["search"]["rrf_k"] == 20 and cfg["search"]["weights"] == {"dense": 1.5, "lexical": 0}
+    with pytest.raises(ConfigError, match=r"\[search.weights\] unknown list: 'bm25'"):
+        load_config(toml('[search]\nweights = {bm25 = 1.0}'))
+    with pytest.raises(ConfigError, match=r"'dense' must be a number, 0 or more"):
+        load_config(toml('[search]\nweights = {dense = -1}'))
+    with pytest.raises(ConfigError, match="'rrf_k' must be at least 1"):
+        load_config(toml('[search]\nrrf_k = 0'))
+    cfg = load_config(toml('[search.rewrite]\nmodel = "small"\nreasoning_effort = "none"'))
+    assert cfg["search"]["rewrite"] == {"model": "small", "reasoning_effort": "none"} and cfg["search"]["answer"] == {}
+    with pytest.raises(ConfigError, match=r"\[search.answer\] unknown key: 'temperature'"):
+        load_config(toml('[search.answer]\ntemperature = 0.5'))
+    with pytest.raises(ConfigError, match=r"\[search.rewrite\] 'model' must be of type str"):
+        load_config(toml('[search.rewrite]\nmodel = 3'))
 
 
 def test_matrix_settings(toml):

@@ -215,11 +215,12 @@ class Index:
                       self.llm if rewrite else None, dense, per)
 
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
-               kinds: list[str] | None = None, scope: str = "") -> dict:
-        """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
+               kinds: list[str] | None = None, scope: str = "", extra_sources: list[dict] = ()) -> dict:
+        """scope: passages | whole | auto ("" = that of the settings); `extra_sources`, those
+        of DocTools.route; see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], extra_sources)
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

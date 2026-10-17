@@ -82,6 +82,21 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   vuelta de chat, de `JsonLlm` y de los agentes: al vencer, se corta la conexión de verdad (el
   servidor ve irse al cliente) y la vuelta se pregunta otra vez, hasta dos veces. Los
   comentarios SSE con que OpenRouter mantiene viva la conexión no cuentan como trozos.
+- Preguntas de trazabilidad en `atlas ask` y `ask_docs`: si la pregunta nombra requisitos o
+  código y pregunta por sus pruebas, su implementación, su padre, sus enlaces, sus llamadas o
+  el impacto de un cambio, `DocTools.route` da sin modelo su `trace`, `trace_code` o `impact`
+  del grafo (sin grafo, su texto, padre y enlaces de DOORS) como las primeras fuentes de la
+  respuesta (`extra_sources` en `Index.answer`). «¿Qué prueba verifica SRS-0004?» gastaba dos
+  peticiones y solo lo encontraba por casualidad; ahora una, y con la fuente del grafo.
+- Citas comprobadas contra el texto: `check_citations` señala, sin modelo, los `[n]` fuera de
+  rango (`out_of_range`) y las frases cuyos IDs o cifras con unidad no están en las fuentes
+  que citan (`unsupported`). `atlas ask` imprime «n claims not supported by their sources» y
+  `ask_docs` lo dice en `warnings`.
+- Estado explícito de cada respuesta, sin modelo: `status` (`not_found`, `answered` o
+  `partial`), `uncited` (las frases sin cita) y `consulted` en `Index.answer`, `ask_docs` y
+  `ask_atlas` (este, frente a lo que devolvieron sus herramientas). `atlas ask` imprime
+  «status: partial (2 sentences without a source)». El asistente y los agentes de impacto y
+  cobertura dicen que su respuesta es parcial cuando lo es.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -94,6 +109,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `ask_json` comprueba la respuesta contra su esquema (tipos, claves obligatorias, listas y
   valores permitidos) y la corrección cita el primer error («requirements[2].text must be a
   string»), en vez de pedir JSON sin más.
+- Las fuentes de una respuesta de pasajes son solo las que cita; las demás van a `unused`.
+- `atlas ask` sale con código 1 cuando no hay nada indexado relacionado con la pregunta.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

@@ -102,7 +102,7 @@ ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso,
 | `atlas impact` | informe de lo que afecta un cambio de código o de un requisito | `impact_analyst` |
 | `atlas coverage` | informe de los huecos de trazabilidad de un módulo | `coverage_auditor` |
 | `atlas link` | para cada requisito sin código, el código que puede implementarlo, con confianza (alta, media, baja), motivo y la etiqueta `Req:` que habría que añadir y dónde. No toca el código. También es la herramienta `link_requirement` | `req_linker` |
-| `ask_atlas` | el asistente como herramienta de `atlas serve`: una llamada para el cliente | `assistant` |
+| `ask_atlas` | el asistente como herramienta de `atlas serve`: una llamada para el cliente. Su `status` dice, sin modelo, si responde: `answered` (cada ID y cifra de la respuesta está en lo que devolvieron sus herramientas), `partial` (las frases que no, en `uncited`) o `not_found` | `assistant` |
 
 En la verificación y en los informes, el grafo encuentra los datos sin modelo, y el agente
 solo juzga o redacta. Los informes van a `<workspace>/reports/` y guardan, tras el texto

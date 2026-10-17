@@ -18,6 +18,16 @@ chunk by itself and its neighbours (up to a character budget) and asks the model
 answer only from those numbered sources, citing them as [n]. An answer to a broad question
 reads its documents whole, section by section: in one request if they fit in
 `scope_chars`, and otherwise in parts, each giving notes that a last request combines.
+
+Every answer has its citations checked without a model (check_citations): a [n] of a
+source that does not exist, and the IDs and values with a unit of a sentence that none of
+the sources it cites contains, are in the result; `sources` are only those cited. Its
+`status` says, without a model either, whether it answers (answer_status): "not_found",
+"answered" or "partial", with the sentences that cite no source in `uncited`.
+
+`extra_sources` (DocTools.route: the traceability of the requirements and code the
+question names, from DOORS and the graph) go before the passages as the first numbered
+sources; a question that has them is not rewritten, nor read whole unless scope="whole".
 """
 from __future__ import annotations
 
@@ -29,12 +39,12 @@ from pathlib import Path
 
 from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
-from atlas.index.store import IndexStore
+from atlas.index.store import REF_PATTERN, IndexStore
 from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
 
-__all__ = ["answer", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search", "section_file",
-           "whole_sources"]
+__all__ = ["answer", "answer_status", "build_context", "check_citations", "cite", "citation_warnings", "diverse",
+           "grounded_status", "rewrite_question", "rrf", "search", "section_file", "status_line", "whole_sources"]
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +99,139 @@ e.g. [2] or [1][3].
 point it out.
 - If the notes do not contain the answer, say so clearly.
 - Answer in the same language as the question."""
+
+
+NOTHING_FOUND = "Nothing indexed is related to the question."
+
+CITATION = re.compile(r"\[(\d+(?:\s*,\s*\d+)*)\]")
+SENTENCE_END = re.compile(r"[.!?](?:\s*\[\d+(?:\s*,\s*\d+)*\])*(?=\s+[^\s\da-z]|\s*$)")
+LIST_MARK = re.compile(r"^\s*(?:[-*•>]|#+|\d+[.)])\s+")
+UNITS = (r"ms|msecs?|milliseconds?|milisegundos?|s|secs?|seconds?|segundos?|min|mins|minutes?|minutos?|h|hrs?"
+         r"|hours?|horas?|days?|d[ií]as?|weeks?|semanas?|Hz|kHz|MHz|GHz|mm|cm|m|km|metres?|meters?|metros?|NM"
+         r"|ft|feet|pies|kts?|kn|knots?|nudos?|deg|degrees?|grados?|°|dB|dBm|mV|mA|kW|bits?|bytes?|KB|kB|MB|GB"
+         r"|bps|kbps|Mbps|%|percent")
+NUMBER_UNIT = re.compile(rf"(?<![\w.,])\d+(?:[.,]\d+)?\s?(?:{UNITS})(?!\w)")
+UNIT_NAMES = {**dict.fromkeys(["msec", "msecs", "millisecond", "milliseconds", "milisegundo", "milisegundos"], "ms"),
+              **dict.fromkeys(["sec", "secs", "second", "seconds", "segundo", "segundos"], "s"),
+              **dict.fromkeys(["mins", "minute", "minutes", "minuto", "minutos"], "min"),
+              **dict.fromkeys(["hr", "hrs", "hour", "hours", "hora", "horas"], "h"),
+              **dict.fromkeys(["day", "days", "dia", "dias", "día", "días"], "d"),
+              **dict.fromkeys(["week", "weeks", "semana", "semanas"], "wk"),
+              **dict.fromkeys(["metre", "metres", "meter", "meters", "metro", "metros"], "m"),
+              **dict.fromkeys(["feet", "pies"], "ft"),
+              **dict.fromkeys(["kt", "kts", "knot", "knots", "nudo", "nudos"], "kn"),
+              **dict.fromkeys(["degree", "degrees", "grado", "grados"], "deg")}
+
+
+def _canon(s: str) -> str:                                  # as in atlas/docs/analysis.py
+    return re.sub(r"\W+", " ", s.replace("-\n", "")).lower().strip()
+
+
+def _norm(text: str) -> str:
+    """A text canonized to look for IDs and values in it: words in lower case, the
+    punctuation as spaces, the number apart from its unit and the units by one name."""
+    text = re.sub(r"(\d)\s?%", r"\1 percent", text.replace("°", " deg"))
+    text = re.sub(r"(?<=\d)(?=[^\W\d_])", " ", text)
+    return " ".join(UNIT_NAMES.get(w, w) for w in _canon(text).split())
+
+
+def _sentences(text: str) -> list[str]:
+    """The sentences of an answer: by line, without their list marks, and by full stop; a
+    citation after the full stop stays with its sentence."""
+    out = []
+    for line in text.splitlines():
+        line, start = LIST_MARK.sub("", line).strip(), 0
+        for m in SENTENCE_END.finditer(line):
+            out.append(line[start:m.end()].strip())
+            start = m.end()
+        out.append(line[start:].strip())
+    return [s for s in out if s.strip("*_#|-: ")]
+
+
+def _cited(sentence: str) -> list[int]:
+    return list(dict.fromkeys(int(n) for group in CITATION.findall(sentence) for n in re.split(r"\s*,\s*", group)))
+
+
+def _claims(sentence: str) -> list[tuple[str, str]]:
+    """The IDs and the values with a unit of a sentence, as written and canonized."""
+    bare = CITATION.sub(" ", sentence)
+    found = [t.rstrip(".-_") for t in REF_PATTERN.findall(bare)]
+    found = [t for t in found if re.search(r"[^\W\d_]", t) and re.search(r"\d", t)] + NUMBER_UNIT.findall(bare)
+    return list({_norm(t): t for t in found}.items())
+
+
+def check_citations(text: str, sources: list[dict]) -> dict:
+    """The citations of an answer against its numbered sources (dicts with `context`, the
+    text the model read), without a model: {"cited": the numbers that exist, "out_of_range":
+    those that do not, "unsupported": [{claim, cited, missing}]}, the sentences with an ID
+    or a value with a unit (320 ms, 30 days, 95 %) that no source they cite contains, after
+    canonizing both texts."""
+    texts: dict[int, str] = {}
+    cited, out_of_range, unsupported = set(), set(), []
+    for sentence in _sentences(text):
+        numbers = _cited(sentence)
+        valid = [n for n in numbers if 1 <= n <= len(sources)]
+        out_of_range.update(set(numbers) - set(valid))
+        cited.update(valid)
+        if not numbers:
+            continue
+        for n in valid:
+            if n not in texts:
+                s = sources[n - 1]
+                texts[n] = f" {_norm(cite(s) + chr(10) + s['context'])} "
+        missing = [t for key, t in _claims(sentence) if not any(f" {key} " in texts[n] for n in valid)]
+        if missing:
+            unsupported.append({"claim": sentence, "cited": numbers, "missing": missing})
+    return {"cited": sorted(cited), "out_of_range": sorted(out_of_range), "unsupported": unsupported}
+
+
+def answer_status(text: str, consulted: int, found: bool = True) -> dict:
+    """Whether an answer with [n] citations answers, from its text alone: {"status",
+    "uncited": the sentences without a citation, "consulted": the sources it was given}.
+    "not_found": no sources, `found` false or the fixed answer of nothing indexed;
+    "answered": at least one citation and no sentence without one that has a figure or an
+    ID; "partial": the rest (an answer that says what the sources lack, or facts without
+    their source)."""
+    if not consulted or not found or text.strip() == NOTHING_FOUND:
+        return {"status": "not_found", "uncited": [], "consulted": consulted}
+    sentences = _sentences(text)
+    uncited = [s for s in sentences if not CITATION.search(s)]
+    answered = len(uncited) < len(sentences) and not any(re.search(r"\d", s) for s in uncited)
+    return {"status": "answered" if answered else "partial", "uncited": uncited, "consulted": consulted}
+
+
+def grounded_status(text: str, results: list[str]) -> dict:
+    """answer_status of an answer that cites by ID and not by [n] (that of an agent), against
+    the texts it was given (its tool results): `uncited` are the sentences with an ID or a
+    value with a unit that none of them contains. "not_found": no answer or no results;
+    "answered": some sentence with an ID or a value, and every one found; "partial": the rest."""
+    if not text.strip() or not results:
+        return {"status": "not_found", "uncited": [], "consulted": len(results)}
+    texts = [f" {_norm(r)} " for r in results]
+    found, uncited = False, []
+    for sentence in _sentences(text):
+        claims = _claims(sentence)
+        if any(not any(f" {key} " in t for t in texts) for key, _ in claims):
+            uncited.append(sentence)
+        found = found or bool(claims)
+    return {"status": "answered" if found and not uncited else "partial", "uncited": uncited,
+            "consulted": len(results)}
+
+
+def status_line(res: dict) -> str:
+    """'status: partial (2 sentences without a source)'."""
+    n = len(res.get("uncited", []))
+    return f"status: {res['status']}" + (f" ({n} sentence{'s' if n != 1 else ''} without a source)" if n else "")
+
+
+def citation_warnings(res: dict) -> list[str]:
+    """What check_citations found in an answer, in a line each."""
+    out, n = [], len(res.get("unsupported", []))
+    if n:
+        out.append(f"{n} claim{'s' if n != 1 else ''} not supported by {'their' if n != 1 else 'its'} sources")
+    if res.get("out_of_range"):
+        out.append("citations of sources that do not exist: " + " ".join(f"[{i}]" for i in res["out_of_range"]))
+    return out
 
 
 def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
@@ -251,21 +394,21 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
-                 max_chars: int = SCOPE_CHARS) -> dict:
-    """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them. A part that fails
-    leaves a note ("part 2 of 4 failed: ...") at the end of the answer, and the answer is
-    written with the others."""
-    sources = [s for d in docs for s in whole_sources(store, d["doc"])]
+                 max_chars: int = SCOPE_CHARS, extra_sources: list[dict] = ()) -> dict:
+    """The answer from whole documents ({doc, name}), after `extra_sources`: one request if
+    they fit in max_chars; if not, notes from each part and a last request that combines them.
+    A part that fails leaves a note ("part 2 of 4 failed: ...") at the end of the answer, the
+    answer is written with the others and its status is partial."""
+    sources = list(extra_sources) + [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
-        return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "whole",
-                "documents": names, "requests": 0}
+        return {**_checked(NOTHING_FOUND, [], False), "scope": "whole", "documents": names, "requests": 0}
     blocks = [f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1)]
     parts = _parts(blocks, max_chars)
     log.info("reading %s whole: %d sections, %d characters, %d parts", ", ".join(names), len(sources),
              sum(len(b) for b in blocks), len(parts))
     failed: list[str] = []
+    found = True
     if len(parts) == 1:
         text = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}")
         requests, truncated = _requests(text), _truncated(text)
@@ -287,17 +430,19 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
                 notes.append(note)
         if first_error is not None and len(failed) == len(parts):
             raise first_error
+        found = bool(notes)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
             joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
             text = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}")
             requests, truncated = requests + _requests(text), truncated or _truncated(text)
-    cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-    answer_text = str(text) + "".join(f"\n\n({note})" for note in failed)
-    return {"answer": answer_text, "scope": "whole", "documents": names, "requests": requests,
-            "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
-            **({"truncated": True} if truncated else {}), **({"failed_parts": failed} if failed else {})}
+    out = {**_checked(str(text), sources, False, found), "scope": "whole", "documents": names, "requests": requests,
+           **({"truncated": True} if truncated else {}), **({"failed_parts": failed} if failed else {})}
+    if failed:
+        out["answer"] += "".join(f"\n\n({note})" for note in failed)
+        out["status"] = "partial"
+    return out
 
 
 def _requests(text: str) -> int:
@@ -308,6 +453,19 @@ def _requests(text: str) -> int:
 def _truncated(text: str) -> bool:
     """Whether an answer of ask_text is still cut by max_tokens."""
     return bool(getattr(text, "truncated", False))
+
+
+def _checked(text: str, sources: list[dict], passages: bool, found: bool = True) -> dict:
+    """The answer, its status, the sources it cites and the check of its citations; from
+    passages, the sources it does not cite in `unused`."""
+    check = check_citations(text, sources)
+    cited = set(check["cited"])
+    out = {"answer": text, **answer_status(text, len(sources), found),
+           "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited],
+           "unsupported": check["unsupported"], "out_of_range": check["out_of_range"]}
+    if passages:
+        out["unused"] = [{"n": i, "cite": cite(s)} for i, s in enumerate(sources, 1) if i not in cited]
+    return out
 
 
 def _source(n: int, s: dict) -> dict:
@@ -333,14 +491,24 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
-           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
-    """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
-    "scope": "passages" | "whole", "documents": those read whole, "requests": to the model},
-    plus "truncated": True if the answer is cut by max_tokens and "failed_parts" with the
-    notes of the parts of whole documents that failed.
+           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
+           extra_sources: list[dict] = ()) -> dict:
+    """{"answer": text with [n] citations, "status": not_found | answered | partial, "uncited": the
+    sentences without a citation, "consulted": how many sources it was given (see
+    answer_status), "sources": those it cites [{n, cite, doc, section, file,
+    kind, ref, excerpt}], "unused": from passages, those it does not cite [{n, cite}],
+    "unsupported" and "out_of_range" (see check_citations), "scope": "passages" | "whole",
+    "documents": those read whole, "requests": to the model}, plus "truncated": True if
+    the answer is cut by max_tokens and "failed_parts" with the notes of the parts of whole
+    documents that failed.
     scope "passages" answers from the best k passages; "whole" reads whole documents
     (`document`, or those of the question); "auto" reads them whole if the rewriting says
-    the question is broad."""
+    the question is broad. `extra_sources` ({doc_name, section_title, kind, ref, context},
+    as DocTools.route gives them) are the first sources; with them the question is not
+    rewritten (its IDs are found without it) and "auto" answers from passages."""
+    extra = list(extra_sources)
+    if extra:
+        rewrite, scope = False, "passages" if scope == "auto" else scope
     candidates = [d for d in store.documents() if not d["doc"].startswith(CODE_PREFIX)]
     rewritten = rewrite_question(llm, question, candidates) if rewrite else None
     requests = 1 if rewrite else 0
@@ -350,15 +518,16 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
                                                    per_document=per_document, rewritten=rewritten)
         docs = _scope_documents(store, document, named, hits)
         if docs:
-            res = answer_whole(store, llm, question, docs, scope_chars)
+            res = answer_whole(store, llm, question, docs, scope_chars, extra)
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
-    sources = build_context(store, hits, context_chars)
+    routed = {s["ref"].upper() for s in extra if s.get("ref")}
+    hits = [h for h in hits if not (h["doc"].startswith(DOORS_PREFIX) and (h.get("ref") or "").upper() in routed)]
+    used = sum(len(s["context"]) for s in extra)
+    sources = extra + build_context(store, hits, max(context_chars - used, context_chars // 4))
     if not sources:
-        return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",
-                "documents": [], "requests": requests}
+        return {**_checked(NOTHING_FOUND, [], True), "scope": "passages", "documents": [], "requests": requests}
     blocks = "\n\n".join(f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1))
     text = llm.ask_text(ANSWER_SYSTEM, f"Sources:\n\n{blocks}\n\nQuestion: {question}")
-    return {"answer": str(text), "sources": [_source(i, s) for i, s in enumerate(sources, 1)],
-            "scope": "passages", "documents": [], "requests": requests + _requests(text),
-            **({"truncated": True} if _truncated(text) else {})}
+    return {**_checked(str(text), sources, True), "scope": "passages", "documents": [],
+            "requests": requests + _requests(text), **({"truncated": True} if _truncated(text) else {})}

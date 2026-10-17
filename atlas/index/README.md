@@ -75,6 +75,55 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
 pide responder solo con esas fuentes y citándolas como `[n]`.
 
+## Citas comprobadas
+
+Al final de cada respuesta, `check_citations` comprueba sus citas sin modelo: un `[n]` de
+una fuente que no existe va a `out_of_range`; de cada frase con cita, los IDs y los números
+con unidad (320 ms, 30 días, 95 %) se buscan, canonizados (minúsculas, sin puntuación, la
+unidad con un solo nombre), en las fuentes que cita esa frase, y si alguno no está la frase
+va a `unsupported` (`{claim, cited, missing}`). `sources` son solo las citadas; de pasajes, el
+resto queda en `unused`. `atlas ask` imprime «n claims not supported by their sources» con
+cada frase, y `ask_docs` lo dice en `warnings`.
+
+## Estado de la respuesta
+
+Un agente o un script tiene que distinguir una respuesta de una no-respuesta sin leerla.
+Cada respuesta lleva, calculado sin modelo y sin pedirle JSON (`answer_status`):
+
+- `status`: `not_found` si no había fuentes o la respuesta es la frase fija «Nothing indexed
+  is related to the question.»; `answered` si cita al menos una fuente y ninguna frase sin
+  cita tiene una cifra o un ID; `partial` en lo demás (una respuesta que dice lo que falta,
+  o datos sin su fuente);
+- `uncited`: las frases sin `[n]`;
+- `consulted`: cuántas fuentes se le pasaron.
+
+`atlas ask` imprime al final «status: partial (2 sentences without a source)» y sale con
+código 1 en `not_found`. `ask_docs` devuelve los tres campos, y `ask_atlas` (el asistente,
+que cita por ID y no por `[n]`) un `status` y un `uncited` frente a lo que devolvieron sus
+herramientas. El asistente y los informes de impacto y cobertura tienen la instrucción de
+decir que su respuesta es parcial cuando lo es.
+
+## Preguntas de trazabilidad
+
+«¿Qué prueba verifica SRS-0004?» no se contesta bien con pasajes: el índice gastaba dos
+peticiones y solo lo encontraba si BM25 sacaba por casualidad el código que lo cita, mientras
+`trace` lo da en milisegundos. Antes de buscar, `DocTools.route(pregunta)` mira, sin modelo,
+si la pregunta nombra IDs de requisito (los de `[sources.doors.convention] id_pattern`, o
+cualquiera que esté en DOORS o en el grafo) o elementos de código (una unidad, o un nombre
+con `.` o `_`) y pregunta por su trazabilidad: pruebas (*test*, *prueba*, *verif…*),
+implementación, padre, enlaces (*satisf…*, *link*, *enlace*), llamadas o impacto de un
+cambio (*impact…*, *afecta*, *cambi…*). Entonces da fuentes deterministas:
+
+- de cada requisito, su `trace` del grafo; sin grafo (o si no está en él), su texto oficial,
+  padre, atributos y enlaces de DOORS; y su `impact` si la pregunta habla de cambios;
+- de cada elemento de código, su `trace_code` y, si se pregunta por cambios, su `impact`.
+
+`atlas ask` y `ask_docs` las pasan a la respuesta como las primeras fuentes numeradas,
+delante de los pasajes (`extra_sources` en `Index.answer`): el modelo las cita como `[1]`,
+`[2]`. Una pregunta con ellas no se reescribe (sus IDs se encuentran sin hacerlo), así que
+cuesta una petición en vez de dos, y no se lee entera salvo con `--whole`. El requisito de
+DOORS que ya va en una fuente de trazabilidad no se repite entre los pasajes.
+
 ## Preguntas amplias
 
 Ocho pasajes no bastan para «resume los requisitos de SRS_TMS» o «explica cómo funciona el
@@ -134,6 +183,7 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 ## Pruebas
 
 `tests/test_index.py` (registros, búsqueda, caché, lotes fallidos y lotes entre
-documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas amplias
-en una petición y por partes), `tests/test_cli.py` (pasos de `atlas
+documentos, cambio de modelo, herramientas, DOORS, límite por documento, preguntas de
+trazabilidad, citas comprobadas, estado de la respuesta, preguntas amplias en una petición y
+por partes), `tests/test_cli.py` (pasos de `atlas
 run`, `search`, `ask`) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).

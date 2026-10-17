@@ -17,4 +17,6 @@ Write a short report in Markdown, in the language of the request:
 6. **Risks**: what could break, in two or three bullets.
 
 Use only the data you are given and cite every requirement ID, code identifier and document
-section exactly as it appears. Do not invent anything; if a list is empty, say so.
+section exactly as it appears. Do not invent anything; if a list is empty, say so. If the
+data does not answer part of what is asked, the analysis is partial: say so, and what is
+missing.

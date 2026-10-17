@@ -292,6 +292,102 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert 1 not in [s["n"] for s in failed["sources"]] and len(failed["sources"]) == len(res["sources"]) - 1
 
 
+def _store(path):
+    """A Store with SRS_TMS (MODULE) and a link of SRS-0004."""
+    from types import SimpleNamespace as N
+    from atlas.store import Store
+    store = Store(path)
+    store.replace_module("SRS_TMS", [N(raw_id=r["id"], **r) for r in MODULE],
+                         [N(source="SRS-0004", target="SSS-0005", type="satisfies")],
+                         {r["id"]: "h" for r in MODULE})
+    return store
+
+
+def test_traceability_questions_get_their_sources_without_searching(docs, samples, tmp_path, fake_llm,
+                                                                    fake_embeddings, fake_chats):
+    """«Which test verifies SRS-0004?» is answered by the graph in milliseconds; the index
+    only finds it by chance."""
+    pytest.importorskip("tree_sitter_ada")
+    pytest.importorskip("networkx")
+    from atlas.code import AdaAnalyzer
+    from atlas.graph import GraphStore, GraphTools, build_code_graph
+    from atlas.index import DocTools, cite
+    analyzer = AdaAnalyzer({})
+    units = [analyzer.analyze_file(f, f.read_bytes()) for f in sorted((samples / "ada").rglob("*.ad?"))]
+    GraphStore(tmp_path / "atlas.db").replace("code", *build_code_graph(units, test_patterns=["**/tests/**"]))
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    idx.add_module("SRS_TMS", MODULE)
+    store = _store(tmp_path / "doors")
+    tools = DocTools(idx, store, graph=GraphTools(tmp_path / "atlas.db"))
+
+    assert tools.route("When does the HMI raise an alarm?") == []           # no traceability
+    assert tools.route("What does SRS-0004 say?") == []
+    routed = tools.route("Which test verifies SRS-0004?")
+    assert [(s["section_title"], s["kind"]) for s in routed] == [("trace SRS-0004", "trace")]
+    assert "test_tracks.test_tracks" in routed[0]["context"]
+    before = fake_chats()
+    res = tools.ask_docs("Which test verifies SRS-0004?")
+    assert res["requests"] == 1 == fake_chats() - before                     # not rewritten
+    assert res["answer"] == "Answer taken from the sources [1]."             # it cites the graph
+    assert (res["status"], res["uncited"]) == ("answered", []) and res["consulted"] == 1 + len(res["unused"])
+    assert res["sources"][0]["cite"] == "traceability graph › trace SRS-0004 (trace)"
+    assert [s["doc"] for s in res["sources"] if s["ref"] == "SRS-0004"] == ["traceability graph"]   # once
+
+    assert [s["section_title"] for s in tools.route("¿Qué afecta cambiar tracks.delete_track?")] == \
+        ["impact tracks.delete_track"]
+    assert [s["section_title"] for s in tools.route("Who calls delete_track and what does it impact?")] == \
+        ["trace_code tracks.delete_track", "impact tracks.delete_track"]
+
+    # without a graph: the official text, parent and links in DOORS
+    alone = DocTools(idx, store)
+    routed = alone.route("¿Cuál es el padre de SRS-0004?")
+    assert [cite(s) for s in routed] == ["DOORS SRS_TMS › SRS-0004 (requirement)"]
+    assert routed[0]["context"].splitlines() == ["SRS-0004 (DOORS module SRS_TMS)",
+                                                 "The TMF shall delete a lost track within 320 ms.",
+                                                 "parent: SRS-0910", "attributes: kind = requirement; "
+                                                 "status = Approved", "links out: SSS-0005 (satisfies)"]
+    assert alone.route("Which test verifies SRS-9999?") == []
+
+
+def test_citations_are_checked_against_the_sources():
+    from atlas.index.search import check_citations
+    sources = [{"doc_name": "spec", "section_title": "", "kind": "chunk",
+                "context": "The TMF shall delete a lost track within 320 ms (SRS-0004)."},
+               {"doc_name": "hmi", "section_title": "3 Logging", "kind": "chunk", "context": "Logs are kept for 30 days."}]
+    res = check_citations("A lost track is deleted within 320ms [1]. SRS-0004 says it [2].\n"
+                          "- Logs are kept 60 days [2].\n- Logs: 30 días. [2] See also [5].", sources)
+    assert res["cited"] == [1, 2] and res["out_of_range"] == [5]
+    assert [(u["claim"], u["missing"]) for u in res["unsupported"]] == [("SRS-0004 says it [2].", ["SRS-0004"]),
+                                                                        ("Logs are kept 60 days [2].", ["60 days"])]
+
+
+def test_the_status_of_an_answer_says_whether_it_answers(docs, tmp_path, fake_llm, fake_embeddings):
+    """Without a model: an agent or a script tells an answer from a non-answer."""
+    from atlas.index.search import answer_status, grounded_status
+    url, control = fake_llm
+    empty = Index(tmp_path / "empty.db", fake_embeddings, fake_llm[0])
+    assert {k: empty.answer("When does the HMI raise an alarm?")[k] for k in ("status", "uncited", "consulted")} \
+        == {"status": "not_found", "uncited": [], "consulted": 0}
+
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["hmi_manual.md"])
+    control.write_text(json.dumps({"prose": True}))      # an answer that cites nothing
+    res = idx.answer("When does the HMI raise an alarm?", scope="passages")
+    assert (res["status"], res["uncited"]) == ("partial", ["Sorry, I cannot produce JSON."])
+    assert res["sources"] == [] and len(res["unused"]) == res["consulted"] > 0
+
+    assert answer_status("The alarm is raised within 2 s [1]. Nothing else.", 1)["status"] == "answered"
+    partial = answer_status("The alarm is raised [1]. Its latency is 2 s.", 1)
+    assert (partial["status"], partial["uncited"]) == ("partial", ["Its latency is 2 s."])
+    assert answer_status("Nothing indexed is related to the question.", 3)["status"] == "not_found"
+    results = ['{"id": "SRS-0004", "verified_by": [{"id": "test_tracks.test_tracks"}], "text": "within 320 ms"}']
+    assert grounded_status("SRS-0004 is verified by test_tracks.test_tracks, within 320 ms.", results)["status"] \
+        == "answered"
+    assert grounded_status("SRS-0004 is verified in 500 ms.", results)["uncited"] == ["SRS-0004 is verified in 500 ms."]
+    assert grounded_status("", results)["status"] == grounded_status("SRS-0004.", [])["status"] == "not_found"
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

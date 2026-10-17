@@ -23,9 +23,11 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["IndexStore"]
+__all__ = ["IndexStore", "REF_PATTERN"]
 
 log = logging.getLogger(__name__)
+
+REF_PATTERN = re.compile(r"[A-Za-z0-9][\w\-.]*[\-_.\d][\w\-.]*")   # what may be an ID in a text
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS index_documents (
@@ -185,7 +187,7 @@ class IndexStore:
 
     def by_ref(self, query: str, allowed: set[int] | None) -> list[int]:
         """Exact match of the IDs (requirements, terms) mentioned in the query."""
-        candidates = {t.upper() for t in re.findall(r"[A-Za-z0-9][\w\-.]*[\-_.\d][\w\-.]*", query)}
+        candidates = {t.upper() for t in REF_PATTERN.findall(query)}
         if not candidates:
             return []
         rows = self._query(f"SELECT id FROM index_records WHERE UPPER(ref) IN ({','.join('?' * len(candidates))})",

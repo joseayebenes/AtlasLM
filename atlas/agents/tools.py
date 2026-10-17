@@ -147,17 +147,29 @@ class AgentTools:
     def ask_atlas(self, question: str) -> dict:
         """Asks the assistant of atlas, an agent that answers from the documents, the DOORS
         requirements and the code with its own tools, citing them. One call that does the
-        searches behind; slower than the other tools. Returns the answer and the tools it
-        called."""
+        searches behind; slower than the other tools. Returns the answer, the tools it
+        called and its `status`: "answered" (every ID and value of the answer is in what its
+        tools returned), "partial" (some are not: those sentences in `uncited`) or
+        "not_found" (no answer, or no tool gave anything); a partial answer must be given as
+        such."""
+        import json
         import openai
         from atlas.agents.runtime import run_agent
+        from atlas.index.search import grounded_status
         from atlas.llm import model_failed
+        record: list = []
         try:
-            return run_agent("assistant", question, self.cfg, self.context)
+            res = run_agent("assistant", question, self.cfg, self.context, record=record)
         except ImportError as e:
             return {"error": str(e)}
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        results = [json.dumps(c["result"], ensure_ascii=False, default=str) for c in record
+                   if not (isinstance(c["result"], dict) and "error" in c["result"])]
+        status = grounded_status(res["answer"], results)
+        if res.get("stopped") and status["status"] == "answered":
+            status["status"] = "partial"
+        return {**res, **status}
 
 
 register_methods(AgentTools, TOOL_NAMES)

@@ -439,3 +439,59 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_a_configuration_finds_its_files_from_any_folder(tmp_path, samples, monkeypatch, capsys):
+    """The relative paths of atlas.toml are relative to it: a project in a subfolder, run from
+    another folder, finds its code, documents and DOORS database, and names them as when it
+    runs from its own folder (nothing is processed again)."""
+    import os
+    import shutil
+    import pytest
+    from atlas.code import CodeTools
+    from atlas.graph import KnowledgeGraph
+    from atlas.store import Store
+    pytest.importorskip("tree_sitter_ada")
+    project = tmp_path / "projects" / "tms"
+    shutil.copytree(samples / "ada", project / "ada")
+    (project / "docs").mkdir()
+    (project / "docs" / "spec.md").write_text("# Spec\n\n## Tracks\n\nReq: SRS-0101 The system shall delete tracks.\n",
+                                              encoding="utf-8")
+    shutil.copy(samples / "requirements.sqlite", project / "req.sqlite")
+    (project / "atlas.toml").write_text('''
+[project]
+workspace = "ws"
+[pipeline]
+steps = ["doors", "code", "docs", "graph"]
+[[sources.docs]]
+name = "specs"
+paths = ["docs"]
+analysis = "regex"
+req_regex = "(?i)\\\\bReq\\\\s*:\\\\s*(\\\\S+)"
+[sources.doors]
+adapter = "exchange"
+[sources.doors.exchange]
+path = "req.sqlite"
+[sources.code]
+roots = ["ada"]
+test_patterns = ["**/tests/**"]
+''', encoding="utf-8")
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    cfg = load_config(project / "atlas.toml")
+    assert run(cfg) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"]["code.parse"] == 5 and rep["processed"]["docs.process"] == 1
+    assert rep["processed"]["doors.requirements"] >= 2 and not rep["errors"]
+    store = Store(cfg.workspace)
+    assert os.path.join("ada", "src", "tracks.adb") in [u["file"] for u in store.code_units()]
+    assert [d["unit"] for d in store.documents()] == [f"specs:{os.path.join('docs', 'spec.md')}"]
+    # the graph and the file tools read the files from the folder of atlas.toml too
+    graph = KnowledgeGraph.from_config(cfg)
+    assert "Delete_Track" in graph.read_file(os.path.join("ada", "src", "tracks.adb"), 1, 40)["source"]
+    assert "error" not in CodeTools.from_config(cfg, read_only=True).read_file("ada/src/tracks.adb")
+    # from its own folder: the same names, nothing to process
+    monkeypatch.chdir(project)
+    assert run(load_config("atlas.toml")) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert rep["processed"] == {} and rep["pruned"] == {} and rep["skipped"]["code.parse"] == 5

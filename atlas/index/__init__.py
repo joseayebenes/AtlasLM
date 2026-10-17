@@ -174,8 +174,8 @@ def _index_records(store: IndexStore, embedder: Embedder, records: list[dict], d
 class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
-    `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars, synonyms: the path of a synonyms file); what is not given takes its
+    `settings` are those of [search] (results, per_document, context_chars, context_radius,
+    scope, scope_chars, synonyms: the path of a synonyms file); what is not given takes its
     default. `fts_tokenizer` is that of [index]; `id_normalize`, that of
     [sources.doors.convention], for the IDs written in another way in a query."""
 
@@ -246,7 +246,7 @@ class Index:
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
                       s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"], self.synonyms,
-                      self.id_normalize)
+                      self.id_normalize, s["context_radius"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

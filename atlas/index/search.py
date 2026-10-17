@@ -19,8 +19,10 @@ its name, can take every place.
 Optionally the model first rewrites the question into 1-3 search queries plus exact
 keywords, and says whether it is broad (it needs much of a document, not a few passages)
 and which documents it is about. An answer from passages takes the hits, replaces every
-chunk by itself and its neighbours (up to a character budget) and asks the model to
-answer only from those numbered sources, citing them as [n]. An answer to a broad question
+one by its context (IndexStore.neighbours: the adjacent chunks, the records around a DOORS
+requirement, the first chunks of a section summary, the passage that states a requirement;
+up to a character budget) and asks the model to answer only from those numbered sources,
+citing them as [n]. An answer to a broad question
 reads its documents whole, section by section: in one request if they fit in
 `scope_chars`, and otherwise in parts, each giving notes that a last request combines.
 """
@@ -45,6 +47,7 @@ __all__ = ["acronyms", "answer", "build_context", "cite", "diverse", "expand_syn
 log = logging.getLogger(__name__)
 
 CONTEXT_CHARS = 14000   # largest context passed to the model when answering from passages
+CONTEXT_RADIUS = 1      # records on each side of a hit in its context (IndexStore.neighbours)
 SCOPE_CHARS = 100000    # largest part of whole documents read in one request
 SCOPE_DOCUMENTS = 3     # documents read whole when a broad question names none
 PART_WORKERS = 4        # parts of whole documents read at the same time
@@ -242,14 +245,17 @@ def section_file(r: dict) -> str:
     return str(hits[0]) if hits else ""
 
 
-def build_context(store: IndexStore, hits: list[dict], max_chars: int = CONTEXT_CHARS) -> list[dict]:
-    """Replaces every chunk by itself and its neighbours, without repeating, up to max_chars."""
+def build_context(store: IndexStore, hits: list[dict], max_chars: int = CONTEXT_CHARS,
+                  radius: int = CONTEXT_RADIUS) -> list[dict]:
+    """Replaces every hit by its context (IndexStore.neighbours), without repeating, up to
+    max_chars. A piece from another document (a DOORS requirement stated in a document)
+    goes with its citation."""
     sources, used, total = [], set(), 0
     for h in hits:
-        group = [r for r in store.neighbours(h) if r["id"] not in used]
+        group = [r for r in store.neighbours(h, radius) if r["id"] not in used]
         if not group:
             continue
-        text = " … ".join(r["text"] for r in group)
+        text = " … ".join(r["text"] if r["doc"] == h["doc"] else f"({cite(r)}) {r['text']}" for r in group)
         if total + len(text) > max_chars and sources:
             break
         used.update(r["id"] for r in group)
@@ -365,7 +371,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
            context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
-           synonyms: list[list[str]] = (), id_normalize: str = "upper") -> dict:
+           synonyms: list[list[str]] = (), id_normalize: str = "upper",
+           context_radius: int = CONTEXT_RADIUS) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
@@ -385,7 +392,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten,
                   synonyms=synonyms, id_normalize=id_normalize)
-    sources = build_context(store, hits, context_chars)
+    sources = build_context(store, hits, context_chars, context_radius)
     if not sources:
         return {"answer": "Nothing indexed is related to the question.", "sources": [], "scope": "passages",
                 "documents": [], "requests": requests}

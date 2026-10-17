@@ -70,6 +70,7 @@ results = 8                            # resultados de atlas search y pasajes de
 per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
 scope = "auto"                         # auto: una pregunta amplia lee sus documentos enteros; passages: nunca
 scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
+context_radius = 1                     # vecinos de cada pasaje de una respuesta (fragmentos, requisitos de DOORS)
 # synonyms = "synonyms.toml"            # grupos de términos equivalentes del proyecto ([[groups]] terms = [...])
 
 # [index]

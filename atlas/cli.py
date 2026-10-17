@@ -368,19 +368,19 @@ def index_requirements_step(ctx) -> Step:
         return ctx.store.modules() if {"requirement", "chunk"} & set(kinds) else []
 
     def fingerprint(ctx, module: str) -> str:
-        rows = json.dumps(ctx.store.requirements(module), sort_keys=True, default=str)
+        rows = json.dumps(ctx.store.requirements(module, in_module_order=True), sort_keys=True, default=str)
         return f"{sha256_text(rows)}|{index_fingerprint(ctx)}|{embed_model}|{INDEX_VERSION}"
 
     def run(ctx, module: str):
-        res = index().add_module(module, ctx.store.requirements(module), kinds)
+        res = index().add_module(module, ctx.store.requirements(module, in_module_order=True), kinds)
         if res["missing"]:
             raise IndexIncomplete(f"{res['missing']} records got no vector ({len(res['failed_batches'])} "
                                   f"failed batches); they are embedded on the next run")
         return {"records": res["records"], "kinds": res["kinds"]}
 
     def prepare(ctx, modules: list[str]) -> None:
-        index().embed_missing([(r["embed_text"], module_title(m)) for m in modules
-                               for r in requirement_records(m, ctx.store.requirements(m), kinds)], workers)
+        index().embed_missing([(r["embed_text"], module_title(m)) for m in modules for r in requirement_records(
+            m, ctx.store.requirements(m, in_module_order=True), kinds)], workers)
 
     return Step(name="index.requirements", units=units, fingerprint=fingerprint, run=run,
                 prune=lambda ctx, module: index().remove_document(DOORS_PREFIX + module), prepare=prepare,

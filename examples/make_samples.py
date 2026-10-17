@@ -8,7 +8,8 @@ documents, code or DOORS:
   samples/ada/src/*.ads, *.adb              small Ada project with Req: comments
   samples/doors.sqlite                      DOORS operational copy: modules, requirements, links
   samples/requirements.sqlite               the same requirements in the exchange database of atlas
-                                            (atlas.doors.exchange), with headings and hierarchy
+                                            (atlas.doors.exchange), with headings and hierarchy, and
+                                            a note (an information object) after SRS-0004
 
 Requires: pip install pymupdf
 """
@@ -207,6 +208,11 @@ def exchange() -> None:
                              "level": 3 if r["parent"] else 2,
                              "outline": f"1.{n}", "source_key": str(n),
                              "attributes": {"status": r["status"], "verification": r["verification"]}})
+                if rid == "SRS-0004":           # a note after a requirement: its context in an answer
+                    reqs.append({"id": "SRS-0950", "kind": "information", "parent": top, "level": 2,
+                                 "outline": f"1.{n}.0", "source_key": f"{n}.note",
+                                 "text": "Note: the deadlines of these requirements are measured from the "
+                                         "reception of the radar plot."})
             links = [{"source": l["source_id"], "target": l["target_id"], "type": l["link_type"],
                       "target_module": l["target_module"]}
                      for l in source.execute("SELECT * FROM links WHERE source_module = ?", (module,))]

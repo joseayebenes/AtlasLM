@@ -411,3 +411,40 @@ def test_the_prefixes_of_the_embeddings(docs, tmp_path, fake_embeddings, caplog)
     texts = {r["embed_text"] for r in build_records(docs["hmi_manual.md"])}
     assert len(idx.store.cache_get([e.key(t, "HMI Manual") for t in texts])) == len(texts)
     assert idx.embed_missing([(t, "HMI Manual") for t in texts])["cached"] == len(texts)
+
+
+def test_the_context_around_what_is_found(docs, tmp_path, fake_embeddings):
+    """A DOORS requirement brings the records around it in its module and the document that
+    states it; a section summary, the first chunks of its section; a requirement of a
+    document, the passage that holds it."""
+    from atlas.index.search import build_context
+    idx = Index(tmp_path / "atlas.db", fake_embeddings)
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE + [{"id": "SRS-0102", "module": "SRS_TMS", "parent": None, "attributes": {},
+                                         "text": "The HMI shall raise an alarm when a track is lost."}])
+    store = idx.store
+    req = lambda ref, doc: next(r for r in store.records(store.by_ref(ref, None)) if r["doc"] == doc)
+
+    doors = req("SRS-0005", "doors:SRS_TMS")
+    assert [(r["doc_name"], r.get("ref") or r["text"]) for r in store.neighbours(doors)] == \
+        [("SRS_TMS", "SRS-0004"), ("SRS_TMS", "SRS-0005"), ("SRS_TMS", "A track is lost after three missed scans."),
+         ("spec_with_bookmarks.pdf", "SRS-0005")]                      # the specification states it too
+    assert [r["doc_name"] for r in store.neighbours(doors, radius=0)] == ["SRS_TMS", "spec_with_bookmarks.pdf"]
+    stated = store.neighbours(req("SRS-0102", "doors:SRS_TMS"), radius=0)           # and where a document says it
+    assert stated[0]["doc_name"] == "SRS_TMS" and {r["kind"] for r in stated} == {"requirement"}
+    assert {r["doc_name"] for r in stated[1:]} == {"hmi_manual.md", "spec_with_bookmarks.pdf"}
+    context = build_context(store, [req("SRS-0102", "doors:SRS_TMS")], radius=0)[0]["context"]
+    assert context.startswith("SRS-0102: The HMI shall") and "(hmi_manual.md › 2 Alarms, p. 1 (requirement)) SRS-0102: The HMI" in context
+
+    in_doc = req("SRS-0102", "test:hmi_manual.md")                                   # the passage that holds it
+    passage = store.neighbours(in_doc)
+    assert [r["kind"] for r in passage] == ["chunk"] and "Alarm latency is TBD" in passage[0]["text"]
+    summary = next(r for r in store.document_records("test:spec_with_bookmarks.pdf") if r["kind"] == "section_summary"
+                   and any(c["kind"] == "chunk" and c["section_id"] == r["section_id"]
+                           for c in store.document_records("test:spec_with_bookmarks.pdf")))
+    around = store.neighbours(summary)
+    assert around[0] == summary and len(around) > 1 and {r["kind"] for r in around[1:]} == {"chunk"}
+    assert [r["seq"] for r in around[1:]] == list(range(len(around) - 1)) and len(around) <= 4
+    assert store.neighbours(next(r for r in store.document_records("test:hmi_manual.md") if r["kind"] == "overview")) \
+        == [next(r for r in store.document_records("test:hmi_manual.md") if r["kind"] == "overview")]

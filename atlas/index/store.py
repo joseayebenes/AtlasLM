@@ -25,6 +25,8 @@ from pathlib import Path
 
 import numpy as np
 
+from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
+
 __all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore"]
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,12 @@ def _tokenizer(sql: str) -> str:
     """The tokenizer of a CREATE VIRTUAL TABLE ... fts5(...), with its spaces normalised."""
     m = _TOKENIZE.search(sql or "")
     return " ".join(m.group(1).replace("''", "'").split()) if m else "unicode61"
+
+
+def _canon(text: str) -> str:
+    """A text in lower case, its words separated by one space and nothing else: to find a
+    requirement inside a chunk, whatever the punctuation and the line breaks."""
+    return " ".join(re.findall(r"\w+", text.lower()))
 
 
 class IndexStore:
@@ -280,13 +288,45 @@ class IndexStore:
             f"FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE r.doc = ? ORDER BY r.id", (doc,))]
 
     def neighbours(self, rec: dict, radius: int = 1) -> list[dict]:
-        """The adjacent chunks of the same section ('small-to-big' context)."""
-        if rec["kind"] != "chunk":
-            return [rec]
-        rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
-                           "AND seq BETWEEN ? AND ? ORDER BY seq",
-                           (rec["doc"], rec["section_id"], rec["seq"] - radius, rec["seq"] + radius))
-        return self.records([r[0] for r in rows])
+        """The context of a record ('small-to-big'), in the order of its document:
+        - a chunk of a document: the adjacent chunks of its section, `radius` on each side;
+        - a requirement or an information object of a DOORS module: the records of its
+          section within `radius` of it (they are indexed in the order of the module) and,
+          for a requirement, the same ID where a document states it;
+        - a section summary: the first 2 * radius + 1 chunks of its section;
+        - a requirement or a definition of a document: the chunk of its section that holds
+          its text, with its neighbours (and the record first if the chunk does not hold
+          all of it);
+        - anything else, the record itself."""
+        kind, doc = rec["kind"], rec["doc"]
+        if doc.startswith(DOORS_PREFIX) and kind in ("requirement", "chunk"):
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND section_id = ? AND id BETWEEN ? AND ? "
+                               "ORDER BY id", (doc, rec["section_id"], rec["id"] - radius, rec["id"] + radius))
+            same = [] if kind != "requirement" or not rec.get("ref") else self._query(
+                "SELECT id FROM index_records WHERE kind = 'requirement' AND UPPER(ref) = ? AND doc NOT LIKE ? "
+                "ORDER BY id", (rec["ref"].upper(), DOORS_PREFIX + "%"))
+            return self.records([r[0] for r in rows] + [r[0] for r in same])
+        if kind == "chunk":
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
+                               "AND seq BETWEEN ? AND ? ORDER BY seq",
+                               (doc, rec["section_id"], rec["seq"] - radius, rec["seq"] + radius))
+            return self.records([r[0] for r in rows])
+        if kind == "section_summary":
+            rows = self._query("SELECT id FROM index_records WHERE doc = ? AND kind = 'chunk' AND section_id = ? "
+                               "ORDER BY seq LIMIT ?", (doc, rec["section_id"], 2 * radius + 1))
+            return [rec] + self.records([r[0] for r in rows])
+        if kind in ("requirement", "definition") and not doc.startswith(CODE_PREFIX) and rec.get("section_id"):
+            chunks = self._query("SELECT id, text FROM index_records WHERE doc = ? AND kind = 'chunk' AND "
+                                 "section_id = ? ORDER BY seq", (doc, rec["section_id"]))
+            text = _canon(rec["text"])
+            body = _canon(rec["text"].split(": ", 1)[1] if rec.get("ref") and rec["text"].startswith(f"{rec['ref']}: ")
+                          else rec["text"])
+            for needle in (text, body, _canon(rec.get("ref") or "")):
+                holder = next((c for c in chunks if needle and needle in _canon(c["text"])), None)
+                if holder is not None:
+                    group = self.neighbours(self.records([holder["id"]])[0], radius)
+                    return group if needle in (text, body) else [rec] + group
+        return [rec]
 
     def requirement(self, req_id: str) -> list[dict]:
         """Records of the requirement with that exact ID, in every document."""

@@ -454,3 +454,37 @@ def test_init_writes_a_template_that_loads_and_runs(tmp_path, capsys, monkeypatc
     cfg = load_config(tmp_path / "atlas.toml")
     assert cfg["llm"]["api_key"] == "local" and cfg.workspace == tmp_path / "workspace"
     assert run(cfg) == 0                     # no sources yet (no docs/ nor src/): nothing to do
+
+
+def test_a_doors_requirement_comes_with_the_note_after_it(tmp_path, samples, fake):
+    """The index keeps the order of the module: the context of SRS-0004 has SRS-0003 before
+    it and the note that follows it in the exchange database (examples/make_samples.py)."""
+    from atlas.index import Index
+    from atlas.index.search import build_context
+    path = tmp_path / "atlas.toml"
+    path.write_text(f'''
+[project]
+workspace = "{(tmp_path / 'ws').as_posix()}"
+[llm]
+base_url = "{fake[0]}"
+model = "fake"
+[network]
+proxy = ""
+no_proxy = "*"
+[pipeline]
+steps = ["doors", "index"]
+[sources.doors]
+adapter = "exchange"
+modules = ["SRS_TMS"]
+[sources.doors.exchange]
+path = "{(samples / 'requirements.sqlite').as_posix()}"
+kinds = ["requirement", "heading", "information"]
+''', encoding="utf-8")
+    cfg = load_config(path)
+    assert run(cfg) == 0
+    idx = Index.from_config(cfg)
+    hit = idx.search("srs-4", k=1, kinds=["requirement"])[0]
+    context = build_context(idx.store, [hit])[0]["context"]
+    assert context.split(" … ") == [
+        next(r["text"] for r in idx.store.document_records("doors:SRS_TMS") if r["ref"] == "SRS-0003"), hit["text"],
+        "Note: the deadlines of these requirements are measured from the reception of the radar plot."]

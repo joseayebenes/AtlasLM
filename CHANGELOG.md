@@ -24,7 +24,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   el gateway lo publicaba con otro, no se ponía ninguno sin aviso; ahora el registro lo avisa y
   `atlas check` imprime los prefijos efectivos. Entran en la huella del índice.
 
+- `[search] context_radius` (1): el contexto de cada pasaje de una respuesta. Un requisito de
+  DOORS llega con los registros que lo rodean en su módulo y con el pasaje del documento que
+  dice el mismo ID; un resumen de sección, con los primeros fragmentos de la sección; un
+  requisito o una definición de un documento, con el fragmento que lo contiene y sus vecinos.
+  Antes solo se ampliaban los fragmentos.
+
 ### Cambiado
+- Los requisitos de un módulo de DOORS se indexan en el orden del módulo (el de la base de
+  intercambio), no en el de sus IDs. Las muestras tienen una nota tras SRS-0004.
 - Con `embeddinggemma`, el prefijo de documento lleva el título del documento (`title: HMI
   Manual | text: …`) en vez de `title: none`, como recomienda su ficha. En las muestras, la híbrida
   pasa del 75 % al 80 % de acierto@1 (MRR de 0,83 a 0,88).

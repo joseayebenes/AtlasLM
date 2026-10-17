@@ -106,8 +106,17 @@ deleted» daba 8 elementos de `tracks` y ningún requisito. Con `document` no ha
 `[search] results` dice cuántos resultados (8).
 
 `atlas ask` reescribe antes la pregunta en consultas de búsqueda. Después pasa al modelo
-los mejores resultados, con los fragmentos vecinos (hasta `[search] context_chars`), y le
-pide responder solo con esas fuentes y citándolas como `[n]`.
+los mejores resultados, cada uno con su contexto (hasta `[search] context_chars`), y le pide
+responder solo con esas fuentes y citándolas como `[n]`. El contexto (`IndexStore.neighbours`,
+`[search] context_radius` registros a cada lado, 1) depende de lo encontrado:
+- un fragmento: sus vecinos de la misma sección;
+- un requisito o un objeto de información de DOORS: los registros de su sección que lo
+  rodean en el módulo (se indexan en el orden del módulo, no en el de los IDs) y, si un
+  documento dice el mismo ID, su pasaje con su cita. Antes llegaba la frase a secas;
+- un resumen de sección: los primeros fragmentos de la sección. Antes, solo el resumen;
+- un requisito o una definición de un documento: el fragmento de su sección que contiene su
+  texto, con sus vecinos;
+- lo demás (resumen del documento, código), él mismo.
 
 ## Preguntas amplias
 

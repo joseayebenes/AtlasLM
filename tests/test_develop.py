@@ -2,6 +2,7 @@
 The agent is scripted (a stub of the OpenAI client); the project is Python, the test real."""
 import json
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -477,6 +478,15 @@ def test_bad_plans(project):
     (base / "bad.toml").write_text('tests = ["tests/test_*.py"]\ntask_calls = -1\n')
     with pytest.raises(ConfigError, match="task_calls is a number, 0 or more"):
         load_plan(base / "bad.toml")
+    (base / "bad.toml").write_text('agent = "a"\nagent_command = ["x", "{prompt}"]\ntests = ["tests/test_*.py"]\n')
+    with pytest.raises(ConfigError, match="agent_command or agent, not both"):
+        load_plan(base / "bad.toml")
+    (base / "bad.toml").write_text('agent_command = "opencode run"\ntests = ["tests/test_*.py"]\n')
+    with pytest.raises(ConfigError, match="agent_command is the program and its arguments"):
+        load_plan(base / "bad.toml")
+    (base / "bad.toml").write_text('agent_command = ["no-such-agent-x", "{prompt}"]\ntests = ["tests/test_*.py"]\n')
+    with pytest.raises(ConfigError, match="no-such-agent-x is not found"):
+        Developer(load_plan(base / "bad.toml"), cfg)
 
 
 def test_a_plan_is_checked_before_any_run(project):
@@ -614,6 +624,74 @@ def test_drafts_of_hints_from_the_calls(project, capsys):
     assert "2 errors without a hint; drafts in" in out and "fixed in run 1" in out
     with pytest.raises(SystemExit, match="no calls of atlas develop for other"):
         cli.hints(cfg, "other")
+
+
+OUTSIDE = f'''import pathlib, sys, time
+prompt = sys.argv[1]
+print("read:", prompt.splitlines()[0])
+if "slowly" in prompt:
+    time.sleep(30)
+pathlib.Path("src/calc.py").write_text({MUL!r} if "Step 2" in prompt else {ADD!r})
+if "however" in prompt:                  # it changes the test and adds one, to pass
+    pathlib.Path("tests/test_calc.py").write_text("print('ok')\\n")
+    pathlib.Path("tests/test_new.py").write_text("print('ok')\\n")
+print("Done.")
+'''
+
+
+def outside_plan(base, text, extra="fix_rounds = 2"):
+    """A plan whose agent is a program of outside: agent.py, a script that writes the code."""
+    (base / "agent.py").write_text(OUTSIDE)
+    command = json.dumps([sys.executable, "agent.py", "{prompt}"])
+    (base / "plan.toml").write_text(f'agent_command = {command}\ncheck = ["src/*.py"]\ntests = ["tests/test_*.py"]\n'
+                                    f"progress = 'Step (\\d+)'\n{extra}\n"
+                                    f'[[tasks]]\nid = "add"\ntext = "{text}"\n')
+    return base / "plan.toml"
+
+
+def test_an_agent_of_outside_under_the_same_judge(project):
+    """agent_command: the program runs in the working folder, the tests judge it as an agent
+    of atlas, and what it prints goes to the calls log as one call."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    report = develop(outside_plan(base, "Implement add."), cfg)
+    assert [(s["kind"], s["agent"], s.get("outcome")) for s in report["steps"]] == [
+        ("task", Path(sys.executable).name, "kept"), ("round", Path(sys.executable).name, "fixed")]
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    assert report["steps"][0]["calls"] == 1 and "protected" not in report["steps"][0]
+    runs = [json.loads(l) for l in (cfg.workspace / "reports" / "develop-plan.calls.jsonl").read_text().splitlines()]
+    call = runs[0]["calls"][0]
+    assert call["name"] == "agent_command" and call["args"]["command"][-1] == "{prompt}"
+    assert call["result"]["exit_code"] == 0 and call["result"]["output"] == "read: Implement add.\nDone.\n"
+    assert "seconds" in call and runs[0]["answer"] == "read: Implement add.\nDone."
+    assert runs[1]["prompt"].startswith("The test tests/test_calc.py fails")
+
+
+def test_an_agent_of_outside_that_changes_a_protected_test(project):
+    """Its tools are its own: the protected test it changed, and the one it added, are put
+    back as they were after its run, and the step says so."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    test = (base / "tests" / "test_calc.py").read_text()
+    report = develop(outside_plan(base, "Implement add however you can.", "fix_rounds = 0"), cfg)
+    first = report["steps"][0]
+    assert first["protected"] == ["tests/test_calc.py", "tests/test_new.py"] and first["outcome"] == "kept"
+    assert (base / "tests" / "test_calc.py").read_text() == test and not (base / "tests" / "test_new.py").exists()
+    assert report["final"]["tests_passed"] == 0                   # the real test: add only gets to step 2
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## Protected files put back" in md and "tests/test_calc.py, tests/test_new.py" in md
+
+
+def test_an_agent_of_outside_that_runs_out_of_time(project):
+    """command_timeout: the run is cut and counts as one that stopped."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    report = develop(outside_plan(base, "Implement add slowly.", "fix_rounds = 0\nrestarts = 0\ncommand_timeout = 1"),
+                     cfg)
+    step = report["steps"][0]
+    assert step["timed_out"] and step["stopped"] and step["seconds"] < 10
+    assert (base / "src" / "calc.py").read_text() == "def add(a, b):\n    return 0\n"
+    assert "(timed out)" in (cfg.workspace / "reports" / "develop-plan.md").read_text()
 
 
 def test_a_failure_in_a_line():

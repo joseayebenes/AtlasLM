@@ -287,6 +287,89 @@ def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):
     assert "Secret1" not in caplog.text and not any(r.levelno == logging.WARNING for r in caplog.records)
 
 
+CALC_TEST = """import sys
+sys.path.insert(0, "SRC")
+import calc
+def check(step, got, want):
+    if got != want:
+        print(f"Step {step}: expected {want}, received {got}")
+        sys.exit(1)
+check(1, calc.add(1, 2), 3)
+check(2, getattr(calc, "mul", lambda a, b: None)(2, 3), 6)
+"""
+
+
+def test_the_judge_of_atlas_develop_for_an_editor(toml, tmp_path, monkeypatch):
+    """run_tests and judge_changes over the Python project of test_develop: by test, how far
+    it gets; after a change, what changed, whether it compiles and which tests moved."""
+    pytest.importorskip("mcp")
+    import anyio
+    from atlas.mcp import create_server, default_tools
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return 0\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_calc.py").write_text(CALC_TEST.replace("SRC", (tmp_path / "src").as_posix()))
+    (tmp_path / "plan.toml").write_text("tests = [\"tests/test_*.py\"]\nprogress = 'Step (\\d+)'\n")
+    code = f'''[sources.code]
+roots = ["src", "tests"]
+exclude = ["**/__pycache__/**"]
+protected = ["tests/**"]
+check_command = ["{sys.executable}", "-m", "py_compile", "{{file}}"]
+[sources.code.test_commands]
+py = ["{sys.executable}", "{{file}}"]
+'''
+    plugins.load_plugins()
+    cfg = load_config(toml(code))
+    assert not {"run_tests", "judge_changes"} & set(default_tools(cfg))         # they run code: only if asked for
+    cfg = load_config(toml(code + '[mcp]\ntools = ["read_file", "run_tests", "judge_changes"]\n'))
+    server = create_server(cfg)
+    tools = _tools(server)
+    assert tools["run_tests"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
+    assert tools["judge_changes"]["annotations"]["destructiveHint"] is True
+    assert "`judge_changes` says after a change" in server.instructions
+
+    def call(name, **arguments):
+        async def go():
+            return await server.call_tool(name, arguments)
+        result = anyio.run(go)                       # mcp 1.x: (content, structured); 2.x: CallToolResult
+        content = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
+        return json.loads(content[0].text)
+
+    assert call("run_tests", plan="plan.toml") == {
+        "tests_of": "plan.toml", "passed": 0, "of": 1,
+        "tests": {"tests/test_calc.py": {"passed": False, "progress": 1.0, "output": "Step 1: expected 3, received 0"}}}
+    assert call("run_tests", plan="../outside.toml")["error"].startswith("../outside.toml is not a plan file")
+    first = call("judge_changes")                      # not a git repository: the first call takes the snapshot
+    assert first["changed"] == [] and first["changed_since"].startswith("nothing")
+    assert first["tests"]["advanced"] == [] and first["tests"]["went_back"] == []
+
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")       # gets to step 2
+    judged = call("judge_changes")
+    assert judged["changed_since"] == "the last call" and judged["changed"] == ["src/calc.py"]
+    assert judged["compiles"] == ["src/calc.py"] and "does_not_compile" not in judged
+    assert judged["tests"]["advanced"] == ["tests/test_calc.py"] and judged["tests"]["tests_of"] == "plan.toml"
+
+    (tmp_path / "src" / "calc.py").write_text("def add(a, b:\n    return a + b\n")        # breaks it
+    judged = call("judge_changes")
+    assert list(judged["does_not_compile"]) == ["src/calc.py"] and judged["compiles"] == []
+    back = judged["tests"]["went_back"]
+    assert [b["test"] for b in back] == ["tests/test_calc.py"] and back[0]["was"] == "got to 2"
+    assert json.loads((cfg.workspace / "judge.json").read_text())["plan"] == "plan.toml"
+
+    # in a git repository, the changes are against the last commit
+    if shutil.which("git"):
+        import subprocess
+        (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
+        for command in (["init", "-q"], ["add", "src", "tests", "plan.toml"],
+                        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]):
+            subprocess.run(["git", *command], cwd=tmp_path, check=True)
+        (tmp_path / "src" / "more.py").write_text("X = 1\n")
+        judged = call("judge_changes", paths=["src/more.py", "src/none.py"])
+        assert judged["changed_since"] == "the last commit (git)" and judged["changed"] == ["src/more.py"]
+        assert judged["compiles"] == ["src/more.py"] and list(judged["does_not_compile"]) == ["src/none.py"]
+
+
 def test_serve_turned_off(toml):
     pytest.importorskip("mcp")
     from atlas.cli import main

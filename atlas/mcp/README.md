@@ -11,6 +11,7 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
 | Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
+| Juez de `atlas develop` | `run_tests`, `judge_changes` | `atlas.code.JudgeTools` |
 | Agentes | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
@@ -66,7 +67,9 @@ Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
 - `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` necesitan el
   modelo (y `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
-  y el editor edita. Lo mismo `run_test`, que ejecuta código.
+  y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
+  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, `run_tests` y
+  `judge_changes`, que ejecutan código.
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
@@ -104,6 +107,36 @@ Cada llamada del editor queda en el registro de uso del workspace (la tabla `usa
 `atlas.db`, `[mcp] usage_log`): la herramienta, los milisegundos, si falló, si la respuesta
 de `ask_docs` tenía fuentes, y las peticiones, tokens y coste que costó. Por defecto sin el
 texto de los argumentos. `atlas usage --since 30d` lo resume por herramienta y semana.
+
+## El juez de `atlas develop` en el editor
+
+`atlas develop` juzga cada cambio de sus agentes sin modelo: qué compila, qué tests pasan y
+hasta dónde llegan los demás, y qué ha empeorado. Desde OpenCode o VS Code el agente del
+editor cambia el código con sus herramientas, y estas dos le dan ese juicio. Ejecutan código
+(los tests y el compilador), así que solo se ofrecen si se piden en `[mcp] tools`, y el
+servidor las marca como destructivas para que el editor pida confirmación:
+
+```toml
+[mcp]
+tools = ["search", "get_requirement", "trace", "build_context", "read_file", "check_code",
+         "run_tests", "judge_changes"]
+```
+
+- `run_tests(plan)` ejecuta los tests de un plan de `atlas develop` (`plan`: su TOML, relativo
+  a la carpeta del servidor) o, sin plan, los que escribe `atlas tests` (los `path` de
+  `[tests.languages]`). Por test: si pasa y, si no, hasta qué paso llegó (con `progress` del
+  plan), lo que dijo al fallar y el sitio del código que cita.
+- `judge_changes(paths)` dice qué ficheros de las raíces del código cambiaron (frente al
+  último commit si la carpeta es un repositorio de git; si no, desde la llamada anterior),
+  si compilan (`check_code` sobre ellos, o sobre `paths` si se dan) y qué tests avanzaron o
+  retrocedieron desde la última llamada a una de las dos. Los tests son los del último plan
+  que recibió `run_tests`, o los de `[tests]`.
+
+Lo que recuerdan entre llamadas (el hash de cada fichero, hasta dónde llegó cada test y el
+último plan) está en `<workspace>/judge.json`. No cambian código: deshacer lo que hace
+retroceder un test es cosa del agente del editor, al que las instrucciones del servidor se lo
+piden. Para que sea `atlas develop` quien encargue, juzgue y deshaga con un agente de fuera,
+ver `agent_command` en [atlas/agents](../agents/README.md#un-agente-de-fuera-bajo-el-mismo-juez).
 
 ## Configurar el editor
 

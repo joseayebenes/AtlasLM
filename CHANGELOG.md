@@ -554,6 +554,19 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `JsonLlm.ask_json` y `ask_text` aceptan `model` y `reasoning_effort` por petición, y
   `JsonLlm.using(...)` los fija para todas. La huella de `docs.process` lleva el modelo de
   cada fuente; cambiar `[search]` sigue sin reprocesar nada.
+- `atlas develop` con un agente de fuera: `agent_command` en el plan (por ejemplo
+  `["opencode", "run", "--format", "json", "{prompt}"]` o `["claude", "-p", "{prompt}"]`), en
+  lugar de `agent` y `fix_agent`. El comando se lanza en la carpeta de trabajo (o en la copia
+  del intento) con el mismo juez: `check`, tests, deshacer, `advances`, rondas, reinicios e
+  informe. Los ficheros protegidos y los tests del plan se comparan tras cada ejecución y, si
+  los cambió, se devuelven a como estaban («Protected files put back»). Lo que escribe va al
+  registro de llamadas como una sola llamada. `command_timeout` (1800 s) limita cada
+  ejecución. Cómo darle `atlas serve` como MCP a OpenCode, en `atlas/agents/README.md`.
+- El juez de `atlas develop` en el editor: `run_tests(plan)` (por test, si pasa, hasta dónde
+  llega y lo que dijo, de un plan de `atlas develop` o de `[tests]`) y `judge_changes(paths)`
+  (qué cambió frente a git o a la llamada anterior, si compila y qué test avanzó o retrocedió;
+  su estado, en `<workspace>/judge.json`). Ejecutan código: solo se ofrecen si se piden en
+  `[mcp] tools`, marcadas como destructivas.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -710,6 +723,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Los Markdown y el `structure.json` de cada documento, y lo que se escribe con
   `atomic_write`, llevan `\n` también en Windows (antes `\r\n`): un workspace copiado entre
   sistemas tiene los mismos bytes.
+- Las instrucciones del servidor MCP incluyen el párrafo del compilador (`check_code`,
+  `run_test`...) cuando ofrece alguna de esas herramientas; antes no salía nunca.
 
 ### Quitado
 - `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.

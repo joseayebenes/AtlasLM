@@ -23,7 +23,8 @@ similar_requirements with the graph of the code. A profile only keeps some of th
 ask_atlas, verify_requirement, link_requirement and check_compliance (which need the model,
 and ask_atlas also ADK) are only offered when listed. So are the tools that write (edit_file,
 write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
-edits) and run_test, which runs code.
+edits) and run_test, run_tests and judge_changes, which run code (the last two are the judge
+of `atlas develop`: which tests pass, which got further and what a change broke).
 [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 Each call goes to the usage log of the workspace ([mcp] usage_log; see atlas.usage).
 
@@ -87,7 +88,10 @@ INSTRUCTIONS = {
              "every change; `run_test` builds a test procedure and runs it; `run_program` runs the program with "
              "an input and returns its output; `library_spec` gives the real declarations of a package of the "
              "runtime or of the project; `search_reference` searches the manuals of the compiler and the "
-             "declarations of the library by words.",
+             "declarations of the library by words. `run_tests` runs the tests of a plan of atlas develop and "
+             "says how far each one gets, and `judge_changes` says after a change what changed, whether it compiles "
+             "and which tests got further or went back: call it after each change, and undo what makes a test go "
+             "back.",
     "lsp": "`find_definition`, `find_references` and `describe_symbol` ask the language server about a name written "
            "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
@@ -187,11 +191,12 @@ def tool_groups() -> dict[str, tuple[str, ...]]:
     """Group of INSTRUCTIONS -> its tools: the paragraph of a group goes in the instructions
     when the server offers any of them."""
     from atlas.code.build import BUILD_TOOL_NAMES
+    from atlas.code.judge import JUDGE_TOOL_NAMES
     from atlas.code.lsp import LSP_TOOL_NAMES
     from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
     groups = {"docs": DOC_TOOLS, "files": tuple(n for n in FILE_TOOLS if n not in WRITING_TOOLS),
-              "edit": WRITING_TOOLS, "build": BUILD_TOOL_NAMES, "lsp": LSP_TOOL_NAMES}
+              "edit": WRITING_TOOLS, "build": (*BUILD_TOOL_NAMES, *JUDGE_TOOL_NAMES), "lsp": LSP_TOOL_NAMES}
     try:                                    # networkx, of the [code] extra
         from atlas.agents.tools import TOOL_NAMES as AGENT_TOOLS
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS

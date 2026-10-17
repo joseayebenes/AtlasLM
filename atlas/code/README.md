@@ -12,6 +12,7 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `outline`, `read_subprogram`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
 | `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
+| `judge.py` | `JudgeTools`: `run_tests` y `judge_changes`, el juez de `atlas develop` para el agente de un editor (ver [atlas/mcp](../mcp/README.md#el-juez-de-atlas-develop-en-el-editor)) |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
 | `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
@@ -364,7 +365,7 @@ programa mismo o, para un servidor, un cliente que manda cada línea y escribe l
 (`["with_server", "session"]` en `atlas-socket-demo`).
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` y `run_program`
-ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
+(y `run_tests` y `judge_changes`, de `judge.py`) ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
 agente de serie las usa: `examples/agents/` trae cuatro de proyecto, `implementer` (cambia el
 código para cumplir un requisito y compila lo que cambia), `fixer` (arregla el código de un test
 que falla), `planner` (lee y dice cómo hacer un encargo) y `tester` (escribe una prueba con

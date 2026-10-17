@@ -122,7 +122,7 @@ restarts = 1                             # veces que una ejecución parada vuelv
 attempts = 1                             # intentos de cada encargo a la vez, cada uno en una copia
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
 reviewer = "reviewer"                    # opcional: un agente que lee el diff de un encargo que compila
-review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente
+review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente (0: solo se informa)
 stray = "report"                         # o "delete": los tests que el agente deja entre el código
 
 [[tasks]]
@@ -182,7 +182,8 @@ cambios que rompían lo que ya iba.
    agente con el encargo y el diff del cambio. Solo lee, tenga las herramientas que tenga: las
    de ficheros le contestan que son de solo lectura. Contesta en JSON, `{"verdict": "ok"}` o
    `{"verdict": "issues", "issues": [{"file", "line", "issue"}]}`, y los problemas vuelven al
-   agente `review_fixes` veces (una por defecto); un arreglo que rompe algo se deshace. El
+   agente `review_fixes` veces (una por defecto; con 0 solo se informan); un arreglo que rompe
+   algo se deshace. El
    informe los lista en «Review». Es para lo que no ven ni el compilador ni los tests (ramas
    muertas, cambios fuera del encargo); antes van las reglas sin modelo de
    `[sources.code] rules`. Falta medirlo con un banco de encargos antes de encenderlo por

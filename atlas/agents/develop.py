@@ -17,7 +17,7 @@ The plan is a TOML file:
     attempts = 1                             # parallel attempts at each task, each in a copy: the tests choose
     planner = "planner"                      # optional: an agent that reads and says how to do each task
     reviewer = "reviewer"                    # optional: an agent that reads the diff of a task that compiles
-    review_fixes = 1                         # turns that the verdict of the reviewer goes back to the agent
+    review_fixes = 1                         # turns that the verdict of the reviewer goes back to the agent (0: report)
     stray = "report"                         # or "delete": the new files of a task that are tests outside tests/
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
@@ -515,8 +515,9 @@ class Developer:
                  ws: _Workspace) -> dict:
         """The review of a task that compiles and breaks nothing (see the module): the reviewer
         reads the task and the diff since `snapshot`; its issues go back to the agent at most
-        review_fixes times. The state after them; a fix that breaks something is undone."""
-        for _ in range(self.plan.review_fixes):
+        review_fixes times (0: they are only reported). The state after them; a fix that breaks
+        something is undone."""
+        for turn in range(max(1, self.plan.review_fixes)):
             diff, _ = self._changes(snapshot, ws)
             if not diff.strip():
                 break
@@ -527,7 +528,7 @@ class Developer:
             if verdict:
                 review["issues"] = verdict
             self._done(review, after)
-            if not verdict:
+            if not verdict or turn >= self.plan.review_fixes:
                 break
             fix_snapshot = ws.files.snapshot()
             issues = "\n".join(f"- {i.get('file', '?')}" + (f", line {i['line']}" if i.get("line") else "")

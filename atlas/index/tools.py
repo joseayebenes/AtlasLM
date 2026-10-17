@@ -11,7 +11,9 @@
 
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
-the agent can correct itself or tell the user.
+the agent can correct itself or tell the user. When the text of search, get_section or
+get_requirement has a phrase written to steer a model ("ignore previous instructions"), the
+answer says where, in `warnings` (atlas/agents/guard.py), and is the same otherwise.
 
     tools = DocTools.from_config(cfg)
     tools.search("alarm latency", k=5)
@@ -28,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import openai
 
+from atlas.agents import guard
 from atlas.index.records import DOORS_PREFIX, KINDS
 from atlas.index.search import cite
 from atlas.llm import model_failed
@@ -124,8 +127,9 @@ class DocTools:
                                      kinds=[kind] if kind else None)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
-        return {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
-                             "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
+        out = {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
+                            "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
+        return guard.check(out, [(r["cite"], r["text"]) for r in out["results"]])
 
     def get_section(self, document: str, section: str) -> dict:
         """The whole Markdown of a section (summary, requirements and its original text).
@@ -154,8 +158,9 @@ class DocTools:
             return {"error": f"section '{section}' is " + ("ambiguous" if hits else f"not in {d['name']}"),
                     "sections": listed[:100]}
         h, text = heads[hits[0]], hits[0].read_text(encoding="utf-8")
-        return {"document": d["name"], "section": h["id"], "title": h["title"], "file": str(hits[0]),
-                "markdown": text[:MAX_SECTION_CHARS], "truncated": len(text) > MAX_SECTION_CHARS}
+        out = {"document": d["name"], "section": h["id"], "title": h["title"], "file": str(hits[0]),
+               "markdown": text[:MAX_SECTION_CHARS], "truncated": len(text) > MAX_SECTION_CHARS}
+        return guard.check(out, [(f"{d['name']} › {h['title']}", out["markdown"])])
 
     def get_requirement(self, req_id: str) -> dict:
         """A requirement by its exact ID: its official text, module, attributes, parent and
@@ -172,7 +177,8 @@ class DocTools:
                                                          "links_in")}
         out["documents"] = [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
                              "text": h["text"]} for h in in_docs]
-        return out
+        return guard.check(out, [(f"{out['id']} (DOORS)", (official or {}).get("text")),
+                                 *((x["cite"], x["text"]) for x in out["documents"])])
 
     def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
         """An answer written by the model only from the documents, citing them as [n], with

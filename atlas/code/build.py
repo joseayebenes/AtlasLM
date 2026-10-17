@@ -17,6 +17,9 @@ When an output cites places of the code ("controller.adb:103", the place of an e
 'File "x.py", line 12'), the lines around them come with it, in `code_at`: a small model that
 gets "length check failed at controller.adb:103" does not always go and read that line.
 Only the files an agent can change are shown (not the protected ones: the tests).
+An output or a `code_at` with a phrase written to steer a model ("ignore previous
+instructions") gets a warning in `warnings` (atlas/agents/guard.py); the compiler warnings of
+run_test go in the same list, as dicts.
 
 The commands come from [sources.code], as lists of arguments (no shell), and nothing is tied
 to a compiler. Placeholders:
@@ -78,6 +81,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Iterable
 
+from atlas.agents import guard
 from atlas.code.library import Library, with_clauses
 from atlas.code.reference import Reference
 from atlas.code.tools import CodeTools, rebased
@@ -429,11 +433,17 @@ class BuildTools:
                 break
         return out
 
-    def _ran(self, ran: subprocess.CompletedProcess) -> dict:
-        """exit_code, output and the code it cites."""
+    def _ran(self, ran: subprocess.CompletedProcess, what: str) -> dict:
+        """exit_code, output and the code it cites; `what` ran, for the warnings (guard.py)."""
         output = ran.stdout + ran.stderr
         cited = self.code_at(output)
-        return {"exit_code": ran.returncode, "output": _tail(output), **({"code_at": cited} if cited else {})}
+        out = {"exit_code": ran.returncode, "output": _tail(output), **({"code_at": cited} if cited else {})}
+        guard.check(out, [(f"the output of {what}", out["output"])])
+        for c in cited:
+            found = guard.find(c["source"])
+            if found:
+                guard.warn(out, f"code_at {c['file']}:{found[1]}", found[0])
+        return out
 
     def check_code(self, path: str) -> dict:
         """Compiles one source file of the project without producing code, as the compiler
@@ -471,7 +481,8 @@ class BuildTools:
             ran = self._run(self._command(direct, p))
             if isinstance(ran, dict):
                 return {"file": self.files._show(p), "passed": False, **ran}
-            return {"file": self.files._show(p), "passed": ran.returncode == 0, **self._ran(ran)}
+            return {"file": self.files._show(p), "passed": ran.returncode == 0,
+                    **self._ran(ran, self.files._show(p))}
         if not self.test_command:
             return {"error": "no test command configured ([sources.code] test_command)"}
         res = self._run(self._command(self.test_command, p))
@@ -487,8 +498,11 @@ class BuildTools:
         ran = self._run(self._command(self.run_command, p))
         if isinstance(ran, dict):
             return {"file": self.files._show(p), "built": True, "passed": False, **ran, **warnings}
-        return {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0, **self._ran(ran),
-                **warnings}
+        res = {"file": self.files._show(p), "built": True, "passed": ran.returncode == 0,
+               **self._ran(ran, self.files._show(p))}
+        if warnings:                                  # those of the compiler, and those of guard
+            res["warnings"] = warnings["warnings"] + res.get("warnings", [])
+        return res
 
     def run_program(self, input_lines: list[str]) -> dict:
         """Runs the program of the project with `input_lines` as its input, one line each,
@@ -502,7 +516,7 @@ class BuildTools:
         if len(input_lines) > MAX_INPUT_LINES:
             return {"error": f"at most {MAX_INPUT_LINES} input lines"}
         ran = self._run(self._command(self.program_command, None), "".join(f"{l}\n" for l in input_lines))
-        return ran if isinstance(ran, dict) else self._ran(ran)
+        return ran if isinstance(ran, dict) else self._ran(ran, "the program")
 
 
 register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"))

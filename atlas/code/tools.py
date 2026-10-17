@@ -29,7 +29,9 @@ whole blocks with edit_file: 39 of its 151 edits in a run of atlas develop were 
 old_text of more than 30 lines, and 34 more did not match the file.
 
 Every answer is a compact JSON-serialisable dict; a problem is an answer with `error`,
-never an exception, so that the agent can correct itself.
+never an exception, so that the agent can correct itself. When what grep or read_file returns
+has a phrase written to steer a model ("ignore previous instructions"), the answer says where,
+in `warnings` (atlas/agents/guard.py), and is the same otherwise.
 
     tools = CodeTools.from_config(cfg)
     tools.grep(r"Delete_Track", glob="*.adb")
@@ -53,6 +55,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
+from atlas.agents import guard
 from atlas.code.symbols import Span, comment_mark, insertion_line, language, new_subprograms, subprograms
 from atlas.plugins import register_methods
 
@@ -227,7 +230,12 @@ class CodeTools:
                     lo, hi = max(0, i - context), min(len(lines), i + context + 1)
                     m["context"] = "\n".join(f"{k + 1:5d} | {lines[k][:MAX_LINE_CHARS]}" for k in range(lo, hi))
                 matches.append(m)
-        return {"count": total, "matches": matches, "truncated": total > len(matches)}
+        out = {"count": total, "matches": matches, "truncated": total > len(matches)}
+        for m in matches:
+            found = guard.find(m.get("context", m["text"]), m["line"])
+            if found:
+                guard.warn(out, f"{m['file']}:{found[1]}", found[0])
+        return out
 
     def read_file(self, path: str, start: int = 1, end: int = 0) -> dict:
         """Lines `start` to `end` of a file, numbered (end 0 = up to 300 lines from start).
@@ -244,9 +252,11 @@ class CodeTools:
         end = min(len(lines), end if end >= start else start + MAX_LINES - 1, start + MAX_LINES - 1)
         with self._lock:
             self._seen[p] = _sha(data)
-        return {"file": self._show(p), "start": start, "end": end, "total_lines": len(lines),
-                "truncated": end < len(lines) and (end - start + 1) >= MAX_LINES,
-                "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
+        out = {"file": self._show(p), "start": start, "end": end, "total_lines": len(lines),
+               "truncated": end < len(lines) and (end - start + 1) >= MAX_LINES,
+               "source": "\n".join(f"{i:5d} | {lines[i - 1]}" for i in range(start, end + 1))}
+        found = guard.find(out["source"])
+        return guard.warn(out, f"{out['file']}:{found[1]}", found[0]) if found else out
 
     # --- editing --------------------------------------------------------------
     def _check_seen(self, p: Path, path: str, data: bytes) -> dict | None:

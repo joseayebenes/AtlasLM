@@ -76,7 +76,9 @@ protected); nothing is committed. The tests should be protected ([sources.code] 
 
 What goes into a prompt from the project (what a test printed, the code it cites, the errors of
 the compiler, the diff of a restart, what an undone task broke) goes in a <data> block
-(guard.data_block): it is data, never instructions.
+(guard.data_block): it is data, never instructions. The warnings of the tools about phrases
+written to steer a model in what they returned (guard.py) go to the step, in `warnings`, and to
+the Markdown report, in "Instructions inside the data".
 """
 from __future__ import annotations
 
@@ -656,12 +658,14 @@ class Developer:
 
 
 def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
-    """What the tool calls of a run did ({"edits": {made, failed}, "compiles": {ok, failed}})
-    and the errors of the compiler it saw: of check_code, of the check after a change and of
-    the syntax check."""
-    edits, compiles, errors = Counter(), Counter(), []
+    """What the tool calls of a run did ({"edits": {made, failed}, "compiles": {ok, failed}},
+    and "warnings" of guard.py if any) and the errors of the compiler it saw: of check_code, of
+    the check after a change and of the syntax check."""
+    edits, compiles, errors, warnings = Counter(), Counter(), [], []
     for call in record:
         res = call.get("result") if isinstance(call.get("result"), dict) else {}
+        warnings += [f"{call.get('name')}: {w}" for w in res.get("warnings", [])
+                     if isinstance(w, str) and f"{call.get('name')}: {w}" not in warnings]
         checks = []
         if call.get("name") in WRITES:
             edits["failed" if "error" in res else "made"] += 1
@@ -673,7 +677,8 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             compiles["ok" if c.get("ok") else "failed"] += 1
             errors += c.get("errors", [])
     return {"edits": {"made": edits["made"], "failed": edits["failed"]},
-            "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
+            "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]},
+            **({"warnings": warnings} if warnings else {})}, errors
 
 
 def _shape(message: str) -> str:
@@ -741,6 +746,11 @@ def markdown(report: dict) -> str:
     if behind:
         out += ["", "## Did not advance", "", "Kept, but these tests did not get further with them:", ""]
         out += [f"- {s['n']} {s['task']}: {', '.join(s['not_advanced'])}" for s in behind]
+    warned = [s for s in report["steps"] if s.get("warnings")]
+    if warned:
+        out += ["", "## Instructions inside the data", "", "What these tools returned has phrases written to "
+                "steer a model; check that the agent did not follow them:", ""]
+        out += [f"- {s['n']} {s['task']}: {w}" for s in warned for w in s["warnings"]]
     person = report.get("for_a_person") or {}
     if person:
         out += ["", "## For a person", "", "The agent made no progress on these tests:", ""]

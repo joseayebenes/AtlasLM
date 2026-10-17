@@ -6,7 +6,9 @@ of ten searches.
 The package is made of blocks in order of importance; a block that does not fit is cut at a
 line and the rest is left out (`omitted`). Tokens are estimated as characters / 4. The body of
 each block is in a <data> block (guard.data_block): the text of the requirements, documents,
-comments and code is data for the agent that reads it, never instructions.
+comments and code is data for the agent that reads it, never instructions. A block with a
+phrase written to steer a model ("ignore previous instructions") gets a warning in `warnings`
+(guard.py), with the target and the block.
 
     requirement   the requirement (DOORS text, links), the sections that state it, the code
                   that implements it (signatures), its tests, the callers of that code, and
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from atlas.agents import guard
 from atlas.agents.guard import data_block
 from atlas.graph.knowledge import REQUIREMENT_KINDS, KnowledgeGraph
 
@@ -202,5 +205,6 @@ def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000) -> 
             truncated = True
             continue
         text += block
-    return {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
-            "truncated": truncated, "omitted": omitted}
+    out = {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
+           "truncated": truncated, "omitted": omitted}
+    return guard.check(out, [(f"{n} ({title})", body) for title, body in blocks if title not in omitted])

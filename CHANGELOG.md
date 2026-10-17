@@ -6,6 +6,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- Aviso de instrucciones dentro de los datos, sin modelo y sin bloquear: `read_file`, `grep`,
+  `run_test`, `run_program` (salida y `code_at`), `search`, `get_section`, `get_requirement` y
+  `build_context` buscan en lo que devuelven las frases típicas de un texto escrito para dirigir
+  a un modelo («ignore previous instructions», «you must now», «as an AI», `write_file(`...).
+  Si hay una, la respuesta lleva `"warnings": ["possible instructions inside the data at
+  <sitio>"]` y el registro una línea WARNING; `atlas develop` los pone en cada paso y en la
+  sección «Instructions inside the data» de su informe. Los patrones están en
+  `atlas/agents/guard.py`. Una prueba con un requisito envenenado en la base de intercambio
+  comprueba que el aviso llega al informe y que los tests protegidos siguen intactos.
+
 ### Cambiado
 - Lo que devuelve una herramienta llega al modelo dentro de un marco,
   `<tool_result name="trace">…</tool_result>`, y el texto del proyecto que va en un prompt

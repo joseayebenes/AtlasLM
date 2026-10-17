@@ -27,6 +27,8 @@ The plan is a TOML file:
     reviewer = "reviewer"                    # optional: an agent that reads the diff of a task that compiles
     review_fixes = 1                         # turns that the verdict of the reviewer goes back to the agent (0: report)
     stray = "report"                         # or "delete": the new files of a task that are tests outside tests/
+    propose = false                          # true: the agents work on a copy; the patches are what it gives
+    max_copy_mb = 500                        # the largest working folder that propose and attempts copy
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -169,6 +171,14 @@ group is killed. Everything else is the same: check, tests, undo, advances, roun
 and report. Its tools are its own, so the protected files are not safe by them: they are read
 before each run and put back after it if it changed them (the step says which, in
 `protected`). What it prints goes to the calls log as a single call, with its seconds.
+
+Next to the patches, answers.md has the whole answer of each run, and the report links each step
+with its patch and its answer. With propose = true, the working folder is not touched: the agents
+work on a copy of it (<workspace>/attempts/0), which stays until the next develop to look at it
+(--resume goes on in it), and the patches are what the plan gives; a person applies those they
+want, as atlas link proposes a tag and does not write it. A copy (of propose, attempts or
+parallel) cannot be larger than max_copy_mb, and the tests cannot name the working folder by its
+absolute path: they would test its code, not the copy's.
 """
 from __future__ import annotations
 
@@ -195,7 +205,7 @@ from atlas.agents.hints import shape as _shape, write_hints_draft
 from atlas.agents.guard import data_block
 from atlas.config import Config, ConfigError
 
-__all__ = ["Plan", "develop", "load_plan"]
+__all__ = ["Plan", "develop", "load_plan", "patch"]
 
 log = logging.getLogger(__name__)
 
@@ -312,6 +322,8 @@ class Plan:
     reviewer: str = ""
     review_fixes: int = 1
     stray: str = "report"
+    propose: bool = False
+    max_copy_mb: int = 500
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -534,8 +546,9 @@ class Developer:
                                   "the prompts of develop tell it to check every file it changes"
                                   + (" and to run the failing test" if "run_test" in missing else ""))
         outside = [r for r in self.code.roots if self.code.base not in (r, *r.parents)]
-        if (plan.attempts > 1 or plan.parallel > 1) and outside:
-            raise ConfigError(f"plan {plan.name}: attempts and parallel need the code roots inside the folder of "
+        copies = "propose" if plan.propose else "attempts" if plan.attempts > 1 else "parallel" if plan.parallel > 1 else ""
+        if copies and outside:
+            raise ConfigError(f"plan {plan.name}: {copies} needs the code roots inside the folder of "
                               f"{cfg.path.name}, to copy them (not {self.code._show(outside[0])})")
         if not self.tests:
             raise ConfigError(f"plan {plan.name}: no file matches its tests {plan.tests}")
@@ -546,6 +559,8 @@ class Developer:
             if not self.code.protected_file(p):
                 raise ConfigError(f"plan {plan.name}: the test {t} is not protected ([sources.code] protected, "
                                   "e.g. [\"tests/**\"]): an agent could change what judges its code")
+        if copies:
+            self._copyable(copies)
         if plan.check and not (self.build.check_command or self.build.check_commands):
             raise ConfigError(f"plan {plan.name} checks {plan.check}, but [sources.code] has no check_command")
         unknown = [t for t in self.tests if Path(t).suffix.lstrip(".").lower() not in self.build.test_commands
@@ -1068,10 +1083,19 @@ class Developer:
     def _copy(self, name: str, number: int = 0, home: _Workspace | None = None,
               folder: str = "attempts") -> _Workspace:
         """A copy of the working folder (or of `home`) in <workspace>/<folder>/<name>, without
-        .git, the workspace and __pycache__: for a parallel attempt (its `number`), or for a
-        task with parallel."""
+        .git, the workspace and __pycache__, and with the build folder, where the tests run, as
+        its own: for a parallel attempt (its `number`), for a task with parallel, or ("0") for
+        propose."""
         source, target = (home or self.main).code.base, self.cfg.workspace / folder / name
         shutil.rmtree(target, ignore_errors=True)
+        shutil.copytree(source, target, symlinks=True, ignore=self._skip())
+        build, home_build = target / ".atlas" / "build", (home or self.main).build.build_dir
+        if home_build.is_dir() and not build.exists():    # the build folder of BuildTools in a copy
+            shutil.copytree(home_build, build, symlinks=True)
+        return _Workspace(self, target, number)
+
+    def _skip(self) -> Callable[[str, list[str]], set[str]]:
+        """What a copy of the working folder leaves out (for shutil.copytree)."""
         workspace = self.cfg.workspace.resolve()
 
         def skip(folder: str, names: list[str]) -> set[str]:
@@ -1079,9 +1103,29 @@ class Developer:
             if Path(folder).resolve() == workspace.parent:
                 out.add(workspace.name)
             return out
+        return skip
 
-        shutil.copytree(source, target, symlinks=True, ignore=skip)
-        return _Workspace(self, target, number)
+    def _copyable(self, why: str) -> None:
+        """A ConfigError if the working folder cannot be copied for `why` (propose, attempts):
+        tests that name it by its absolute path (they would test its code, not the copy's), or
+        more than max_copy_mb with the build folder."""
+        base = self.code.base
+        here = {str(base), str(base.resolve()), base.resolve().as_posix()}
+        for t in self.tests:
+            if any(h in (base / t).read_text(encoding="utf-8", errors="replace") for h in here):
+                raise ConfigError(f"plan {self.plan.name}: {why} runs the tests in a copy of the working folder, and "
+                                  f"{t} names it by its absolute path ({base}): make its paths relative to the "
+                                  f"test file")
+        limit, size, skip = self.plan.max_copy_mb * 2**20, 0, self._skip()
+        for folder in {self.code.base, self.build.build_dir.resolve()}:
+            for root, dirs, files in os.walk(folder):
+                left = skip(root, dirs + files)
+                dirs[:] = [d for d in dirs if d not in left]
+                size += sum(os.lstat(os.path.join(root, f)).st_size for f in files if f not in left)
+                if size > limit:
+                    raise ConfigError(f"plan {self.plan.name}: {why} copies the working folder, and it has more than "
+                                      f"{self.plan.max_copy_mb} MB (without .git and the workspace, with the build "
+                                      f"folder): raise max_copy_mb in the plan, or leave {why} out")
 
     def _best(self, results: list[tuple[dict, dict, list]]) -> int | None:
         """The index of the best attempt that broke nothing: more tests passing, then further
@@ -1383,6 +1427,11 @@ class Developer:
         warnings = self.warnings + [w for w in [self.load()] if w]
         if warnings:
             self.report["warnings"] = warnings
+        if self.plan.propose:                                        # the working folder is not touched
+            copy = self.cfg.workspace / "attempts" / "0"             # with --resume, the copy of the earlier run
+            self.main = _Workspace(self, copy) if resume and copy.is_dir() else self._copy("0")
+            self.code, self.build, self.files = self.main.code, self.main.build, self.main.files
+            self.report["proposal"] = {"copy": str(self.main.base), "patches": str(self.path)}
         state = self.evaluate()
         self.report.setdefault("at_start", {"tests_passed": self.passing(state),
                                             "check_errors": sorted(state["check"])})
@@ -1419,21 +1468,11 @@ class Developer:
 
     def _patched(self, step: dict, before: dict, name: str) -> None:
         """What changed in the working folder since `before`, as a patch: <name>.patch in
-        <reports>/develop-<plan>/, and at the end of all.patch there; `patch` in the step is its
-        path from the reports folder. Nothing when nothing changed."""
-        now, parts = self.main.files.snapshot(), []
-        for p in sorted(set(before) | set(now)):
-            if before.get(p) == now.get(p):
-                continue
-            shown = self.code._show(p)
-            a, b = (f"a/{shown}" if p in before else "/dev/null"), (f"b/{shown}" if p in now else "/dev/null")
-            if b"\0" in before.get(p, b"") + now.get(p, b""):
-                parts.append(f"Binary files {a} and {b} differ\n")
-                continue
-            old, new = (_decoded(d).splitlines(keepends=True) for d in (before.get(p, b""), now.get(p, b"")))
-            parts += [line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
-                      for line in difflib.unified_diff(old, new, a, b, n=3)]
-        if not parts:
+        <reports>/develop-<plan>/, and at the end of all.patch there (see patch: without binary
+        files); `patch` in the step is its path from the reports folder. Nothing when nothing
+        changed."""
+        text = patch(before, self.main.files.snapshot(), self.code._show)
+        if not text:
             return
         used = {s.get("patch") for s in self.report["steps"]}
         base = re.sub(r"[^\w.-]", "_", name)
@@ -1442,10 +1481,10 @@ class Developer:
             k += 1
             file = f"{base}-{k}.patch"
         self.path.mkdir(parents=True, exist_ok=True)
-        text = "".join(parts)
-        (self.path / file).write_text(text, encoding="utf-8")
-        with open(self.path / "all.patch", "a", encoding="utf-8") as all_patches:
-            all_patches.write(text)
+        data = text.encode("utf-8", "surrogateescape")
+        (self.path / file).write_bytes(data)
+        with open(self.path / "all.patch", "ab") as all_patches:
+            all_patches.write(data)
         step["patch"] = f"{self.path.name}/{file}"
 
     def hints_to_write(self) -> None:
@@ -1478,6 +1517,40 @@ class Developer:
             self.path.with_suffix(".json").write_text(json.dumps(self.report, ensure_ascii=False, indent=1),
                                                       encoding="utf-8")
             self.path.with_suffix(".md").write_text(markdown(self.report), encoding="utf-8")
+            answered = [s for s in steps if self._answers.get(s["n"])]
+            if answered:
+                self.path.mkdir(parents=True, exist_ok=True)
+                (self.path / "answers.md").write_text(answers(self.report, self._answers), encoding="utf-8")
+
+
+def patch(before: dict[Path, bytes], after: dict[Path, bytes], show: Callable[[Path], str]) -> str:
+    """The unified diff from `before` to `after` (files and their bytes), with 3 lines of
+    context and the paths of `show` after a/ and b/ (/dev/null for a new or a removed file), for
+    `git apply` or `patch -p1`. A binary file is left out; the bytes that are not UTF-8 stay
+    (surrogateescape: encode the text back with it)."""
+    lines = lambda data: [l for l in re.split(r"(?<=\n)", (data or b"").decode("utf-8", "surrogateescape")) if l]
+    out = []
+    for p in sorted(set(before) | set(after)):
+        old, new = before.get(p), after.get(p)
+        if old == new or b"\0" in (old or b"") or b"\0" in (new or b""):
+            continue
+        name = show(p)
+        for line in difflib.unified_diff(lines(old), lines(new), n=3,
+                                         fromfile=f"a/{name}" if old is not None else "/dev/null",
+                                         tofile=f"b/{name}" if new is not None else "/dev/null"):
+            out.append(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n")
+    return "".join(out)
+
+
+def answers(report: dict, texts: dict[int, str]) -> str:
+    """The whole answer of each run of an agent, by step, for the links of the report."""
+    out = [f"# atlas develop: {report['plan']}, the answers of the agents", ""]
+    for s in report["steps"]:
+        if texts.get(s["n"]):
+            kind = s["kind"] + (f" #{s['attempt']}" if s.get("attempt") else "")
+            out += [f'<a id="step-{s["n"]}"></a>', "", f"## {s['n']}. {kind} {s['task']} ({s['agent']})", "",
+                    texts[s["n"]].strip(), ""]
+    return "\n".join(out)
 
 
 def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
@@ -1582,13 +1655,6 @@ def _cited(result: dict) -> str:
     return f"\nThe code it cites:\n{data_block(code, 'code_at')}\n" if code else ""
 
 
-def _decoded(data: bytes) -> str:
-    try:
-        return data.decode("utf-8")
-    except UnicodeDecodeError:              # old Ada sources
-        return data.decode("latin-1")
-
-
 def _message(error: dict) -> str:
     return str(error.get("message", error))
 
@@ -1609,10 +1675,16 @@ def markdown(report: dict) -> str:
     out = [f"# atlas develop: {report['plan']}", "",
            f"Started {report['started']}" + (f", finished {report['finished']}" if report.get("finished") else
                                               ", running") + ".", ""]
+    folder = f"develop-{report['plan']}"
     if report.get("final"):
         f = report["final"]
         out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**"
                 + (f" {f['errors']} agent runs failed with an error." if f.get("errors") else ""), ""]
+    if report.get("proposal"):
+        out += [f"A proposal: the working folder was not changed. The patches are in [{folder}]({folder}/), "
+                f"[all.patch]({folder}/all.patch) with every change (`git apply` or `patch -p1` in the working "
+                f"folder); the code as the agents left it, in {report['proposal']['copy']}, until the next "
+                f"atlas develop.", ""]
     edits, compiles = t.get("edits", {}), t.get("compiles", {})
     out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min of runs ({t.get('wall_seconds', 0) // 60} "
             f"min of wall time, with the tests and the attempts at once), {t['calls']} tool calls, "
@@ -1620,7 +1692,7 @@ def markdown(report: dict) -> str:
             f"Edits: {edits.get('made', 0)} made, {edits.get('failed', 0)} failed. Compilations: "
             f"{compiles.get('ok', 0)} without errors, {compiles.get('failed', 0)} with errors."]
     patches = [s["patch"] for s in report["steps"] if s.get("patch")]
-    if patches:
+    if patches and not report.get("proposal"):
         all_patches = patches[0].split("/")[0] + "/all.patch"
         out += [f"What the tasks and rounds left in the code: a patch in each step, and all of them in "
                 f"[{all_patches}]({all_patches}) (`git apply`, or `patch -p1`)."]
@@ -1635,7 +1707,7 @@ def markdown(report: dict) -> str:
         out += [f"Resumed {', '.join(report['resumed'])}."]
     out += [f"Warning: {w}" for w in report.get("warnings", [])]
     out += ["", "| # | kind | task or test | agent | min | calls | edits (failed) | compilations (errors) | outcome | "
-                "tests passing |", "|---|---|---|---|---|---|---|---|---|---|"]
+                "tests passing | patch, answer |", "|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in report["steps"]:
         outcome = s.get("outcome", "")
         if s.get("error"):
@@ -1646,16 +1718,16 @@ def markdown(report: dict) -> str:
             c = s["conflict"]
             met = f", with {', '.join(c['with'])}" if c["with"] else ""
             outcome = f"{outcome} ({', '.join(c['files'])}{met}; done again alone)"
-        if s.get("patch"):
-            outcome = f"{outcome} ([patch]({s['patch']}))"
         e, c = s.get("edits") or {}, s.get("compiles") or {}
         stop = (" (stalled)" if s.get("stalled") else " (timed out)" if s.get("timed_out") else
                 " (max_steps)" if s.get("stopped") else "")
         kind = s["kind"] + (f" #{s['attempt']}" if s.get("attempt") else "")
+        links = ([f"[patch]({s['patch']})"] if s.get("patch") else []) + \
+                ([f"[answer]({folder}/answers.md#step-{s['n']})"] if s.get("answer") else [])
         out.append(f"| {s['n']} | {kind} | {s['task']} | {s['agent']} | {s['seconds'] / 60:.1f} | {s['calls']}"
                    f"{stop} | {e.get('made', 0) + e.get('failed', 0)} "
                    f"({e.get('failed', 0)}) | {c.get('ok', 0) + c.get('failed', 0)} ({c.get('failed', 0)}) | "
-                   f"{outcome} | {s.get('tests_passed', '')} |")
+                   f"{outcome} | {s.get('tests_passed', '')} | {' '.join(links)} |")
     undone = [s for s in report["steps"] if s.get("broke")]
     if undone:
         out += ["", "## Undone", ""]

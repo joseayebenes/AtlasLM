@@ -148,6 +148,8 @@ atlas search "deletion" atlas.dev.toml --attribute status=Approved --module SRS_
 atlas plugins  atlas.dev.toml # analizadores, adaptadores y extractores disponibles
 atlas agents   atlas.dev.toml # agentes (ficheros Markdown): de serie y del proyecto
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml   # pregunta a un agente
+atlas chat     atlas.dev.toml # conversación con el asistente (--agent NOMBRE para otro): cada pregunta ve
+                              # las anteriores; /trace, /matrix, /gaps, /sources y /save, sin modelo
 atlas verify SRS_TMS atlas.dev.toml    # cada requisito contra la documentación, con el modelo
 atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
 atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
@@ -155,6 +157,7 @@ atlas link SRS_TMS atlas.dev.toml      # código que puede implementar los requi
 atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace todo lo que pide, obligación a obligación
 atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
 atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
+                                             # (con propose = true en el plan, en una copia: deja parches)
 atlas hints tasks/server.toml atlas.toml     # borradores de pistas para los errores sin pista de la última tanda
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas eval --compare atlas.dev.toml   # y cada caso contra el último informe de otra versión
@@ -183,7 +186,9 @@ por stderr y un error sale como `{"error": ...}` con código 1:
 atlas status atlas.dev.toml --json > estado.json
 ```
 
-Sin instalar, `python -m atlas.cli` en vez de `atlas`.
+Sin instalar, `python -m atlas.cli` en vez de `atlas`. Para ver las llamadas de un agente
+paso a paso, en el navegador, en vez de `atlas chat`: `ATLAS_CONFIG=atlas.dev.toml adk web
+examples/adk` (ver [atlas.agents](atlas/agents/README.md#conversaciones-atlas-chat)).
 
 Prueba el motor sin modelo:
 

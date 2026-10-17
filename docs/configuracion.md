@@ -590,7 +590,7 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `temperature` | número | su temperatura |
 | `top_p` | número | su `top_p` (de 0 a 1); sin poner, el del servidor. La ficha de gemma 4 recomienda 0,95 |
 | `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
-| `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos |
+| `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos; `atlas chat` usa 6 si el agente no dice nada |
 | `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `atlas develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
 
 ### El plan de `atlas develop`
@@ -599,8 +599,10 @@ El plan no va en `atlas.toml`: es su propio TOML, descrito en
 [atlas/agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests). Dos de sus claves
 dependen de esta configuración:
 
-- `attempts` y `parallel` (encargos a la vez, los que ya tienen hechos los de su `after`)
-  copian la carpeta de trabajo: las raíces de `[sources.code]` tienen que estar dentro de ella.
+- `attempts`, `parallel` (encargos a la vez, los que ya tienen hechos los de su `after`) y
+  `propose` (los agentes trabajan en una copia y el resultado son los parches) copian la
+  carpeta de trabajo: las raíces de `[sources.code]` tienen que estar dentro de ella, la copia
+  no puede pasar de `max_copy_mb` y los tests no pueden nombrarla por su ruta absoluta.
 - `parallel` × `attempts` agentes a la vez piden una vuelta cada unos 30 s cada uno; se
   comparan con `[network] requests_per_minute` (o el de `[llm.network]`) y el plan avisa si van
   a llenarlo. Hasta que el cupo se comparta entre procesos, `parallel` es como mucho 2.
@@ -634,6 +636,8 @@ desconocida es un error, como aquí.
 | `task_calls`, `task_seconds`, `task_cost` | entero, entero, número | 0 | presupuesto de cada intento de un encargo: llamadas, segundos y coste (0 = sin límite) |
 | `require_tags` | sí/no | `false` | un encargo conservado cuyos `requirements` no cita ningún subprograma cambiado vuelve una vez al agente |
 | `requirement_chars` | entero | `1200` | caracteres de cada requisito que van delante del encargo |
+| `propose` | sí/no | `false` | `true`: los agentes trabajan sobre una copia (`<workspace>/attempts/0`, que se queda hasta el siguiente `develop`) y la carpeta de trabajo no se toca; el resultado son los parches de `<workspace>/reports/develop-<plan>/` |
+| `max_copy_mb` | entero | `500` | lo más que puede ocupar la carpeta de trabajo (sin `.git` ni el workspace, con la carpeta de compilación) para copiarla con `propose`, `attempts` o `parallel` |
 | `[[tasks]]` | tabla | — | `id`, `text` (obligatorio), `advances` (tests que hace avanzar) y `requirements` (IDs del grafo: hace falta `atlas run`; con ellos, el encargo recibe su texto y, sin `advances`, los tests que los verifican) |
 
 ## [mcp]

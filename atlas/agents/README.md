@@ -8,7 +8,7 @@ paquetes de contexto, verificación de requisitos, informes y evaluación. Neces
 |---|---|
 | `definitions.py` | `AgentDef` y `load_definitions`: los agentes de `builtin/` y de `[agents] dirs`, con los retoques de `[agents.<nombre>]` (sin ADK) |
 | `model.py` | `AtlasLlm`: un modelo de ADK sobre el cliente de `atlas.llm` (proxy, TLS, límites, reintentos) |
-| `runtime.py` | `build_agent` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo |
+| `runtime.py` | `build_agent`, `Conversation` y `run_agent`: el agente de un fichero como `LlmAgent`, con sus herramientas y como mucho `max_steps` llamadas al modelo por respuesta; una conversación de varias preguntas en la misma sesión de ADK |
 | `context.py` | `build_context`: un paquete en Markdown sobre un requisito, un elemento de código o un paquete; `similar_requirements`: requisitos parecidos que ya tienen código |
 | `verify.py` | la verificación de los requisitos con la documentación |
 | `link.py` | las propuestas de enlaces: el código que puede implementar los requisitos sin código |
@@ -92,7 +92,11 @@ context of 8000 (6000 for the input): 10 old tool results left out». Los cinco 
 siempre.
 
 `run_agent` devuelve también los tokens de entrada y salida de todas las vueltas y, cuando el
-servidor lo dice (OpenRouter, `usage.cost`), su coste. Cada llamada de un agente a una herramienta queda en el
+servidor lo dice (OpenRouter, `usage.cost`), su coste; `sources`, las citas que dan los
+resultados de sus herramientas (los pasajes de `search`, las fuentes de `ask_docs`, la sección
+de `get_section` y, de `trace`, el requisito, las secciones que lo enuncian y el código que lo
+implementa, con su fichero y línea); y `stopped`, si la respuesta es parcial porque agotó
+`max_steps`. Cada llamada de un agente a una herramienta queda en el
 registro de uso del workspace (origen `agent`, con el nombre del agente; `[mcp] usage_log` y
 `atlas usage`).
 
@@ -100,6 +104,34 @@ registro de uso del workspace (origen `agent`, con el nombre del agente; `[mcp] 
 atlas agent assistant "¿Qué prueba verifica SRS-0004?" atlas.dev.toml
 ATLAS_CONFIG=atlas.dev.toml adk web examples/adk     # las llamadas paso a paso, en el navegador
 ```
+
+### Conversaciones: `atlas chat`
+
+`run_agent` crea el agente, su `InMemoryRunner` y una sesión de ADK nuevos por pregunta: la
+segunda no sabe nada de la primera. `Conversation` los crea una vez, y cada `ask(pregunta)` es
+un turno más de la misma sesión, con su propio límite de `max_steps` llamadas al modelo; el
+resultado es el de `run_agent` (que es una conversación de una pregunta). `history()` lee los
+turnos de la sesión (pregunta, respuesta, llamadas y citas), y `markdown()` los escribe. Nada
+de la conversación se guarda fuera de la sesión de ADK.
+
+`atlas chat [--agent NOMBRE] [atlas.toml]` es un bucle fino sobre ella, por la entrada
+estándar, con el asistente por defecto. El agente, el índice y el grafo se cargan una vez. Para
+que la conversación no crezca sin fin, usa el `keep_tool_results` del agente o, si no tiene, 6.
+Tras cada respuesta dice qué herramientas llamó y sus citas. Las órdenes que empiezan por `/`
+no llaman al modelo, sino a las mismas funciones que los comandos:
+
+| Orden | Qué hace |
+|---|---|
+| `/trace ID` | todo sobre un requisito, como `atlas trace` |
+| `/matrix MÓDULO` | la matriz de trazabilidad de un módulo de DOORS (`*`: todos), como `atlas matrix` |
+| `/gaps [MÓDULO]` | lo que le falta a la trazabilidad, con los primeros de cada lista |
+| `/sources` | las citas de la última respuesta, con su fichero |
+| `/save` | la conversación, con sus citas y llamadas, en `<workspace>/reports/chat-<fecha>.md` |
+| `/quit` | termina (también Ctrl+D) |
+
+Para ver las llamadas paso a paso, con sus argumentos y resultados, la alternativa sigue siendo
+`ATLAS_CONFIG=atlas.toml adk web examples/adk`. `atlas chat` no sustituye al editor: para
+trabajar sobre el código, el servidor MCP en OpenCode o VS Code.
 
 ## Datos e instrucciones
 
@@ -185,6 +217,8 @@ requirement_chars = 1200                 # caracteres de cada requisito delante 
 reviewer = "reviewer"                    # opcional: un agente que lee el diff de un encargo que compila
 review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente (0: solo se informa)
 stray = "report"                         # o "delete": los tests que el agente deja entre el código
+propose = false                          # true: los agentes trabajan en una copia; el resultado, los parches
+max_copy_mb = 500                        # lo más que copian propose y attempts de la carpeta de trabajo
 
 [[tasks]]
 id = "ping-bye"
@@ -245,6 +279,10 @@ cambios que rompían lo que ya iba.
    una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
+   La copia lleva también la carpeta de compilación (`<workspace>/build`), donde se ejecutan los
+   tests. Una carpeta de trabajo de más de `max_copy_mb` (sin `.git` ni el workspace) o un test
+   que la nombra por su ruta absoluta se rechazan al empezar: el test probaría el código de la
+   carpeta de trabajo, no el de la copia.
 7. Con `reviewer` (apagado por defecto), un encargo que compila y no rompe nada pasa por ese
    agente con el encargo y el diff del cambio. Solo lee, tenga las herramientas que tenga: las
    de ficheros le contestan que son de solo lectura. Contesta en JSON, `{"verdict": "ok"}` o
@@ -473,6 +511,23 @@ entonces `read_file` y `check_code` del servidor ven la carpeta de trabajo y no 
 ese caso es mejor dejar al servidor solo el conocimiento (`[mcp] tools`) y que el agente lea
 y compile con sus herramientas. Las variables del entorno que necesite atlas (el proxy, la
 clave del modelo) las hereda de `atlas develop`.
+
+### Parches y modo propuesta
+
+Los parches (punto 10) son diffs unificados con 3 líneas de contexto y las rutas de la carpeta
+de trabajo tras `a/` y `b/`, para `git apply` o `patch -p1` en ella; `all.patch` los junta en
+orden. Con `attempts`, el parche es el del intento ganador. `answers.md` guarda la respuesta
+entera de cada ejecución del agente, y la tabla del informe enlaza cada paso con su parche y su
+respuesta. Los tests protegidos no salen en los parches, ni los ficheros binarios.
+
+Con `propose = true` en el plan, la carpeta de trabajo **no se toca**: los agentes trabajan
+sobre una copia (`<workspace>/attempts/0`, como la de `attempts`), los tests se ejecutan en
+ella y el resultado son los parches. La persona revisa y aplica los que quiera, igual que
+`atlas link` propone la etiqueta y no la escribe. La copia se queda hasta el siguiente
+`atlas develop`, para mirarla o ejecutar sus tests (con `--resume`, se sigue en ella); cada tanda empieza de la carpeta de
+trabajo tal como esté entonces (con los parches que se hayan aplicado). En un proyecto
+grande, copiar la carpeta de trabajo puede no caber (`max_copy_mb`): sin `propose`, los
+parches dan casi lo mismo, y el código queda en la carpeta de trabajo.
 
 Lo medido con `gemma-4-26b` (OpenRouter, razonamiento `low`, temperatura 1,0) en
 `atlas-socket-demo`, el 2026-10-13 y 14, con los tests generados por `atlas tests` y
@@ -820,13 +875,17 @@ impacto, documentos y una sección.
 ```python
 from atlas.agents.context import build_context
 from atlas.agents.definitions import load_definitions
-from atlas.agents.runtime import run_agent
+from atlas.agents.runtime import Conversation, run_agent
 from atlas.graph import KnowledgeGraph
 
 print(sorted(load_definitions(cfg)))                                  # los agentes, sin ADK
 print(build_context(KnowledgeGraph.from_config(cfg), "SRS-0004")["markdown"])   # sin modelo
 res = run_agent("assistant", "Which tests verify SRS-0004?", cfg)     # con ADK y el modelo
-print(res["answer"], [c["name"] for c in res["calls"]])
+print(res["answer"], [c["name"] for c in res["calls"]], [s["cite"] for s in res["sources"]])
+
+chat = Conversation("assistant", cfg)                                 # varias preguntas, una sesión
+chat.ask("Which tests verify SRS-0004?")
+print(chat.ask("And which code do they call?")["answer"])             # «they»: las de la primera
 ```
 
 ## Pruebas
@@ -839,6 +898,6 @@ intercambio con una instrucción envenenada: el aviso llega al informe y los tes
 siguen intactos aunque el agente la siga).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
-agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda, del grafo y
+agentes, `Conversation` y `atlas chat`, y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda, del grafo y
 de los casos `develop` (con un agente de pega y con el servidor falso).
 Con Ollama, `tests/test_agents_ollama.py`.

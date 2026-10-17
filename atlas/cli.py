@@ -33,6 +33,8 @@
                                     (those of the GPR of [sources.code] project, if any)
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
+    atlas chat     [atlas.toml]     a conversation with an agent (the assistant, or --agent NAME): each
+                   [--agent NAME]   question sees the earlier ones; /help for the orders without model
     atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
                    [--check] [--resume]  is undone, and what it cannot fix goes to a person (a report);
                                        --check: the plan, check_code and the tests at the start, no model;
@@ -1241,25 +1243,31 @@ def graph(cfg: Config, as_json: bool = False) -> int:
         print("\nID shapes as written, by origin (N = a digit; how many times each one is written):")
         for origin, items in shapes.items():
             print(f"  {origin:6s} " + ", ".join(f"{x['count']} {id_shape_text(x)}" for x in items))
-    gaps = g.gaps()
     print("\ntraceability gaps (atlas matrix MODULE for the detail):")
-    for key, value in gaps.items():
-        if isinstance(value, dict):
-            print(f"  {value['count']:5d}  {key.replace('_', ' ')}")
+    print_gaps(g.gaps())
     print(f"\nexported to {cfg.workspace / 'graph'}")
     return 0
+
+
+def print_gaps(gaps: dict, items: int = 0) -> None:
+    """The counts of the gaps of traceability (KnowledgeGraph.gaps), with their first `items`."""
+    for key, value in gaps.items():
+        if isinstance(value, dict):
+            shown = [x["id"] if isinstance(x, dict) else str(x) for x in value["items"][:items]]
+            print(f"  {value['count']:5d}  {key.replace('_', ' ')}"
+                  + (f": {', '.join(shown)}" + (" …" if value["count"] > len(shown) else "") if shown else ""))
 
 
 TRACE_BUDGET = 20000     # tokens of `atlas trace`: more room than the build_context tool, not to cut on screen
 
 
-def trace(cfg: Config, req_id: str, as_json: bool = False) -> int:
+def trace(cfg: Config, req_id: str, as_json: bool = False, kg=None) -> int:
     """Everything about a requirement: in Markdown (build_context, without a model) or, with
-    --json, the dictionary of KnowledgeGraph.trace."""
+    --json, the dictionary of KnowledgeGraph.trace; `kg`, a KnowledgeGraph already loaded."""
     from atlas.agents.context import build_context
     from atlas.graph import KnowledgeGraph
     _context(cfg)                         # the logging of the configuration
-    g = KnowledgeGraph.from_config(cfg)
+    g = kg if kg is not None else KnowledgeGraph.from_config(cfg)
     res = g.trace(req_id)
     if as_json:
         return _json_result(res)
@@ -1276,15 +1284,15 @@ def _held(counts: dict) -> str:
     return f"; {n} not sent to the model: local-only sources (model = \"none\")" if n else ""
 
 
-def matrix(cfg: Config, module: str, as_json: bool = False) -> int:
+def matrix(cfg: Config, module: str, as_json: bool = False, kg=None) -> int:
     """The traceability matrix of a module ("*": every requirement) in <workspace>/graph, in
     the formats of [graph] matrix_formats (atlas.graph.export), and its summary and gaps on
-    the screen."""
+    the screen; `kg`, a KnowledgeGraph already loaded."""
     from atlas.graph import GraphStore, KnowledgeGraph, write_matrix
     from atlas.graph.export import matrix_header, summary_line
     ctx = _context(cfg)
     module = "" if module == "*" else module
-    g = KnowledgeGraph.from_config(cfg)
+    g = kg if kg is not None else KnowledgeGraph.from_config(cfg)
     res = g.matrix(module, limit=10**9)
     if "error" in res:
         if as_json:
@@ -1449,6 +1457,7 @@ OPTIONS = {"init": {"--profile": str},
            "eval": {"--compare": bool, "--generate": str, "--n": int, "--set": str},
            "cache": {"--with-judgements": bool},
            "usage": {"--since": str},
+           "chat": {"--agent": str},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
                                                       "comply", "link", "coverage", "impact")}}
 DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when it is not the name of the option
@@ -1652,6 +1661,10 @@ def agent(cfg: Config, name: str, question: str) -> int:
         print("\nTools called:")
     for c in res["calls"]:
         print(f"  {c['name']}({json.dumps(c['args'], ensure_ascii=False)})")
+    if res["sources"]:
+        print("\nSources:")
+    for i, src in enumerate(res["sources"], 1):
+        print(f"  [{i}] {src['cite']}" + (f"\n       {src['file']}" if src["file"] else ""))
     tokens = res.get("tokens") or {}
     print(f"\nModel: {tokens.get('prompt', 0)} prompt / {tokens.get('completion', 0)} completion tokens"
           + (f", ${res['cost']:.4f}" if "cost" in res else ""))
@@ -1676,6 +1689,87 @@ def _develop_check(cfg: Config, plan: str) -> int:
         print(f"warning: {warning}")
     print("nothing was changed and no model was asked")
     return 0
+
+
+CHAT_HELP = """Write a question, or one of these orders, which need no model:
+  /trace ID        everything about a requirement, as atlas trace
+  /matrix MODULE   the traceability matrix of a DOORS module (* = all), as atlas matrix
+  /gaps [MODULE]   what traceability lacks: requirements without code or tests...
+  /sources         the citations of the last answer, with their files
+  /save            the conversation, with its citations, to <workspace>/reports/chat-<date>.md
+  /quit            the end (also Ctrl+D)"""
+
+
+def chat(cfg: Config, agent: str = "assistant") -> int:
+    """A conversation with an agent over stdin (atlas.agents.runtime.Conversation): the agent,
+    the index and the graph are loaded once, and each question sees the earlier ones. The orders
+    of CHAT_HELP call the functions of the other actions; what was said is in the ADK session."""
+    from atlas.agents.runtime import KEEP_IN_CHAT, Conversation, definition
+    from atlas.graph.tools import NO_GRAPH, GraphTools
+    ctx = _context(cfg)
+    try:
+        keep = definition(agent, cfg).keep_tool_results or KEEP_IN_CHAT
+        conversation = Conversation(agent, cfg, ctx, keep_tool_results=keep)
+    except ImportError as e:            # without the [agents] extra
+        sys.exit(str(e))
+    graph_tools = GraphTools.for_context(ctx)     # those of the agent's tools: the graph is loaded once
+    saved = cfg.workspace / "reports" / f"chat-{time.strftime('%Y-%m-%d-%H%M%S')}.md"
+    print(f"atlas chat with {agent}. /help for the orders, /quit to end.")
+    while True:
+        try:
+            line = input("> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line:
+            continue
+        if not line.startswith("/"):
+            try:
+                res = conversation.ask(line)
+            except KeyboardInterrupt:        # that question only: the conversation goes on
+                print("(interrupted)")
+                continue
+            except Exception as e:           # the model server failed: the conversation goes on
+                print(f"error: {type(e).__name__}: {e}")
+                continue
+            print(res["answer"] or "(no answer)")
+            if res["stopped"]:
+                print("(a partial answer: it stopped after the most calls to the model of the agent, max_steps)")
+            if res["calls"]:
+                print(f"(tools: {', '.join(c['name'] for c in res['calls'])})")
+            if res["sources"]:
+                print("Sources: " + "; ".join(f"[{i}] {s['cite']}" for i, s in enumerate(res["sources"], 1)))
+            continue
+        order, _, arg = line[1:].partition(" ")
+        arg = arg.strip()
+        if order in ("quit", "exit", "q"):
+            return 0
+        if order in ("trace", "matrix", "gaps"):
+            kg = graph_tools.graph()
+            if kg is None:
+                print(NO_GRAPH)
+            elif order == "gaps":
+                gaps = kg.gaps(arg)
+                if "error" in gaps:
+                    print(gaps["error"])
+                else:
+                    print(f"traceability gaps of {gaps['module']}:")
+                    print_gaps(gaps, items=10)
+            elif not arg:
+                print(f"usage: /{order} {'ID' if order == 'trace' else 'MODULE'}")
+            else:
+                (trace if order == "trace" else matrix)(cfg, arg, kg=kg)
+        elif order == "sources":
+            turns = conversation.history()
+            found = turns[-1]["sources"] if turns else []
+            print("\n".join(f"[{i}] {s['cite']}" + (f"\n    {s['file']}" if s["file"] else "")
+                            for i, s in enumerate(found, 1)) or "no citations in the last answer")
+        elif order == "save":
+            saved.parent.mkdir(parents=True, exist_ok=True)
+            saved.write_text(conversation.markdown(), encoding="utf-8")
+            print(f"written {saved}")
+        else:
+            print(CHAT_HELP)
 
 
 def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -> int:
@@ -1729,6 +1823,9 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
                for f in s.get("created", [])]
     if created:
         print(f"new files: {', '.join(created)}")
+    if report.get("proposal"):
+        print(f"a proposal: the working folder is unchanged; the patches in {report['proposal']['patches']}, the "
+              f"code in {report['proposal']['copy']}")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
     return 0 if final["tests_passed"] == final["tests"] else 1
 
@@ -2066,7 +2163,7 @@ def _dispatch(action: str, rest: list[str]) -> None:
         sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
     actions = {"run": run, "estimate": estimate, "status": status, "sections": sections, "graph": graph,
                "plugins": list_plugins, "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor,
-               "probe": probe, "reference": reference, "serve": serve, "usage": usage}
+               "probe": probe, "reference": reference, "serve": serve, "usage": usage, "chat": chat}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
                  "tests": tests, "develop": develop, "hints": hints, "impact": impact, "coverage": coverage}
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]

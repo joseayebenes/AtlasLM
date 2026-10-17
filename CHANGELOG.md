@@ -588,6 +588,24 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas graph` cuenta `calls to units not imported` (`unimported_calls`): llamadas que solo
   se encuentran en unidades que el llamador no importa con `with`, la suposición de la
   resolución por nombres que `ambiguous calls` no enseña.
+- `atlas develop`: `answers.md`, junto a los parches, tiene la respuesta entera de cada
+  ejecución, y la tabla del informe enlaza cada paso con su parche y su respuesta (columna
+  «patch, answer»). Los parches dejan fuera los ficheros binarios, que `git apply` no podría
+  aplicar sin su contenido.
+- `propose = true` en el plan de `atlas develop`: los agentes trabajan sobre una copia de la
+  carpeta de trabajo (`<workspace>/attempts/0`, que se queda hasta el siguiente `develop`;
+  con `--resume`, se sigue en ella) y la carpeta de trabajo no se toca; el resultado son los
+  parches. `max_copy_mb` (500) limita lo que copian `propose`, `attempts` y `parallel`.
+- `atlas chat [--agent NOMBRE] [atlas.toml]`: una conversación con un agente (el asistente por
+  defecto) en la que cada pregunta ve las anteriores. El agente, el índice y el grafo se
+  cargan una vez; `/trace`, `/matrix`, `/gaps`, `/sources` (las citas de la última respuesta)
+  y `/save` (`reports/chat-<fecha>.md`) no llaman al modelo. Usa el `keep_tool_results` del
+  agente o, si no tiene, 6.
+- `atlas.agents.runtime.Conversation`: el agente, su runner y su sesión de ADK una vez, y
+  `ask(pregunta)` por turno; `history()` lee la conversación de la sesión. `run_agent` es una
+  conversación de una pregunta.
+- El resultado de `run_agent` (y de `atlas agent`) trae `sources`: las citas de las llamadas a
+  `search`, `ask_docs`, `get_section` y `trace`.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -673,6 +691,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   Con `make large` y otro proceso escribiendo en el libro, una búsqueda pasa de 73-165 ms a
   21-28 ms. `dense` usa `np.argpartition` y una máscara de numpy para el filtro por
   documento. `examples/dense_search.py` lo mide (cifras en `atlas/index/README.md`).
+- Las copias de `attempts` y `parallel` llevan también la carpeta de compilación, y `atlas
+  develop` rechaza al empezar, con `propose`, `attempts` o `parallel`, una carpeta de trabajo
+  de más de `max_copy_mb` o un
+  test que la nombra por su ruta absoluta (probaría el código de la carpeta de trabajo, no el
+  de la copia).
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni

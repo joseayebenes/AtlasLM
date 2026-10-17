@@ -123,6 +123,7 @@ attempts = 1                             # intentos de cada encargo a la vez, ca
 planner = "planner"                      # opcional: un agente que lee y dice cómo hacer cada encargo
 reviewer = "reviewer"                    # opcional: un agente que lee el diff de un encargo que compila
 review_fixes = 1                         # veces que el veredicto del revisor vuelve al agente
+stray = "report"                         # o "delete": los tests que el agente deja entre el código
 
 [[tasks]]
 id = "ping-bye"
@@ -186,7 +187,15 @@ cambios que rompían lo que ya iba.
    muertas, cambios fuera del encargo); antes van las reglas sin modelo de
    `[sources.code] rules`. Falta medirlo con un banco de encargos antes de encenderlo por
    defecto. `examples/agents/reviewer.md` es un ejemplo.
-8. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
+8. Los ficheros que **crea** un encargo (o una ronda) que se conserva van en su paso
+   (`created`), en la sección «New files» del informe y en la salida de `atlas develop`. En la
+   tanda 4 el agente dejó en `src` un fichero suyo de prueba, que entró en `check`, en cada
+   copia de `attempts` y en el siguiente `atlas run`. Con `stray = "delete"`, antes de juzgar
+   el encargo se borran los ficheros nuevos de su ejecución que casan con
+   `[sources.code] test_patterns` y no con `protected`: un test del agente fuera de `tests/`. Se
+   dicen en `deleted`. Nunca se borra un fichero nuevo que no sea un test, ni una carpeta. No
+   hace falta limitar dónde escribe cada agente: `protected` ya se aplica a los ficheros nuevos.
+9. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
    persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
@@ -450,8 +459,8 @@ print(res["answer"], [c["name"] for c in res["calls"]])
 ## Pruebas
 
 `tests/test_develop.py`: `atlas develop` con un agente de pega sobre un proyecto Python (encargos
-que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona, el revisor y los
-borradores de pistas de un `.calls.jsonl` de pega).
+que se deshacen, arreglos de compilación, rondas, lo que se deja a una persona, el revisor, los
+ficheros nuevos con `stray` y los borradores de pistas de un `.calls.jsonl` de pega).
 `tests/test_agents.py`: ficheros Markdown y sus retoques, `AtlasLlm` con un cliente de pega,
 `max_steps`, `build_context`, la verificación, los informes, `ask_atlas`, la evaluación de los
 agentes y la app de `adk web`. `tests/test_eval.py`: la evaluación de la búsqueda y del grafo.

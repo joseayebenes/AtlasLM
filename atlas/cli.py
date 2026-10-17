@@ -964,6 +964,8 @@ def develop(cfg: Config, plan: str) -> int:
               f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
               + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
               + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
+              + (f"\n      new files: {', '.join(s['created'])}" if s.get("created") else "")
+              + (f"\n      deleted (a test among the code): {', '.join(s['deleted'])}" if s.get("deleted") else "")
               + (f"\n      error: {s['error']}" if s.get("error") else ""), flush=True)
 
     _context(cfg)
@@ -976,6 +978,10 @@ def develop(cfg: Config, plan: str) -> int:
           f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else ""))
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")
+    created = [f for s in report["steps"] if s.get("outcome") not in ("undone", "not chosen")
+               for f in s.get("created", [])]
+    if created:
+        print(f"new files: {', '.join(created)}")
     print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
     return 0 if final["tests_passed"] == final["tests"] else 1
 

@@ -21,6 +21,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   por forma, con el `match` derivado del mensaje, la `hint` vacía y, como comentario, el diff de
   la primera escritura de la misma ejecución tras la que el error ya no estaba. Van en
   `reports/hints-<plan>.toml` y en la sección «Hints to write» del informe; nunca se usan solos.
+- Los ficheros que crea cada encargo conservado de `atlas develop` van en su paso (`created`), en
+  la sección «New files» del informe y en la salida del comando. `stray = "delete"` en el plan
+  borra, antes de juzgar el encargo, los nuevos que casan con `[sources.code] test_patterns` y no
+  con `protected`: en la tanda 4 el agente dejó en `src` un fichero suyo de prueba. Por defecto,
+  `stray = "report"`.
 
 ## [0.2.0] — 2026-10-16
 

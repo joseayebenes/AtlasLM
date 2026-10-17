@@ -289,6 +289,37 @@ def test_a_reviewer_reads_the_diff_and_its_issues_go_back_once(project):
         develop(base / "plan.toml", cfg, client=StubClient([]))
 
 
+@pytest.mark.parametrize("stray", ["report", "delete"])
+def test_the_files_a_task_leaves(project, stray):
+    """The agent of the fourth run left a test of its own in src: a kept task lists what it
+    created; with stray = "delete", a new file that is a test among the code is deleted before
+    the task is judged, and a new module is not."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    cfg["sources"]["code"]["test_patterns"] = ["tests/**", "**/*_test.py"]
+    plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
+    (base / "plan.toml").write_text(plan + f'stray = "{stray}"\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
+    client = StubClient(write(ADD)[:2] + [
+        {"write_file": {"path": "src/scratch_test.py", "content": "import calc\nprint(calc.add(1, 2))\n"}},
+        {"write_file": {"path": "src/util.py", "content": "def half(x):\n    return x / 2\n"}}, "Done."])
+    report = develop(base / "plan.toml", cfg, client=client)
+    step = report["steps"][0]
+    assert (step["kind"], step["outcome"]) == ("task", "kept")
+    md = (cfg.workspace / "reports" / "develop-plan.md").read_text()
+    assert "## New files" in md and (base / "src" / "util.py").exists()
+    if stray == "report":
+        assert step["created"] == ["src/scratch_test.py", "src/util.py"] and "deleted" not in step
+        assert (base / "src" / "scratch_test.py").exists()
+        assert "- 1 add: src/scratch_test.py, src/util.py" in md
+    else:
+        assert step["created"] == ["src/util.py"] and step["deleted"] == ["src/scratch_test.py"]
+        assert not (base / "src" / "scratch_test.py").exists()
+        assert "- 1 add: src/util.py; deleted src/scratch_test.py" in md
+    (base / "plan.toml").write_text(plan + 'stray = "keep"\n[[tasks]]\ntext = "x"\n')
+    with pytest.raises(ConfigError, match="stray is 'report' or 'delete'"):
+        develop(base / "plan.toml", cfg, client=StubClient([]))
+
+
 def test_a_round_that_fixes_the_test(project):
     from atlas.agents.develop import develop
     base, cfg = project

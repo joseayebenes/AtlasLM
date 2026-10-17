@@ -18,6 +18,7 @@ The plan is a TOML file:
     planner = "planner"                      # optional: an agent that reads and says how to do each task
     reviewer = "reviewer"                    # optional: an agent that reads the diff of a task that compiles
     review_fixes = 1                         # turns that the verdict of the reviewer goes back to the agent
+    stray = "report"                         # or "delete": the new files of a task that are tests outside tests/
     fix_prompt = "..."                       # optional: {test}, {output}, {code}, {attempts}
     advance_prompt = "..."                   # optional: {test}, {output}, {code}
 
@@ -80,6 +81,13 @@ calls without changing the code) starts again with a fresh conversation, at most
 times: the same prompt, the diff of what it changed, which stays, and what check_code says
 now. A long conversation of failed edits does not get better with more turns.
 
+The files a kept task creates are listed in its step (`created`, "New files" in the report): in
+the fourth run, the agent left a test of its own in src, which went into check, into every copy
+of `attempts` and into the next atlas run. With stray = "delete", the new files of the run of a
+task that match [sources.code] test_patterns, and not its protected ones, are deleted before the
+task is judged (`deleted`): a test of the agent outside tests/. Only those: a new package of the
+code is never deleted. `protected` already keeps the agent out of the tests themselves.
+
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
 """
@@ -111,6 +119,7 @@ MAX_CHANGES = 3000         # characters of the diff of what a stopped run change
 MAX_ANSWER = 400           # characters of an answer of the agent kept for the report and the attempts
 WRITES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 SHOWN_ERRORS = 15          # errors of the compiler in the Markdown report
+STRAY = ("report", "delete")   # what to do with the tests an agent leaves among the code
 
 FIX_PROMPT = """The test {test} fails. What it printed:
 
@@ -189,6 +198,7 @@ class Plan:
     planner: str = ""
     reviewer: str = ""
     review_fixes: int = 1
+    stray: str = "report"
     fix_prompt: str = FIX_PROMPT
     advance_prompt: str = ADVANCE_PROMPT
 
@@ -219,6 +229,8 @@ def load_plan(path: str | Path) -> Plan:
             re.compile(data["progress"])
         except re.error as e:
             raise ConfigError(f"plan {path}: progress is not a valid regular expression: {e}") from None
+    if data.get("stray", "report") not in STRAY:
+        raise ConfigError(f"plan {path}: stray is {' or '.join(map(repr, STRAY))}, not {data['stray']!r}")
     plan = Plan(name=path.stem, tasks=tasks, **data)
     plan.fix_agent = plan.fix_agent or plan.agent
     if not plan.tests:
@@ -540,6 +552,10 @@ class Developer:
         ws = ws or self.main
         snapshot = ws.files.snapshot()
         step = self.run(agent, prompt, kind, task, ws)
+        if self.plan.stray == "delete":
+            deleted = self.strays(snapshot, ws)
+            if deleted:
+                step["deleted"] = deleted
         after = self.compiled(agent, task, before, self.evaluate(ws), ws)
         broken = self.broken(before, after)
         if not broken and advances:
@@ -554,7 +570,24 @@ class Developer:
             step["undone"] = ws.files.restore(snapshot)
             step["broke"] = broken
             after = before
+        else:
+            created = sorted(ws.code._show(p) for p in ws.files.snapshot() if p not in snapshot)
+            if created:
+                step["created"] = created
         return step, after, broken
+
+    def strays(self, snapshot: dict, ws: _Workspace) -> list[str]:
+        """Deletes the files created since `snapshot` that are tests ([sources.code]
+        test_patterns) and not protected, and returns them: a test of the agent among the code.
+        Files only, never a folder, nor a new file that is not a test."""
+        patterns = (self.cfg["sources"].get("code") or {}).get("test_patterns", [])
+        deleted = []
+        for p in sorted(set(ws.files.snapshot()) - set(snapshot)):
+            shown = ws.code._show(p)
+            if _is_test(shown, patterns) and not ws.code.protected_file(p):
+                p.unlink()
+                deleted.append(shown)
+        return deleted
 
     def attempts(self, agent: str, prompt: str, kind: str, task: str, before: dict,
                  advances: list[str] = ()) -> tuple[dict, dict, list]:
@@ -757,6 +790,11 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
 
 
+def _is_test(file: str, patterns: list[str]) -> bool:
+    """Whether a file matches one of [sources.code] test_patterns ("**/tests/**"), as the graph says."""
+    return any(fnmatch.fnmatch(file, p) or fnmatch.fnmatch("/" + file, p) for p in patterns)
+
+
 def _verdict(answer: str) -> list[dict] | None:
     """The issues of the answer of a reviewer ([] when it says ok), or None when the answer has
     no verdict in JSON. An issue is {file, line, issue}; a plain text is taken as the issue."""
@@ -850,6 +888,13 @@ def markdown(report: dict) -> str:
                 "can get one in a file of [sources.code] hints.", "", "| times | message | hint |", "|---|---|---|"]
         out += [f"| {e['count']} | {e['message'].replace('|', '/')[:120]} | {'yes' if e['hint'] else '**no**'} |"
                 for e in errors[:SHOWN_ERRORS]]
+    new = [s for s in report["steps"] if s.get("created") or s.get("deleted")]
+    if new:
+        out += ["", "## New files", "", "The files that kept tasks created, and those deleted as tests of the agent "
+                "among the code (stray = \"delete\"):", ""]
+        out += [f"- {s['n']} {s['task']}: " + "; ".join(
+            part for part in (", ".join(s.get("created", [])), "deleted " + ", ".join(s["deleted"])
+                              if s.get("deleted") else "") if part) for s in new]
     drafts = report.get("hints_to_write") or {}
     if drafts.get("errors"):
         out += ["", "## Hints to write", "", f"The errors that came without a hint, as drafts in {drafts['file']}: "

@@ -46,7 +46,7 @@ Todo en el workspace del proyecto (`[project] workspace`):
 
 | Dónde | Qué |
 |---|---|
-| `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro y perfiles de las ejecuciones |
+| `atlas.db` | requisitos y enlaces, unidades de código, documentos, índice (textos y vectores), grafo, libro de registro, perfiles de las ejecuciones y registro de uso (tabla `usage`) |
 | `docs/` | el Markdown de cada documento y la caché de análisis de secciones |
 | `graph/` | el grafo exportado (GraphML, JSON) y las matrices |
 | `reports/` | verificaciones, propuestas de enlaces, juicios de cumplimiento, informes y evaluaciones |
@@ -57,6 +57,15 @@ portátil, el cifrado de disco del sistema (BitLocker, FileVault).
 
 El libro de registro guarda los errores de cada unidad (500 caracteres como mucho). Son
 mensajes de las librerías: no llevan claves.
+
+El registro de uso (tabla `usage`, `[mcp] usage_log`) guarda una fila por llamada a una
+herramienta del servidor MCP o de un agente y por comando de la CLI: fecha, origen, nombre,
+milisegundos, si falló (con el mensaje de error, 500 caracteres como mucho), el estado de la
+respuesta y las peticiones, tokens y coste. Con `counts`, el valor por defecto, no guarda el
+texto de los argumentos (ni las preguntas ni las rutas); con `full` sí, cortado a 200
+caracteres, y entonces las preguntas que se hacen al editor quedan en el workspace. Nunca
+guarda la configuración ni el contexto de las herramientas. Es información local: no sale
+del puesto, y `atlas usage` solo la lee. Prueba: `test_the_usage_log_keeps_counts_or_cut_arguments`.
 
 ## Secretos
 

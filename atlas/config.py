@@ -89,7 +89,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list},
     "search": {"results": int, "per_document": int, "context_chars": int, "scope": str, "scope_chars": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
-    "mcp": {"enabled": bool, "tools": list},
+    "mcp": {"enabled": bool, "tools": list, "usage_log": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
 }
 
@@ -123,7 +123,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "scope": "auto", "scope_chars": 100000},
     "agents": {"model": "", "dirs": ["agents"]},
-    "mcp": {"enabled": True, "tools": []},
+    "mcp": {"enabled": True, "tools": [], "usage_log": "counts"},
     "tests": {"languages": {}, "steps": []},
 }
 
@@ -290,6 +290,8 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}))
+    if data.get("mcp", {}).get("usage_log", "counts") not in ("counts", "full", "off"):
+        raise ConfigError("[mcp] usage_log must be one of counts, full, off")
     secrets = literal_secrets(raw)
     if secrets:
         raise ConfigError(f"secrets are read from the environment, not written in {path.name}: "

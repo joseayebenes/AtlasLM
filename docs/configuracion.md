@@ -313,3 +313,4 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
 | `tools` | lista | `[]` | las herramientas del servidor; vacío = las de las fuentes configuradas. `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
+| `usage_log` | texto | `"counts"` | registro de uso en la tabla `usage` de `atlas.db`: una fila por llamada a una herramienta del servidor o de un agente y por comando de la CLI, con su tiempo, si falló, el estado de la respuesta y las peticiones, tokens y coste. `counts`: sin el texto de los argumentos; `full`: con los argumentos, cortados a 200 caracteres; `off`: nada. `atlas usage` lo resume |

@@ -14,6 +14,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `atlas status` los enseñan por paso; `atlas ask`, `atlas agent` y `atlas eval` los imprimen,
   y `atlas eval` los guarda en su informe. `set_usage_label` dice qué comando y qué paso
   están en marcha. Sin precios configurables: el gateway no tiene precio público.
+- Registro de uso en el workspace: una fila por llamada a una herramienta de `atlas serve` o
+  de un agente y por comando de la CLI, en la tabla `usage` de `atlas.db` (varios procesos
+  escriben a la vez sin pisarse, también en Windows). Lleva la fecha, el origen (`mcp`, `cli`
+  o `agent`), los milisegundos, si falló, el estado de la respuesta de `atlas ask` y
+  `ask_docs` (con fuentes o sin ellas) y las peticiones, tokens y coste. `[mcp] usage_log`:
+  `counts` (por defecto, sin el texto de los argumentos), `full` (con ellos, cortados a 200
+  caracteres) u `off`. `atlas usage [--since 30d]` lo resume: llamadas por herramienta y
+  semana, mediana de milisegundos, errores, tokens y coste, respuestas con y sin fuente.
+- `atlas.plugins.instrumented`: el envoltorio de cada llamada que usan el servidor MCP, los
+  agentes (antes `recorded`, que sigue) y la CLI.
 
 ## [0.2.0] — 2026-10-16
 

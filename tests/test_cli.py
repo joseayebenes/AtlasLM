@@ -160,6 +160,10 @@ patterns = ["*.md"]
     out = capsys.readouterr().out
     assert "[1]" in out and "Sources:" in out and "003-2-alarms.md" in out
     assert "\nModel: 2 chat, 1 embeddings, " in out and " completion tokens, " in out      # rewriting and answer
+    from atlas.usage import summary
+    logged = summary(cfg.workspace / "atlas.db")
+    assert logged["answers"] == {"ask": {"answered": 1}}
+    assert next(r for r in logged["by_name"] if r["name"] == "ask")["requests"] == 3
     with pytest.raises(SystemExit) as e:              # the TEXT [atlas.toml] form of the command line
         main(["search", "keep logs", str(path)])
     assert e.value.code == 0 and "hmi_manual.md" in capsys.readouterr().out

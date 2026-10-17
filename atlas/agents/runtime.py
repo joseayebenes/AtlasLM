@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
-import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
@@ -29,7 +28,7 @@ from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
 __all__ = ["agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition", "loop_guard",
-           "recorded", "run_agent", "stall_guard"]
+           "recorded", "run_agent", "stall_guard", "tool_functions"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
 CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
@@ -132,25 +131,43 @@ def stall_guard(functions: list, limit: int, state: dict) -> list:
     return [wrap(f) for f in functions]
 
 
+def _to_record(record: list):
+    """A sink of plugins.instrumented that keeps each call in `record`."""
+    def sink(event: dict) -> None:
+        record.append({"name": event["name"], "args": event["args"], "result": event["result"],
+                       "seconds": round(event["seconds"], 2), **({"error": event["error"]} if event["error"] else {})})
+    return sink
+
+
 def recorded(functions: list, record: list) -> list:
     """The tools, wrapped so that each call goes to `record` with its arguments, its result
     and its seconds, to study afterwards what an agent did."""
-    def wrap(f):
-        @functools.wraps(f)
-        def logged(*args, **kwargs):
-            t0 = time.time()
-            result = f(*args, **kwargs)
-            record.append({"name": f.__name__, "args": kwargs, "result": result,
-                           "seconds": round(time.time() - t0, 2)})
-            return result
-        return logged
-    return [wrap(f) for f in functions]
+    return [plugins.instrumented(f, _to_record(record)) for f in functions]
+
+
+def tool_functions(d: AgentDef, cfg: Config, context: Any, record: list | None = None) -> list:
+    """The functions of the tools of an agent (agent_tools), each call of them in the usage
+    log of the workspace (origin "agent", with the name of the agent; see atlas.usage) and,
+    if `record` is a list, in it."""
+    from atlas.usage import usage_sink
+    sinks = [_to_record(record)] if record is not None else []
+    log = usage_sink(cfg, "agent", d.name)
+    if log is not None:
+        sinks.append(log)
+    functions = agent_tools(d, context)
+    if not sinks:
+        return functions
+
+    def sink(event: dict) -> None:
+        for s in sinks:
+            s(event)
+    return [plugins.instrumented(f, sink) for f in functions]
 
 
 def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None, record: list | None = None,
                 state: dict | None = None):
     """The ADK LlmAgent of an agent file. `client` replaces the OpenAI client, for tests;
-    `record`, a list, gets every tool call with its result (see recorded); `state`, a dict,
+    `record`, a list, gets every tool call with its result (see tool_functions); `state`, a dict,
     gets "stalled" when the agent has stall_steps (see stall_guard)."""
     try:
         from google.adk.agents import LlmAgent
@@ -159,10 +176,10 @@ def build_agent(name: str, cfg: Config, context: Any = None, client: Any = None,
     from atlas.agents.model import AtlasLlm
     d = definition(name, cfg)
     text = d.instruction
-    tools = agent_tools(d, context or context_for(cfg))
+    tools = tool_functions(d, cfg, context or context_for(cfg), record)
     model = AtlasLlm.from_service(agent_service(d, cfg), client, top_p=d.top_p, top_k=d.top_k,
                                   keep_tool_results=d.keep_tool_results)
-    guarded = loop_guard(recorded(tools, record) if record is not None else tools)
+    guarded = loop_guard(tools)
     if d.stall_steps and state is not None and set(d.tools) & {*CHANGES, "run_test"}:
         guarded = stall_guard(guarded, d.stall_steps, state)    # one that only reads would always look stuck
     return LlmAgent(name=d.name, description=d.description, model=model, tools=guarded,

@@ -59,6 +59,11 @@ cliente tiene que arrancar el servidor en la carpeta del proyecto (`cwd`). El se
 arranca en medio segundo y escribe su registro por stderr, porque stdout es el canal del
 protocolo.
 
+Cada llamada del editor queda en el registro de uso del workspace (la tabla `usage` de
+`atlas.db`, `[mcp] usage_log`): la herramienta, los milisegundos, si falló, si la respuesta
+de `ask_docs` tenía fuentes, y las peticiones, tokens y coste que costó. Por defecto sin el
+texto de los argumentos. `atlas usage --since 30d` lo resume por herramienta y semana.
+
 ## Configurar el editor
 
 OpenCode (`opencode.json` en la carpeta del proyecto):

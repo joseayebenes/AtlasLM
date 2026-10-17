@@ -118,13 +118,13 @@ class JsonLlm:
     it, goes on without it. Thread-safe: one instance can be shared by the workers that
     analyse sections in parallel, and `concurrency` (0 = no limit) caps how many requests
     of all of them are in flight at once (e.g. the sections of several documents that are
-    processed at the same time)."""
+    processed at the same time); None takes [llm] concurrency."""
 
     # How servers say they do not support response_format: 400 (most), 422 (some vLLM
     # versions), 501 "structured output is unavailable" (Ollama with some models)
     NO_SCHEMA_STATUSES = (400, 422, 501)
 
-    def __init__(self, cfg: ServiceConfig, concurrency: int = 0):
+    def __init__(self, cfg: ServiceConfig, concurrency: int | None = None):
         from openai import APIStatusError
         self.cfg = cfg
         self.client, self.proxy = create_client(cfg)
@@ -133,6 +133,8 @@ class JsonLlm:
         self.temperature = cfg.temperature
         self.schema_ok = True   # turned off if the server does not accept json_schema
         self._lock = threading.Lock()
+        concurrency = cfg.concurrency if concurrency is None else concurrency
+        self.concurrency = concurrency
         self._slots = threading.BoundedSemaphore(concurrency) if concurrency > 0 else contextlib.nullcontext()
 
     def _create(self, **kwargs):

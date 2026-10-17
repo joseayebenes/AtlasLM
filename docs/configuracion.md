@@ -68,6 +68,7 @@ con OpenAI.
 | `reasoning_effort` | texto | `""` | `"none"` apaga el razonamiento (gemma4 en Ollama razona por defecto y tarda minutos por sección) |
 | `extra_body` | tabla | `{}` | `[llm.extra_body]`: campos que van tal cual en cada petición de chat, para opciones propias del servidor. En OpenRouter, `provider = { order = ["deepinfra"], allow_fallbacks = false }` fija el proveedor; en vLLM, `chat_template_kwargs = { enable_thinking = false }` apaga el razonamiento de Qwen3 |
 | `reasoning_field` | texto | `"reasoning"` | agentes: el campo del mensaje del asistente con llamadas a herramientas en el que vuelve al modelo su razonamiento (lo pide gemma 4). `"reasoning_content"` para algunos servidores; `""` no lo devuelve. `atlas probe` dice si el servidor lo aprovecha |
+| `concurrency` | entero | `0` | peticiones al modelo en vuelo a la vez desde un mismo cliente: en `docs`, entre las secciones de todos los documentos que se procesan juntos. 0 = las `workers` del paso, como antes. Sirve para llenar el cupo sin abrir más documentos a la vez: `atlas status` dice cuántas lo llenarían |
 | `network` | tabla | — | `[llm.network]`: claves de `[network]` solo para el chat |
 
 ## [embeddings]
@@ -118,17 +119,26 @@ cada proceso vuelve a llevar su ritmo solo, y lo avisa; si está roto, se reescr
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `steps` | lista | `["docs", "doors", "code", "graph", "index"]` | qué pasos ejecuta `atlas run`; el orden lo dan sus dependencias |
-| `workers` | entero | `1` | unidades a la vez en cada paso. En `docs`, además, peticiones al modelo a la vez entre todos los documentos |
+| `workers` | entero | `1` | unidades a la vez en cada paso. En `docs`, además, peticiones al modelo a la vez entre todos los documentos, salvo que `[llm] concurrency` diga otra cosa |
 | `step_workers` | tabla | `{}` | otro número para un paso: `{ docs = 8, code = 4, index = 2 }`. Solo `docs`, `code` e `index`; `doors` y `graph` van de uno en uno |
 | `on_error` | texto | `"continue"` | `continue`: una unidad que falla se anota y se sigue; `stop`: se para. Los errores fatales (conexión, credenciales, cupo agotado) siempre paran |
 | `max_attempts` | entero | `3` | intentos de una unidad antes de dejarla en cuarentena |
 | `retry_quarantined` | sí/no | `false` | `true` vuelve a intentar las unidades en cuarentena |
 | `prune_missing` | sí/no | `true` | borra del índice y del grafo lo que ya no está en las fuentes |
 
-Con un gateway limitado por minuto, `workers` (o `step_workers.docs`) es lo que mantiene
-llena la cuota: con respuestas de 10 s y 28 peticiones por minuto hacen falta unas 5 a la
-vez. `atlas status` muestra, por paso, el tiempo, las peticiones y cuánto se esperó al
-limitador.
+Con un gateway limitado por minuto, lo que mantiene lleno el cupo son las peticiones en
+vuelo: con respuestas de 21 s y 28 peticiones por minuto hacen falta 28 × 21 / 60 ≈ 10 a la
+vez (ley de Little). `atlas status` lo calcula, por paso, con lo medido en la última
+ejecución:
+
+```
+  docs.process   1860.00   0.40     42     42  spec.pdf (412.10 s); 540 chat, 3 rejected
+                 chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.1 in flight; 10 would fill the quota
+```
+
+Si las peticiones en vuelo se quedan por debajo de las que llenarían el cupo, sube `[llm]
+concurrency` (o `workers`); si hay rechazos, bájalo. `concurrency` separa las peticiones al
+modelo de los documentos que se abren a la vez (`workers`), que cuestan memoria.
 
 ## [plugins]
 
@@ -273,11 +283,13 @@ Cambiarlo no reprocesa nada.
 | `context_chars` | entero | `14000` | caracteres de pasajes (con sus vecinos) que recibe el modelo al responder |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `part_workers` | entero | `4` | partes de documentos enteros que se leen a la vez |
 
 `scope_chars` depende del contexto del modelo: 100 000 caracteres son unos 25 000 o 30 000
 tokens. Con el gateway, de unos 200 000 tokens de entrada, puede subir a 400 000 (menos
 peticiones, cada una más lenta); con Ollama y `OLLAMA_CONTEXT_LENGTH=16384`, 30 000. Las
-partes se leen de cuatro en cuatro; `[network] max_concurrent` lo limita. En un Mac de 24 GB
+partes se leen de `part_workers` en `part_workers`; `[llm] concurrency` y `[network]
+max_concurrent` lo limitan. En un Mac de 24 GB
 con `gemma4:12b`, cuatro a la vez llenan la memoria de intercambio: un documento de 20 000
 caracteres en partes de 5000 tardó 11 minutos.
 

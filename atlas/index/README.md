@@ -89,7 +89,7 @@ nunca unidades de código:
 - cada sección es una fuente: el texto de sus fragmentos sin el solape; en un módulo de
   DOORS, sus requisitos y objetos de información en su orden;
 - si caben en `[search] scope_chars` (100 000 caracteres), una sola petición;
-- si no, por partes de ese tamaño, a la vez: de cada una, el modelo toma notas de todo lo
+- si no, por partes de ese tamaño, `[search] part_workers` (4) a la vez: de cada una, el modelo toma notas de todo lo
   que importa a la pregunta, con sus citas, y una última petición las junta en la
   respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones.
 

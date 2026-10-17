@@ -40,7 +40,7 @@ log = logging.getLogger(__name__)
 CONTEXT_CHARS = 14000   # largest context passed to the model when answering from passages
 SCOPE_CHARS = 100000    # largest part of whole documents read in one request
 SCOPE_DOCUMENTS = 3     # documents read whole when a broad question names none
-PART_WORKERS = 4        # parts of whole documents read at the same time
+PART_WORKERS = 4        # parts of whole documents read at the same time ([search] part_workers)
 
 REWRITE_SYSTEM = """You turn a user question into search queries for a technical document \
 collection. Reply with JSON: {"queries": [...], "keywords": [...], "broad": true|false, "documents": [...]}.
@@ -250,9 +250,10 @@ def _parts(blocks: list[str], max_chars: int) -> list[str]:
 
 
 def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict],
-                 max_chars: int = SCOPE_CHARS) -> dict:
+                 max_chars: int = SCOPE_CHARS, part_workers: int = PART_WORKERS) -> dict:
     """The answer from whole documents ({doc, name}): one request if they fit in max_chars;
-    if not, notes from each part and a last request that combines them."""
+    if not, notes from each part (`part_workers` at the same time) and a last request that
+    combines them."""
     sources = [s for d in docs for s in whole_sources(store, d["doc"])]
     names = [d["name"] for d in docs]
     if not sources:
@@ -265,7 +266,7 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
     if len(parts) == 1:
         text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
     else:
-        with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
+        with ThreadPoolExecutor(max(1, min(part_workers, len(parts)))) as pool:
             notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}"),
                                   parts))
         notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
@@ -303,7 +304,8 @@ def _scope_documents(store: IndexStore, document: str, named: list[str], hits: l
 
 def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k: int = 8,
            document: str = "", rewrite: bool = True, kinds: list[str] | None = None, per_document: int = 0,
-           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS) -> dict:
+           context_chars: int = CONTEXT_CHARS, scope: str = "auto", scope_chars: int = SCOPE_CHARS,
+           part_workers: int = PART_WORKERS) -> dict:
     """{"answer": text with [n] citations, "sources": [{n, cite, doc, section, file, kind, ref, excerpt}],
     "scope": "passages" | "whole", "documents": those read whole, "requests": to the model}.
     scope "passages" answers from the best k passages; "whole" reads whole documents
@@ -318,7 +320,7 @@ def answer(store: IndexStore, embedder: Embedder, llm: JsonLlm, question: str, k
                                                    per_document=per_document, rewritten=rewritten)
         docs = _scope_documents(store, document, named, hits)
         if docs:
-            res = answer_whole(store, llm, question, docs, scope_chars)
+            res = answer_whole(store, llm, question, docs, scope_chars, part_workers)
             return {**res, "requests": res["requests"] + requests}
     hits = search(store, embedder, question, k, document, kinds, per_document=per_document, rewritten=rewritten)
     sources = build_context(store, hits, context_chars)

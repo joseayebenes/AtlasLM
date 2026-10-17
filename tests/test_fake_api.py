@@ -71,6 +71,8 @@ def test_usage_counts_the_requests_by_endpoint_and_the_rejections(fake):
     assert grown["chat"] == 1 and grown["other"] == 0 and grown["retried"] == 0
     assert grown["rejected"] >= 2 and grown["embeddings"] == 1 + grown["rejected"]
     assert grown["wait_seconds"] > 0 and grown["api_seconds"] > 0 and grown["sent_kb"] > 0
+    assert grown["chat_seconds"] > 0 and grown["embeddings_seconds"] > 0 and grown["other_seconds"] == 0
+    assert grown["api_seconds"] == pytest.approx(grown["chat_seconds"] + grown["embeddings_seconds"])
 
 
 def _status_error(status: int, message: str, **metadata):

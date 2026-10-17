@@ -92,6 +92,7 @@ class ServiceConfig:
     extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
+    concurrency: int = 0         # LLM only: requests of one JsonLlm in flight; 0 = no cap (in docs, the workers)
     batch: int = 32              # embeddings only
     net: NetConfig = field(default_factory=NetConfig)
 
@@ -656,7 +657,8 @@ def _http_module():
 # What went to the APIs since the process started, through every client: the time
 # profiles of `atlas run` keep what each step added.
 _USAGE: dict[str, float] = {"chat": 0, "embeddings": 0, "other": 0, "rejected": 0, "retried": 0,
-                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0}
+                            "wait_seconds": 0.0, "api_seconds": 0.0, "chat_seconds": 0.0, "embeddings_seconds": 0.0,
+                            "other_seconds": 0.0, "sent_kb": 0.0}
 _USAGE_LOCK = threading.Lock()
 
 
@@ -670,8 +672,9 @@ def usage() -> dict[str, float]:
     """Cumulative counters of the requests of this process to the APIs: requests sent by
     endpoint (`chat`, `embeddings`, `other`), rate-limit rejections (`rejected`), retries
     after 5xx or connection errors (`retried`), seconds waiting for the pace or a pause of
-    the limiter (`wait_seconds`) and for the server (`api_seconds`), and kilobytes sent
-    (`sent_kb`)."""
+    the limiter (`wait_seconds`) and for the server (`api_seconds`, and by endpoint
+    `chat_seconds`, `embeddings_seconds`, `other_seconds`: divided by the requests, the
+    latency), and kilobytes sent (`sent_kb`)."""
     with _USAGE_LOCK:
         return dict(_USAGE)
 
@@ -716,7 +719,8 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                             raise
                         resp = None
                     finally:
-                        _count(api_seconds=time.monotonic() - sent)
+                        took = time.monotonic() - sent
+                        _count(api_seconds=took, **{f"{endpoint}_seconds": took})
                 finally:
                     if lim.sem:
                         lim.sem.release()

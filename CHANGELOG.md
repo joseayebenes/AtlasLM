@@ -27,6 +27,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   Ninguna petición falló al final: los 429 se reintentan. Lo que cambia es que la pregunta que
   llega con el lote en marcha espera su turno en vez de llevarse los rechazos, y que el lote no
   pierde ritmo. El servidor falso tiene `rpm_limit` para probarlo.
+- `atlas status` dice, por paso y destino, cuánto se llenó el cupo y por qué:
+  «chat: 540 in 31 min = 17/min of 28; latency 21 s; 6.1 in flight; 10 would fill the quota».
+  Las peticiones en vuelo de media son los segundos del servidor entre los del paso, y las que
+  llenarían el cupo, `requests_per_minute` × latencia / 60 (ley de Little). La guía pedía
+  adivinar `workers` con una latencia supuesta de 10 s, y con 20-30 s por sección el cupo se
+  llenaba a medias. Los contadores de uso separan los segundos por destino (`chat_seconds`,
+  `embeddings_seconds`, `other_seconds`); en las ejecuciones de la 0.2 se reparten los de
+  `api_seconds`.
+- `[llm] concurrency`: las peticiones al modelo en vuelo, separadas de los documentos que se
+  abren a la vez (`[pipeline] workers`). Por defecto, las `workers`, como antes.
+- `[search] part_workers`: las partes de documentos enteros que se leen a la vez (4, como antes).
 
 ### Al actualizar
 - Con `requests_per_minute` o `tokens_per_minute`, atlas escribe en `~/.atlas/limits` (o

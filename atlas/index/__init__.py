@@ -158,7 +158,7 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, scope,
-    scope_chars); what is not given takes its default."""
+    scope_chars, part_workers); what is not given takes its default."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None):
@@ -219,7 +219,8 @@ class Index:
         """scope: passages | whole | auto ("" = that of the settings); see search.answer."""
         s = self.settings
         return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"])
+                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+                      s["part_workers"])
 
     def requirement(self, req_id: str) -> list[dict]:
         """The exact text of a requirement by its ID, in every indexed document."""

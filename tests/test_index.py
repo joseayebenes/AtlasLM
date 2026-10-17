@@ -275,6 +275,8 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert res["documents"] == ["spec_with_bookmarks.pdf"] and parts > 2 and fake_chats() - before == parts + 2
     assert res["answer"].startswith("Answer combined from the notes [1]") and len(res["sources"]) > 2
     assert [s["n"] for s in res["sources"]] == sorted(s["n"] for s in res["sources"])
+    one = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500, "part_workers": 1})
+    assert one.answer("Summarise everything spec_with_bookmarks.pdf says")["requests"] == res["requests"]
 
 
 def test_records_of_a_code_unit(samples):

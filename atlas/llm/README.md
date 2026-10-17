@@ -68,15 +68,19 @@ reparado para que quien llama divida su entrada y pregunte otra vez.
 
 Si el servidor no acepta `response_format` con esquema (400, 422 o 501, como Ollama con
 algunos modelos), sigue sin él. `concurrency` limita cuántas peticiones de una misma
-instancia hay en vuelo a la vez, aunque la usen muchos hilos: así comparten las secciones
-de todos los documentos que se procesan juntos `[pipeline] workers` peticiones.
+instancia hay en vuelo a la vez, aunque la usen muchos hilos; sin darlo, es el de `[llm]
+concurrency`. Así comparten las secciones de todos los documentos que se procesan juntos
+`[llm] concurrency` peticiones (o, si es 0, `[pipeline] workers`).
 
 ## Contadores de uso
 
 `usage()` devuelve lo que ha pedido el proceso desde que empezó: peticiones por destino
 (`chat`, `embeddings`, `other`), rechazos por cupo (`rejected`), reintentos (`retried`),
-segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`), y kB
-enviados (`sent_kb`). Los perfiles de `atlas run` guardan lo que creció en cada paso.
+segundos esperando al limitador (`wait_seconds`) y al servidor (`api_seconds`, y por destino
+`chat_seconds`, `embeddings_seconds` y `other_seconds`), y kB enviados (`sent_kb`). Los
+perfiles de `atlas run` guardan lo que creció en cada paso, y `atlas status` saca de ahí, por
+paso y destino, el ritmo, la latencia media, las peticiones en vuelo de media (los segundos
+del servidor entre los del paso) y cuántas llenarían el cupo (rpm × latencia / 60).
 
 ## Como librería
 

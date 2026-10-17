@@ -255,8 +255,29 @@ git clone <repositorio> && cd AtlasLM
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt
 python examples/make_samples.py          # datos de ejemplo
-python -m pytest -q                      # sin modelo; las de Ollama se omiten si no está
+python -m pytest -q                      # sin modelo; las de modelo se omiten si atlas check falla
 ```
 
-El [README](../README.md) explica los tres niveles de modelo (servidor falso, Ollama y
+El [README](../README.md) explica los niveles de modelo (servidor falso, Ollama, OpenRouter y
 gateway) y cómo probar con cada uno.
+
+### Las pruebas con modelo en un puesto con el gateway
+
+Las siete pruebas con modelo (marcador `model`) leen la configuración de
+`ATLAS_TEST_CONFIG`; por defecto, `atlas.dev.toml` (Ollama). Con el gateway prueban lo que
+el servidor falso no puede: que el modelo de producción llama a las herramientas a través
+del proxy, con la CA de la empresa y el cupo de peticiones. Hace falta el repositorio con
+el extra `[agents]` y las muestras, y un `atlas.toml` con `[llm]`, `[embeddings]` y
+`[network]` como los de la sección 3 (la clave en `GW_KEY`, nunca escrita en el fichero):
+
+```powershell
+python examples/make_samples.py
+$env:GW_KEY = "..."
+atlas check atlas.toml                   # debe pasar: si no, las pruebas se omiten y dicen por qué
+$env:ATLAS_TEST_CONFIG = "atlas.toml"
+python -m pytest -q -m model             # en macOS o Linux: make test-gateway
+```
+
+Las pruebas escriben sus propias configuraciones con las secciones `[llm]`, `[embeddings]`
+y `[network]` de ese fichero tal como están escritas (las variables `${...}` siguen siendo
+variables) y el modelo de `[agents] model`. Solo leen las muestras, que son sintéticas.

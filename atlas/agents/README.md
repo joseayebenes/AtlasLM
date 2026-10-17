@@ -451,11 +451,15 @@ versiones, se compara con el mismo fichero.
 ```bash
 pip install -e ".[agents]"                       # google-adk
 OLLAMA_CONTEXT_LENGTH=16384 ollama serve         # en otra terminal
-make test-ollama                                 # o: python -m pytest -q -m ollama
+make test-ollama                                 # o: python -m pytest -q -m model
 ```
 
-`tests/test_agents_ollama.py` prueba los agentes contra la URL y el modelo de
-`atlas.dev.toml` (`[llm] base_url`, `[agents] model`). Son siete pruebas:
+`tests/test_agents_ollama.py` prueba los agentes contra el modelo de la configuración de
+`ATLAS_TEST_CONFIG`, por defecto `atlas.dev.toml`: sus `[llm]`, `[embeddings]` y
+`[network]` van a las configuraciones que escriben las pruebas, y los agentes usan su
+`[agents] model`. Con `make test-gateway` (`ATLAS_TEST_CONFIG=atlas.toml`) son las mismas
+contra el gateway, con su proxy, su CA y su cupo (ver el [README](../../README.md#niveles-de-modelo)).
+Son siete pruebas:
 - un agente con dos herramientas propias sobre las muestras (`get_requirement` y una `trace`
   que busca las etiquetas `Req:`): usa las dos, responde con el requisito y los ficheros
   correctos y no se inventa ficheros;
@@ -466,8 +470,10 @@ make test-ollama                                 # o: python -m pytest -q -m oll
 - las propuestas de enlaces del `req_linker`, una que debe proponer y otra que no;
 - el cumplimiento de un `Classify` con un error de límite y sin él.
 
-Se omiten solas si falta el extra `[agents]`, si Ollama no responde o si el modelo no está
-descargado. Para excluirlas: `python -m pytest -m "not ollama"`.
+Llevan el marcador `model` (y `ollama`, su nombre de antes, que sigue valiendo). Se omiten
+solas si falta el extra `[agents]` o si `atlas check` falla sobre esa configuración (Ollama
+parado, el modelo sin descargar, el gateway sin red o sin clave), y el motivo dice la salida
+de `atlas check`. Para excluirlas: `python -m pytest -m "not model"`.
 
 Con `gemma4:12b`, conviene desactivar el razonamiento en los agentes
 (`reasoning_effort: none`, como hacen los agentes de serie). Con razonamiento, 7 de 10

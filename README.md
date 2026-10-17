@@ -44,7 +44,7 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
-python -m pytest -q                                # 203 pruebas sin modelo (+7 de agentes con Ollama)
+python -m pytest -q                                # las pruebas sin modelo (+7 con modelo, si atlas check pasa)
 ```
 
 ### Niveles de modelo
@@ -57,6 +57,21 @@ python -m pytest -q                                # 203 pruebas sin modelo (+7 
 | **Gateway corporativo** | producción | `atlas.toml` |
 
 Todos usan la misma API compatible con OpenAI: cambiar de nivel es cambiar `base_url`.
+
+Las siete pruebas con modelo (`tests/test_agents_ollama.py`, marcador `model`) usan la
+configuración de `ATLAS_TEST_CONFIG`, por defecto `atlas.dev.toml`, y se omiten si
+`atlas check` falla sobre ella. En un puesto con el gateway, las mismas prueban que
+`gemma-4-26b` llama a las herramientas con el proxy, la CA y el cupo reales:
+
+```bash
+export GW_KEY=...                                  # la clave del gateway, como para atlas run
+atlas check atlas.toml                             # si falla, las pruebas se omiten y dicen por qué
+make test-gateway                                  # ATLAS_TEST_CONFIG=atlas.toml pytest -m model
+```
+
+Solo leen las muestras (`examples/samples`, sintéticas): no envían nada del proyecto real.
+Cada una hace entre unas pocas y unas decenas de peticiones; con 28 por minuto, la tanda
+entera tarda varios minutos.
 
 ### Ollama o LM Studio
 
@@ -80,7 +95,7 @@ Tamaño del modelo según la memoria del Mac (valores aproximados de descarga en
 Comprueba la conexión antes de nada: `atlas check atlas.dev.toml`. `gemma4` razona por
 defecto, y ese razonamiento cuenta dentro de `max_tokens` y multiplica los tiempos:
 `atlas.dev.toml` lo apaga con `[llm] reasoning_effort = "none"`. Los agentes con Ollama y
-sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md).
+sus pruebas (`make test-ollama`, `make test-gateway`) están en [atlas.agents](atlas/agents/README.md).
 
 ## Comandos
 

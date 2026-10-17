@@ -29,6 +29,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   día; no sobrescribe un conjunto escrito a mano.
 - `tools/compare_models.py` añade tokens por caso, dólares en total y por acierto, y el
   acierto@3 y el MRR de la búsqueda; escribe `reports/compare-<fecha>.md` y `.json`.
+- Las pruebas con modelo pasan contra cualquier configuración: `ATLAS_TEST_CONFIG` (por
+  defecto `atlas.dev.toml`) da su `[llm]`, `[embeddings]`, `[network]` y `[agents] model`,
+  y se omiten si `atlas check` falla sobre ella. Marcador `model` (`ollama` sigue valiendo) y
+  `make test-gateway`, que las pasa contra el gateway de `atlas.toml`. Guía en el README
+  («Niveles de modelo») y en `docs/instalacion.md`.
 
 ### Cambiado
 - Cada fuente de `Index.answer` trae `context`, el texto que leyó el modelo; `ask_docs` no

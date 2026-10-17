@@ -46,6 +46,7 @@ include = ["atlas*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["ollama: needs a local Ollama with the atlas.dev.toml models (skipped otherwise)"]
+markers = ["model: needs the real model of ATLAS_TEST_CONFIG (atlas.dev.toml by default); skipped if atlas check fails",
+           "ollama: the old name of the marker model (the same tests)"]
 filterwarnings = ["ignore:.*EXPERIMENTAL.*:UserWarning",       # notices of ADK about its own features
                   "ignore:builtin type [Ss]wig.* has no __module__:DeprecationWarning"]   # pymupdf on Python 3.13

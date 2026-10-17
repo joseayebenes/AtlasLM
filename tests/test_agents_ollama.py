@@ -1,13 +1,22 @@
-"""ADK agents against a local Ollama: real tool calling over the sample data.
+"""ADK agents against a real model: real tool calling over the sample data.
 
-Skipped unless the [agents] extra (google-adk) is installed and the Ollama of atlas.dev.toml
-is running with its [agents] model pulled. The model is AtlasLlm, over atlas.llm. Run only these with
-`pytest -m ollama`, or leave them out with `pytest -m "not ollama"`.
+The model is that of the configuration in ATLAS_TEST_CONFIG (atlas.dev.toml, the local
+Ollama, by default; atlas.toml for the corporate gateway, with its proxy, CA and rate limit):
+its [llm], [embeddings] and [network] go to the configurations these tests write, and the
+agents use its [agents] model. Skipped unless the [agents] extra (google-adk) is installed
+and `atlas check` passes on that configuration. The model is AtlasLlm, over atlas.llm.
+
+    pytest -m model                                     # only these (`-m ollama` is the same)
+    ATLAS_TEST_CONFIG=atlas.toml pytest -m model        # against the gateway: make test-gateway
+    pytest -m "not model"                               # all the others
 """
 import asyncio
+import contextlib
+import io
 import json
+import os
 import re
-import urllib.request
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -16,29 +25,78 @@ from atlas.config import load_config
 from atlas.doors import DatabaseAdapter, normalize_id
 
 ROOT = Path(__file__).resolve().parents[1]
+CONFIG = Path(os.environ.get("ATLAS_TEST_CONFIG") or "atlas.dev.toml").expanduser()
+CONFIG = CONFIG if CONFIG.is_absolute() or CONFIG.exists() else ROOT / CONFIG
 QUESTION = ("Which system requirement (SSS) does SRS-0004 satisfy, and in which Ada files "
             "is SRS-0004 implemented and tested?")
 SAMPLE_ADA_FILES = {"tracks.ads", "tracks.adb", "logger.ads", "logger.adb", "test_tracks.adb"}
 
-pytestmark = [pytest.mark.ollama,                      # noise from ADK imports:
+pytestmark = [pytest.mark.model, pytest.mark.ollama,   # ollama: the old name of the marker; noise from ADK:
               pytest.mark.filterwarnings("ignore:.*EXPERIMENTAL.*:UserWarning"),
               pytest.mark.filterwarnings("ignore:.*ReadOnly.*:UserWarning")]
 
 
 @pytest.fixture(scope="module")
-def ollama():
-    """(base_url, api_key, model) of atlas.dev.toml, or skip if it cannot be used."""
+def served():
+    """The configuration of ATLAS_TEST_CONFIG, or skip if `atlas check` fails on it (a real
+    request to its chat model and another to its embeddings)."""
     pytest.importorskip("google.adk", reason="needs the [agents] extra")
-    cfg = load_config(ROOT / "atlas.dev.toml")
-    base_url, model = cfg["llm"]["base_url"], cfg["agents"]["model"]
+    from atlas.config import ConfigError
+    from atlas.llm import check, from_config
+    if not CONFIG.exists():
+        pytest.skip(f"ATLAS_TEST_CONFIG: {CONFIG} does not exist")
     try:
-        with urllib.request.urlopen(f"{base_url}/models", timeout=2) as r:
-            models = {m["id"] for m in json.load(r)["data"]}
-    except OSError as e:
-        pytest.skip(f"Ollama is not running at {base_url} ({e})")
-    if model not in models and f"{model}:latest" not in models:
-        pytest.skip(f"model {model} is not in Ollama (ollama pull {model})")
-    return base_url, cfg["llm"]["api_key"], model
+        cfg = load_config(CONFIG)
+    except ConfigError as e:
+        pytest.skip(f"{CONFIG.name}: {e}")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        failed = check(from_config(cfg))
+    if failed:
+        pytest.skip(f"atlas check fails on {CONFIG.name}:\n{out.getvalue()[-1500:]}")
+    return cfg
+
+
+def _toml(value) -> str:
+    """A value as TOML: strings (JSON escapes are TOML's), numbers, booleans, lists and
+    inline tables."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    if isinstance(value, list):
+        return "[" + ", ".join(map(_toml, value)) + "]"
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{json.dumps(k)} = {_toml(v)}" for k, v in value.items()) + "}"
+    return json.dumps(str(value))
+
+
+def _services(cfg, agents: bool = False) -> str:
+    """[llm], [embeddings] and [network] of the configuration under test, for the atlas.toml
+    of a test: as written in its file (an api_key = "${GW_KEY}" stays a variable), the paths
+    of its certificates made absolute, and the [agents] model as the [llm] one if `agents`."""
+    try:
+        import tomllib
+    except ModuleNotFoundError:                                  # Python 3.10
+        import tomli as tomllib
+    raw = tomllib.loads(cfg.path.read_text(encoding="utf-8"))
+
+    def absolute(table: dict) -> dict:
+        out = {}
+        for k, v in table.items():
+            if isinstance(v, dict):
+                v = absolute(v)
+            elif k in ("ca_cert", "client_cert", "client_key") and isinstance(v, str) and v and v != "system" \
+                    and "${" not in v and not Path(v).expanduser().is_absolute() and (cfg.path.parent / v).exists():
+                v = str(cfg.path.parent / v)
+            out[k] = v
+        return out
+
+    sections = {name: absolute(raw.get(name) or {}) for name in ("llm", "embeddings", "network")}
+    if agents and cfg["agents"].get("model"):
+        sections["llm"]["model"] = cfg["agents"]["model"]
+    return "\n".join(f"[{name}]\n" + "".join(f"{k} = {_toml(v)}\n" for k, v in table.items())
+                     for name, table in sections.items())
 
 
 def _tools(doors_config: dict, ada_root: Path) -> list:
@@ -77,14 +135,15 @@ EDIT_INSTRUCTION = ("You change code with the tools. Find the code with grep, re
                     "then change it with edit_file. Be brief.")
 
 
-def _model(ollama):
+def _model(cfg):
+    """The [agents] model of the configuration, with its [llm] connection and options. In
+    atlas.dev.toml, reasoning_effort = "none": gemma4 reasons by default, and with reasoning
+    on 3 out of 10 runs ended with an empty or invented answer; with it off, 5 out of 5 were
+    right and about 4x faster."""
     from atlas.agents.model import AtlasLlm
-    from atlas.llm import NetConfig, ServiceConfig
-    base_url, api_key, model_name = ollama
-    # gemma4 reasons by default. With reasoning on, 3 out of 10 runs ended with an empty
-    # or invented answer; with it off, 5 out of 5 were right and about 4x faster.
-    return AtlasLlm.from_service(ServiceConfig(base_url=base_url, model=model_name, api_key=api_key,
-                                               reasoning_effort="none", net=NetConfig(proxy="", no_proxy="*")))
+    from atlas.llm import from_config
+    llm = from_config(cfg).llm
+    return AtlasLlm.from_service(replace(llm, model=cfg["agents"].get("model") or llm.model))
 
 
 async def _ask(model, tools: list, question: str, instruction: str = TRACE_INSTRUCTION) -> tuple[list[str], str]:
@@ -107,9 +166,9 @@ async def _ask(model, tools: list, question: str, instruction: str = TRACE_INSTR
     return calls, answer
 
 
-def test_agent_traces_a_requirement_with_tools(ollama, toml, samples):
+def test_agent_traces_a_requirement_with_tools(served, toml, samples):
     tools = _tools(load_config(toml())["sources"]["doors"], samples / "ada")
-    calls, answer = asyncio.run(asyncio.wait_for(_ask(_model(ollama), tools, QUESTION), timeout=300))
+    calls, answer = asyncio.run(asyncio.wait_for(_ask(_model(served), tools, QUESTION), timeout=300))
 
     assert {"get_requirement", "trace"} <= set(calls), calls
     assert "SSS-0005" in answer, answer
@@ -118,7 +177,7 @@ def test_agent_traces_a_requirement_with_tools(ollama, toml, samples):
     assert cited <= SAMPLE_ADA_FILES, f"cites files that do not exist: {answer}"
 
 
-def test_agent_edits_code_with_the_file_tools(ollama, samples, tmp_path, monkeypatch):
+def test_agent_edits_code_with_the_file_tools(served, samples, tmp_path, monkeypatch):
     """The file tools of atlas.code in the hands of gemma4: a precise change and nothing else.
     Before edit_file tolerated escaped quotes and other indentation, the model found the
     line but looped until the timeout; with that tolerance, 5 out of 5 in about 20 s."""
@@ -131,7 +190,7 @@ def test_agent_edits_code_with_the_file_tools(ollama, samples, tmp_path, monkeyp
     task = 'In the Ada project, change the log message of Delete_Track from "delete" to "track deleted". ' \
            "Change nothing else."
     calls, _ = asyncio.run(asyncio.wait_for(
-        _ask(_model(ollama), [tools.list_files, tools.grep, tools.read_file, tools.edit_file], task,
+        _ask(_model(served), [tools.list_files, tools.grep, tools.read_file, tools.edit_file], task,
              EDIT_INSTRUCTION), timeout=300))
 
     assert "edit_file" in calls, calls
@@ -140,7 +199,7 @@ def test_agent_edits_code_with_the_file_tools(ollama, samples, tmp_path, monkeyp
     assert all(f.read_text() == text for f, text in before.items() if f != tracks)
 
 
-def test_agent_answers_with_the_tools_of_atlas_serve(ollama, toml, samples, docs_samples, tmp_path):
+def test_agent_answers_with_the_tools_of_atlas_serve(served, toml, samples, docs_samples, tmp_path):
     """gemma4 with only the tools of `atlas serve`, over MCP (what OpenCode or VS Code do), on
     a workspace processed with the embeddings of Ollama. Without reasoning, 12 of 12 answers
     to four questions (traceability, impact, documents, a section) were right, in 4-37 s."""
@@ -152,21 +211,11 @@ def test_agent_answers_with_the_tools_of_atlas_serve(ollama, toml, samples, docs
     from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
     from mcp import StdioServerParameters
     from atlas.cli import run
-    base_url, api_key, _ = ollama
     docs = tmp_path / "docs"
     docs.mkdir()
     shutil.copy(docs_samples / "spec_with_bookmarks.pdf", docs)
-    dev = load_config(ROOT / "atlas.dev.toml")
     cfg = load_config(toml(f'''
-[llm]
-base_url = "{base_url}"
-api_key = "{api_key}"
-model = "{dev["llm"]["model"]}"
-[embeddings]
-model = "{dev["embeddings"]["model"]}"
-[network]
-proxy = ""
-no_proxy = "*"
+{_services(served)}
 [[sources.docs]]
 name = "docs"
 paths = ["{docs.as_posix()}"]
@@ -183,7 +232,7 @@ roots = ["{(samples / 'ada').as_posix()}"]
                                                     args=["-m", "atlas.cli", "serve", str(cfg.path)]),
                 timeout=60), errlog=errlog)
             try:
-                return await _ask(_model(ollama), [toolset], QUESTION.replace("Ada files", "Ada subprograms"))
+                return await _ask(_model(served), [toolset], QUESTION.replace("Ada files", "Ada subprograms"))
             finally:
                 await toolset.close()
 
@@ -195,7 +244,7 @@ roots = ["{(samples / 'ada').as_posix()}"]
                      "logger.next_id", "tracks.adb", "tracks.ads", "test_tracks.adb"}, answer
 
 
-def test_the_assistant_of_atlas(ollama, toml, samples):
+def test_the_assistant_of_atlas(served, toml, samples):
     """The built-in assistant (atlas/agents/builtin/assistant.md) with its own tools, as
     `atlas agent assistant` runs it, over the DOORS and the graph of the samples."""
     pytest.importorskip("tree_sitter_ada")
@@ -203,15 +252,8 @@ def test_the_assistant_of_atlas(ollama, toml, samples):
     import io
     from atlas.agents.runtime import run_agent
     from atlas.cli import run
-    base_url, api_key, model = ollama
     cfg = load_config(toml(f'''
-[llm]
-base_url = "{base_url}"
-api_key = "{api_key}"
-model = "{model}"
-[network]
-proxy = ""
-no_proxy = "*"
+{_services(served, agents=True)}
 [pipeline]
 steps = ["doors", "code", "graph"]
 [sources.code]
@@ -226,7 +268,7 @@ test_patterns = ["**/tests/**"]
     assert "test_tracks" in res["answer"].lower(), res["answer"]
 
 
-def test_requirement_verification_finds_the_deadline_that_differs(ollama, toml, docs_samples, tmp_path):
+def test_requirement_verification_finds_the_deadline_that_differs(served, toml, docs_samples, tmp_path):
     """The verification of a requirement against the documents: SRS-0001 says 499 ms in DOORS
     and 301 ms in the specification. gemma4 found it and cited both, in about 35 s."""
     pytest.importorskip("markitdown")
@@ -236,21 +278,11 @@ def test_requirement_verification_finds_the_deadline_that_differs(ollama, toml, 
     from atlas.agents.verify import verify
     from atlas.cli import run
     from atlas.index import Index
-    base_url, api_key, model = ollama
     docs = tmp_path / "docs"
     docs.mkdir()
     shutil.copy(docs_samples / "spec_with_bookmarks.pdf", docs)
-    dev = load_config(ROOT / "atlas.dev.toml")
     cfg = load_config(toml(f'''
-[llm]
-base_url = "{base_url}"
-api_key = "{api_key}"
-model = "{model}"
-[embeddings]
-model = "{dev["embeddings"]["model"]}"
-[network]
-proxy = ""
-no_proxy = "*"
+{_services(served, agents=True)}
 [pipeline]
 steps = ["doors", "docs", "graph", "index"]
 [[sources.docs]]
@@ -266,7 +298,7 @@ analysis = "regex"
                for i in res["issues"]), res
 
 
-def test_req_linker_proposes_the_code_that_implements_a_requirement(ollama, toml, samples, tmp_path):
+def test_req_linker_proposes_the_code_that_implements_a_requirement(served, toml, samples, tmp_path):
     """Two requirements stated in a document and without code: one that tracks.delete_track
     implements (the search over the indexed code finds it) and one that no code of the
     samples implements (the display of the HMI). The agent proposes the first and nothing
@@ -277,7 +309,6 @@ def test_req_linker_proposes_the_code_that_implements_a_requirement(ollama, toml
     from atlas.agents.link import link_all
     from atlas.cli import run
     from atlas.index import Index
-    base_url, api_key, model = ollama
     docs = tmp_path / "docs"
     docs.mkdir()
     (docs / "operations.md").write_text(
@@ -285,17 +316,8 @@ def test_req_linker_proposes_the_code_that_implements_a_requirement(ollama, toml
         "when the operator deletes it.\n\n2 Display\n\nReq: SRS-0151 The HMI shall show the speed of each "
         "track in knots.\n")
     code = {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")}
-    dev = load_config(ROOT / "atlas.dev.toml")
     cfg = load_config(toml(f'''
-[llm]
-base_url = "{base_url}"
-api_key = "{api_key}"
-model = "{model}"
-[embeddings]
-model = "{dev["embeddings"]["model"]}"
-[network]
-proxy = ""
-no_proxy = "*"
+{_services(served, agents=True)}
 [pipeline]
 steps = ["doors", "code", "docs", "graph", "index"]
 [[sources.docs]]
@@ -318,7 +340,7 @@ test_patterns = ["**/tests/**"]
     assert {f: f.read_text() for f in (samples / "ada").rglob("*.ad?")} == code
 
 
-def test_compliance_checker_finds_a_wrong_boundary(ollama, toml, samples, tmp_path):
+def test_compliance_checker_finds_a_wrong_boundary(served, toml, samples, tmp_path):
     """The code of a requirement that says "from 50 to 300 inclusive is Normal": with
     `Speed < 300.0` it does not comply (300 is Fast), with `Speed <= 300.0` it does."""
     pytest.importorskip("tree_sitter_ada")
@@ -327,7 +349,6 @@ def test_compliance_checker_finds_a_wrong_boundary(ollama, toml, samples, tmp_pa
     import shutil
     from atlas.agents.comply import comply
     from atlas.cli import run
-    base_url, api_key, model = ollama
     ada, docs = tmp_path / "ada", tmp_path / "docs"
     shutil.copytree(samples / "ada", ada)
     docs.mkdir()
@@ -341,17 +362,8 @@ def test_compliance_checker_finds_a_wrong_boundary(ollama, toml, samples, tmp_pa
             "      if Speed < 0.0 then\n         return Invalid;\n      elsif Speed < 50.0 then\n         return Slow;\n"
             "      elsif Speed {op} 300.0 then\n         return Normal;\n      else\n         return Fast;\n"
             "      end if;\n   end Classify;\nend Speeds;\n")
-    dev = load_config(ROOT / "atlas.dev.toml")
     cfg = load_config(toml(f'''
-[llm]
-base_url = "{base_url}"
-api_key = "{api_key}"
-model = "{model}"
-[embeddings]
-model = "{dev["embeddings"]["model"]}"
-[network]
-proxy = ""
-no_proxy = "*"
+{_services(served, agents=True)}
 [pipeline]
 steps = ["code", "docs", "graph"]
 [[sources.docs]]

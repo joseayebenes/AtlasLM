@@ -6,6 +6,17 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `docs/aceptacion.md`: el guion de las dos primeras semanas con el proyecto real (un puesto
+  Windows limpio, el gateway por el proxy, DOORS, los PDF y el código sin modelo, la ingesta
+  de noche, 20 preguntas con `atlas eval` y el servidor en el editor), con una casilla y una
+  cifra por paso, y dónde van las de las metas 1 a 7 en `legacy/PLAN.md`.
+- `docs/faq.md`: los errores conocidos y su remedio (certificados, proxy, cupo, el
+  razonamiento de gemma 4, el 501 del esquema JSON, `OLLAMA_CONTEXT_LENGTH`, las rutas
+  relativas, «does not exist» en las fuentes y el entorno del servidor MCP).
+- `make wheelhouse` y `make wheelhouse-windows` aceptan `EXTRAS` (`all` por defecto):
+  `EXTRAS=all,dev` mete pytest para pasar `tests/test_security.py` en el puesto.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

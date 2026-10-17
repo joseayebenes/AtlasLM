@@ -223,6 +223,7 @@ Desde el repositorio, en cualquier equipo con red:
 make wheel                         # dist/atlaslm-<versión>-py3-none-any.whl
 make wheelhouse-windows            # dist/wheelhouse-win_amd64-py312/ (WIN_PY=3.11 para otro Python)
 make wheelhouse                    # dist/wheelhouse/ para este sistema y este Python
+make wheelhouse-windows EXTRAS=all,dev   # con pytest, para pasar las pruebas en el puesto
 make check-install                 # instalación limpia desde dist/wheelhouse, sin red
 ```
 
@@ -230,6 +231,10 @@ make check-install                 # instalación limpia desde dist/wheelhouse, 
 nueva: entorno, instalación sin red, `atlas init`, la plantilla apuntando a las muestras y
 a la API falsa, `check`, dos `run` (el segundo no procesa nada), `status`, `trace` y
 `search`.
+
+El [guion de aceptación](aceptacion.md) dice qué comprobar y medir en el primer puesto
+Windows y con el proyecto real; los errores conocidos, con su remedio, están en la
+[FAQ](faq.md).
 
 Para publicar en el repositorio interno, se sube el wheel (y, si se quiere, el `.tar.gz`)
 con la herramienta del repositorio, por ejemplo

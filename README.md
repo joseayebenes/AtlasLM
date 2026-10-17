@@ -23,6 +23,8 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
+| [Aceptación](docs/aceptacion.md) | el guion de las dos primeras semanas en Windows con el proyecto real, con una cifra por paso |
+| [Preguntas frecuentes](docs/faq.md) | los errores conocidos y su remedio: red, razonamiento, rutas, entorno del editor |
 | [OpenRouter](docs/openrouter.md) | probar y comparar modelos de chat con las muestras |
 | [atlas.pipeline](atlas/pipeline/README.md) | el motor incremental, el paralelismo y los perfiles de tiempo |
 | [atlas.llm](atlas/llm/README.md) | la conexión con los modelos: proxy, TLS, límites, JSON |

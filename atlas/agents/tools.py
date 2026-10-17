@@ -66,7 +66,9 @@ class AgentTools:
         if g is None:
             return {"error": NO_GRAPH}
         n, err = g.at(path, line)
-        return err or build_context(g, n, budget_tokens, self._index())
+        if err or n is None:
+            return err or {"error": f"nothing at {path}:{line}"}
+        return build_context(g, n, budget_tokens, self._index())
 
     def similar_requirements(self, req_id: str, k: int = 3) -> dict:
         """Up to `k` requirements like this one that already have code, as examples of how

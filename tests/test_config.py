@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from atlas.config import ConfigError, load_config
 

@@ -302,9 +302,16 @@ communities = true
     capsys.readouterr()
     assert matrix(cfg, "SRS_TMS") == 0 and "40 requirements: 4 with code, 1 with tests" in capsys.readouterr().out
     written = cfg.workspace / "graph" / "matrix-SRS_TMS.csv"
-    assert written.read_text().splitlines()[0] == "id,text,status,verification,derived,code,tests,covering_tests," \
-                                                  "documents"
+    raw = written.read_bytes()                          # for Excel in Spanish: a BOM and ";"
+    assert raw.startswith(b"\xef\xbb\xbf") and raw[3:].decode().splitlines()[0] == \
+        "id;text;status;verification;derived;code;tests;covering_tests;documents"
+    import csv
+    rows = {r["id"]: r for r in csv.DictReader(written.open(encoding="utf-8-sig", newline=""), delimiter=";")}
+    assert rows["SRS-0004"]["code"] == "tracks.delete_track" and rows["SRS-0004"]["tests"] == "test_tracks.test_tracks"
     assert "| SRS-0004 |" in written.with_suffix(".md").read_text()
+    assert go(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')))["skipped"]["graph.build"] == 3
+    assert matrix(load_config(toml(extra + 'csv_delimiter = ","\nmatrix_formats = ["csv"]\n')), "SRS_TMS") == 0
+    assert "id,text," in written.read_text(encoding="utf-8-sig") and "matrix-SRS_TMS.md" not in capsys.readouterr().out
     assert matrix(cfg, "NOPE") == 1 and "SRS_TMS, SRS_TMS_OLD, SSS_MISSION" in capsys.readouterr().out
     assert matrix(cfg, "*") == 0 and (cfg.workspace / "graph" / "matrix-all.md").exists()
     capsys.readouterr()

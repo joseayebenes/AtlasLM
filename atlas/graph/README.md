@@ -9,6 +9,7 @@ modelo a las preguntas de trazabilidad e impacto. Viene de `legacy/ada_graph.py`
 | `build.py` | construcción de las tres partes del grafo |
 | `sources.py` | los nombres de documentos y de elementos de código que se buscan en el texto |
 | `store.py` | `GraphStore`: el grafo en `atlas.db`, por origen |
+| `export.py` | `write_matrix`: la matriz en CSV, Markdown y XLSX |
 | `knowledge.py` | `KnowledgeGraph`: consultas de código y de trazabilidad, exportación |
 | `tools.py` | `GraphTools`: las herramientas del grafo para agentes y MCP |
 
@@ -71,8 +72,11 @@ Un requisito de un módulo cuyos derivados de otro módulo tienen código cuenta
 implementado a través de ellos: un SSS lo está si lo están los SRS que lo satisfacen. Los
 enlaces dentro de un mismo módulo (referencias, refinamientos) no cuentan como derivación.
 
-`atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.csv` (para una
-hoja de cálculo) y `.md`, y muestra el resumen y los huecos; `atlas matrix "*"` la hace con
+`atlas matrix SRS_TMS` escribe la matriz en `<workspace>/graph/matrix-SRS_TMS.*`, en los
+formatos de `[graph] matrix_formats` (`export.py`, `write_matrix`): `.csv` para Excel (UTF-8 con
+BOM, `;` entre columnas por defecto, `csv_delimiter`; las listas de una celda, una por línea),
+`.md` y, con el extra `[xlsx]`, `.xlsx` (matriz con filtros, huecos y resumen con la fecha de
+DOORS). Muestra el resumen y los huecos; `atlas matrix "*"` la hace con
 todos los requisitos. Con las muestras:
 
 ```

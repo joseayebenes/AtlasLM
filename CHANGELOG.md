@@ -6,6 +6,18 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `atlas matrix` escribe los formatos de `[graph] matrix_formats` (`csv`, `md` y `xlsx`). La
+  escritura pasa a la librería: `atlas.graph.write_matrix(res, prefijo, formatos, delimitador)`.
+- Extra `[xlsx]` (openpyxl, wheel puro): `matrix-<módulo>.xlsx` con una hoja de matriz con
+  filtros y anchos, una de huecos y un resumen con la fecha de la parte DOORS del grafo.
+
+### Al actualizar
+- El CSV de `atlas matrix` va en UTF-8 con BOM y con `;` entre columnas (`[graph]
+  csv_delimiter`), para que Excel en español lo abra en columnas y con los acentos bien. Las
+  listas de una celda van una por línea en vez de separadas por «; ». Un script que lea el
+  CSV necesita `encoding="utf-8-sig"` y `delimiter=";"`, o `csv_delimiter = ","`.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

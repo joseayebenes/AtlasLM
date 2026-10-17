@@ -5,7 +5,8 @@
     atlas sections [atlas.toml]     sections each document would have, without the model
     atlas graph    [atlas.toml]     report of the graph (code, DOORS, documents) and of its gaps
     atlas trace    ID [atlas.toml]     everything about a requirement: DOORS, documents, code, tests
-    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module (CSV and Markdown); * = all
+    atlas matrix   MODULE [atlas.toml] traceability matrix of a DOORS module ([graph] matrix_formats: CSV
+                                       for Excel, Markdown, XLSX); * = all
     atlas verify   ID|MODULE [atlas.toml]  the requirements against the documents, with the model; * = all
     atlas comply   ID|MODULE [atlas.toml]  whether the code of each requirement does all it asks, obligation
                                            by obligation, with the model; * = all
@@ -46,7 +47,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from atlas import plugins
-from atlas.config import Config, ConfigError, load_config
+from atlas.config import GRAPH_BUILD_KEYS, Config, ConfigError, load_config
 from atlas.pipeline import FatalError, Ledger, Runner, Step, sha256_file, sha256_text
 from atlas.store import Store
 
@@ -453,7 +454,10 @@ def graph_step(ctx) -> Step:
     test_patterns = (ctx.cfg["sources"].get("code") or {}).get("test_patterns", [])
     id_normalize = ((ctx.cfg["sources"].get("doors") or {}).get("convention") or {}).get("id_normalize", "upper")
     normalize = lambda rid: normalize_id(rid, id_normalize)
-    settings = f"{ctx.cfg.fingerprint('graph')}|{test_patterns}|{id_normalize}|{GRAPH_VERSION}"
+    # only what changes the graph built: the matrix formats ([graph] matrix_formats...) do not
+    built = {k: v for k, v in ctx.cfg["graph"].items() if k in GRAPH_BUILD_KEYS}
+    settings = (f"{sha256_text(json.dumps(built, sort_keys=True, ensure_ascii=False, default=str))[:16]}|"
+                f"{test_patterns}|{id_normalize}|{GRAPH_VERSION}")
 
     def documents(ctx) -> list[dict]:
         docs = [d for d in ctx.store.documents() if (Path(d["out_dir"]) / "structure.json").exists()]
@@ -704,38 +708,31 @@ def trace(cfg: Config, req_id: str) -> int:
 
 
 def matrix(cfg: Config, module: str) -> int:
-    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph,
-    as CSV (for a spreadsheet) and Markdown, and its summary and gaps on the screen."""
-    import csv
-    from atlas.graph import KnowledgeGraph
+    """The traceability matrix of a module ("*": every requirement) in <workspace>/graph, in
+    the formats of [graph] matrix_formats (atlas.graph.export), and its summary and gaps on
+    the screen."""
+    from atlas.graph import GraphStore, KnowledgeGraph, write_matrix
+    from atlas.graph.export import summary_line
     ctx = _context(cfg)
     module = "" if module == "*" else module
     res = KnowledgeGraph.open(ctx.store.path).matrix(module, limit=10**9)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
         return 1
-    columns = ["id", "text", "status", "verification", "derived", "code", "tests", "covering_tests", "documents"]
-    cell = lambda v: "; ".join(v) if isinstance(v, list) else str(v)
-    prefix = cfg.workspace / "graph" / f"matrix-{module or 'all'}"
-    prefix.parent.mkdir(parents=True, exist_ok=True)
-    with open(prefix.with_suffix(".csv"), "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(columns)
-        w.writerows([cell(row.get(c, "")) for c in columns] for row in res["rows"])
-    sm, gaps = res["summary"], res["gaps"]
-    md = [f"# Traceability matrix: {res['module']}", "",
-          f"{sm['requirements']} requirements: {sm['with_code']} with code, {sm['with_tests']} with tests, "
-          f"{sm['with_documents']} in documents.", "",
-          "| " + " | ".join(columns) + " |", "|" + "---|" * len(columns)]
-    md += ["| " + " | ".join(cell(row.get(c, "")).replace("|", "\\|") for c in columns) + " |" for row in res["rows"]]
-    for key, title in (("without_code", "Without code"), ("without_tests", "Without tests")):
-        md += ["", f"## {title} ({gaps[key]['count']})", "", ", ".join(gaps[key]["items"]) or "-"]
-    prefix.with_suffix(".md").write_text("\n".join(md) + "\n", encoding="utf-8")
-    print(md[2])
+    gc = cfg["graph"]
+    try:
+        files = write_matrix(res, cfg.workspace / "graph" / f"matrix-{module or 'all'}", gc["matrix_formats"],
+                             gc["csv_delimiter"], builds=GraphStore(ctx.store.path).builds())
+    except ImportError as e:            # "xlsx" without the [xlsx] extra
+        sys.exit(str(e))
+    except PermissionError as e:        # Windows: the file is open in Excel
+        sys.exit(f"cannot write {e.filename}: close it (Excel keeps it locked) and run again")
+    gaps = res["gaps"]
+    print(summary_line(res))
     for key, title in (("without_code", "without code"), ("without_tests", "without tests")):
         items = gaps[key]["items"]
         print(f"{title} ({gaps[key]['count']}): {', '.join(items[:20])}" + (" …" if len(items) > 20 else ""))
-    print(f"written {prefix.with_suffix('.csv')} and {prefix.with_suffix('.md')}")
+    print(f"written {', '.join(str(f) for f in files)}" if files else "nothing written: [graph] matrix_formats is empty")
     return 0
 
 

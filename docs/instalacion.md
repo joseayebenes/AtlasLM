@@ -67,6 +67,7 @@ python3.12 -m venv ~/atlas/venv
 | `docs` | leer PDF y Office (markitdown, pymupdf) | solo Markdown y texto |
 | `code` | analizar Ada y construir el grafo (tree-sitter, networkx) | sin código ni grafo |
 | `mcp` | `atlas serve`, el servidor para OpenCode y VS Code | sin servidor MCP |
+| `xlsx` | `atlas matrix` en `.xlsx` (openpyxl); no está en `all` | solo CSV y Markdown |
 | `agents` | agentes ADK: `atlas agent`, `verify`, `impact`, `coverage`, `eval` (google-adk 2.11) | sin agentes |
 
 Por ejemplo, `"atlaslm[docs,code,mcp]"` para procesar y servir sin agentes.

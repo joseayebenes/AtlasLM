@@ -65,6 +65,15 @@ def test_search_settings(toml):
     assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
 
 
+def test_matrix_settings(toml):
+    cfg = load_config(toml('[graph]\ncommunities = true'))
+    assert cfg["graph"]["matrix_formats"] == ["csv", "md"] and cfg["graph"]["csv_delimiter"] == ";"
+    with pytest.raises(ConfigError, match="unknown matrix_formats \\['docx'\\]"):
+        load_config(toml('[graph]\nmatrix_formats = ["csv", "docx"]'))
+    with pytest.raises(ConfigError, match="csv_delimiter must be one character"):
+        load_config(toml('[graph]\ncsv_delimiter = ";;"'))
+
+
 def test_wrong_type(toml):
     with pytest.raises(ConfigError, match="integer"):
         load_config(toml('[pipeline]\nworkers = "many"'))

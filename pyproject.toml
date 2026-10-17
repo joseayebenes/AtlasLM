@@ -23,6 +23,7 @@ docs = ["markitdown[pdf]>=0.1.2,<0.2", "pymupdf>=1.24,<2"]
 code = ["tree-sitter>=0.23,<0.27", "tree-sitter-ada>=0.1,<0.2", "networkx>=3,<4"]
 mcp = ["mcp>=2.3,<3"]
 agents = ["google-adk>=2.11,<2.12"]
+xlsx = ["openpyxl>=3.1,<4"]                  # atlas matrix en .xlsx; wheel puro (con et-xmlfile)
 all = ["atlaslm[docs,code,mcp,agents]"]
 dev = ["pytest>=8", "pymupdf>=1.24,<2", "build>=1"]
 

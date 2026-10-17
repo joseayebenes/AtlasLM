@@ -42,7 +42,7 @@ de ella:
 | `[search]` | nada: solo cambia lo que devuelven `search` y `ask` |
 | `[sources.code]` | el análisis del código y su parte del grafo |
 | `[sources.doors]` | la lectura de los módulos y su parte del grafo |
-| `[graph]` | el grafo |
+| `[graph]` `exports` o `communities` | el grafo (`matrix_formats` y `csv_delimiter`, nada) |
 | una clave o una contraseña | nada |
 
 ## [project]
@@ -244,6 +244,8 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 |---|---|---|---|
 | `exports` | lista | `["graphml", "json"]` | formatos del grafo completo en `<workspace>/graph/atlas.*` |
 | `communities` | sí/no | `false` | `true`: cada elemento de código lleva su grupo (Louvain), para colorearlo en Gephi |
+| `matrix_formats` | lista | `["csv", "md"]` | qué escribe `atlas matrix` en `<workspace>/graph/matrix-<módulo>.*`: `csv` (para Excel), `md` y `xlsx` (hoja de matriz con filtros, hoja de huecos y resumen con la fecha de DOORS; necesita `pip install "atlaslm[xlsx]"`). No reconstruye el grafo |
+| `csv_delimiter` | texto | `";"` | separador de columnas del CSV: `";"` para Excel en español, `","` para Excel en inglés. El CSV va en UTF-8 con BOM. No reconstruye el grafo |
 
 ## [index]
 

@@ -168,19 +168,20 @@ cambios que rompían lo que ya iba.
    arquitecto y el editor de Aider: el modelo no tiene que pensar el cambio y acertar con las
    herramientas en las mismas vueltas. Con el mismo modelo en los dos papeles, GPT-4o-mini
    pasó del 55,6 al 60,2 % en su banco de pruebas.
-6. Con `attempts` mayor que 1, cada encargo (y su reintento) va a esos intentos **a la vez**,
-   cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las raíces del
-   código, los scripts del proyecto y su propia carpeta de compilación), con sus arreglos de
-   compilación y sus vueltas de `advances`. De los que no rompen nada gana el que deja más
-   tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la carpeta
-   de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo que
-   tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
+6. Con `attempts` mayor que 1, cada encargo (y su reintento) y cada ronda van a esos intentos
+   **a la vez**, cada uno en su copia de la carpeta de trabajo (`<workspace>/attempts/<n>`: las
+   raíces del código, los scripts del proyecto y su propia carpeta de compilación), con sus
+   arreglos de compilación y sus vueltas de `advances`. De los que no rompen nada gana el que
+   deja más tests pasando, y luego el que llega más lejos en los demás; sus ficheros pasan a la
+   carpeta de trabajo y las copias se borran. Un modelo pequeño acierta una de tres más a menudo
+   que tres seguidas (Agentless, S*), y el cupo da para ello: una vuelta de `gemma-4-26b` tarda
    unos 30 s, dos peticiones por minuto de las 28 del gateway. Las raíces del código tienen que
    estar dentro de la carpeta de trabajo, y los tests no pueden usar rutas absolutas a ella.
 7. Un **informe** tras cada paso, en `<workspace>/reports/develop-<plan>.json` y `.md`: qué hizo
    cada encargo y cada ronda, su tiempo, tokens y coste, sus ediciones (y cuántas fallaron) y
    sus compilaciones (y cuántas con errores), los tests que pasan y los que necesitan a una
-   persona, con su salida. Al final, los errores del compilador de toda la tanda, los más
+   persona, con su salida. El tiempo de las ejecuciones (`seconds`, sumado) y el de pared de la
+   tanda (`wall_seconds`: con los tests, y con los intentos a la vez contados una vez). Al final, los errores del compilador de toda la tanda, los más
    frecuentes primero, y si llevaban pista (`[sources.code] hints`): los que no, son las
    lecciones que añadir antes de la siguiente. Lo que cada encargo y cada ronda dejó en el
    código es un **parche**, `develop-<plan>/<id>.patch` (`round-<n>.patch`), enlazado desde su

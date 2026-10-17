@@ -70,6 +70,22 @@ class StubClient:
                                usage=SimpleNamespace(prompt_tokens=50, completion_tokens=5, total_tokens=55, cost=0.001))
 
 
+def interrupted(run) -> None:
+    """`run` ends in the KeyboardInterrupt of the stub. The asyncio task it leaves behind says
+    so when it is collected (a real Ctrl+C, which asyncio turns into a cancellation, does not):
+    collected here, quietly."""
+    import gc
+    import logging
+    with pytest.raises(KeyboardInterrupt):
+        run()
+    log = logging.getLogger("asyncio")
+    level, log.level = log.level, logging.CRITICAL + 1
+    try:
+        gc.collect()
+    finally:
+        log.setLevel(level)
+
+
 def write(content):
     """A run of the agent that reads src/calc.py, writes `content` and says so."""
     return [{"read_file": {"path": "src/calc.py"}}, {"write_file": {"path": "src/calc.py", "content": content}}, "Done."]
@@ -456,8 +472,7 @@ def test_an_interrupted_run_leaves_the_files_as_they_were_and_resume_ends_it(pro
     client = StubClient(write(ADD) + [{"read_file": {"path": "src/calc.py"}},
                                       {"write_file": {"path": "src/calc.py", "content": MUL + "# half done\n"}},
                                       KeyboardInterrupt()])
-    with pytest.raises(KeyboardInterrupt):
-        develop(base / "plan.toml", cfg, client=client)
+    interrupted(lambda: develop(base / "plan.toml", cfg, client=client))
     assert (base / "src" / "calc.py").read_text() == ADD                    # as the first task left it
     reports = cfg.workspace / "reports"
     report = json.loads((reports / "develop-plan.json").read_text())
@@ -494,8 +509,7 @@ def test_resume_goes_on_with_the_rounds(project):
     (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 3"))
     (base / "src" / "calc.py").write_text(ADD)
     nothing = [{"read_file": {"path": "src/calc.py"}}, "No idea."]
-    with pytest.raises(KeyboardInterrupt):
-        develop(base / "plan.toml", cfg, client=StubClient(nothing + [KeyboardInterrupt()]))
+    interrupted(lambda: develop(base / "plan.toml", cfg, client=StubClient(nothing + [KeyboardInterrupt()])))
     client = StubClient(nothing * 2)
     report = develop(base / "plan.toml", cfg, client=client, resume=True)
     assert [(s["kind"], s["outcome"], s.get("round")) for s in report["steps"]] == [
@@ -503,3 +517,24 @@ def test_resume_goes_on_with_the_rounds(project):
     assert "- No idea. -> no progress" in client.prompts[0]                 # the round before the interruption
     assert report["for_a_person"]["tests/test_calc.py"]["reason"] == "no progress in 2 rounds"
     assert len(client.turns) == 2                       # no third round: the test went to a person
+
+
+def test_the_rounds_have_parallel_attempts_too(project):
+    """attempts = 2 in a round: the attempt that breaks the code is undone, the one that fixes
+    the test wins; the report has the wall time of the plan as well as that of the runs."""
+    from atlas.agents.develop import develop
+    base, cfg = project
+    (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
+                                                                        '.resolve().parent.parent / "src")'))
+    (base / "src" / "calc.py").write_text(ADD)
+    plan = PLAN.split("[[tasks]]")[0].replace("build_fixes = 1", "build_fixes = 0").replace("fix_rounds = 4",
+                                                                                          "fix_rounds = 1")
+    (base / "plan.toml").write_text(plan + "attempts = 2\n")
+    report = develop(base / "plan.toml", cfg, client=ParallelClient([write("def add(a, b):\n    return 0\n"),
+                                                                     write(MUL)]))
+    assert sorted((s["kind"], s["outcome"]) for s in report["steps"]) == [("round", "fixed"), ("round", "undone")]
+    chosen = next(s for s in report["steps"] if s["outcome"] == "fixed")
+    assert chosen["round"] == 1 and chosen["chosen"].endswith("of 2") and chosen["patch"] == "develop-plan/round-1.patch"
+    assert (base / "src" / "calc.py").read_text() == MUL and report["final"]["tests_passed"] == 1
+    totals = report["totals"]
+    assert totals["wall_seconds"] >= 0 and "min of wall time" in (cfg.workspace / "reports" / "develop-plan.md").read_text()

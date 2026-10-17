@@ -1002,7 +1002,8 @@ def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -
         return 130
     final, totals = report["final"], report["totals"]
     print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
-          f"{totals['seconds'] // 60} min" + (f", ${totals['cost']}" if "cost" in totals else "")
+          f"{totals['seconds'] // 60} min of runs, {totals.get('wall_seconds', 0) // 60} min in all"
+          + (f", ${totals['cost']}" if "cost" in totals else "")
           + (f"; {final['errors']} runs failed with an error" if final.get("errors") else ""))
     for test, why in (report.get("for_a_person") or {}).items():
         print(f"for a person: {test} ({why['reason']})")

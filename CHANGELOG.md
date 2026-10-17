@@ -19,6 +19,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `atlas develop PLAN atlas.toml --resume` (`develop(..., resume=True)`): sigue una tanda
   cortada desde su informe. Los encargos terminados no se repiten, los que tienen `error` o
   quedaron `interrupted` sí, y las rondas siguen donde iban; el estado lo dicen los tests.
+- `wall_seconds` en el informe de `atlas develop`: el tiempo de pared de la tanda, que no es la
+  suma de los `seconds` de las ejecuciones (los tests van aparte y los intentos a la vez
+  solapan).
 - Parches de `atlas develop`: lo que deja cada encargo y cada ronda, en
   `reports/develop-<plan>/<id>.patch` y `all.patch`, enlazados desde el informe.
 - Herramientas `outline` (los subprogramas de un fichero con sus líneas, su firma y sus
@@ -37,6 +40,8 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   con todo lo que arrancó (su grupo de procesos; `taskkill /T` en Windows). Antes se mataba
   solo el comando, y un envoltorio como `with_server` dejaba vivo el servidor.
 - `run_test` encuentra el ejecutable con `.exe` que GNAT deja en Windows.
+- Las rondas de `atlas develop` no usaban `attempts`: ahora van, como los encargos, a esos
+  intentos a la vez.
 - Ctrl+C a medio encargo de `atlas develop` dejaba los ficheros a medias: ahora vuelven a como
   estaban antes del paso, que queda `interrupted` en el informe.
 

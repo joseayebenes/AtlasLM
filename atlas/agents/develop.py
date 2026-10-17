@@ -52,7 +52,9 @@ again and again in the same way, and changes that broke what worked.
    task and round did, its time, tokens and cost, its edits (and how many failed) and its
    compilations (and how many had errors), the tests that pass and those that need a person,
    with their output, and the errors of the compiler of the whole plan, the most frequent
-   first, with whether a hint came with them ([sources.code] hints: one more after each run).
+   first, with whether a hint came with them ([sources.code] hints: one more after each run),
+   and the time of the runs and the wall time of the plan (`wall_seconds`: with the tests, and
+   with the parallel attempts counted once).
    develop-<plan>.calls.jsonl keeps the prompt, the tool calls with their results and the
    answer of every run of an agent. What each task and each round left in the code is a patch,
    develop-<plan>/<id>.patch (round-<n>.patch), and all of them in develop-<plan>/all.patch, to
@@ -63,13 +65,13 @@ writes how to do it, and the task goes to the agent with that plan. The architec
 Aider: the model does not have to think out the change and get the tools right in the same
 turns (with the same model in both roles, GPT-4o-mini went from 55.6 to 60.2 %).
 
-With attempts > 1, each task (and its retry) goes to that many runs at once, each in its own
-copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of the
-project, its own build folder), with its build fixes and the turns of `advances`. Of those that
-break nothing, the one with more tests passing, and further, wins, and its files are copied to
-the working folder. A small model gets one in N right more often than one right in a row
-(Agentless, S*); the request limit leaves room (a turn of gemma-4-26b takes ~30 s: 2 requests
-per minute of 28). The code roots must be inside the working folder.
+With attempts > 1, each task (and its retry) and each round go to that many runs at once, each
+in its own copy of the working folder (<workspace>/attempts/<n>: the code roots, the scripts of
+the project, its own build folder), with its build fixes and the turns of `advances`. Of those
+that break nothing, the one with more tests passing, and further, wins, and its files are
+copied to the working folder. A small model gets one in N right more often than one right in a
+row (Agentless, S*); the request limit leaves room (a turn of gemma-4-26b takes ~30 s: 2
+requests per minute of 28). The code roots must be inside the working folder.
 
 A run that stops without finishing (max_steps, or stall_steps of the agent: that many tool
 calls without changing the code) starts again with a fresh conversation, at most `restarts`
@@ -390,6 +392,7 @@ class Developer:
         self.errors: dict[str, dict] = {}      # the errors of the compiler, by their message without names
         self._answers: dict[int, str] = {}     # the whole answer of each step (the report keeps its start)
         self._lock = threading.RLock()         # the report and the calls log, shared by parallel attempts
+        self._started, self._wall_before = time.time(), 0     # the wall time of this run, and of earlier ones
 
     # --- what the code does --------------------------------------------------------------
     def _score(self, result: dict) -> float:
@@ -759,7 +762,7 @@ class Developer:
                 attempts=("\nEarlier attempts on this test, which did not fix it:\n" +
                           "\n".join(f"- {a}" for a in tried[-3:])) if tried else "")
             before = self.main.files.snapshot()
-            step, after, broken = self.attempt(self.plan.fix_agent, prompt, "round", target, state)
+            step, after, broken = self.attempts(self.plan.fix_agent, prompt, "round", target, state)
             before_score, after_score = result["score"], after["tests"][target]["score"]
             if broken:
                 outcome = "undone"
@@ -785,12 +788,14 @@ class Developer:
     def run_plan(self, resume: bool = False) -> dict:
         """The tasks, then the rounds; with `resume`, from the report of an earlier run (see
         the module). Returns the report."""
+        self._started = time.time()
         done = self._resume() if resume else set()
         if not resume:
             Path(f"{self.path}.calls.jsonl").unlink(missing_ok=True)
             shutil.rmtree(self.path, ignore_errors=True)               # the patches of an earlier run
         state = self.evaluate()
-        self.report.setdefault("at_start", {"tests_passed": self.passing(state), "check_errors": sorted(state["check"])})
+        self.report.setdefault("at_start", {"tests_passed": self.passing(state),
+                                            "check_errors": sorted(state["check"])})
         state = self.tasks(state, done)
         self.report["after_tasks"] = {"tests_passed": self.passing(state)}
         state = self.rounds(state)
@@ -814,6 +819,7 @@ class Developer:
         except (OSError, ValueError) as e:
             raise ConfigError(f"--resume: cannot read {path}: {e}") from None
         self.errors = {_shape(e["message"]): e for e in old.pop("compiler_errors", [])}
+        self._wall_before = (old.get("totals") or {}).get("wall_seconds", 0)
         for key in ("final", "finished", "totals"):
             old.pop(key, None)
         old["resumed"] = old.get("resumed", []) + [time.strftime("%Y-%m-%d %H:%M:%S")]
@@ -858,6 +864,7 @@ class Developer:
             total = lambda key, field: sum((s.get(key) or {}).get(field, 0) for s in steps)
             self.report["totals"] = {
                 "seconds": sum(s["seconds"] for s in steps), "calls": sum(s["calls"] for s in steps),
+                "wall_seconds": self._wall_before + round(time.time() - self._started),
                 "prompt_tokens": total("tokens", "prompt"), "completion_tokens": total("tokens", "completion"),
                 "edits": {"made": total("edits", "made"), "failed": total("edits", "failed")},
                 "compiles": {"ok": total("compiles", "ok"), "failed": total("compiles", "failed")},
@@ -933,7 +940,8 @@ def markdown(report: dict) -> str:
         out += [f"**{f['tests_passed']} of {f['tests']} tests pass.**"
                 + (f" {f['errors']} agent runs failed with an error." if f.get("errors") else ""), ""]
     edits, compiles = t.get("edits", {}), t.get("compiles", {})
-    out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min, {t['calls']} tool calls, "
+    out += [f"{len(report['steps'])} agent runs, {t['seconds'] // 60} min of runs ({t.get('wall_seconds', 0) // 60} "
+            f"min of wall time, with the tests and the attempts at once), {t['calls']} tool calls, "
             f"{t['prompt_tokens'] + t['completion_tokens']} tokens" + (f", ${t['cost']}" if "cost" in t else "") + ".",
             f"Edits: {edits.get('made', 0)} made, {edits.get('failed', 0)} failed. Compilations: "
             f"{compiles.get('ok', 0)} without errors, {compiles.get('failed', 0)} with errors."]

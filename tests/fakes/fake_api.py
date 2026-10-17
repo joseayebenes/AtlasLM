@@ -28,6 +28,9 @@ The control file is re-read on every request; keys:
                                       completion_tokens of the answer and its reasoning; an
                                       answer longer than max_tokens is cut, finish_reason "length"
   slow: seconds                    -> delay per request
+  chat_fail_if: ["text"]           -> 400 to chat requests whose last message contains the string
+  notes_chars: N                   -> answers to questions with sources padded to N characters
+                                      (long notes of the parts of whole documents)
   reasoning_tokens: N              -> reasoning model: spends N tokens reasoning before the
                                       answer; with max_tokens <= N the answer comes back empty.
                                       reasoning_effort = "none" in the request turns it off
@@ -166,6 +169,8 @@ class H(BaseHTTPRequestHandler):
             return self.send(501, {"error": {"message": "structured output is unavailable", "type": "api_error"}})
         last = body["messages"][-1]; user = last.get("content") or ""; cut = False
         message = None
+        if any(k in user for k in c.get("chat_fail_if", [])):
+            return self.send(400, {"error": {"message": "input rejected by gateway", "type": "invalid_request_error"}})
         if c.get("tool_call") and last.get("role") == "tool":
             content = f"The tool {c['tool_call']['name']} returned: {user}"
         elif c.get("tool_call") and body.get("tools"):
@@ -191,6 +196,7 @@ class H(BaseHTTPRequestHandler):
         elif user.startswith("Sources:"):
             first = re.search(r"^\[(\d+)\]", user, re.M)
             content = "Answer taken from the sources [%s]." % (first[1] if first else 1)
+            content += (" filler" * c.get("notes_chars", 0))[:max(0, c.get("notes_chars", 0) - len(content))]
         elif user.startswith("Notes:"):
             content = "Answer combined from the notes " + "".join(dict.fromkeys(re.findall(r"\[\d+\]", user))) + "."
         elif "search queries" in (body["messages"][0]["content"] if body["messages"] else ""):

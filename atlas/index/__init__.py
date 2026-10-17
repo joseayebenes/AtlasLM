@@ -177,9 +177,9 @@ class Index:
     """The index of a workspace: add or remove documents, search and answer. The model
     (`llm`) is only needed to rewrite queries and to answer, and it is created on first use.
     `settings` are those of [search] (results, per_document, context_chars, context_radius,
-    scope, scope_chars, synonyms: the path of a synonyms file); what is not given takes its
-    default. `fts_tokenizer` is that of [index]; `id_normalize`, that of
-    [sources.doors.convention], for the IDs written in another way in a query."""
+    scope, scope_chars, synonyms: the path of a synonyms file, max_parts, scope_documents);
+    what is not given takes its default. `fts_tokenizer` is that of [index]; `id_normalize`,
+    that of [sources.doors.convention], for the IDs written in another way in a query."""
 
     def __init__(self, db: str | Path, embeddings: ServiceConfig | Embedder,
                  llm: ServiceConfig | JsonLlm | None = None, settings: dict | None = None,
@@ -246,16 +246,25 @@ class Index:
                       self.llm if rewrite else None, dense, per, where=where, synonyms=self.synonyms,
                       id_normalize=self.id_normalize)
 
+    @property
+    def requests_per_minute(self) -> int:
+        """The limit of requests per minute of the model ([network]), 0 = none."""
+        cfg = self._llm.cfg if isinstance(self._llm, JsonLlm) else self._llm
+        return cfg.net.requests_per_minute if isinstance(cfg, ServiceConfig) else 0
+
     def answer(self, question: str, k: int = 0, document: str = "", rewrite: bool = True,
                kinds: list[str] | None = None, scope: str = "", extra_sources: list[dict] = (),
-               where: dict | None = None) -> dict:
+               where: dict | None = None, dry_run: bool = False, section: str = "") -> dict:
         """scope: passages | whole | auto ("" = that of the settings); `extra_sources`, those
-        of DocTools.route; `where` as in search; see search.answer."""
+        of DocTools.route; `where` as in search; dry_run: only the plan, without any request;
+        section: read whole only that section; see search.answer."""
         s = self.settings
-        return answer(self.store, self.embedder, self.llm, question, k or s["results"], document, rewrite, kinds,
-                      s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
+        return answer(self.store, self.embedder, None if dry_run else self.llm, question, k or s["results"], document,
+                      rewrite, kinds, s["per_document"], s["context_chars"], scope or s["scope"], s["scope_chars"],
                       extra_sources=extra_sources, synonyms=self.synonyms, id_normalize=self.id_normalize,
-                      context_radius=s["context_radius"], where=where)
+                      context_radius=s["context_radius"], where=where, max_parts=s["max_parts"],
+                      scope_documents=s["scope_documents"], requests_per_minute=self.requests_per_minute,
+                      dry_run=dry_run, section=section)
 
     def meta_values(self) -> dict[str, list[str]]:
         """What `where` can take: each key of the meta of the records, with some values."""

@@ -339,6 +339,8 @@ configuran aquí: van en cada búsqueda (ver [atlas.index](../atlas/index/README
 | `context_radius` | entero | `1` | cuánto contexto lleva cada pasaje de una respuesta: los fragmentos vecinos de un fragmento, los registros de alrededor de un requisito de DOORS (en el orden del módulo) y los primeros fragmentos de un resumen de sección (`2 × context_radius + 1`); `0`, solo el propio |
 | `scope` | texto | `"auto"` | `auto`: si el modelo ve que la pregunta es amplia (un resumen, una función entera, todos los requisitos de algo), lee sus documentos enteros; `passages`: siempre los mejores pasajes; `whole`: siempre enteros |
 | `scope_chars` | entero | `100000` | caracteres de documentos enteros que se leen en una petición; si son más, se leen por partes y una última petición junta las notas de cada una |
+| `max_parts` | entero | `12` | partes de documentos enteros que se leen como mucho para una pregunta. Antes de pedir nada, `atlas ask` calcula el plan (documentos, secciones, caracteres, partes y peticiones; y minutos del cupo si hay `[network] requests_per_minute`); con más partes no lee nada y pide acotar la pregunta a un documento. `atlas ask --dry-run` imprime el plan sin preguntar al modelo |
+| `scope_documents` | entero | `3` | documentos que lee enteros, como mucho, una pregunta amplia que no nombra ninguno: los que más salen al buscarla en los resúmenes de los documentos y de sus secciones |
 | `synonyms` | ruta | `""` | un fichero TOML de grupos de términos equivalentes del proyecto, relativo a este fichero (abajo) |
 
 `synonyms` apunta a un fichero como `examples/synonyms.toml`:

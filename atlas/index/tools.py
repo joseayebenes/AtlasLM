@@ -281,23 +281,27 @@ class DocTools:
                                        json.dumps(g.impact(n), ensure_ascii=False)))
         return sources
 
-    def ask_docs(self, question: str, document: str = "", whole: bool = False) -> dict:
+    def ask_docs(self, question: str, document: str = "", whole: bool = False, section: str = "") -> dict:
         """An answer written by the model only from the documents, citing them as [n], with
         the list of sources. Slower than search: use it when the answer needs several
         passages. `document` limits it to one document or DOORS module. A broad question (a
         summary, a whole function, every requirement about a topic) reads its documents
         whole instead of the best passages, in parts if they are long; `whole` = true makes
-        it read them whole always (`scope` in the answer says how it was read). A question
-        about the tests, code, parent, links or impact of a requirement or code element also
-        gets their traceability from DOORS and the graph as its first sources. `status` says
-        whether it answers: "answered" (every figure and ID with its source), "partial" (some
-        sentences without a source, in `uncited`, or an answer that says what is missing) or
-        "not_found" (nothing related is indexed); a partial answer must be given as such.
-        `sources` are those the answer cites; `unsupported` lists the sentences with an ID or
-        a value that the sources they cite do not contain, and `warnings` says so in a line."""
+        it read them whole always (`scope` in the answer says how it was read). If that takes
+        more parts than allowed, the answer is an `error` with the plan and the chapters of
+        the documents: ask again with a `document` and a `section`. `section` reads whole only
+        a section and what is below it: its number or title ("2.1", "Logging"), or its ID as a
+        search result gives it. A question about the tests, code, parent, links or impact of
+        a requirement or code element also gets their traceability from DOORS and the graph
+        as its first sources. `status` says whether it answers: "answered" (every figure and
+        ID with its source), "partial" (some sentences without a source, in `uncited`, or an
+        answer that says what is missing) or "not_found" (nothing related is indexed); a
+        partial answer must be given as such. `sources` are those the answer cites;
+        `unsupported` lists the sentences with an ID or a value that the sources they cite do
+        not contain, and `warnings` says so in a line."""
         try:
             res = self.index.answer(question, document=document, scope="whole" if whole else "",
-                                    extra_sources=self.route(question))
+                                    extra_sources=self.route(question), section=section)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
         warnings = citation_warnings(res)

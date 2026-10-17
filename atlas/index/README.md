@@ -188,19 +188,41 @@ registro»: en las muestras, la primera pasaba al modelo 8 de los 40 requisitos 
 la respuesta parecía completa sin serlo. Por eso, al reescribir la pregunta, el modelo dice
 también si es amplia (un resumen, una función o un capítulo enteros, todos los requisitos o
 valores de algo) y de qué documentos o módulos trata, de la lista de los indexados. Si es
-amplia, `atlas ask` lee esos documentos enteros. Si no nombra ninguno, lee los que más
-salen en su búsqueda: hasta tres, con al menos la mitad de resultados que el primero, y
-nunca unidades de código:
+amplia, `atlas ask` lee esos documentos enteros. Si no nombra ninguno, busca la pregunta
+solo en los resúmenes de los documentos y de sus secciones (`overview` y `section_summary`),
+que dicen de qué trata un documento o un capítulo entero mejor que unos pocos pasajes, y lee
+los que más salen: hasta `[search] scope_documents` (3), con al menos la mitad de resultados
+que el primero, y nunca unidades de código. Un módulo de DOORS no tiene resúmenes: solo se
+lee entero si la pregunta lo nombra, con `--document`, o si ningún documento tiene
+resúmenes (entonces deciden los resultados de la búsqueda de la pregunta):
 
 - cada sección es una fuente: el texto de sus fragmentos sin el solape; en un módulo de
   DOORS, sus requisitos y objetos de información en su orden;
 - si caben en `[search] scope_chars` (100 000 caracteres), una sola petición;
 - si no, por partes de ese tamaño, a la vez: de cada una, el modelo toma notas de todo lo
   que importa a la pregunta, con sus citas, y una última petición las junta en la
-  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones. Si una parte
-  falla (el servidor no contesta, se acaba el cupo), la respuesta se escribe con las demás y
-  termina con la nota «part 2 of 4 failed: …», que también va en `failed_parts`; solo si
-  fallan todas falla la pregunta.
+  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones;
+- si las notas tampoco caben en `scope_chars`, se juntan antes por grupos que caben, nivel a
+  nivel, como el resumen de un documento: las citas de las notas son las de los documentos
+  enteros, así que pasan los niveles sin cambiar, y al final se numeran 1, 2, 3… en el orden
+  de las fuentes. La última petición siempre cabe: si dos notas no caben juntas, se recortan;
+- si una parte falla (el servidor no contesta, se acaba el cupo), la respuesta se escribe con
+  las demás y termina con la nota «part 2 of 4 failed: …», que también va en
+  `failed_parts`; solo si fallan todas falla la pregunta.
+
+Antes de pedir nada se calcula el plan: documentos, secciones, caracteres, partes y
+peticiones, como mínimo (juntar las notas por niveles añade alguna), y minutos del cupo si hay `[network] requests_per_minute`. Con más de
+`[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
+capítulos de cada documento, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
+sin ninguna petición: elige los documentos sin el modelo (`--document`, los que la pregunta
+nombra o una búsqueda léxica).
+
+`--section` (o `section` en `ask_docs`) lee entera solo una sección y lo que cuelga de ella:
+por su número o su título, con o sin número («2.1», «Logging»), por su ruta, título a título
+(«Track management > Deletion»), o por su ID, el de un resultado de búsqueda («004») o, en un
+módulo de DOORS, el del título («SRS-0910»: solo lo que está justo debajo). Con `--section`
+se lee entera aunque la pregunta no parezca amplia. Si la sección no está, la respuesta es un
+error con los capítulos de los documentos.
 
 Las fuentes de la respuesta son las secciones que cita, y `scope` dice cómo se leyó
 (`passages` o `whole`). `--whole` (o `whole` en `ask_docs`) lee enteros los documentos aunque

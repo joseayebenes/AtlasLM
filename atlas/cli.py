@@ -26,6 +26,8 @@
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
                    [--module MODULE] [--chapter CHAPTER] [--attribute NAME=VALUE]
+                   [--section S]   reads whole only a section (its number, title or ID)
+                   [--dry-run]   only the plan of reading them whole, without asking the model
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -1254,7 +1256,8 @@ OPTIONS = {"init": {"--profile": str},
            "run": {"--until": str, "--max-minutes": int, "--max-requests": int},
            "estimate": {"--latency": float},
            "search": {"--k": int, "--kind": str, "--document": str, **FILTERS},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, **FILTERS},
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--section": str, "--dry-run": bool,
+                   **FILTERS},
            "develop": {"--check": bool, "--resume": bool},
            **{action: {"--json": bool} for action in ("status", "sections", "graph", "trace", "matrix", "verify",
                                                       "comply", "link", "coverage", "impact")}}
@@ -1335,8 +1338,28 @@ def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = 
     return 0
 
 
+def _plan(res: dict) -> str:
+    """The plan of a dry run of ask, for a person."""
+    plan = res["plan"]
+    if not plan:
+        return (f"No document to read whole: the question would be answered from passages "
+                f"({res['passages_requests']} requests to the model).")
+    minutes = f", at least {plan['minutes']} min of the quota" if "minutes" in plan else ""
+    section = f" › {plan['section']}" if plan.get("section") else ""
+    lines = ["Plan, without asking the model (if the question is broad, or with --whole or --section):",
+             f"  read whole: {', '.join(plan['documents'])}{section}",
+             f"  sections: {plan['sections']}, characters: {plan['chars']}, parts: {plan['parts']}",
+             f"  requests to the model: at least {plan['requests']}{minutes}"]
+    if plan["parts"] > res["max_parts"]:
+        lines.append(f"More than [search] max_parts = {res['max_parts']}: it would not be read; narrow it "
+                     f"with --document and --section.")
+    if not section:
+        lines.append(f"Not broad: from passages, {res['passages_requests']} requests to the model.")
+    return "\n".join(lines)
+
+
 def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False,
-        attribute: str = "", module: str = "", chapter: str = "") -> int:
+        section: str = "", dry_run: bool = False, attribute: str = "", module: str = "", chapter: str = "") -> int:
     from atlas.index import DocTools
     from atlas.index.search import citation_warnings, status_line
     kinds, where = _kinds(kind), _where(attribute, module, chapter)
@@ -1344,7 +1367,18 @@ def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = 
     tools = DocTools.from_config(cfg)
     # with filters, only what they let through: no requirement routed from outside them
     res = tools.index.answer(question, k=k, document=document, kinds=kinds, scope="whole" if whole else "",
-                             extra_sources=[] if where else tools.route(question), where=where)
+                             extra_sources=[] if where else tools.route(question), where=where, dry_run=dry_run,
+                             section=section)
+    if dry_run:
+        print(_plan(res))
+        return 0
+    if "error" in res:
+        print(res["error"])
+        if res.get("chapters"):
+            print("\nSections (characters):")
+        for c in res.get("chapters", []):
+            print(f"  {c['document']} › {c['section']} ({c['chars']})")
+        return 1
     print(res["answer"])
     if res.get("truncated"):
         print("\n(The answer is cut: the model reached max_tokens even when asked again with twice the "

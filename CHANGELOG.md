@@ -248,6 +248,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   atributos de `[sources.doors] attributes`; en los fragmentos, resúmenes de sección y
   requisitos de un documento, su capítulo (el primer elemento de su ruta); en el código, la
   clase del elemento (`subprogram`, `test`, `type`, `variable` o `constant`) y su fichero.
+- Plan previo de las preguntas amplias: antes de pedir nada, `atlas ask` y `ask_docs`
+  calculan cuántas secciones, caracteres, partes y peticiones costará leer enteros los
+  documentos (y los minutos del cupo, si hay `[network] requests_per_minute`). Con más de
+  `[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
+  capítulos de los documentos, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
+  sin preguntar al modelo. `[search] scope_documents` (3) sustituye a la constante fija.
+- `atlas ask --section` y `section` en `ask_docs`: leer entera solo una sección y lo que
+  cuelga de ella, por su número o título («2.1», «Logging»), por su ruta («Track management >
+  Deletion») o por su ID (el de un resultado de búsqueda, o el del título en un módulo de
+  DOORS). Una sección que no está da un error con los capítulos de los documentos.
+- Las notas de las partes de una pregunta amplia se juntan por niveles cuando no caben en
+  `[search] scope_chars`, como el resumen de un documento; antes iban todas en una última
+  petición, aunque no cupiera. Las citas se conservan y se numeran 1, 2, 3… en el orden de las
+  fuentes.
 
 ### Cambiado
 - Un paso de `atlas develop` cuya ejecución falla (el servidor del modelo) queda como `error`,
@@ -288,6 +302,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   importa: eso siguen haciéndolo `attribute_columns` y el relleno de la base de intercambio.
   Cambiar la lista solo reindexa los módulos de DOORS, sin volver a leerlos.
 - `atlas search` sangra todas las líneas de cada resultado.
+- Una pregunta amplia que no nombra ningún documento elige los que lee buscando solo en los
+  resúmenes de los documentos y de sus secciones, no en los 8 pasajes de su búsqueda. Un
+  módulo de DOORS, que no tiene resúmenes, solo se lee entero si la pregunta lo nombra (o con
+  `--document`), salvo que ningún documento tenga resúmenes.
 
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
@@ -349,6 +367,9 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `T'Image (X)`, `T'Write (S, X)` y los demás atributos ya no cuentan `T` como una llamada.
 - Un nombre que declara la propia unidad (un tipo, una variable) va a ese elemento aunque
   otra unidad tenga un subprograma con el mismo nombre; antes ganaba el subprograma de fuera.
+- Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
+  Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
+  `failed_parts`) y la respuesta se escribe con las demás.
 
 ### Quitado
 - `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.

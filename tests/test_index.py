@@ -344,7 +344,7 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert idx.answer("Explain the alarms", scope="passages")["scope"] == "passages"
 
     # too long for one request: notes of each part, combined by a last request
-    small = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500})
+    small = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1500, "max_parts": 50})
     before = fake_chats()
     res = small.answer("Summarise everything spec_with_bookmarks.pdf says")
     parts = res["requests"] - 2
@@ -365,7 +365,8 @@ def test_a_broad_question_reads_its_documents_whole(docs, tmp_path, fake_llm, fa
     assert failed["requests"] == res["requests"] and failed["failed_parts"] == [
         f"part 1 of {parts} failed: RuntimeError: the gateway closed the connection"]
     assert failed["answer"].endswith(f"\n\n(part 1 of {parts} failed: RuntimeError: the gateway closed the connection)")
-    assert 1 not in [s["n"] for s in failed["sources"]] and len(failed["sources"]) == len(res["sources"]) - 1
+    first = res["sources"][0]["cite"]                       # that of part 1: the citations are renumbered
+    assert first not in [s["cite"] for s in failed["sources"]] and len(failed["sources"]) == len(res["sources"]) - 1
 
 
 def _store(path):
@@ -462,6 +463,116 @@ def test_the_status_of_an_answer_says_whether_it_answers(docs, tmp_path, fake_ll
         == "answered"
     assert grounded_status("SRS-0004 is verified in 500 ms.", results)["uncited"] == ["SRS-0004 is verified in 500 ms."]
     assert grounded_status("", results)["status"] == grounded_status("SRS-0004.", [])["status"] == "not_found"
+
+
+def test_the_plan_of_a_broad_question_and_too_many_parts(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    idx.add_module("SRS_TMS", MODULE)
+    before = fake_chats()
+    dry = idx.answer("Summarise all the requirements of SRS_TMS", dry_run=True)       # no request at all
+    assert fake_chats() == before and dry["documents"] == ["SRS_TMS"]
+    assert {k: dry["plan"][k] for k in ("documents", "sections", "parts", "requests")} == \
+        {"documents": ["SRS_TMS"], "sections": 2, "parts": 1, "requests": 2}
+    res = idx.answer("Summarise all the requirements of SRS_TMS")
+    assert res["requests"] == dry["plan"]["requests"] == fake_chats() - before
+
+    small = Index(tmp_path / "atlas.db", replace(fake_embeddings), fake_llm[0], {"scope_chars": 1000, "max_parts": 2})
+    plan = small.answer("Summarise spec_with_bookmarks.pdf", dry_run=True)["plan"]
+    assert plan["parts"] > 2 and plan["requests"] == plan["parts"] + 2 and "minutes" not in plan
+    before = fake_chats()
+    res = small.answer("Summarise spec_with_bookmarks.pdf")
+    assert "max_parts = 2" in res["error"] and res["plan"]["parts"] == plan["parts"] and res["chapters"]
+    assert fake_chats() - before == 1                                         # only the rewriting
+
+
+def test_a_section_is_read_whole(docs, tmp_path, fake_llm, fake_embeddings, fake_chats):
+    from atlas.index import DocTools
+    from atlas.index.search import whole_sources
+    from atlas.store import Store
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0])
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE)
+    titles = lambda doc, section: [s["section_title"] for s in whole_sources(idx.store, doc, section)]
+    assert titles("test:spec_with_bookmarks.pdf", "2") == [f"2.{n} Function group 2.{n}" for n in (1, 2, 3)]
+    assert titles("test:spec_with_bookmarks.pdf", "function group 2.2") == ["2.2 Function group 2.2"]
+    assert titles("test:hmi_manual.md", "003") == titles("test:hmi_manual.md", "Alarms") == ["2 Alarms"]
+    assert titles("doors:SRS_TMS", "1") == titles("doors:SRS_TMS", "Track management > 1.1 Deletion") == \
+        titles("doors:SRS_TMS", "srs-0910") == ["1.1 Deletion"]
+    assert titles("doors:SRS_TMS", "Track") == []
+
+    before = fake_chats()
+    res = idx.answer("When does the HMI raise an alarm?", document="hmi_manual.md", section="2 Alarms")
+    assert (res["scope"], res["plan"]["section"], res["plan"]["sections"]) == ("whole", "2 Alarms", 1)
+    assert [s["section"] for s in res["sources"]] == ["003"] and fake_chats() - before == 2
+    missing = DocTools(idx, Store(tmp_path)).ask_docs("Explain it", document="hmi_manual.md", section="9")
+    assert missing["error"] == "there is no section '9' in hmi_manual.md"
+    assert ("hmi_manual.md", "2 Alarms") in {(c["document"], c["section"]) for c in missing["chapters"]}
+    dry = idx.answer("Explain it", document="SRS_TMS", section="1.1", dry_run=True)
+    assert (dry["plan"]["section"], dry["plan"]["sections"], dry["plan"]["requests"]) == ("1.1", 1, 2)
+
+
+def test_notes_that_do_not_fit_are_combined_in_levels(docs, tmp_path, fake, fake_llm, fake_embeddings, fake_chats):
+    _, control = fake
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1000, "max_parts": 50})
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    question = "Summarise everything spec_with_bookmarks.pdf says"
+    parts = idx.answer(question, dry_run=True)["plan"]["parts"]
+    control.write_text(json.dumps({"notes_chars": 400}))       # the notes of all the parts: > 1000 characters
+    before = fake_chats()
+    res = idx.answer(question)
+    merges = (parts + 1) // 2                                    # two notes of 400 fit in 1000
+    assert res["requests"] == 1 + parts + merges + 1 == fake_chats() - before
+    # the citations of the notes (the first source of each part) survive the two levels,
+    # renumbered in the order of the sources
+    cited = len(res["sources"])
+    assert cited > 5 and [s["n"] for s in res["sources"]] == list(range(1, cited + 1))
+    assert res["answer"] == "Answer combined from the notes " + "".join(f"[{n}]" for n in range(1, cited + 1)) + "."
+
+    # a part that fails leaves a note, and the answer is written with the others
+    control.write_text(json.dumps({"chat_fail_if": ["› 2.2 Function group 2.2"]}))
+    res = idx.answer(question)
+    assert res["failed_parts"] and len(res["failed_parts"]) < parts
+    assert all(f.startswith("part ") and f" of {parts} failed: " in f for f in res["failed_parts"])
+    assert res["answer"].endswith(f"({res['failed_parts'][-1]})") and 0 < len(res["sources"]) < cited
+    control.write_text(json.dumps({"chat_fail_if": ["Sources:"]}))   # all of them: the error
+    with pytest.raises(Exception, match="400"):
+        idx.answer(question)
+
+
+def test_the_last_request_of_the_notes_always_fits():
+    from atlas.index.search import _combine, _renumber
+    asked = []
+
+    class Llm:
+        def ask_text(self, system, user):
+            asked.append(user)
+            return "Merged [3]." if "merge" in system else "Answer [3][7]."
+    text, requests = _combine(Llm(), "q", ["a [3] " + "x" * 700, "b [7] " + "y" * 700], 1000)
+    assert (text, requests) == ("Answer [3][7].", 1)            # no two fit together: each one cut
+    assert len(asked[0].split("\n\nQuestion:")[0]) <= 1000 + len("Notes:\n\n")
+    assert _renumber("A [3][7], B [7, 3] and [12].", 9) == ("A [1][2], B [2, 1] and [12].", {3: 1, 7: 2})
+
+
+def test_the_summaries_choose_the_documents_of_a_broad_question(docs, tmp_path, fake_llm, fake_embeddings):
+    from atlas.index.search import SUMMARY_KINDS, _scope_hits
+    only_module = Index(tmp_path / "module.db", fake_embeddings, fake_llm[0])
+    only_module.add_module("SRS_TMS", MODULE)
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_documents": 1})
+    for data in docs.values():
+        _add(idx, data)
+    idx.add_module("SRS_TMS", MODULE)
+    question = "Explain how tracks are deleted"
+    hits = _scope_hits(idx.store, idx.embedder, question, 8, None, 3, None)
+    assert hits and {h["kind"] for h in hits} <= set(SUMMARY_KINDS)    # not the passages of the module
+    res = idx.answer(question)
+    assert res["scope"] == "whole" and res["documents"] == ["spec_with_bookmarks.pdf"]    # scope_documents = 1
+    # without summaries, the hits of the question choose
+    assert {h["kind"] for h in _scope_hits(only_module.store, only_module.embedder, question, 8, None, 3, None)} \
+        == {"requirement", "chunk"}
+    assert only_module.answer(question)["documents"] == ["SRS_TMS"]
+    assert only_module.answer(question, dry_run=True)["documents"] == ["SRS_TMS"]
 
 
 def test_records_of_a_code_unit(samples):

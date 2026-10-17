@@ -95,7 +95,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
               "code_revision": bool},
     "index": {"chunk_chars": int, "chunk_overlap": int, "kinds": list, "fts_tokenizer": str},
     "search": {"results": int, "per_document": int, "context_chars": int, "context_radius": int, "scope": str,
-               "scope_chars": int, "synonyms": str},
+               "scope_chars": int, "synonyms": str, "max_parts": int, "scope_documents": int},
     "agents": {"model": str, "dirs": list, "eval": dict},       # and [agents.<name>]: AGENT_SCHEMA
     "mcp": {"enabled": bool, "tools": list, "profile": str},
     "tests": {"languages": dict, "steps": list},                # atlas tests (atlas/code/procedures.py)
@@ -137,7 +137,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
               "fts_tokenizer": "unicode61 remove_diacritics 2"},    # changing it rebuilds only index_fts
     # what search and ask take from the index; changing it reprocesses nothing
     "search": {"results": 8, "per_document": 3, "context_chars": 14000, "context_radius": 1, "scope": "auto",
-               "scope_chars": 100000, "synonyms": ""},
+               "scope_chars": 100000, "synonyms": "", "max_parts": 12, "scope_documents": 3},
     "agents": {"model": "", "dirs": ["agents"]},
     "mcp": {"enabled": True, "tools": [], "profile": ""},     # "": editor with [sources.code], else all
     "tests": {"languages": {}, "steps": []},
@@ -254,7 +254,7 @@ def _validate_search(search: dict, base: Path) -> None:
     if search.get("scope", "auto") not in SEARCH_SCOPES:
         raise ConfigError(f"[search] scope must be one of {', '.join(SEARCH_SCOPES)}")
     for key, least in (("results", 1), ("per_document", 0), ("context_chars", 1000), ("context_radius", 0),
-                       ("scope_chars", 1000)):
+                       ("scope_chars", 1000), ("max_parts", 1), ("scope_documents", 1)):
         if key in search and search[key] < least:
             raise ConfigError(f"[search] '{key}' must be at least {least}")
     if search.get("synonyms"):

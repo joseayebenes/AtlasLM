@@ -24,6 +24,21 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   semana, mediana de milisegundos, errores, tokens y coste, respuestas con y sin fuente.
 - `atlas.plugins.instrumented`: el envoltorio de cada llamada que usan el servidor MCP, los
   agentes (antes `recorded`, que sigue) y la CLI.
+- Registro de cada ejecución en el workspace: `[project] log_dir` (`logs` por defecto; `""`
+  lo apaga) con un fichero por día, `atlas-AAAA-MM-DD.log`, con todo lo de atlas a nivel
+  `DEBUG` y los avisos de las librerías, la fecha, el proceso y el comando y paso en marcha.
+  No se rota renombrando (en Windows, `atlas run` y `atlas serve` lo tienen abierto a la vez):
+  cada día empieza uno, y los de más de `[project] log_keep_days` días (14) se borran al
+  arrancar. Una línea al empezar y al acabar cada acción, con la versión y el fichero de
+  configuración; las líneas de `atlas run` llevan el id de su fila de la tabla `runs`.
+  `atlas status` dice dónde está. `atlas.logs.setup_logging` lo prepara.
+
+### Cambiado
+- Los avisos del limitador de peticiones (rechazos por cupo, reintentos) son avisos del
+  registro `atlas.llm` en vez de `print`: `[project] log_level` los gobierna y quedan en el
+  fichero del registro.
+- La fila de una ejecución de `atlas run` en la tabla `runs` se crea al empezar; una
+  ejecución interrumpida deja su fila sin segundos y `atlas status` no la enseña.
 
 ## [0.2.0] — 2026-10-16
 

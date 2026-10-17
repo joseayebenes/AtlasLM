@@ -87,7 +87,7 @@ sus pruebas (`make test-ollama`) están en [atlas.agents](atlas/agents/README.md
 ```bash
 atlas init     [atlas.toml]   # una plantilla comentada de atlas.toml
 atlas run      atlas.dev.toml # procesamiento incremental y reanudable
-atlas status   atlas.dev.toml # libro de registro, datos y perfil de tiempos
+atlas status   atlas.dev.toml # libro de registro, datos, perfil de tiempos y dónde está el registro del día
 atlas sections atlas.dev.toml # secciones de cada documento, sin llamar al modelo
 atlas graph    atlas.dev.toml # informe del grafo (código, DOORS, documentos) y de sus huecos
 atlas trace SRS-0004 atlas.dev.toml   # todo sobre un requisito: DOORS, documentos, código, pruebas

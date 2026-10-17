@@ -71,7 +71,7 @@ def unset_hint(cfg: "Config") -> str:
 
 # Schema: section -> {key: type | "any"}. "list" = list, "dict" = free nested table.
 SCHEMA: dict[str, dict[str, Any]] = {
-    "project": {"name": str, "workspace": str, "log_level": str},
+    "project": {"name": str, "workspace": str, "log_level": str, "log_dir": str, "log_keep_days": int},
     "llm": {"base_url": str, "model": str, "api_key": str, "temperature": float,
             "max_tokens": int, "reasoning_effort": str, "extra_body": dict, "reasoning_field": str,
             "network": dict},
@@ -111,7 +111,8 @@ CODE_SCHEMA = {"roots": list, "languages": list, "exclude": list, "req_tag": str
                "reference": list, "language_server": list, "language_server_project": str}
 
 DEFAULTS: dict[str, dict[str, Any]] = {
-    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO"},
+    "project": {"name": "atlas", "workspace": "./workspace", "log_level": "INFO", "log_dir": "logs",
+                "log_keep_days": 14},
     "pipeline": {"workers": 1, "step_workers": {}, "on_error": "continue", "max_attempts": 3,
                  "retry_quarantined": False, "prune_missing": True,
                  "steps": ["docs", "doors", "code", "graph", "index"]},
@@ -290,6 +291,8 @@ def load_config(path: str | Path) -> Config:
         _validate(sources["code"], CODE_SCHEMA, "sources.code")
     _validate_tests(data.get("tests", {}))
     _validate_search(data.get("search", {}))
+    if data.get("project", {}).get("log_keep_days", 14) < 0:
+        raise ConfigError("[project] log_keep_days must be 0 (keep every file) or more")
     if data.get("mcp", {}).get("usage_log", "counts") not in ("counts", "full", "off"):
         raise ConfigError("[mcp] usage_log must be one of counts, full, off")
     secrets = literal_secrets(raw)

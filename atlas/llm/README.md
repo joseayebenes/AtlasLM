@@ -25,6 +25,9 @@ mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection
   30 % y lo recupera poco a poco;
 - reintenta los 5xx y los fallos de conexión puntuales, pero no los de certificado.
 
+Los avisos de los rechazos y los reintentos son avisos del registro `atlas.llm`: salen por
+stderr según `[project] log_level` y quedan en el fichero del registro del workspace.
+
 `diagnose(e)` convierte los errores típicos de una red corporativa (certificado, proxy con
 autenticación, TLS mutuo, credenciales, URL sin `/v1`) y la falta de crédito (402) en una
 indicación concreta, con lo que diga el servidor (y, en OpenRouter, el proveedor), y `is_connection_error(e)` dice cuáles

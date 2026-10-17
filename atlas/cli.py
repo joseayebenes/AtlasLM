@@ -45,6 +45,7 @@ import logging
 import shutil
 import sys
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -56,9 +57,15 @@ from atlas.store import Store
 log = logging.getLogger("atlas")
 
 
+def _logging(cfg: Config) -> None:
+    """The log of this action (atlas.logs.setup_logging): stderr and the file of the day."""
+    from atlas.llm import usage_label
+    from atlas.logs import setup_logging
+    setup_logging(cfg, usage_label()[0])
+
+
 def _context(cfg: Config) -> SimpleNamespace:
-    logging.basicConfig(level=cfg["project"]["log_level"], format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)     # one line per request otherwise
+    _logging(cfg)
     loaded = plugins.load_plugins(cfg["plugins"]["modules"])
     log.debug("plugins loaded: %s", loaded)
     return SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"],
@@ -567,7 +574,10 @@ def run(cfg: Config) -> int:
                     retry_quarantined=pc["retry_quarantined"], prune_missing=pc["prune_missing"],
                     meters=usage, version=__version__, stopping=ctx.stopping,
                     on_step=lambda step: set_usage_label("run", step))
-    rep = runner.run()
+    try:
+        rep = runner.run()
+    finally:
+        set_usage_label("run")                   # the steps are over
     print(json.dumps(rep.as_dict(), ensure_ascii=False, indent=1))
     if rep.fatal:
         print("Stopped by a fatal error; the state is saved: run `atlas run` again.", file=sys.stderr)
@@ -613,9 +623,11 @@ def print_profile(run: dict) -> None:
 
 
 def status(cfg: Config) -> int:
+    from atlas.logs import log_file
     ctx = _context(cfg)
     ledger = Ledger(ctx.store.path)
     print(f"workspace: {cfg.workspace}")
+    print(f"log: {log_file(cfg) or 'off ([project] log_dir is empty)'}")
     print("data:", ctx.store.counts())
     from atlas.graph import GraphStore
     from atlas.index import IndexStore
@@ -785,6 +797,7 @@ def comply(cfg: Config, target: str) -> int:
     """Whether the code of each requirement does all it asks, judged by the agent
     compliance_checker: the verdicts on the screen and the report in <workspace>/reports."""
     from atlas.agents.comply import comply_all
+    _logging(cfg)
     res = comply_all(target, cfg)
     if "error" in res:
         print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
@@ -1056,6 +1069,7 @@ def evaluate(cfg: Config) -> int:
 def usage(cfg: Config, since: str = "30d") -> int:
     """What the usage log of the workspace says of the last days (atlas.usage.summary)."""
     from atlas.usage import parse_since, summary
+    _logging(cfg)
     try:
         days = parse_since(since)
     except ValueError as e:
@@ -1092,6 +1106,7 @@ def usage(cfg: Config, since: str = "30d") -> int:
 def check(cfg: Config) -> int:
     from atlas.config import unset_hint
     from atlas.llm import check as check_connection, from_config
+    _logging(cfg)
     if cfg.unset:
         print(f"WARNING {unset_hint(cfg)}", file=sys.stderr)
     return check_connection(from_config(cfg))
@@ -1101,12 +1116,14 @@ def probe(cfg: Config) -> int:
     """The chat model as an agent: a tool call, its result and the reasoning given back."""
     from atlas.llm import from_config
     from atlas.llm.probe import probe as probe_model
+    _logging(cfg)
     return probe_model(from_config(cfg).llm)
 
 
 def reference(cfg: Config) -> int:
     """The manuals and the library for search_reference: built, or brought up to date."""
     from atlas.code import BuildTools
+    _logging(cfg)
     tools = BuildTools.from_config(cfg)
     if not (tools.reference.patterns or tools.library.folders):
         print("nothing to index: [sources.code] reference (manuals) and library (specs)", file=sys.stderr)
@@ -1165,6 +1182,17 @@ def main(argv: list[str] | None = None) -> None:
     action, rest = argv[0], argv[1:]
     from atlas.llm import set_usage_label
     set_usage_label(action)
+    t0 = time.monotonic()
+    try:
+        _dispatch(action, rest)
+    finally:                                  # the last line of the action in its log
+        error = sys.exc_info()[1]
+        how = f"exit code {error.code}" if isinstance(error, SystemExit) else \
+            f"{type(error).__name__}: {error}" if error else "exit code 0"
+        log.debug("end of %s: %s, %.1f s", action, how, time.monotonic() - t0)
+
+
+def _dispatch(action: str, rest: list[str]) -> None:
     if action == "init":
         sys.exit(init(Path(rest[0] if rest else "atlas.toml")))
     actions = {"run": run, "status": status, "sections": sections, "graph": graph, "plugins": list_plugins,

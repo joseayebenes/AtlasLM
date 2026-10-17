@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import logging
 import os
 import random
 import re
@@ -309,8 +310,13 @@ WINDOW = 60.0   # seconds of the requests_per_minute / tokens_per_minute window
 RATE_STATUSES = {409, 429}
 
 
+_LOGGER = logging.getLogger("atlas.llm")
+
+
 def _log(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    """A notice of the limiter or of the retries: a warning of atlas.llm, which [project]
+    log_level governs and the log file keeps."""
+    _LOGGER.warning(msg)
 
 
 class RateLimiter:

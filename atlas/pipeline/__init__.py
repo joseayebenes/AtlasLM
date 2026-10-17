@@ -174,18 +174,32 @@ class Ledger:
             "SELECT step, unit, status, attempts, error FROM ledger WHERE status IN ('error','quarantined','running')"
             " ORDER BY step, unit")]
 
-    def save_run(self, report: "RunReport", version: str = "") -> None:
+    def start_run(self, started: str, version: str = "") -> int:
+        """The row of a run that starts (without seconds nor report until save_run): its id
+        goes in the lines of the log of the run."""
         with self.lock:
-            self.db.execute("INSERT INTO runs (started, seconds, version, report) VALUES (?,?,?,?)",
-                            (report.started, round(report.seconds, 2), version,
-                             json.dumps(report.as_dict(), ensure_ascii=False)))
+            cur = self.db.execute("INSERT INTO runs (started, version, report) VALUES (?,?,?)",
+                                  (started, version, "{}"))
+            self.db.commit()
+            return cur.lastrowid
+
+    def save_run(self, report: "RunReport", version: str = "", run_id: int | None = None) -> None:
+        """The report of a run: in its row of start_run, or in a new one."""
+        values = (report.started, round(report.seconds, 2), version, json.dumps(report.as_dict(), ensure_ascii=False))
+        with self.lock:
+            if run_id is None:
+                self.db.execute("INSERT INTO runs (started, seconds, version, report) VALUES (?,?,?,?)", values)
+            else:
+                self.db.execute("UPDATE runs SET started=?, seconds=?, version=?, report=? WHERE id=?",
+                                (*values, run_id))
             self.db.commit()
 
     def runs(self, limit: int = 10) -> list[dict]:
-        """The last runs, most recent first: started, seconds, version and report (with
-        the profile of each step)."""
+        """The last finished runs, most recent first: id, started, seconds, version and report
+        (with the profile of each step). One that is running, or was killed, is left out."""
         return [{**dict(r), "report": json.loads(r["report"])} for r in self._query(
-            "SELECT started, seconds, version, report FROM runs ORDER BY id DESC LIMIT ?", (limit,))]
+            "SELECT id, started, seconds, version, report FROM runs WHERE seconds IS NOT NULL ORDER BY id DESC "
+            "LIMIT ?", (limit,))]
 
 
 class _WorkspaceLock:
@@ -265,6 +279,13 @@ class RunReport:
 SLOWEST = 3     # units listed in the profile of each step
 
 
+class _RunLog(logging.LoggerAdapter):
+    """The lines of a run, with the id of its row of the runs table: "run 12: ..."."""
+
+    def process(self, msg, kwargs):
+        return (f"run {self.extra['run']}: {msg}" if self.extra.get("run") else msg), kwargs
+
+
 class Runner:
     """Runs the steps in dependency order, the units of a parallel step in `workers`
     threads (or the step's own `workers`). `meters` returns cumulative counters (requests
@@ -290,6 +311,8 @@ class Runner:
         self.meters, self.version = meters, version
         self.stopping = stopping or threading.Event()
         self.on_step = on_step
+        self.run_id: int | None = None
+        self.log = _RunLog(log, {"run": None})
 
     @staticmethod
     def _sort(steps: list[Step]) -> list[Step]:
@@ -316,6 +339,10 @@ class Runner:
         rep, t0 = RunReport(started=datetime.now().isoformat(timespec="seconds")), time.perf_counter()
         self.stopping.clear()
         with self._lock():
+            self.run_id = self.ledger.start_run(rep.started, self.version)
+            self.log.extra["run"] = self.run_id
+            self.log.info("started, version %s, %d steps: %s", self.version or "?", len(self.steps),
+                          ", ".join(s.name for s in self.steps))
             for step in self.steps:
                 if only and step.name not in set(only):
                     continue
@@ -325,10 +352,12 @@ class Runner:
                     self._run_step(step, rep)
                 except FatalError as e:
                     rep.fatal = f"{step.name}: {e}"
-                    log.error("run stopped at %s: %s (the state is saved)", step.name, e)
+                    self.log.error("stopped at %s: %s (the state is saved)", step.name, e)
                     break
             rep.seconds = time.perf_counter() - t0
-            self.ledger.save_run(rep, self.version)
+            self.ledger.save_run(rep, self.version, self.run_id)
+            self.log.info("finished in %.1f s: processed %s, errors %s, quarantined %s", rep.seconds,
+                          rep.processed or 0, rep.errors or 0, rep.quarantined or 0)
         return rep
 
     def _lock(self) -> "_WorkspaceLock":
@@ -397,7 +426,7 @@ class Runner:
                 rep.pruned[step.name] = rep.pruned.get(step.name, 0) + 1
         prof.update(units=len(units), scan_seconds=time.perf_counter() - start)
 
-        log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
+        self.log.info("%s: %d units, %d to process, %d up to date", step.name, len(units),
                  len(pending), rep.skipped.get(step.name, 0))
         if not pending:
             return
@@ -410,7 +439,7 @@ class Runner:
                     raise
                 if step.is_fatal(e):
                     raise FatalError(str(e)) from e
-                log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
+                self.log.warning("%s: the preparation failed, each unit does its own work: %s", step.name, e)
             prof["prepare_seconds"] = time.perf_counter() - t0
 
         fatal: list[Exception] = []
@@ -449,7 +478,7 @@ class Runner:
                 with result_lock:
                     key = "quarantined" if status == "quarantined" else "errors"
                     getattr(rep, key)[step.name] = getattr(rep, key).get(step.name, 0) + 1
-                log.warning("%s %s: %s", step.name, u, e)
+                self.log.warning("%s %s: %s", step.name, u, e)
                 if self.on_error == "stop":
                     fatal.append(FatalError(f"on_error = stop after {u} failed: {e}"))
 

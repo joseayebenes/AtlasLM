@@ -51,7 +51,9 @@ de ella:
 |---|---|---|---|
 | `name` | texto | `"atlas"` | nombre del proyecto |
 | `workspace` | ruta | `"./workspace"` | carpeta de trabajo: `atlas.db`, salidas de documentos, grafo, informes. Relativa al fichero |
-| `log_level` | texto | `"INFO"` | `DEBUG`, `INFO`, `WARNING` o `ERROR`; el registro va por stderr |
+| `log_level` | texto | `"INFO"` | `DEBUG`, `INFO`, `WARNING` o `ERROR`: lo que sale por stderr, también los avisos del limitador de peticiones |
+| `log_dir` | ruta | `"logs"` | carpeta del registro de cada ejecución, relativa al workspace: un fichero por día (`atlas-AAAA-MM-DD.log`) con todo lo de atlas a nivel `DEBUG` y los avisos de las librerías, con fecha, nivel, proceso y qué comando y paso estaban en marcha. `atlas run` y `atlas serve` escriben a la vez en el mismo fichero. `""` lo apaga. `atlas status` dice dónde está |
+| `log_keep_days` | entero | `14` | días que se guardan los ficheros del registro: los más viejos se borran al arrancar atlas; `0` = se guardan todos |
 
 ## [llm]
 

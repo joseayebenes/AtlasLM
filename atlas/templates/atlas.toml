@@ -14,6 +14,8 @@
 [project]
 name = "mi-proyecto"
 workspace = "./workspace"              # atlas.db, salidas de documentos, grafo e informes
+# log_dir = "logs"                     # registro de cada ejecución en el workspace, un fichero por día; "" = no
+# log_keep_days = 14                   # días que se guardan esos ficheros
 
 # --- Modelos: cualquier API compatible con OpenAI ------------------------------------
 [llm]

@@ -91,10 +91,17 @@ nunca unidades de código:
 - si caben en `[search] scope_chars` (100 000 caracteres), una sola petición;
 - si no, por partes de ese tamaño, a la vez: de cada una, el modelo toma notas de todo lo
   que importa a la pregunta, con sus citas, y una última petición las junta en la
-  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones.
+  respuesta. Así ninguna parte se queda fuera, a cambio de más peticiones;
+- si las notas tampoco caben en `scope_chars`, se juntan antes por grupos que caben, nivel a
+  nivel, como el resumen de un documento: las citas de las notas son las de los documentos
+  enteros, así que pasan los niveles sin cambiar, y al final se numeran 1, 2, 3… en el orden
+  de las fuentes. La última petición siempre cabe: si dos notas no caben juntas, se recortan;
+- si una parte falla (el servidor no contesta, se acaba el cupo), la respuesta se escribe con
+  las demás y termina con la nota «part 2 of 4 failed: …», que también va en
+  `failed_parts`; solo si fallan todas falla la pregunta.
 
 Antes de pedir nada se calcula el plan: documentos, secciones, caracteres, partes y
-peticiones (y minutos del cupo si hay `[network] requests_per_minute`). Con más de
+peticiones, como mínimo (juntar las notas por niveles añade alguna), y minutos del cupo si hay `[network] requests_per_minute`. Con más de
 `[search] max_parts` partes (12) no se lee nada: la respuesta es un error con el plan y los
 capítulos de cada documento, para acotar la pregunta. `atlas ask --dry-run` imprime el plan
 sin ninguna petición: elige los documentos sin el modelo (`--document`, los que la pregunta

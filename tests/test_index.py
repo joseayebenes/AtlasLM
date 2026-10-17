@@ -325,6 +325,48 @@ def test_a_section_is_read_whole(docs, tmp_path, fake_llm, fake_embeddings, fake
     assert (dry["plan"]["section"], dry["plan"]["sections"], dry["plan"]["requests"]) == ("1.1", 1, 2)
 
 
+def test_notes_that_do_not_fit_are_combined_in_levels(docs, tmp_path, fake, fake_llm, fake_embeddings, fake_chats):
+    _, control = fake
+    idx = Index(tmp_path / "atlas.db", fake_embeddings, fake_llm[0], {"scope_chars": 1000, "max_parts": 50})
+    _add(idx, docs["spec_with_bookmarks.pdf"])
+    question = "Summarise everything spec_with_bookmarks.pdf says"
+    parts = idx.answer(question, dry_run=True)["plan"]["parts"]
+    control.write_text(json.dumps({"notes_chars": 400}))       # the notes of all the parts: > 1000 characters
+    before = fake_chats()
+    res = idx.answer(question)
+    merges = (parts + 1) // 2                                    # two notes of 400 fit in 1000
+    assert res["requests"] == 1 + parts + merges + 1 == fake_chats() - before
+    # the citations of the notes (the first source of each part) survive the two levels,
+    # renumbered in the order of the sources
+    cited = len(res["sources"])
+    assert cited > 5 and [s["n"] for s in res["sources"]] == list(range(1, cited + 1))
+    assert res["answer"] == "Answer combined from the notes " + "".join(f"[{n}]" for n in range(1, cited + 1)) + "."
+
+    # a part that fails leaves a note, and the answer is written with the others
+    control.write_text(json.dumps({"chat_fail_if": ["› 2.2 Function group 2.2"]}))
+    res = idx.answer(question)
+    assert res["failed_parts"] and len(res["failed_parts"]) < parts
+    assert all(f.startswith(f"part ") and f" of {parts} failed: " in f for f in res["failed_parts"])
+    assert res["answer"].endswith(f"({res['failed_parts'][-1]})") and 0 < len(res["sources"]) < cited
+    control.write_text(json.dumps({"chat_fail_if": ["Sources:"]}))   # all of them: the error
+    with pytest.raises(Exception, match="400"):
+        idx.answer(question)
+
+
+def test_the_last_request_of_the_notes_always_fits():
+    from atlas.index.search import _combine, _renumber
+    asked = []
+
+    class Llm:
+        def ask_text(self, system, user):
+            asked.append(user)
+            return "Merged [3]." if "merge" in system else "Answer [3][7]."
+    text, requests = _combine(Llm(), "q", ["a [3] " + "x" * 700, "b [7] " + "y" * 700], 1000)
+    assert (text, requests) == ("Answer [3][7].", 1)            # no two fit together: each one cut
+    assert len(asked[0].split("\n\nQuestion:")[0]) <= 1000 + len("Notes:\n\n")
+    assert _renumber("A [3][7], B [7, 3] and [12].", 9) == ("A [1][2], B [2, 1] and [12].", {3: 1, 7: 2})
+
+
 def test_records_of_a_code_unit(samples):
     """An Ada package is one unit: the comment and the requirements of its spec go with the
     code of its body."""

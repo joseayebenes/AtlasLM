@@ -33,6 +33,7 @@ from pathlib import Path
 from atlas.index.embeddings import Embedder
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX
 from atlas.index.store import IndexStore
+from atlas.llm.connection import diagnose
 from atlas.llm.structured import JsonLlm
 
 __all__ = ["answer", "answer_whole", "build_context", "cite", "diverse", "rewrite_question", "rrf", "search",
@@ -93,6 +94,11 @@ e.g. [2] or [1][3].
 point it out.
 - If the notes do not contain the answer, say so clearly.
 - Answer in the same language as the question."""
+
+MERGE_SYSTEM = """You merge notes taken, part by part, over some documents to answer a question \
+into one set of notes; the question is answered later from them. Keep EVERY fact, requirement \
+identifier and value exactly as written, each with its source numbers in brackets, e.g. [12]; \
+merge only what is repeated. Do not answer the question and add nothing that is not in the notes."""
 
 
 def rrf(rankings: list[list[int]], k: int = 60) -> list[int]:
@@ -296,7 +302,8 @@ def whole_plan(store: IndexStore, docs: list[dict], max_chars: int = SCOPE_CHARS
     at most max_chars and the plan of reading them, before any request: {documents,
     sections, chars, parts, requests} (and `section` if there is one). `requests` counts one
     per part and the last one that combines their notes (one in all if they fit in one
-    part), plus `extra_requests` (the rewriting)."""
+    part), plus `extra_requests` (the rewriting): the least, since notes that do not fit in
+    one request are merged in groups first (see _combine)."""
     sources = [s for d in docs for s in whole_sources(store, d["doc"], section)]
     blocks = [f"[{i}] {cite(s)}\n{s['context']}" for i, s in enumerate(sources, 1)]
     parts = _parts(blocks, max_chars)
@@ -345,22 +352,93 @@ def answer_whole(store: IndexStore, llm: JsonLlm, question: str, docs: list[dict
                                 f"{plan['requests']} requests to the model{minutes}, more than [search] "
                                 f"max_parts = {max_parts}: narrow the question to a document or a section",
                 "answer": "", "sources": [], "requests": extra_requests, "chapters": _chapters(sources)}
+    failed: list[str] = []
     if len(parts) == 1:
         text, requests = llm.ask_text(WHOLE_SYSTEM, f"Sources:\n\n{parts[0]}\n\nQuestion: {question}"), 1
     else:
-        with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
-            notes = list(pool.map(lambda part: llm.ask_text(NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}"),
-                                  parts))
-        notes = [n for n in notes if n.strip() and n.strip().rstrip(".").upper() != "NOTHING"]
+        notes, failed = _read_parts(llm, question, parts, names)
         requests = len(parts)
         if not notes:
             text = f"Nothing in {', '.join(names)} is related to the question."
         else:
-            joined = "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
-            text, requests = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{joined}\n\nQuestion: {question}"), requests + 1
-    cited = {int(n) for n in re.findall(r"\[(\d+)\]", text)}
-    return {**out, "answer": text, "requests": requests + extra_requests,
-            "sources": [_source(i, s) for i, s in enumerate(sources, 1) if i in cited]}
+            text, combining = _combine(llm, question, notes, max_chars)
+            requests += combining
+    text, cited = _renumber(text, len(sources))
+    return {**out, "answer": text + "".join(f"\n\n({note})" for note in failed),
+            "requests": requests + extra_requests,
+            "sources": [_source(new, sources[old - 1]) for old, new in cited.items()],
+            **({"failed_parts": failed} if failed else {})}
+
+
+def _read_parts(llm: JsonLlm, question: str, parts: list[str], names: list[str]) -> tuple[list[str], list[str]]:
+    """The notes of each part, PART_WORKERS at a time, without the empty ones, and a note
+    ("part 2 of 4 failed: ...") for each part that failed; if all of them fail, the error."""
+    with ThreadPoolExecutor(min(PART_WORKERS, len(parts))) as pool:
+        futures = [pool.submit(llm.ask_text, NOTES_SYSTEM, f"Sources:\n\n{part}\n\nQuestion: {question}")
+                   for part in parts]
+    notes, failed, first_error = [], [], None
+    for i, future in enumerate(futures, 1):
+        try:
+            note = future.result()
+        except Exception as e:
+            log.warning("part %d of %d of %s failed: %s", i, len(parts), ", ".join(names), e)
+            failed.append(f"part {i} of {len(parts)} failed: {diagnose(e)}")
+            first_error = first_error or e
+            continue
+        if note.strip() and note.strip().rstrip(".").upper() != "NOTHING":
+            notes.append(note)
+    if first_error is not None and len(failed) == len(parts):
+        raise first_error
+    return notes, failed
+
+
+def _joined(notes: list[str]) -> str:
+    return "\n\n".join(f"Part {i}:\n{n}" for i, n in enumerate(notes, 1))
+
+
+def _combine(llm: JsonLlm, question: str, notes: list[str], max_chars: int) -> tuple[str, int]:
+    """The answer from the notes of the parts and the requests it took. If the notes do not
+    fit in max_chars, they are merged in groups that fit first, level by level, as the
+    overview of a document (atlas.docs.analysis): their source numbers are those of the
+    whole documents, so the citations are kept. The last request always fits: notes that
+    cannot be grouped any more are cut."""
+    requests, level = 0, 0
+    while len(_joined(notes)) > max_chars and len(notes) > 1:
+        groups, buf = [], []
+        for n in notes:
+            if buf and len(_joined(buf + [n])) > max_chars:
+                groups.append(buf)
+                buf = []
+            buf.append(n)
+        groups.append(buf)
+        if len(groups) == len(notes):           # no two notes fit together
+            break
+        level += 1
+        log.info("combining %d notes in %d groups (level %d)", len(notes), len(groups), level)
+        merge = lambda g: g[0] if len(g) == 1 else \
+            llm.ask_text(MERGE_SYSTEM, f"Notes:\n\n{_joined(g)}\n\nQuestion: {question}")
+        with ThreadPoolExecutor(min(PART_WORKERS, len(groups))) as pool:
+            notes = list(pool.map(merge, groups))
+        requests += sum(len(g) > 1 for g in groups)
+    if len(_joined(notes)) > max_chars:
+        each = max(200, (max_chars - len(_joined([""] * len(notes)))) // len(notes))
+        log.warning("the notes of %d parts do not fit in %d characters: each one cut to %d", len(notes), max_chars, each)
+        notes = [n[:each] for n in notes]
+    text = llm.ask_text(COMBINE_SYSTEM, f"Notes:\n\n{_joined(notes)}\n\nQuestion: {question}")
+    return text, requests + 1
+
+
+_CITATION = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
+
+
+def _renumber(text: str, count: int) -> tuple[str, dict[int, int]]:
+    """The answer with its citations of sources 1..count numbered 1, 2, 3... in the order of
+    the sources, and {old number: new}. "[4, 9]" counts as two citations."""
+    numbers = lambda m: [int(n) for n in re.split(r"[,;]", m[1])]
+    old = sorted({n for m in _CITATION.finditer(text) for n in numbers(m) if 1 <= n <= count})
+    new = {n: i for i, n in enumerate(old, 1)}
+    text = _CITATION.sub(lambda m: "[" + ", ".join(str(new.get(n, n)) for n in numbers(m)) + "]", text)
+    return text, new
 
 
 def _source(n: int, s: dict) -> dict:

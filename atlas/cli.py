@@ -913,7 +913,7 @@ def _plan(res: dict) -> str:
     lines = [f"Plan, without asking the model (if the question is broad, or with --whole or --section):",
              f"  read whole: {', '.join(plan['documents'])}{section}",
              f"  sections: {plan['sections']}, characters: {plan['chars']}, parts: {plan['parts']}",
-             f"  requests to the model: {plan['requests']}{minutes}"]
+             f"  requests to the model: at least {plan['requests']}{minutes}"]
     if plan["parts"] > res["max_parts"]:
         lines.append(f"More than [search] max_parts = {res['max_parts']}: it would not be read; narrow it "
                      f"with --document and --section.")

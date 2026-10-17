@@ -173,7 +173,7 @@ patterns = ["*.md"]
         main(["ask", "Summarise hmi_manual.md", str(path), "--section", "Alarms", "--dry-run"])
     out = capsys.readouterr().out
     assert e.value.code == 0 and fake_stats()["chat"] == chats
-    assert "read whole: hmi_manual.md › Alarms" in out and "requests to the model: 2" in out
+    assert "read whole: hmi_manual.md › Alarms" in out and "requests to the model: at least 2" in out
     with pytest.raises(SystemExit) as e:
         main(["ask", "Summarise it", str(path), "--document", "hmi_manual.md", "--section", "9"])
     out = capsys.readouterr().out

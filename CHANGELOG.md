@@ -17,6 +17,15 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   cuelga de ella, por su número o título («2.1», «Logging»), por su ruta («Track management >
   Deletion») o por su ID (el de un resultado de búsqueda, o el del título en un módulo de
   DOORS). Una sección que no está da un error con los capítulos de los documentos.
+- Las notas de las partes de una pregunta amplia se juntan por niveles cuando no caben en
+  `[search] scope_chars`, como el resumen de un documento; antes iban todas en una última
+  petición, aunque no cupiera. Las citas se conservan y se numeran 1, 2, 3… en el orden de las
+  fuentes.
+
+### Corregido
+- Una pregunta amplia leída por partes perdía la respuesta entera si fallaba una sola parte.
+  Ahora esa parte deja la nota «part i of n failed: …» al final de la respuesta (y en
+  `failed_parts`) y la respuesta se escribe con las demás.
 
 ## [0.2.0] — 2026-10-16
 

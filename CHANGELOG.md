@@ -6,6 +6,29 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Corregido
+- Todas las rutas relativas de `atlas.toml` lo son a su carpeta, se lance atlas desde donde se
+  lance. Antes solo `workspace`, `[agents] dirs`, `[agents.eval] sets`, `hints` y
+  `language_server_project`; las de las fuentes (`[[sources.docs]] paths`, `[sources.code]
+  roots`, las bases de `[sources.doors]`), `tool_path`, `library`, `reference`,
+  `[tests.languages]` y las de los planes de `atlas develop` dependían de la carpeta desde la
+  que se lanzaba: un editor que arrancaba `atlas serve` en otra carpeta no encontraba nada, y
+  `atlas run` daba 0 ficheros y borraba lo procesado. Las herramientas de ficheros, el grafo y
+  los intentos de `atlas develop` también parten de la carpeta de `atlas.toml`.
+
+### Al actualizar
+- `tool_path` relativo pasa a ser relativo a `atlas.toml`, no a donde se lanza atlas (como
+  decía la 0.2.0). Las rutas de las herramientas de ficheros (`read_file`, `list_files`...)
+  parten de la carpeta de `atlas.toml`: en el editor, igual que antes si arranca el servidor
+  en la carpeta del proyecto. El `cwd` del cliente MCP ya no es obligatorio, aunque sigue
+  siendo lo recomendable: `atlas.toml` se busca desde ahí si no se da su ruta completa.
+- El motor nombra cada fichero de las fuentes por su ruta relativa a la carpeta de
+  `atlas.toml` (absoluta si está fuera de ella): los mismos nombres que antes cuando atlas se
+  lanzaba desde esa carpeta, así que un workspace así no reprocesa nada. Se reprocesan una
+  vez (y se borra lo anterior) los ficheros de una ruta escrita como absoluta pero dentro de
+  la carpeta de `atlas.toml`, los de una ruta relativa que sale de ella (`../docs`), y todo
+  lo de un workspace que se llenaba lanzando atlas desde otra carpeta.
+
 ## [0.2.0] — 2026-10-16
 
 Desde la 0.1.0: agentes que escriben código y lo prueban (`atlas develop`, `atlas tests`), el

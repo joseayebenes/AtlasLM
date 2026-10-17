@@ -41,6 +41,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ### Corregido
 - Las instrucciones de `atlas serve` no explicaban nunca `check_code`, `run_test` ni
   `library_spec`, aunque `check_code` se ofrece por defecto con un compilador.
+- El párrafo del grafo de las instrucciones de `atlas serve` era fijo y, con el perfil
+  `editor`, hablaba al modelo del cliente de `get_node`, `callers`, `callees`, `matrix` y
+  `gaps`, que no puede llamar. Ahora se construye con las herramientas ofrecidas: el flujo
+  habitual solo tiene los pasos ofrecidos (`find_symbol -> trace_code / impact ->
+  read_source` en `editor`) y cada frase de `trace`, `trace_code`, `impact`, `matrix` y
+  `gaps` solo está si se ofrece su herramienta.
 
 ### Al actualizar
 - Con `[sources.code]`, `atlas serve` ofrece ahora el perfil `editor`: ya no están `callers`,

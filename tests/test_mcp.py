@@ -24,7 +24,7 @@ def _tools(server) -> dict[str, dict]:
 
 def test_the_configuration_chooses_the_tools(toml, tmp_path):
     pytest.importorskip("mcp")
-    from atlas.mcp import create_server, default_tools, tool_names
+    from atlas.mcp import create_server, default_tools, graph_instructions, tool_names
     plugins.load_plugins()
     assert default_tools(load_config(toml())) == ["search", "get_requirement", "trace", "matrix", "gaps",
                                                   "list_requirements", "neighbors", "build_context"]  # only DOORS
@@ -43,8 +43,14 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "build_context",
             "read_file"} <= set(names)
     assert not {"edit_file", "write_file", "grep"} & set(names)              # knowledge; the editor edits
-    assert tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "trace"\n'))) == [
-        "search", "get_requirement", "trace", "matrix", "gaps", "list_requirements", "neighbors"]
+    graph = graph_instructions(names)
+    assert "Usual flow: find_symbol -> get_node -> callers / callees / trace_code / impact -> read_source." in graph
+    assert graph.endswith("; `matrix` and `gaps`, the traceability of a DOORS module and what it lacks.")
+    names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "trace"\n')))
+    assert names == ["search", "get_requirement", "trace", "matrix", "gaps", "list_requirements", "neighbors"]
+    assert graph_instructions(names).endswith("in lower case. `trace` gives everything about a requirement (DOORS, "
+                                              "documents, code, tests); `matrix` and `gaps`, the traceability of a "
+                                              "DOORS module and what it lacks.")         # no flow without code
     assert tool_names(load_config(toml())) == default_tools(load_config(toml()))     # without code, all
     with pytest.raises(ConfigError, match="profile must be one of editor, trace, all"):
         load_config(toml('[mcp]\nprofile = "small"\n'))
@@ -56,7 +62,12 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert tools["impact"]["annotations"] == {"readOnlyHint": True, "destructiveHint": False,
                                               "idempotentHint": True, "openWorldHint": False}
     assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
-    assert "find_symbol -> get_node" in server.instructions and "edit_file" not in server.instructions
+    graph = next(p for p in server.instructions.split("\n\n") if p.startswith("Graph of"))
+    assert graph == ("Graph of code, requirements and documents: code identifiers are `unit.name` in lower case. "
+                     "Usual flow: find_symbol -> trace_code / impact -> read_source. `trace` gives everything about a "
+                     "requirement (DOORS, documents, code, tests); `trace_code`, the requirements and tests of a code "
+                     "element; `impact`, what a change affects.")      # no get_node, callers, matrix or gaps
+    assert "edit_file" not in server.instructions
     assert "`build_context` gives in one call" in server.instructions
 
     # a list of its own, writing tools included; repeated names count once
@@ -78,9 +89,11 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
 
 def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(toml, samples):
     """Each tool, offered alone, has its paragraph in the instructions (the compiler and the
-    language server had none), and only the tools that write or run code are not read-only."""
+    language server had none), the one of the graph names no other graph tool, and only the
+    tools that write or run code are not read-only."""
     pytest.importorskip("mcp")
-    from atlas.mcp import INSTRUCTIONS, create_server, tool_groups
+    import re
+    from atlas.mcp import INSTRUCTIONS, create_server, graph_instructions, tool_groups
     from atlas.plugins import Requirement
     from atlas.store import Store
     plugins.load_plugins()
@@ -91,6 +104,10 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
         server = create_server(cfg)
         paragraphs = [INSTRUCTIONS[g] for g, tools in groups.items() if name in tools]
         assert paragraphs and all(p in server.instructions for p in paragraphs), name
+        if name in groups.get("graph", ()):
+            graph = graph_instructions([name])
+            assert graph in server.instructions, name
+            assert not [t for t in groups["graph"] if t != name and re.search(rf"\b{t}\b", graph)], name
         tool = plugins.get("tool", name)
         assert _tools(server)[name]["annotations"]["readOnlyHint"] is (not tool.writes), name
     assert "`run_program` runs the program" in create_server(load_config(

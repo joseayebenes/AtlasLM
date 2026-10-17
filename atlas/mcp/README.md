@@ -70,7 +70,10 @@ Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
-Las instrucciones del servidor explican cada grupo de herramientas ofrecidas y, en un
+Las instrucciones del servidor explican cada grupo de herramientas ofrecidas. El párrafo del
+grafo solo nombra las que se ofrecen: el flujo habitual (`find_symbol -> trace_code / impact
+-> read_source` en el perfil `editor`, con `get_node`, `callers` y `callees` en `all`) y lo
+que dan `trace`, `trace_code`, `impact`, `matrix` y `gaps`. Además cuentan, en un
 párrafo «Traceability of this project», cómo cita el código los requisitos (`req_tag` o
 `req_regex`), cómo son sus ID (`id_pattern`), qué módulos de DOORS hay y los pasos de un
 cambio: contexto (`context_at` o `build_context`), editar, `check_code` y `run_test` de las

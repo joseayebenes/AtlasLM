@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from atlas.agents.definitions import AgentDef
+from atlas.agents.guard import data_block
 from atlas.config import Config
 from atlas.pipeline import atomic_write, sha256_text
 
@@ -129,7 +130,7 @@ def _prompt(ev: dict) -> str:
                   f"- {d['source']}: {d['against']} {', '.join(d['official']) or '-'}; "
                   f"document {', '.join(d['document']) or '-'}"
                   for d in ev["values_differ"]]
-    return "\n".join(lines)
+    return data_block("\n".join(lines), f"requirement {ev['id']} and its documents")
 
 
 def _clean(answer: dict) -> dict:

@@ -17,7 +17,9 @@ them to the answer before the passages.
 
 Every answer is a compact JSON-serialisable dict; a problem (a document or section that is
 not there, the model server down) is an answer with `error`, never an exception, so that
-the agent can correct itself or tell the user.
+the agent can correct itself or tell the user. When the text of search, get_section or
+get_requirement has a phrase written to steer a model ("ignore previous instructions"), the
+answer says where, in `warnings` (atlas/agents/guard.py), and is the same otherwise.
 
     tools = DocTools.from_config(cfg)
     tools.search("alarm latency", k=5)
@@ -41,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 import openai
 
+from atlas.agents import guard
 from atlas.index.records import DOORS_PREFIX, KINDS, asks_for
 from atlas.index.search import citation_warnings, cite, filters
 from atlas.index.store import REF_PATTERN
@@ -200,7 +203,7 @@ class DocTools:
             out["filters"] = {key: values[:MAX_FILTER_VALUES] for key, values in known.items()}
             if unknown:
                 out["error"] = f"no passage has {', '.join(unknown)}: the filters are {', '.join(known) or 'none'}"
-        return out
+        return guard.check(out, [(r["cite"], r["text"]) for r in out["results"]])
 
     def get_section(self, document: str, section: str) -> dict:
         """The whole Markdown of a section (summary, requirements and its original text).
@@ -231,8 +234,9 @@ class DocTools:
             return {"error": f"section '{section}' is " + ("ambiguous" if hits else f"not in {d['name']}"),
                     "sections": listed[:100]}
         h, text = heads[hits[0]], hits[0].read_text(encoding="utf-8")
-        return {"document": d["name"], "section": h["id"], "title": h["title"], "file": str(hits[0]),
-                "markdown": text[:MAX_SECTION_CHARS], "truncated": len(text) > MAX_SECTION_CHARS}
+        out = {"document": d["name"], "section": h["id"], "title": h["title"], "file": str(hits[0]),
+               "markdown": text[:MAX_SECTION_CHARS], "truncated": len(text) > MAX_SECTION_CHARS}
+        return guard.check(out, [(f"{d['name']} › {h['title']}", out["markdown"])])
 
     def get_requirement(self, req_id: str) -> dict:
         """A requirement by its exact ID: its official text, module, attributes, parent and
@@ -261,7 +265,8 @@ class DocTools:
                              "text": h["text"]} for h in in_docs]
         if held:
             out["local_only"] = held
-        return out
+        return guard.check(out, [(f"{out['id']} (DOORS)", (official or {}).get("text") or ""),
+                                 *((x["cite"], x["text"]) for x in out["documents"])])
 
     def route(self, question: str) -> list[dict]:
         """The sources a question about traceability needs, without searching: if it names

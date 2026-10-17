@@ -31,6 +31,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from atlas.agents.definitions import AgentDef
+from atlas.agents.guard import data_block
 from atlas.config import Config
 from atlas.pipeline import atomic_write, sha256_text
 
@@ -86,7 +87,7 @@ def _prompt(ev: dict) -> str:
             lines.append("It calls: " + "; ".join(f"{x['id']}" + (f" ({x['doc']})" if x["doc"] else "")
                                                   for x in c["calls"]))
     lines += ["", "Tests that verify or cover it: " + (", ".join(ev["tests"]) or "none")]
-    return "\n".join(lines)
+    return data_block("\n".join(lines), f"requirement {ev['id']} and its code")
 
 
 def _clean(answer: dict) -> dict:

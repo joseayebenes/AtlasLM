@@ -136,6 +136,12 @@ code is never deleted. `protected` already keeps the agent out of the tests them
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
+
+What goes into a prompt from the project (what a test printed, the code it cites, the errors of
+the compiler, the diff of a restart, what an undone task broke) goes in a <data> block
+(guard.data_block): it is data, never instructions. The warnings of the tools about phrases
+written to steer a model in what they returned (guard.py) go to the step, in `warnings`, and to
+the Markdown report, in "Instructions inside the data".
 """
 from __future__ import annotations
 
@@ -157,6 +163,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from atlas.agents.hints import shape as _shape, write_hints_draft
+from atlas.agents.guard import data_block
 from atlas.config import Config, ConfigError
 
 __all__ = ["Plan", "develop", "load_plan"]
@@ -649,7 +656,8 @@ class Developer:
             self.on_step(step)
             why = " without changing the code in its last steps" if step.get("stalled") else ""
             step = self._run_once(agent, RESTART.format(prompt=prompt, calls=step["calls"], why=why,
-                                                        changes=changes or "(nothing)", check=check),
+                                                        changes=data_block(changes, "diff") if changes
+                                                        else "(nothing)", check=check),
                                   f"{kind}-restart", task, ws, read_only)
         return step
 
@@ -718,7 +726,8 @@ class Developer:
                 break
             errors = "\n".join(f"{f}:{e.get('line', '')}: {_message(e)}" for f, es in after["check"].items()
                                for e in es[:10])
-            fix = self.run(agent, BUILD_FIX_PROMPT.format(errors=errors), "build-fix", task, ws)
+            fix = self.run(agent, BUILD_FIX_PROMPT.format(errors=data_block(errors, "check_code")), "build-fix",
+                           task, ws)
             after = self.evaluate(ws)
             fix["outcome"] = "errors remain" if new_errors(after) else "compiles"
             self._done(fix, after)
@@ -742,8 +751,7 @@ class Developer:
             result = after["tests"][stuck[0]]
             snapshot = ws.files.snapshot()
             fix = self.run(agent, self.plan.advance_prompt.format(
-                test=stuck[0], output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result)), "advance-fix",
-                task, ws)
+                test=stuck[0], output=_output(stuck[0], result), code=_cited(result)), "advance-fix", task, ws)
             fixed = self.compiled(agent, task, after, self.evaluate(ws), ws)
             broken = self.broken(after, fixed)
             if broken:
@@ -970,7 +978,8 @@ class Developer:
             if broken:
                 self._done(step, state)
                 step, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
-                    broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
+                    broken=data_block("\n".join(f"- {b}" for b in broken), "the tests")), "task-retry", task["id"],
+                    state, task["advances"])
                 step["outcome"] = self._outcome(step, broken)
             if step["outcome"] == "kept" and task["requirements"]:
                 step["untagged"] = self.untagged(task["requirements"], before)
@@ -1053,7 +1062,7 @@ class Developer:
             result = state["tests"][target]
             tried = attempts.get(target, [])
             prompt = self.plan.fix_prompt.format(
-                test=target, output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result),
+                test=target, output=_output(target, result), code=_cited(result),
                 attempts=("\nEarlier attempts on this test, which did not fix it:\n" +
                           "\n".join(f"- {a}" for a in tried[-3:])) if tried else "")
             before = self.main.files.snapshot()
@@ -1186,12 +1195,14 @@ class Developer:
 
 
 def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
-    """What the tool calls of a run did ({"edits": {made, failed}, "compiles": {ok, failed}})
-    and the errors of the compiler it saw: of check_code, of the check after a change and of
-    the syntax check."""
-    edits, compiles, errors = Counter(), Counter(), []
+    """What the tool calls of a run did ({"edits": {made, failed}, "compiles": {ok, failed}},
+    and "warnings" of guard.py if any) and the errors of the compiler it saw: of check_code, of
+    the check after a change and of the syntax check."""
+    edits, compiles, errors, warnings = Counter(), Counter(), [], []
     for call in record:
         res = call.get("result") if isinstance(call.get("result"), dict) else {}
+        warnings += [f"{call.get('name')}: {w}" for w in res.get("warnings", [])
+                     if isinstance(w, str) and f"{call.get('name')}: {w}" not in warnings]
         checks = []
         if call.get("name") in WRITES:
             edits["failed" if "error" in res else "made"] += 1
@@ -1203,7 +1214,8 @@ def tool_use(record: list[dict]) -> tuple[dict, list[dict]]:
             compiles["ok" if c.get("ok") else "failed"] += 1
             errors += c.get("errors", [])
     return {"edits": {"made": edits["made"], "failed": edits["failed"]},
-            "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]}}, errors
+            "compiles": {"ok": compiles["ok"], "failed": compiles["failed"]},
+            **({"warnings": warnings} if warnings else {})}, errors
 
 
 def _changed_lines(old: bytes, new: bytes) -> set[int]:
@@ -1241,10 +1253,15 @@ def _verdict(answer: str) -> list[dict] | None:
     return [i if isinstance(i, dict) else {"issue": str(i)} for i in issues if i]
 
 
+def _output(test: str, result: dict) -> str:
+    """What a test printed, its end, for a prompt."""
+    return data_block(result["output"][-MAX_OUTPUT:], f"the output of {test}")
+
+
 def _cited(result: dict) -> str:
     """The code that the output of a test cites, for a prompt."""
     code = "\n".join(f"{c['file']}, line {c['line']}:\n{c['source']}" for c in result["code_at"])
-    return f"\nThe code it cites:\n{code}\n" if code else ""
+    return f"\nThe code it cites:\n{data_block(code, 'code_at')}\n" if code else ""
 
 
 def _decoded(data: bytes) -> str:
@@ -1326,6 +1343,11 @@ def markdown(report: dict) -> str:
         out += [f"- {s['n']} {s['task']}: " + "; ".join(
             f"{i.get('file', '?')}" + (f":{i['line']}" if i.get("line") else "") + f" {i.get('issue', '')}"
             for i in s["issues"])[:400] for s in reviews]
+    warned = [s for s in report["steps"] if s.get("warnings")]
+    if warned:
+        out += ["", "## Instructions inside the data", "", "What these tools returned has phrases written to "
+                "steer a model; check that the agent did not follow them:", ""]
+        out += [f"- {s['n']} {s['task']}: {w}" for s in warned for w in s["warnings"]]
     person = report.get("for_a_person") or {}
     if person:
         out += ["", "## For a person", "", "The agent made no progress on these tests:", ""]

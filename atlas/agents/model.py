@@ -39,6 +39,10 @@ tokens are estimated (characters / 4, the tools included) and, if they go over c
 max_tokens, the old tool results are left out with a smaller keep, MASK_STEP at a time, until
 it fits, with a warning. Without it, a long run of atlas develop went on sending turns that the
 server cut or rejected.
+
+Every tool result goes to the model inside <tool_result name="...">…</tool_result> (guard.py):
+what a tool returns (a requirement, a comment of the code, what a test printed) is data, and the
+mark says so, for the sentence of the agents (guard.DATA_RULE) to point at.
 """
 from __future__ import annotations
 
@@ -54,6 +58,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
+from atlas.agents.guard import tool_result
 from atlas.llm import ServiceConfig, create_client
 from atlas.llm.chat import complete
 from atlas.llm.connection import reasoning_of
@@ -183,7 +188,8 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
     The reasoning of a turn of the model with tool calls goes in its `reasoning_field`
     ("" = it is left out). With keep_tool_results, the old tool results are left out (see
     the module and masked); with budget_tokens, also as many as it takes to fit in it
-    (fit_context; `extra_chars` are those of the tools, `context_tokens` for the warning)."""
+    (fit_context; `extra_chars` are those of the tools, `context_tokens` for the warning).
+    Each tool result is in its frame (guard.tool_result)."""
     messages = []
     system = _text(request.config.system_instruction) if request.config else ""
     if system:
@@ -225,8 +231,10 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
                         before, context_tokens or budget_tokens, budget_tokens, left,
                         f"; it still has {after}" if after > budget_tokens else "")
     for m in messages:
-        m.pop("_name", None)
+        name = m.pop("_name", None)
         m.pop("_response", None)
+        if m["role"] == "tool":
+            m["content"] = tool_result(name or "tool", m["content"])
     return messages
 
 

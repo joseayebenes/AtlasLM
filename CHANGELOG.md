@@ -16,6 +16,10 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Presupuesto por intento de un encargo en el plan: `task_calls`, `task_seconds` y `task_cost`
   (0 = sin límite). Al llegar a él no se lanzan más arreglos de compilación, vueltas de
   `advances` ni reinicios, y el paso lo dice (`budget_exceeded`).
+- Herramientas `outline` (los subprogramas de un fichero con sus líneas, su firma y sus
+  requisitos, y sus `with` o `import`) y `read_subprogram` (uno solo, con su comentario). Con
+  ellas, `replace_subprogram` y `add_subprogram` ya no necesitan un `read_file` del fichero
+  entero (hasta 300 líneas). `examples/agents/implementer.md` y `tester.md` las usan.
 - `[sources.code]` `check_timeout`, `test_timeout` y `program_timeout`: el tiempo de cada clase
   de comando, con `command_timeout` por defecto.
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from atlas.agents.guard import data_block
 from atlas.config import Config
 from atlas.pipeline import atomic_write
 
@@ -70,7 +71,8 @@ def impact_report(name: str, cfg: Config, llm: Any = None, graph=None, depth: in
                   "requirements": [{**r, "via": [impact["node"]]} for r in impact["requirements"]]}
     data = _impact_data(g, impact)
     agent, llm = _writer("impact_analyst", cfg, llm)
-    text = llm.ask_text(agent.instruction, f"Impact analysis of a change to {impact['node']}.\n\n{data}")
+    text = llm.ask_text(agent.instruction, f"Impact analysis of a change to {impact['node']}.\n\n"
+                        f"{data_block(data, 'the graph')}")
     path = _file(cfg, "impact", impact["node"])
     atomic_write(path, f"{text.strip()}\n\n---\n\n## Data of the graph\n\n{data}\n")
     return {"node": impact["node"], "report": text, "file": str(path), "impact": impact}
@@ -97,7 +99,8 @@ def coverage_report(module: str, cfg: Config, llm: Any = None, graph=None) -> di
         return "\n".join(out)
 
     agent, llm = _writer("coverage_auditor", cfg, llm)       # the model sees the first ones of each list
-    text = llm.ask_text(agent.instruction, f"Traceability audit of {matrix['module']}.\n\n{data(SHOWN)}")
+    text = llm.ask_text(agent.instruction, f"Traceability audit of {matrix['module']}.\n\n"
+                        f"{data_block(data(SHOWN), 'the graph')}")
     path = _file(cfg, "coverage", module or "all")
     atomic_write(path, f"{text.strip()}\n\n---\n\n## Data of the graph\n\n{data(10**6)}\n")
     return {"module": matrix["module"], "report": text, "file": str(path), "summary": matrix["summary"],

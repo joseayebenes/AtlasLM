@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from atlas.agents.definitions import AgentDef
+from atlas.agents.guard import data_block
 from atlas.config import Config
 from atlas.pipeline import atomic_write, sha256_text
 
@@ -100,7 +101,7 @@ def _prompt(ev: dict) -> str:
         lines.append("\nValues found only in one of the texts (a comparison without a model):")
         lines += [f"- {d['source']}: DOORS {', '.join(d['doors']) or '-'}; document {', '.join(d['document']) or '-'}"
                   for d in ev["values_differ"]]
-    return "\n".join(lines)
+    return data_block("\n".join(lines), f"requirement {ev['id']} and its documents")
 
 
 def _clean(answer: dict) -> dict:

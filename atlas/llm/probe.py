@@ -3,7 +3,10 @@
     atlas probe atlas.toml
 
 1. A question that needs a tool: the model must call it, with the right arguments.
-2. The result of the tool: the model must answer with it.
+2. The result of the tool: the model must answer with it. It goes in the frame of the agents
+   (<tool_result name="word_length">, atlas/agents/guard.py), with their sentence on data and
+   instructions in the system prompt: a model that took the frame for something else would
+   fail here.
 3. The same request without the reasoning of the first turn: if the server gives the token
    count of the prompt, the difference says whether it puts back the reasoning that atlas
    returns in [llm] reasoning_field. A chat template that drops it, or a server that does not
@@ -20,6 +23,7 @@ import json
 import time
 from typing import Any, Callable
 
+from atlas.agents.guard import DATA_RULE, tool_result
 from atlas.llm.connection import ServiceConfig, create_client, describe, diagnose, reasoning_of
 
 __all__ = ["probe"]
@@ -28,7 +32,7 @@ TOOL = {"type": "function", "function": {
     "name": "word_length", "description": "The number of letters of a word.",
     "parameters": {"type": "object", "properties": {"word": {"type": "string", "description": "the word"}},
                    "required": ["word"]}}}
-SYSTEM = "You answer with the tools you are given: call a tool when it can give the answer."
+SYSTEM = "You answer with the tools you are given: call a tool when it can give the answer. " + DATA_RULE
 QUESTION = "How many letters has the word 'atlas'? Find it out with the tool word_length."
 RESULT = {"word": "atlas", "letters": 5}
 
@@ -78,7 +82,7 @@ def probe(service: ServiceConfig, client: Any = None, out: Callable[[str], None]
     assistant = {"role": "assistant", "content": message.content or None,
                  "tool_calls": [{"id": call.id, "type": "function",
                                  "function": {"name": "word_length", "arguments": call.function.arguments}}]}
-    result = {"role": "tool", "tool_call_id": call.id, "content": json.dumps(RESULT)}
+    result = {"role": "tool", "tool_call_id": call.id, "content": tool_result("word_length", json.dumps(RESULT))}
     with_reasoning = {**assistant, service.reasoning_field: reasoning} if reasoning and service.reasoning_field \
         else assistant
     try:

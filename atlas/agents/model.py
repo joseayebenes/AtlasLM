@@ -29,6 +29,10 @@ takes its place. JetBrains found this as good as summarizing with the model, at 
 (The Complexity Trap, 2025); in a run of atlas develop, the turns of a fix carried 55 000
 tokens of input, most of them old reads. The old results go in steps of MASK_STEP, so that the
 beginning of the conversation changes seldom (servers reuse the prompt they have seen).
+
+Every tool result goes to the model inside <tool_result name="...">…</tool_result> (guard.py):
+what a tool returns (a requirement, a comment of the code, what a test printed) is data, and the
+mark says so, for the sentence of the agents (guard.DATA_RULE) to point at.
 """
 from __future__ import annotations
 
@@ -44,6 +48,7 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
+from atlas.agents.guard import tool_result
 from atlas.llm import ServiceConfig, create_client
 from atlas.llm.connection import reasoning_of
 from atlas.llm.structured import repair_json
@@ -171,7 +176,7 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
     the turns of the user, those of the model (text and tool calls) and the tool results.
     The reasoning of a turn of the model with tool calls goes in its `reasoning_field`
     ("" = it is left out). With keep_tool_results, the old tool results are left out (see
-    the module and masked)."""
+    the module and masked). Each tool result is in its frame (guard.tool_result)."""
     messages = []
     system = _text(request.config.system_instruction) if request.config else ""
     if system:
@@ -207,8 +212,10 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
     if keep_tool_results > 0:
         masked(messages, keep_tool_results)
     for m in messages:
-        m.pop("_name", None)
+        name = m.pop("_name", None)
         m.pop("_response", None)
+        if m["role"] == "tool":
+            m["content"] = tool_result(name or "tool", m["content"])
     return messages
 
 

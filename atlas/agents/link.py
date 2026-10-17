@@ -32,6 +32,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from atlas.agents.definitions import AgentDef
+from atlas.agents.guard import data_block
 from atlas.config import Config
 from atlas.pipeline import atomic_write, sha256_text
 
@@ -126,7 +127,7 @@ def _prompt(c: dict) -> str:
                   f"Comment: {x['doc'] or '(none)'}",
                   f"Already cites: {', '.join(x['requirements']) or '(nothing)'}",
                   f"Code:\n{x['code']}" if x["code"] else "Code: (not available)"]
-    return "\n".join(lines)
+    return data_block("\n".join(lines), f"requirement {c['id']} and its candidates")
 
 
 def _clean(answer: dict, offered: dict[str, dict]) -> dict:

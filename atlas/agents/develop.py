@@ -73,6 +73,10 @@ now. A long conversation of failed edits does not get better with more turns.
 
 Undo puts back the files of the code roots that an agent can change (neither excluded nor
 protected); nothing is committed. The tests should be protected ([sources.code] protected).
+
+What goes into a prompt from the project (what a test printed, the code it cites, the errors of
+the compiler, the diff of a restart, what an undone task broke) goes in a <data> block
+(guard.data_block): it is data, never instructions.
 """
 from __future__ import annotations
 
@@ -92,6 +96,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from atlas.agents.guard import data_block
 from atlas.config import Config, ConfigError
 
 __all__ = ["Plan", "develop", "load_plan"]
@@ -358,7 +363,8 @@ class Developer:
             self.on_step(step)
             why = " without changing the code in its last steps" if step.get("stalled") else ""
             step = self._run_once(agent, RESTART.format(prompt=prompt, calls=step["calls"], why=why,
-                                                        changes=changes or "(nothing)", check=check),
+                                                        changes=data_block(changes, "diff") if changes
+                                                        else "(nothing)", check=check),
                                   f"{kind}-restart", task, ws)
         return step
 
@@ -425,7 +431,8 @@ class Developer:
                 break
             errors = "\n".join(f"{f}:{e.get('line', '')}: {_message(e)}" for f, es in after["check"].items()
                                for e in es[:10])
-            fix = self.run(agent, BUILD_FIX_PROMPT.format(errors=errors), "build-fix", task, ws)
+            fix = self.run(agent, BUILD_FIX_PROMPT.format(errors=data_block(errors, "check_code")), "build-fix",
+                           task, ws)
             after = self.evaluate(ws)
             fix["outcome"] = "errors remain" if new_errors(after) else "compiles"
             self._done(fix, after)
@@ -449,8 +456,7 @@ class Developer:
             ws = ws or self.main
             snapshot = ws.files.snapshot()
             fix = self.run(agent, self.plan.advance_prompt.format(
-                test=stuck[0], output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result)), "advance-fix",
-                task, ws)
+                test=stuck[0], output=_output(stuck[0], result), code=_cited(result)), "advance-fix", task, ws)
             fixed = self.compiled(agent, task, after, self.evaluate(ws), ws)
             broken = self.broken(after, fixed)
             if broken:
@@ -557,7 +563,7 @@ class Developer:
             self._done(step, state)
             if broken:
                 retry, state, broken = self.attempts(self.plan.agent, text + RETRY.format(
-                    broken="\n".join(f"- {b}" for b in broken)), "task-retry", task["id"], state, task["advances"])
+                    broken=data_block("\n".join(f"- {b}" for b in broken), "the tests")), "task-retry", task["id"], state, task["advances"])
                 retry["outcome"] = "undone" if broken else "kept"
                 self._done(retry, state)
         return state
@@ -586,7 +592,7 @@ class Developer:
             result = state["tests"][target]
             tried = attempts.get(target, [])
             prompt = self.plan.fix_prompt.format(
-                test=target, output=result["output"][-MAX_OUTPUT:].strip(), code=_cited(result),
+                test=target, output=_output(target, result), code=_cited(result),
                 attempts=("\nEarlier attempts on this test, which did not fix it:\n" +
                           "\n".join(f"- {a}" for a in tried[-3:])) if tried else "")
             step, after, broken = self.attempt(self.plan.fix_agent, prompt, "round", target, state)
@@ -675,10 +681,15 @@ def _shape(message: str) -> str:
     return re.sub(r"\d+", "N", re.sub(r'"[^"]*"', '"X"', message)).strip()
 
 
+def _output(test: str, result: dict) -> str:
+    """What a test printed, its end, for a prompt."""
+    return data_block(result["output"][-MAX_OUTPUT:], f"the output of {test}")
+
+
 def _cited(result: dict) -> str:
     """The code that the output of a test cites, for a prompt."""
     code = "\n".join(f"{c['file']}, line {c['line']}:\n{c['source']}" for c in result["code_at"])
-    return f"\nThe code it cites:\n{code}\n" if code else ""
+    return f"\nThe code it cites:\n{data_block(code, 'code_at')}\n" if code else ""
 
 
 def _message(error: dict) -> str:

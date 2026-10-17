@@ -48,7 +48,8 @@ def test_a_model_that_calls_the_tool_and_a_server_that_uses_the_reasoning():
     first, second, third = server.requests
     assert first["reasoning_effort"] == "low"                       # "none" in [llm]: agents that write code reason
     assert second["messages"][2]["reasoning"].startswith("I will count")
-    assert second["messages"][3] == {"role": "tool", "tool_call_id": "c1", "content": '{"word": "atlas", "letters": 5}'}
+    assert second["messages"][3] == {"role": "tool", "tool_call_id": "c1", "content":
+                                  '<tool_result name="word_length">\n{"word": "atlas", "letters": 5}\n</tool_result>'}
     assert "reasoning" not in third["messages"][2]
 
 

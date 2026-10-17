@@ -124,7 +124,9 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
     assert report["final"] == {"tests_passed": 0, "tests": 1, "check_errors": [],
                                "failing": {"tests/test_calc.py": "Step 2: expected 6, received None"}}
     first_round, second_round = client.prompts[-2:]
-    assert first_round.startswith("The test tests/test_calc.py fails. What it printed:\n\nStep 2: expected 6")
+    assert first_round.startswith("The test tests/test_calc.py fails. What it printed:\n\n"
+                                  '<data source="the output of tests/test_calc.py">\nStep 2: expected 6')
+    assert "Step 2: expected 6, received None\n</data>" in first_round          # what it printed is data
     assert "Earlier attempts" not in first_round and "- No idea. -> no progress" in second_round
     assert "A first attempt at this task was undone" in client.prompts[2] and "now got to 1" in client.prompts[2]
     assert client.prompts[3].startswith("The code does not compile after the last change")

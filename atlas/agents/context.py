@@ -4,7 +4,9 @@ plan). For an agent that is going to change that code (OpenCode, VS Code): one c
 of ten searches.
 
 The package is made of blocks in order of importance; a block that does not fit is cut at a
-line and the rest is left out (`omitted`). Tokens are estimated as characters / 4.
+line and the rest is left out (`omitted`). Tokens are estimated as characters / 4. The body of
+each block is in a <data> block (guard.data_block): the text of the requirements, documents,
+comments and code is data for the agent that reads it, never instructions.
 
     requirement   the requirement (DOORS text, links), the sections that state it, the code
                   that implements it (signatures), its tests, the callers of that code, and
@@ -18,6 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from atlas.agents.guard import data_block
 from atlas.graph.knowledge import REQUIREMENT_KINDS, KnowledgeGraph
 
 __all__ = ["build_context"]
@@ -181,19 +184,19 @@ def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000) -> 
     for title, body in blocks:
         if not body.strip():
             continue
-        block = f"\n## {title}\n\n{body.strip()}\n"
+        block = f"\n## {title}\n\n{data_block(body)}\n"
         if truncated:
             omitted.append(title)
             continue
         if len(text) + len(block) > budget:
-            room = budget - len(text) - 40
-            lines, kept = block.splitlines(keepends=True), []
-            for line in lines:
+            room = budget - len(text) - len(block) + len(body.strip()) - 40
+            kept = []
+            for line in body.strip().splitlines(keepends=True):
                 if sum(map(len, kept)) + len(line) > room:
                     break
                 kept.append(line)
-            if len(kept) > 3:                       # more than the title: keep what fits
-                text += "".join(kept) + "\n[…cut to fit the budget]\n"
+            if kept:                                # some of the body fits: keep it
+                text += f"\n## {title}\n\n{data_block(''.join(kept) + '[…cut to fit the budget]')}\n"
             else:
                 omitted.append(title)
             truncated = True

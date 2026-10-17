@@ -29,6 +29,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   revisión del código (`git rev-parse HEAD` al construir el grafo del código). `atlas matrix`
   la escribe en la cabecera del Markdown y en un `matrix-<módulo>.json`.
 
+### Cambiado
+- La comparación de cifras entre DOORS y los documentos (`atlas/graph/values.py`): cantidades
+  con su unidad canónica (ms, s, min, h, m, km, Hz, kHz, %, B, KB, MB), separador de miles
+  solo con tres cifras detrás, comparación numérica, números escritos con letras, y fuera las
+  referencias («section 3.2», «Table 3»...), las fechas y las versiones. `values_differ`
+  dice además qué clase de diferencia es: `value`, `unit_only` (300 ms frente a 0,3 s: no se
+  convierte) o `format_only` («1,000» y «1000»). `gaps` y `trace` solo listan `value`; el
+  verificador recibe también `unit_only`. Antes, 6 de 7 casos reales daban un veredicto
+  erróneo.
+
 ### Quitado
 - `[sources.code] summaries`, que se aceptaba sin efecto desde la 0.1.0.
 
@@ -36,6 +46,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - `[sources.code] summaries` ya no existe: una configuración que la tenga deja de cargar
   (`unknown key: 'summaries'`). Basta con borrar la línea.
 - El CSV de `atlas matrix` tiene una columna más al final, `exported_at`.
+- `values_differ` (en `trace`, `gaps` y la evidencia de `atlas verify`) pasa de
+  `{"doors", "document"}` con números sueltos (`"320"`) a `{"doors", "document", "kind"}` con
+  las cantidades como las escribe cada texto (`"320 ms"`). Quien lea esos campos debe mirar
+  `kind`. Como cambia el prompt, `atlas verify` vuelve a preguntar una vez por los requisitos
+  con cifras distintas.
 - Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
   lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
   hay peticiones al modelo ni a los embeddings.

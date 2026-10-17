@@ -82,8 +82,8 @@ def _sections(items: list[dict]) -> str:
         line = f"- {x['document']} § {x['title']}"
         if x.get("text"):
             line += f": {x['text']}"
-        if x.get("values_differ"):
-            v = x["values_differ"]
+        v = x.get("values_differ")
+        if v and v.get("kind") == "value":          # trace only gives these
             line += f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
         out.append(line)
     return "\n".join(out)

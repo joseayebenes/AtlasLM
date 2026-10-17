@@ -6,6 +6,7 @@
     knowledge.py   KnowledgeGraph: queries (find_symbol, callers, impact, read_source...) and
                    traceability (trace, trace_code, matrix, gaps, neighbors, communities)
     tools.py       GraphTools: those queries as tools of agents and of the MCP server
+    values.py      quantities, values_differ: the values of DOORS against those of a document
 
     from atlas.graph import KnowledgeGraph
     g = KnowledgeGraph.from_config(cfg)

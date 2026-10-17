@@ -37,6 +37,7 @@ import networkx as nx
 
 from atlas.graph.build import CODE_KINDS, find_communities
 from atlas.graph.store import GraphStore, to_mermaid
+from atlas.graph.values import values_differ
 
 __all__ = ["KnowledgeGraph"]
 
@@ -45,8 +46,6 @@ MAX_LINES = 300      # cap of the lines of a source read
 REQUIREMENT_KINDS = ("requirement", "heading", "information")
 DEPENDS = ("calls", "converts", "uses")          # u depends on v: a change of v affects u
 STRUCTURE = {"contains", "declares", "mentions", "defines", "withs", "implements", "verifies", *DEPENDS}
-ID_LIKE = re.compile(r"\b[A-Za-z][A-Za-z0-9]*(?:[-_.][A-Za-z0-9]+)+\b")     # SRS-0001: not a value
-NUMBER = re.compile(r"\d+(?:[.,]\d+)*")
 DEFAULT_ATTRIBUTES = ("status", "verification")    # [sources.doors] attributes: what is shown and filtered by
 NODE_FIELDS = ("heading", "outline", "level")      # attributes of the exchange database kept in the node
 
@@ -54,11 +53,6 @@ NODE_FIELDS = ("heading", "outline", "level")      # attributes of the exchange 
 def _natural(text: str) -> list:
     """Sort key that puts 1.9 before 1.10 and SRS-2 before SRS-10."""
     return [(0, int(x)) if x.isdigit() else (1, x) for x in re.split(r"(\d+)", text or "")]
-
-
-def _values(text: str) -> set[str]:
-    """The numbers of a requirement text (deadlines, limits...), without its IDs."""
-    return {n.replace(",", ".") for n in NUMBER.findall(ID_LIKE.sub(" ", text or ""))}
 
 
 def display_attributes(cfg) -> list[str]:
@@ -216,9 +210,9 @@ class KnowledgeGraph:
             official = self.G.nodes[requirement].get("text", "") if self.G.nodes[requirement].get("module") else ""
             if text:
                 out["text"] = text
-            if text and official and _values(text) != _values(official):
-                out["values_differ"] = {"doors": sorted(_values(official) - _values(text), key=_natural),
-                                        "document": sorted(_values(text) - _values(official), key=_natural)}
+            differ = values_differ(official, text) if text and official else None
+            if differ and differ["kind"] == "value":         # a unit or a format apart is not a gap
+                out["values_differ"] = differ
         return out
 
     def _documents(self, r: str) -> list[dict]:
@@ -453,7 +447,8 @@ class KnowledgeGraph:
     def trace(self, req_id: str, limit: int = MAX_LIST) -> dict:
         """Everything about a requirement: its text and attributes in DOORS, its parent,
         children and links; the document sections that state it, with their text and the
-        values (deadlines, limits) that differ from DOORS; the code that implements it; and
+        values (deadlines, limits) that differ from DOORS (kind "value" of
+        atlas.graph.values.values_differ: not a unit or a format apart); the code that implements it; and
         the tests that verify it (citing it, "tag") or cover it (calling that code, "calls")."""
         r, err = self._requirement(req_id)
         if err:

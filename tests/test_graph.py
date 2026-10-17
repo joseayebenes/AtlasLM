@@ -272,7 +272,7 @@ def test_trace_and_trace_code(unified):
     assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
     assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
                                "text": "The TMF shall delete a track within 300 ms.",
-                               "values_differ": {"doors": ["320"], "document": ["300"]}}]
+                               "values_differ": {"doors": ["320 ms"], "document": ["300 ms"], "kind": "value"}}]
     assert [i["id"] for i in t["implemented_by"]["items"]] == ["tracks.delete_track"]
     assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
     assert g.trace("SRS-0003")["parent"] == "SRS-0002" and g.trace("SRS-0002")["children"] == ["SRS-0003"]
@@ -347,8 +347,8 @@ def test_matrix_and_gaps(unified):
     assert gaps["code_without_requirement"]["items"] == ["logger.next_id"]
     assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
     assert gaps["stated_in_documents_not_in_doors"]["items"] == [{"id": "SRS-0103", "documents": ["spec.pdf §2 Logs"]}]
-    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320"],
-                                               "document": ["300"]}]
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320 ms"],
+                                               "document": ["300 ms"], "kind": "value"}]
     assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
     assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
     assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
@@ -376,3 +376,48 @@ def test_neighbors_and_communities(unified, tmp_path):
     c = g.communities()
     assert c["count"] == len(set(groups.values())) and sum(x["size"] for x in c["items"]) == len(groups)
     assert c["items"][0]["size"] >= c["items"][-1]["size"]
+
+
+# --- the values of a requirement against those of a document ------------------------------
+
+VALUE_CASES = [   # (DOORS, document, kind of values_differ or None)
+    ("within 320 ms", "within 300 ms", "value"),                          # the one the old comparison got right
+    ("within 300 ms", "within 0.3 s", "unit_only"),                       # the same time: never converted
+    ("up to 1,000 tracks", "up to 1000 tracks", "format_only"),           # a thousands separator
+    ("within 300 ms (see section 3.2)", "within 300 ms", None),           # a reference is not a value
+    ("the rates of Table 3: 5 Hz", "5 Hz", None),
+    ("every 1.5 s", "every 1.50 s", "format_only"),                       # compared as numbers
+    ("two retries", "2 retries", "format_only"),                          # a number word
+    ("logs are kept 30 days", "logs are kept 60 days", "value"),          # no unit on either side
+    ("1,5 s", "1.5 seconds", "format_only"),                              # decimal comma, unit written out
+    ("0,125 s", "0.125 s", "format_only"),                                # 0,125 is not 125
+    ("1,000.5 m", "1000.5 m", "format_only"),
+    ("since 2026-10-14 (v2)", "since 2026-09-01 (v3)", None),             # dates and versions
+    ("SRS-0001: 95 %", "SRS-0002: 95%", None),                            # IDs; the same writing
+    ("group 1.1.1, 5 Hz", "5 Hz", None),                                  # the number of a section
+    ("anexo B.2 y figura 4: 10 km", "10 km", None),
+    ("within 300", "within 300 ms", "unit_only"),                         # a unit in only one text
+    ("1 kHz", "1000 Hz", "unit_only"),
+    ("within 300 ms", "within 300 ms for 500 tracks", None),              # the document says more
+    ("5-10 s", "5-12 s", "value"),
+    ("within 300 ms", "within 300 ms", None),
+]
+
+
+@pytest.mark.parametrize("official,document,kind", VALUE_CASES)
+def test_values_that_differ(official, document, kind):
+    from atlas.graph.values import values_differ
+    differ = values_differ(official, document)
+    assert (differ or {}).get("kind") == kind, differ
+
+
+def test_quantities():
+    from atlas.graph.values import quantities, values_differ
+    assert quantities("within 300 ms, up to 1,000 tracks and two retries") == [(300.0, "ms"), (1000.0, ""), (2.0, "")]
+    assert quantities("1.000.000 B, 2 MB, 3 M, 4 b, 50 %, 7 hercios") == [(1e6, "B"), (2.0, "MB"), (3.0, ""), (4.0, ""),
+                                                                         (50.0, "%"), (7.0, "Hz")]
+    assert quantities("see section 3.2, Table 4, p. 7, § 5.1, on 14/10/2026, release v1.3") == []
+    assert values_differ("within 320 ms", "within 300 ms for 500 tracks") == {
+        "doors": ["320 ms"], "document": ["300 ms", "500"], "kind": "value"}
+    assert values_differ("up to 1,000 tracks", "up to 1000 tracks") == {"doors": ["1,000"], "document": ["1000"],
+                                                                       "kind": "format_only"}

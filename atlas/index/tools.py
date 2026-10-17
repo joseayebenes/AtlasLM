@@ -2,7 +2,8 @@
 
     list_documents    the indexed documents and DOORS modules, with their summary
     search            hybrid search in the documents and in the requirements of DOORS
-                      (exact IDs + meaning + keywords)
+                      (exact IDs + meaning + keywords), narrowed by document, module,
+                      chapter, kind of passage and DOORS attributes
     get_section       the Markdown of a section
     get_requirement   a requirement by its ID: its official text (DOORS) and the documents
                       that state it
@@ -15,6 +16,7 @@ the agent can correct itself or tell the user.
 
     tools = DocTools.from_config(cfg)
     tools.search("alarm latency", k=5)
+    tools.search("deletion", module="SRS_TMS", attribute="status=Approved")
     tools.get_requirement("SRS-0102")
 
 They are registered as "tool" plugins with these names, for [agents.*] tools and [mcp] tools.
@@ -22,14 +24,13 @@ They are registered as "tool" plugins with these names, for [agents.*] tools and
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import openai
 
-from atlas.index.records import DOORS_PREFIX, KINDS
-from atlas.index.search import cite
+from atlas.index.records import DOORS_PREFIX, KINDS, asks_for
+from atlas.index.search import cite, filters
 from atlas.llm import model_failed
 from atlas.plugins import register_methods
 from atlas.store import Store
@@ -44,6 +45,7 @@ TOOL_NAMES = ("list_documents", "search", "get_section", "get_requirement", "ask
 MAX_RESULTS = 20            # results of a search
 MAX_SUMMARY_CHARS = 500     # characters of the summary of a document in list_documents
 MAX_SECTION_CHARS = 20000   # characters of a section
+MAX_FILTER_VALUES = 10      # values of each filter when a filter matches nothing
 
 
 def _heading(f: Path) -> dict:
@@ -62,16 +64,6 @@ def _heading(f: Path) -> dict:
                     except ValueError:
                         pass
     return out
-
-
-def _asks_for(wanted: str, title: str) -> bool:
-    """Whether `wanted` names a section with that title: the whole title, its number ("3",
-    "2.1") or the title without its number, in any case."""
-    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
-    wanted, title = norm(wanted), norm(title)
-    number, _, rest = title.partition(" ")
-    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
-    return bool(wanted) and wanted in names
 
 
 class DocTools:
@@ -107,25 +99,43 @@ class DocTools:
                                "summary": str((d["overview"] or {}).get("summary", ""))[:MAX_SUMMARY_CHARS]}
                               for d in docs]}
 
-    def search(self, query: str, k: int = 0, document: str = "", kind: str = "") -> dict:
+    def search(self, query: str, k: int = 0, document: str = "", kind: str = "", attribute: str = "",
+               module: str = "", chapter: str = "") -> dict:
         """Hybrid search in the documents, in the requirements of DOORS and in the code:
         exact IDs, meaning and keywords. `k` results (0: the configured number, 8 by default;
         at most a few of each document unless `document` is given). `document` limits it to
         one document, DOORS module or code unit (its name or part of its title); `kind` to
         one kind of passage: chunk | section_summary | requirement | definition | open_issue |
-        overview | code_doc (a subprogram, type or variable with its comment and code). Each
-        result has its citation, its document and section (for get_section; for a DOORS
-        requirement, get_requirement with its ref; for code, read_source or trace_code with
-        its ref) and its text."""
+        overview | code_doc (a subprogram, type or variable with its comment and code).
+        Filters, combined: `module`, a DOORS module ("SRS_TMS"); `chapter`, a chapter of a
+        document or module, by its number or title ("3", "Logging"); `attribute`, values of
+        the `meta` of the results, "name=value" and several separated by ";": the DOORS
+        attributes of a requirement ("status=Approved;verification=Test"), or "kind=test",
+        "file=tracks.adb" in the code. Each result has its citation, its document and section
+        (for get_section; for a DOORS requirement, get_requirement with its ref; for code,
+        read_source or trace_code with its ref), its text and its meta. A filter that matches
+        nothing answers with the names and values the filters can take."""
         if kind and kind not in KINDS:
             return {"error": f"unknown kind '{kind}'", "kinds": list(KINDS)}
         try:
+            where = filters(attribute, module, chapter)
+        except ValueError as e:
+            return {"error": str(e)}
+        try:
             hits = self.index.search(query, k=min(k, MAX_RESULTS) if k > 0 else 0, document=document,
-                                     kinds=[kind] if kind else None)
+                                     kinds=[kind] if kind else None, where=where or None)
         except openai.APIError as e:
             return model_failed(e, self.cfg)
-        return {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
-                             "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"]} for h in hits]}
+        out: dict[str, Any] = {"results": [{"cite": cite(h), "document": h["doc_name"], "section": h["section_id"],
+                                            "kind": h["kind"], "ref": h.get("ref", ""), "text": h["text"],
+                                            **({"meta": h["meta"]} if h.get("meta") else {})} for h in hits]}
+        if where and not hits:
+            known = self.index.meta_values()
+            unknown = [key for key in where if key not in known]
+            out["filters"] = {key: values[:MAX_FILTER_VALUES] for key, values in known.items()}
+            if unknown:
+                out["error"] = f"no passage has {', '.join(unknown)}: the filters are {', '.join(known) or 'none'}"
+        return out
 
     def get_section(self, document: str, section: str) -> dict:
         """The whole Markdown of a section (summary, requirements and its original text).
@@ -146,9 +156,9 @@ class DocTools:
         files = sorted((Path(d["out_dir"]) / "sections").glob("*.md"))
         heads = {f: _heading(f) for f in files}
         hits = [f for f in files if heads[f]["id"] == section.strip()] or \
-               [f for f in files if _asks_for(section, heads[f]["title"])] or \
-               [f for f in files if any(_asks_for(section, t) for t in heads[f]["includes"])] or \
-               [f for f in files if any(_asks_for(section, t) for t in heads[f]["path"])]
+               [f for f in files if asks_for(section, heads[f]["title"])] or \
+               [f for f in files if any(asks_for(section, t) for t in heads[f]["includes"])] or \
+               [f for f in files if any(asks_for(section, t) for t in heads[f]["path"])]
         if len(hits) != 1:
             listed = [f"{heads[f]['id']}: {heads[f]['title']}" for f in (hits or files)]
             return {"error": f"section '{section}' is " + ("ambiguous" if hits else f"not in {d['name']}"),

@@ -34,13 +34,23 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "code_records",
-           "reflow", "requirement_records"]
+__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "asks_for", "build_records", "chunk_text",
+           "code_records", "reflow", "requirement_records"]
 
 DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
 CODE_PREFIX = "code:"       # key of a code unit in the index: "code:tracks"
 KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
 ATTRIBUTES = ("status", "verification")     # [sources.doors] attributes by default
+
+
+def asks_for(wanted: str, title: str) -> bool:
+    """Whether `wanted` names a section or chapter with that title: the whole title, its
+    number ("3", "2.1") or the title without its number, in any case."""
+    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
+    wanted, title = norm(wanted), norm(title)
+    number, _, rest = title.partition(" ")
+    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
+    return bool(wanted) and wanted in names
 
 
 def _chapter(path: list[str] | str) -> dict:

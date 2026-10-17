@@ -4,7 +4,7 @@ same records, and the embeddings cache.
     index_documents   one row per indexed document: key, name, title, output folder,
                       overview and the embeddings model of its vectors
     index_records     the records (see records.py) with their vector and their meta (JSON:
-                      module, chapter, attributes...)
+                      what a search can be narrowed by, see allowed)
     index_fts         full-text index of embed_text and ref (if SQLite has FTS5)
     embed_cache       vector by key (model + prefix + text): what has been embedded once
                       is never embedded again, whatever document it comes from
@@ -23,6 +23,8 @@ from datetime import datetime
 from pathlib import Path
 
 import numpy as np
+
+from atlas.index.records import asks_for
 
 __all__ = ["IndexStore"]
 
@@ -49,6 +51,10 @@ def _record(row: sqlite3.Row) -> dict:
     return {**dict(row), "meta": json.loads(row["meta"] or "{}")}
 
 
+def _chapter_is(chapter: str | None, wanted: str) -> bool:
+    return bool(chapter) and asks_for(wanted, chapter)
+
+
 class IndexStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -59,6 +65,7 @@ class IndexStore:
         self.db.executescript(SCHEMA)
         if "meta" not in {r["name"] for r in self.db.execute("PRAGMA table_info(index_records)")}:
             self.db.execute("ALTER TABLE index_records ADD COLUMN meta TEXT")   # an index of before 0.3
+        self.db.create_function("atlas_chapter_is", 2, _chapter_is, deterministic=True)
         try:
             self.db.execute("CREATE VIRTUAL TABLE IF NOT EXISTS index_fts USING fts5("
                             "embed_text, ref, tokenize='unicode61 remove_diacritics 2')")
@@ -149,10 +156,12 @@ class IndexStore:
                 self._matrix = (model, version, ids, m)
             return self._matrix[2], self._matrix[3]
 
-    def allowed(self, document: str = "", kinds: list[str] | None = None) -> set[int] | None:
-        """Record ids of a document (by name, key or part of its title) and of some kinds;
-        None if there is no filter."""
-        if not document and not kinds:
+    def allowed(self, document: str = "", kinds: list[str] | None = None,
+                where: dict[str, str] | None = None) -> set[int] | None:
+        """Record ids of a document (by name, key or part of its title), of some kinds and
+        whose meta has every key = value of `where` (in any case; `chapter` also by its
+        number or its title without the number); None if there is no filter."""
+        if not document and not kinds and not where:
             return None
         sql, params = "SELECT r.id FROM index_records r JOIN index_documents d ON d.doc = r.doc WHERE 1=1", []
         if document:
@@ -161,7 +170,26 @@ class IndexStore:
         if kinds:
             sql += f" AND r.kind IN ({','.join('?' * len(kinds))})"
             params += kinds
+        for key, value in (where or {}).items():
+            path = '$."' + str(key).lower().replace('"', "") + '"'
+            if str(key).lower() == "chapter":
+                sql += " AND atlas_chapter_is(json_extract(r.meta, ?), ?)"
+            else:
+                sql += " AND json_extract(r.meta, ?) = ? COLLATE NOCASE"
+            params += [path, str(value).strip()]
         return {r[0] for r in self._query(sql, params)}
+
+    def meta_values(self, limit: int = 20) -> dict[str, list[str]]:
+        """Every key of the meta of the records, with some of its values (the most
+        frequent first): what `where` can take."""
+        rows = self._query("SELECT j.key, j.value, COUNT(*) AS n FROM index_records r, json_each(r.meta) j "
+                           "GROUP BY j.key, j.value ORDER BY j.key, n DESC, j.value")
+        out: dict[str, list[str]] = {}
+        for r in rows:
+            values = out.setdefault(r["key"], [])
+            if len(values) < limit:
+                values.append(str(r["value"]))
+        return out
 
     def dense(self, qvec: np.ndarray, model: str, n: int, allowed: set[int] | None) -> list[int]:
         ids, m = self._load_matrix(model)

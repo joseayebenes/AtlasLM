@@ -7,28 +7,38 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
-- Cada registro del índice lleva su `meta` (columna `meta` de `index_records`): en los
-  requisitos de DOORS, el módulo, el capítulo y los atributos de `[sources.doors]
-  attributes`; en los fragmentos, resúmenes de sección y requisitos de un documento, su
-  capítulo (el primer elemento de su ruta); en el código, la clase del elemento
-  (`subprogram`, `test`, `type`, `variable` o `constant`) y su fichero.
+- Filtros en la búsqueda, por la `meta` de los registros: `attribute = "status=Approved"`
+  (varios pares con «;»), `module` (un módulo de DOORS) y `chapter` (un capítulo, por su
+  número o su título) en la herramienta `search`; `--attribute` (repetible), `--module` y
+  `--chapter` en `atlas search` y `atlas ask`; `where` en `Index.search` e `Index.answer`.
+  Se suman entre sí y con `document` y `kind`. En las muestras, «deletion» no daba ningún
+  requisito de DOORS entre sus ocho resultados; con `--attribute status=Approved`, ocho
+  requisitos aprobados. Un filtro que no casa con nada devuelve las claves y los valores que
+  hay, y una pregunta amplia con filtros lee enteros solo los registros que casan. La
+  descripción de `search` y las instrucciones del servidor MCP explican los filtros.
+- Cada registro del índice lleva su `meta` (columna `meta` de `index_records`), y cada
+  resultado de `search` la devuelve: en los requisitos de DOORS, el módulo, el capítulo y los
+  atributos de `[sources.doors] attributes`; en los fragmentos, resúmenes de sección y
+  requisitos de un documento, su capítulo (el primer elemento de su ruta); en el código, la
+  clase del elemento (`subprogram`, `test`, `type`, `variable` o `constant`) y su fichero.
 
 ### Cambiado
 - `[sources.doors] attributes` tiene efecto: son los atributos de DOORS que atlas enseña y por
   los que filtra, `["status", "verification"]` por defecto. Cada uno que tenga un requisito va
   en su texto del índice (`status: Approved; verification: Test`), así que pesa en la búsqueda
-  y el modelo lo ve con el requisito. No elige qué se importa: eso siguen haciéndolo
-  `attribute_columns` y el relleno de la base de intercambio. Cambiar la lista solo reindexa
-  los módulos de DOORS, sin volver a leerlos.
+  y el modelo lo ve con el requisito, y se puede pedir con `attribute`. No elige qué se
+  importa: eso siguen haciéndolo `attribute_columns` y el relleno de la base de intercambio.
+  Cambiar la lista solo reindexa los módulos de DOORS, sin volver a leerlos.
+- `atlas search` sangra todas las líneas de cada resultado.
 
 ### Al actualizar
 - El índice se reconstruye una vez (`index-2`): la siguiente `atlas run` reescribe todos sus
   registros. Solo se embeben de nuevo los requisitos de DOORS con atributos, cuyo texto
   cambia; lo demás sale de la caché de vectores. Un `atlas.db` anterior gana la columna `meta`
-  al abrirse.
+  al abrirse, y sus registros no casan con ningún filtro hasta esa ejecución.
 - Los módulos de DOORS se vuelven a leer una vez: su huella ya no incluye `attributes`.
 - `attributes` estaba «reservada: todavía sin efecto». Si alguien la puso como lista de lo que
-  se importa, ahora decide lo que se enseña; con `[]` no se enseña ningún atributo.
+  se importa, ahora decide lo que se enseña y por lo que se filtra; con `[]`, nada.
 
 ## [0.2.0] — 2026-10-16
 

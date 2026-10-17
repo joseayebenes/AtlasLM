@@ -1,4 +1,5 @@
 import json
+import re
 from atlas.cli import run, status
 from atlas.config import load_config
 
@@ -168,6 +169,10 @@ patterns = ["*.md"]
         main(["ask", "--whole", "When does the HMI raise an alarm?", "--document", "hmi_manual.md", str(path)])
     out = capsys.readouterr().out
     assert e.value.code == 0 and "Read whole: hmi_manual.md (2 requests to the model)" in out
+    with pytest.raises(SystemExit) as e:              # a chapter: by its title, without its number
+        main(["ask", "When does the HMI raise an alarm?", str(path), "--chapter", "alarms"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "hmi_manual.md › 2 Alarms" in out and "3 Logging" not in out
     for args, error in ((["search", "x", "--kind", "pages"], "unknown kind 'pages'"),
                         (["search", "x", "--whole"], "unknown option --whole"),
                         (["ask", "x", "--k", "many"], "--k must be an integer"),
@@ -315,8 +320,15 @@ communities = true
     assert (cfg.workspace / "graph" / "atlas.graphml").exists()
 
 
+def _with_attributes(path, attributes: str):
+    path.write_text(re.sub(r"attributes = \[.*\]", f"attributes = {attributes}", path.read_text()))
+    return load_config(path)
+
+
 def test_doors_requirements_are_indexed(toml, fake, fake_stats, capsys):
-    from atlas.cli import search
+    import pytest
+    from atlas.cli import main, search
+    from atlas.config import ConfigError
     extra = f'''
 [llm]
 base_url = "{fake[0]}"
@@ -329,7 +341,8 @@ no_proxy = "*"
 [pipeline]
 steps = ["doors", "index"]
 '''
-    cfg = load_config(toml(extra))
+    path = toml(extra)
+    cfg = load_config(path)
 
     def go(config=cfg):
         assert run(config) == 0
@@ -340,6 +353,26 @@ steps = ["doors", "index"]
     assert go()["skipped"] == {"doors.requirements": 3, "index.requirements": 3}
     assert fake_stats()["emb_texts"] == embedded                    # nothing embedded again
     assert search(cfg, "srs-0004") == 0 and "SRS_TMS (requirement)" in capsys.readouterr().out
+
+    # the attributes of [sources.doors] attributes: in the text, and filters
+    assert search(cfg, "track event", k=20, attribute="status=Approved", module="SRS_TMS") == 0
+    out = capsys.readouterr().out
+    assert out.count("status: Approved") == out.count("(requirement)") > 3 and "Draft" not in out
+    assert "SSS_MISSION" not in out
+    with pytest.raises(SystemExit) as e:              # repeated: both pairs
+        main(["search", "track event", str(path), "--attribute", "status=Draft", "--attribute=verification=Test"])
+    out = capsys.readouterr().out
+    assert e.value.code == 0 and "nothing found with those filters" in out and "no passage has verification" in out
+    assert re.search(r"status \([^)]*Draft", out)                    # what the filters can take
+    with pytest.raises(SystemExit) as e:
+        main(["search", "track event", str(path), "--attribute", "Approved"])
+    assert "is not name=value" in str(e.value.code)
+    # another list of attributes reindexes the modules, without reading DOORS again
+    path.write_text(path.read_text().replace('adapter = "database"', 'adapter = "database"\nattributes = ["Status"]'))
+    assert go(load_config(path))["processed"] == {"index.requirements": 3}
+    assert search(load_config(path), "srs-0004") == 0 and "Status: " in capsys.readouterr().out
+    with pytest.raises(ConfigError, match="not attribute names"):
+        run(_with_attributes(path, '["a=b"]'))
     assert go(load_config(toml(extra + '[index]\nkinds = ["overview"]\n')))["pruned"] == {"index.requirements": 3}
 
 

@@ -16,9 +16,11 @@
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
-                   [--k N] [--kind KIND] [--document NAME]
+                   [--k N] [--kind KIND] [--document NAME] [--module MODULE] [--chapter CHAPTER]
+                   [--attribute NAME=VALUE]   e.g. --attribute status=Approved (repeatable, or ";")
     atlas ask      TEXT [atlas.toml]   answer from the indexed documents, with citations; a broad question
                    [--k N] [--kind KIND] [--document NAME] [--whole]   reads its documents whole
+                   [--module MODULE] [--chapter CHAPTER] [--attribute NAME=VALUE]
     atlas plugins  [atlas.toml]     available plugins
     atlas agents   [atlas.toml]     agents (Markdown files): built-in and of the project
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
@@ -866,8 +868,10 @@ def coverage(cfg: Config, module: str) -> int:
 
 
 # options of the actions that take them: --name -> type (bool: a flag)
-OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str},
-           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool}}
+FILTERS = {"--module": str, "--chapter": str, "--attribute": str}
+OPTIONS = {"search": {"--k": int, "--kind": str, "--document": str, **FILTERS},
+           "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, **FILTERS}}
+REPEATABLE = {"--attribute": ";"}       # given twice: joined with this
 
 
 def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
@@ -890,6 +894,8 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
             value = next(it, None)
             if value is None:
                 sys.exit(f"atlas {action}: {name} needs a value")
+        if name in REPEATABLE and name[2:] in options:
+            value = f"{options[name[2:]]}{REPEATABLE[name]}{value}"
         try:
             options[name[2:]] = kind(value)
         except ValueError:
@@ -904,24 +910,48 @@ def _kinds(kind: str) -> list[str] | None:
     return [kind] if kind else None
 
 
-def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = "") -> int:
+def _where(attribute: str, module: str, chapter: str) -> dict | None:
+    from atlas.index import filters
+    try:
+        return filters(attribute, module, chapter) or None
+    except ValueError as e:
+        sys.exit(str(e))
+
+
+def _no_match(index, where: dict) -> None:
+    """What the filters can take, when they match nothing."""
+    known = index.meta_values()
+    unknown = [key for key in where if key not in known]
+    if unknown:
+        print(f"no passage has {', '.join(unknown)}")
+    print("filters: " + ("; ".join(f"{key} ({', '.join(values[:10])})" for key, values in known.items())
+                         or "none (has `atlas run` indexed anything since atlas 0.3?)"))
+
+
+def search(cfg: Config, query: str, k: int = 0, kind: str = "", document: str = "", attribute: str = "",
+           module: str = "", chapter: str = "") -> int:
     from atlas.index import Index, cite
-    kinds = _kinds(kind)
+    kinds, where = _kinds(kind), _where(attribute, module, chapter)
     _context(cfg)
-    hits = Index.from_config(cfg).search(query, k=k, document=document, kinds=kinds)
+    index = Index.from_config(cfg)
+    hits = index.search(query, k=k, document=document, kinds=kinds, where=where)
     if not hits:
-        print("nothing found (has `atlas run` indexed any document?)")
+        print("nothing found" + (" with those filters" if where else " (has `atlas run` indexed any document?)"))
+        if where:
+            _no_match(index, where)
     for i, h in enumerate(hits, 1):
-        print(f"\n[{i}] {cite(h)}\n    {h['text'][:400]}")
+        text = h["text"][:400].replace("\n", "\n    ")
+        print(f"\n[{i}] {cite(h)}\n    {text}")
     return 0
 
 
-def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False) -> int:
+def ask(cfg: Config, question: str, k: int = 0, kind: str = "", document: str = "", whole: bool = False,
+        attribute: str = "", module: str = "", chapter: str = "") -> int:
     from atlas.index import Index
-    kinds = _kinds(kind)
+    kinds, where = _kinds(kind), _where(attribute, module, chapter)
     _context(cfg)
     res = Index.from_config(cfg).answer(question, k=k, document=document, kinds=kinds,
-                                        scope="whole" if whole else "")
+                                        scope="whole" if whole else "", where=where)
     print(res["answer"])
     if res["sources"]:
         print("\nSources:")

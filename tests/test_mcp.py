@@ -46,6 +46,9 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
     assert "find_symbol -> get_node" in server.instructions and "edit_file" not in server.instructions
     assert "`build_context` gives in one call" in server.instructions
+    assert "`attribute` (\"status=Approved" in server.instructions                 # the filters of search
+    assert {"attribute", "module", "chapter"} <= set(tools["search"]["inputSchema"]["properties"])
+    assert "status=Approved;verification=Test" in tools["search"]["description"]
 
     # a list of its own, writing tools included; repeated names count once
     server = create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search", "ask_atlas"]\n')))

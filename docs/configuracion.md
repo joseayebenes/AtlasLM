@@ -171,7 +171,9 @@ intercambio (con `exchange`) o `attribute_columns` (con `database`). Dice cuále
 leídos enseña atlas y por cuáles se puede filtrar. Cada uno que tenga un requisito va:
 - en su texto del índice, como una línea `status: Approved; verification: Test`, así que
   también pesa en la búsqueda y llega al modelo con el requisito;
-- en su `meta` del índice (columna `meta` de `index_records`).
+- en su `meta`, que da cada resultado de `search`;
+- en los filtros: `attribute = "status=Approved"` en la herramienta `search`, y
+  `--attribute status=Approved` en `atlas search` y `atlas ask`.
 
 El nombre se busca en cualquier caso (`Status` casa con `status`). Cambiar la lista solo
 reindexa los módulos de DOORS, sin volver a leerlos.
@@ -267,7 +269,8 @@ pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desd
 ## [search]
 
 Lo que `atlas search`, `atlas ask` y las herramientas `search` y `ask_docs` toman del índice.
-Cambiarlo no reprocesa nada.
+Cambiarlo no reprocesa nada. Los filtros (`--module`, `--chapter`, `--attribute`) no se
+configuran aquí: van en cada búsqueda (ver [atlas.index](../atlas/index/README.md#filtros)).
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|

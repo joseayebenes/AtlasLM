@@ -1,7 +1,7 @@
 """Code analyzers. Each language is a `CodeAnalyzer` plugin registered under its name;
 [sources.code] languages = ["ada"] picks the ones in use.
 
-    ada.py      AdaAnalyzer (tree-sitter-ada), the analysis of legacy/ada_graph.py
+    ada.py      AdaAnalyzer (tree-sitter-ada): units, subprograms, types, calls and their tags
     python.py   PythonAnalyzer (ast, no dependencies): functions, classes and their tags
     common.py   requirement tags in comments, shared by every language
     tools.py    CodeTools: list, search, read and edit files, for coding agents

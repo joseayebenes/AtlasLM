@@ -1,5 +1,5 @@
-"""Graph tools for agents and the MCP server (the MCP of legacy/ada_graph_mcp.py, and the
-traceability of code, DOORS and documents).
+"""Graph tools for agents and the MCP server: the code graph and the traceability of code,
+DOORS and documents.
 
 They are the queries of KnowledgeGraph, with the names agents see:
 

@@ -12,7 +12,7 @@ agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
   que lo citan (y si dicen otra cifra), el código que lo implementa y las pruebas que lo
   cubren. Y a la inversa, el impacto de un cambio.
 
-Versión 0.3.0: las fases 0 a 6 del plan (`legacy/PLAN.md`) y, desde la 0.2.0, las mejoras
+Versión 0.3.0: las fases 0 a 6 del plan del proyecto y, desde la 0.2.0, las mejoras
 del [análisis de octubre](docs/analisis-mejoras-2026-10.md): el contexto para el editor por
 MCP, `atlas develop` que se reanuda, va en paralelo y propone parches, `atlas chat`, la
 búsqueda con filtros y léxico, DOORS con la semántica de sus enlaces y ReqIF, y lo que sale al
@@ -42,7 +42,6 @@ gateway bajo control. Los cambios de cada versión están en el [CHANGELOG](CHAN
 | [atlas.agents](atlas/agents/README.md) | agentes en Markdown, verificación, informes, evaluación |
 | [tools/doors_export](tools/doors_export/README.md) | el exportador de DOORS a la base de intercambio |
 | [tools/reqif_import](tools/reqif_import/README.md) | el importador de ReqIF a la base de intercambio |
-| [Plan del proyecto](legacy/PLAN.md) | objetivos, arquitectura, fases y su estado |
 | [Análisis de mejoras](docs/analisis-mejoras-2026-10.md) | qué mejorar tras la 0.2.0: el contexto para el editor, `atlas develop`, la aceptación en el proyecto real; hoja de ruta de la 0.3 y la 0.4 |
 
 ## Puesta en marcha para desarrollar
@@ -260,7 +259,6 @@ tools/check_install.py      instalación limpia desde el wheelhouse (make check-
 tools/constraints.py        genera constraints.txt
 tools/licenses.py           aviso de terceros y SBOM de las dependencias (make licenses)
 tests/                      pytest; tests/fakes/fake_api.py es el servidor OpenAI falso
-legacy/                     los scripts de partida y el plan del proyecto
 ```
 
 ## Idioma
@@ -268,8 +266,7 @@ legacy/                     los scripts de partida y el plan del proyecto
 El código está en inglés: nombres, comentarios, docstrings, mensajes de la línea de
 comandos y los ficheros que genera (los Markdown de cada documento; el contenido de los
 resúmenes sigue `lang`). La documentación está en español: los README, `docs/`, el
-CHANGELOG, `legacy/PLAN.md` y los comentarios de los TOML de ejemplo. `legacy/` conserva el
-español mientras siga existiendo.
+CHANGELOG y los comentarios de los TOML de ejemplo.
 
 ## Añadir o quitar piezas
 

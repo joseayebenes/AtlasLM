@@ -1,8 +1,7 @@
 # atlas.code — código fuente
 
 Analiza el código (Ada con tree-sitter, Python con `ast`) y da a los agentes las herramientas habituales de
-un agente de código, confinadas a las carpetas del proyecto. Viene de
-`legacy/ada_graph.py`.
+un agente de código, confinadas a las carpetas del proyecto.
 
 | Fichero | Qué tiene |
 |---|---|

@@ -6,6 +6,13 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Quitado
+- `legacy/`: los scripts de partida (`ada_graph.py`, `ada_graph_mcp.py`, `conexion.py`,
+  `doc_rag.py`, `pdf_struct.py`...), el proyecto `doors_kb` y el plan del proyecto
+  (`PLAN.md`), con las pruebas que comparaban atlas con esos scripts (`test_docs_legacy.py`,
+  `test_index_legacy.py` y las de `ada_graph.py` en `test_code.py` y `test_graph.py`).
+  Siguen en el historial de git, en la etiqueta `v0.3.0`.
+
 ## [0.3.0] — 2026-10-18
 
 Desde la 0.2.0, las mejoras del [análisis de octubre](docs/analisis-mejoras-2026-10.md): el

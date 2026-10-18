@@ -1,7 +1,7 @@
 # atlas.index — índice y búsqueda
 
 Indexa los documentos procesados y los requisitos de DOORS, busca combinando IDs, vectores
-y texto, y responde con citas. Viene de `legacy/doc_rag.py`.
+y texto, y responde con citas.
 
 | Fichero | Qué tiene |
 |---|---|
@@ -400,4 +400,4 @@ idx.embed_missing(["text one", "text two"], workers=4)    # a la caché, en lote
 documentos, cambio de modelo, herramientas, DOORS, filtros por `meta`, límite por documento,
 preguntas de trazabilidad, citas comprobadas, estado de la respuesta, preguntas amplias en
 una petición y por partes, documentos locales), `tests/test_cli.py` (pasos de `atlas run`,
-`search`, `ask` y sus filtros) y `tests/test_index_legacy.py` (mismo resultado que `doc_rag.py`).
+`search`, `ask` y sus filtros).

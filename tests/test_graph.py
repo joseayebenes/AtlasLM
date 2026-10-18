@@ -1,5 +1,4 @@
 import json
-import sys
 from pathlib import Path
 
 import pytest
@@ -7,7 +6,7 @@ import pytest
 pytest.importorskip("tree_sitter_ada")
 nx = pytest.importorskip("networkx")
 
-from atlas.code import AdaAnalyzer, requirement_pattern  # noqa: E402
+from atlas.code import AdaAnalyzer  # noqa: E402
 from atlas.graph import GraphStore, GraphTools, KnowledgeGraph, build_code_graph, export_graph  # noqa: E402
 
 SAME_NAMES = {   # two packages with an Update and a Reset each
@@ -231,35 +230,6 @@ def test_graph_tools_follow_the_builds(sample_graph, tmp_path):
     assert "error" in tools.get_node("tracks.update")
     plugins.load_plugins()
     assert set(TOOL_NAMES) <= set(plugins.available("tool")) and "read_file" not in TOOL_NAMES
-
-
-LEGACY = Path(__file__).resolve().parents[1] / "legacy"
-
-
-@pytest.mark.skipif(not (LEGACY / "ada_graph.py").exists(), reason="legacy/ has been removed")
-def test_same_graph_as_ada_graph(sample_graph, samples):
-    """With the identifiers projected to simple names, the graph of the samples is the one
-    of legacy/ada_graph.construir_grafo (to be deleted together with legacy/). The one
-    differences: there, the test procedure Test_Tracks overwrote the node of its own unit, and
-    an element cited a requirement with a "traces" edge (here implements, or verifies in a test)."""
-    sys.path.insert(0, str(LEGACY))
-    try:
-        import ada_graph
-    finally:
-        sys.path.remove(str(LEGACY))
-    old, _ = ada_graph.construir_grafo(samples / "ada", requirement_pattern({}))
-    new, _ = sample_graph
-    simple = lambda n: new.nodes[n]["name"] if new.nodes[n].get("unit") else n
-    assert {(simple(n), d["kind"]) for n, d in new.nodes(data=True)} - {("test_tracks", "unit")} == \
-        {(n, d["kind"]) for n, d in old.nodes(data=True)}
-    kind = lambda k: "traces" if k in ("implements", "verifies") else k
-    assert {(simple(u), simple(v), kind(d["kind"])) for u, v, d in new.edges(data=True)} == \
-        {(u, v, d["kind"]) for u, v, d in old.edges(data=True)}
-    for n, d in new.nodes(data=True):
-        if d["kind"] == "subprogram":
-            o = old.nodes[simple(n)]
-            assert (d["doc"], ";".join(d["requirements"]), d["start_line"], d["end_line"]) == \
-                (o["doc"], o["requirements"], o["start_line"], o["end_line"]), n
 
 
 # --- the unified graph: code, DOORS and documents ----------------------------------------

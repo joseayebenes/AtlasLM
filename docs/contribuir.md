@@ -31,7 +31,7 @@ falta, explica el porqué y lo que se midió.
   `build` (dependencias, empaquetado) y `chore` (la versión, limpieza).
 - **Ámbitos**: el módulo o la pieza que cambia. Los usados: `code`, `agents`, `index`,
   `graph`, `tools`, `llm`, `mcp`, `docs`, y también `pipeline`, `cli`, `plugins`, `doors`,
-  `config`, `release` y `plan` (`legacy/PLAN.md`).
+  `config` y `release`.
 
 ```
 feat(index): como mucho 3 resultados por documento, [search] y --k, --kind y --document

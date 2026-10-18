@@ -1,4 +1,4 @@
-"""Section analysis and consolidation (sections 3 and 4 of legacy/pdf_struct.py).
+"""Section analysis and consolidation.
 
 Three ways to analyse a section, chosen with `analysis` in each [[sources.docs]]:
 

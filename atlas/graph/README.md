@@ -1,8 +1,7 @@
 # atlas.graph — grafo y trazabilidad
 
 Junta en un solo grafo el código, los requisitos de DOORS y los documentos, y responde sin
-modelo a las preguntas de trazabilidad e impacto. Viene de `legacy/ada_graph.py` y
-`legacy/ada_graph_mcp.py`.
+modelo a las preguntas de trazabilidad e impacto.
 
 | Fichero | Qué tiene |
 |---|---|

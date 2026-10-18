@@ -1,4 +1,4 @@
-"""The code graph, built from the CodeUnits of every file (the graph of legacy/ada_graph.py).
+"""The code graph, built from the CodeUnits of every file.
 
 Nodes (`kind`): unit (package / compilation unit), subprogram, test (a subprogram of a file
 that matches [sources.code] test_patterns), type, variable, constant, requirement, external

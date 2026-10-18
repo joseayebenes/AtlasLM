@@ -10,6 +10,8 @@ import pytest
 from atlas.cli import run
 from atlas.config import load_config
 
+pytestmark = pytest.mark.slow
+
 
 def test_second_run_and_a_pdf_changed_in_one_page(tmp_path, fake, fake_stats):
     for module in ("pymupdf", "markitdown", "tree_sitter_ada"):

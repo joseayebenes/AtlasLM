@@ -3,7 +3,11 @@
 Quick use:
     from atlas import load
     cfg = load("atlas.dev.toml")       # validated configuration
-"""
-from atlas.config import load_config as load  # noqa: F401
 
-__version__ = "0.2.0"
+The public API, what is kept between versions, is in docs/api.md.
+"""
+from atlas.config import Config, ConfigError, load_config as load
+
+__all__ = ["Config", "ConfigError", "__version__", "load"]
+
+__version__ = "0.3.0"

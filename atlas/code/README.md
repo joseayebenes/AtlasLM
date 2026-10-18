@@ -9,24 +9,45 @@ un agente de código, confinadas a las carpetas del proyecto. Viene de
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
-| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
+| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `outline`, `read_subprogram`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
 | `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
+| `judge.py` | `JudgeTools`: `run_tests` y `judge_changes`, el juez de `atlas develop` para el agente de un editor (ver [atlas/mcp](../mcp/README.md#el-juez-de-atlas-develop-en-el-editor)) |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |
 | `lsp.py` | `LanguageTools`: `find_definition`, `find_references` y `describe_symbol` de un servidor de lenguaje (el Ada Language Server) |
+| `gpr.py` | `read_project`: las carpetas de fuentes y de objetos de un proyecto GPR y de los que importa (`[sources.code] project`), para las raíces, `exclude` y los comandos de gprbuild |
 | `hints.toml` | las pistas de serie para los mensajes de GNAT |
+| `rules.toml` | las reglas de serie para el texto nuevo de un cambio (Ada y Python) |
 | `procedures.py` | `generate_tests`: los procedimientos de prueba como tests, paso a paso, sin modelo (`atlas tests`) |
 
 ## Análisis
 
 El paso `code.parse` analiza cada fichero y guarda en `atlas.db`:
-- sus subprogramas, con sus líneas, sus llamadas propias, el comentario de cabecera (el del
-  `.ads` si lo hay) y los requisitos que citan;
+- sus subprogramas, con su clase (`kind`: `procedure`, `function`, `method`, `task`...), su
+  perfil, sus líneas, sus llamadas propias con la línea y la columna de cada una, el
+  comentario de cabecera (el del `.ads` si lo hay) y los requisitos que citan;
 - sus tipos, variables, constantes y `with`.
 
+En Ada, la clase es `procedure`, `function`, `operator` (`function "+"`, que se llama `"+"`),
+`task` (`task body`), `entry` (`entry ... when`, la de un objeto protegido) o `protected`
+(`protected body`, cuyas llamadas y etiquetas propias son las que no están en sus entradas y
+subprogramas). El prefijo de un atributo (`T` en `T'Image (X)`) no es una llamada. Dos
+subprogramas con el mismo nombre en un fichero salen dos veces; el grafo los junta en un
+nodo. En Python, todo es `function`.
+
+El analizador Ada guarda también los paquetes de las cláusulas `use` (`uses`, sin los `use
+type`) y los alias (`aliases`, nombre → destino): los renombramientos de subprogramas y de
+paquetes y las instancias genéricas. El grafo los usa para resolver las llamadas.
+
 Los requisitos se leen de la etiqueta `[sources.code] req_tag` (`"Req:"` por defecto). Para
-otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los ficheros que casan con
+otro formato, `req_regex`, cuyo grupo 1 es la lista de IDs. Los IDs de una etiqueta son los
+que casan con la expresión de un ID de `[sources.doors.convention]` (`id_regex`, o
+`id_pattern` sin anclas) en el resto de su línea: `Req: SRS-0004 and SRS-0005`, `Req: see
+SRS-0004` y `Req: SRS-0004 / SRS-0005` dan los IDs que se esperan. El paso `code.parse` la
+pasa a cada analizador en su configuración (`id_regex`, que `requirement_ids` compila) y la
+incluye en su huella. Sin convención, las palabras que parecen un ID se leen hasta la primera
+que no lo parece. Los ficheros que casan con
 `test_patterns` son pruebas. Con eso, el paso `graph` construye el grafo de código (ver
 [atlas.graph](../graph/README.md)).
 
@@ -44,6 +65,32 @@ Con `test_patterns`, una prueba Python y una Ada verifican el mismo requisito en
 Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en el
 [README](../../README.md)).
 
+## La interfaz `CodeUnit`
+
+Es lo que `CodeAnalyzer.analyze_file` devuelve de un fichero y lo que `code.parse` guarda
+(`atlas/plugins.py`):
+
+| Campo | Qué es |
+|---|---|
+| `file`, `unit`, `language` | el fichero, su unidad (`tracks.db`, `python.test_session`) y el lenguaje, el nombre del analizador |
+| `subprograms` | `{name, start_line, end_line, calls, doc, reqs}` y, si el analizador las sabe, `kind` (`procedure`, `function`, `method`, `task`, `entry`, `operator`) y `signature`, el perfil en una línea (`procedure Update (I : Integer)`, `def send(self, line)`) |
+| `subprograms[].calls` | cada llamada, como el nombre escrito (`"pkg.op"`) o como `{"name", "line", "column"}`: dónde empieza el nombre, las dos cosas contadas desde 1 y la columna en caracteres. Ada y Python dan una por cada sitio donde se llama; el grafo toma cada nombre una vez por subprograma |
+| `declarations` | las de una especificación: `{name, line, doc, reqs}` |
+| `types`, `variables`, `imports` | tipos, variables y constantes del paquete o módulo, y sus `with` o `import` |
+
+`CodeAnalyzer.predefined` son los nombres del lenguaje que nunca son llamadas: en Ada,
+`Integer`, `Float`, `String`...; en Python ninguno, porque el analizador ya deja fuera los
+`builtins`. El grafo los busca en el analizador del lenguaje de la unidad que llama, así que
+`integer (...)` se ignora en Ada y es una llamada externa en Python, y otro lenguaje no
+tiene que tocar `atlas.graph`. `CodeUnit.from_dict` lee lo que guardaron versiones anteriores,
+sin el campo `tests` (no lo leía nadie y ya no existe) y con las llamadas sin posición.
+
+La posición de cada llamada es lo que necesitaría un paso que preguntase al servidor de
+lenguaje (`textDocument/definition`) por cada una y guardase aristas exactas. Medido en
+octubre de 2026, no compensa todavía: la resolución por nombres no deja ninguna llamada
+ambigua en los proyectos Ada que hay a mano, y donde el Ada Language Server sabe la
+definición dentro del proyecto da la misma arista (ver [atlas.graph](../graph/README.md#precisión-de-la-resolución-por-nombres)).
+
 ## Herramientas para agentes de código
 
 `CodeTools` tiene las herramientas habituales de un agente de código sobre
@@ -54,6 +101,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 | `list_files` | ficheros por patrón glob (`*.adb` busca en todas las subcarpetas) |
 | `grep` | expresión regular, con fichero, línea y líneas de contexto |
 | `read_file` | un fragmento numerado |
+| `outline` | los subprogramas de un fichero (Ada y Python), con sus líneas, su firma y los requisitos de su comentario, y sus `with` o `import` |
+| `read_subprogram` | un subprograma, numerado, con su comentario de encima, buscado por su nombre |
 | `edit_file` | sustituye un texto y devuelve el diff |
 | `write_file` | crea un fichero o lo reescribe entero |
 | `replace_subprogram` | sustituye un subprograma entero, buscado por su nombre (Ada y Python) |
@@ -62,7 +111,8 @@ Otro lenguaje es otro plugin `CodeAnalyzer` (ver «Añadir o quitar piezas» en 
 Protecciones:
 - No tocan nada fuera de las raíces ni de lo excluido con `exclude`; tampoco con `..` ni
   con enlaces simbólicos.
-- Solo editan un fichero leído antes, y no si ha cambiado desde entonces.
+- Solo editan un fichero leído antes, y no si ha cambiado desde entonces. `read_subprogram`
+  cuenta como lectura; `outline`, solo para `replace_subprogram` y `add_subprogram`.
 - Si el texto a sustituir aparece varias veces, exigen precisar más o pedir `replace_all`.
 - Conservan la codificación, los finales de línea CRLF y los permisos, y escriben de forma
   atómica.
@@ -134,7 +184,32 @@ hint = "Controller declares Session and Execute; the commands are Do_* procedure
 La regla del `String` ya estaba en las instrucciones del agente y el error salió igual 16
 veces: la pista llega con el error, cuando hace falta. El informe de `atlas develop` lista los
 errores de toda la tanda, los más frecuentes primero, y dice cuáles no tenían pista: es la
-lista de lecciones que crece tras cada tanda.
+lista de lecciones que crece tras cada tanda. `atlas hints PLAN` (y el final de cada tanda)
+deja un borrador de cada una en `reports/hints-<plan>.toml`, con el `match` hecho y el diff con
+el que el agente salió del error, para escribir la pista y copiarla aquí (ver
+[atlas.agents](../agents/README.md)).
+
+### Reglas para el código nuevo
+
+Lo que no ven ni el compilador ni los tests se queda: en la tanda 4, un `when others => null`
+se tragó un `Constraint_Error` que ningún test veía y el cliente se quedaba sin respuesta. Las
+reglas son expresiones regulares sobre las líneas que añade cada cambio (todas, en un fichero
+nuevo), sin modelo. Las de serie (`rules.toml`) son avisos: `when others => null;` y
+`pragma Suppress` en Ada, `except: pass` en Python. Las del proyecto, en los ficheros de
+`[sources.code] rules` (relativos a `atlas.toml`), van antes:
+
+```toml
+[[rule]]
+match = '(?i)\bdelay\s+\d'                  # expresión regular; \s cruza también los saltos de línea
+message = "No delays in the server: use the timer of Controller."
+level = "error"                              # error: el cambio no se hace; warning: se hace, con aviso
+files = ["*.adb"]                            # opcional: los nombres de fichero a los que se aplica
+```
+
+Un `error` no se escribe: el agente recibe `error` con la línea y el mensaje, y la lista en
+`rules`. Un `warning` se escribe y su mensaje va en `notes` de la respuesta, con la línea. Lo
+que ya estaba en el fichero no cuenta: una edición en otra parte de un fichero que ya tenía un
+`when others => null` pasa sin aviso.
 
 ### La biblioteca de verdad
 
@@ -223,7 +298,13 @@ fichero. Las dos:
   con el mismo nombre (sobrecargas);
 - sangran el texto nuevo como el sitio donde va, y si empieza por comentarios, sustituyen
   también los de encima del subprograma (las etiquetas `Req:`);
-- piden la misma lectura previa que `edit_file` y conservan codificación y finales de línea.
+- piden una lectura previa, como `edit_file`, pero no del fichero entero: basta con `outline`
+  (qué subprogramas tiene, con sus líneas, su primera línea y los IDs de requisito de su
+  comentario, y sus `with` o `import`) o con `read_subprogram(path, name, line=0)`, que lee
+  solo ese subprograma con su comentario de encima, con la misma búsqueda por nombre (un cuerpo
+  antes que su declaración; varios con el mismo nombre, el que tiene `line`). `read_file` lee
+  hasta 300 líneas, y el contexto de un modelo pequeño es pequeño;
+- conservan codificación y finales de línea.
 
 Salen de la tanda 4 de `atlas develop` con `gemma-4-26b`: 80 de sus 151 `edit_file` fallaron,
 39 por un texto buscado de más de 30 líneas (quería sustituir bloques enteros) y 34 por no
@@ -267,7 +348,8 @@ tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin"]
 
 `{include}` se convierte en un `-I` por cada carpeta de código, `{build}` es
 `<workspace>/build`, donde el compilador deja lo que produce, y `tool_path` va antes del
-`PATH` solo para estos comandos. Un proyecto con fichero GPR usaría `gprbuild -P`.
+`PATH` solo para estos comandos. Un proyecto con fichero GPR lo da en `project` (ver «El
+proyecto GPR», abajo).
 `gnatmake` decide qué recompilar por las fechas de los ficheros: un cambio un instante después
 de compilar puede no verse. Si pasa, `-f` en `test_command` recompila todo lo que usa la
 prueba.
@@ -284,6 +366,14 @@ tool_path = ["scripts", "~/.local/share/alire/toolchains/gnat_native_*/bin"]
 [sources.code.test_commands]
 py = ["with_server", "python3", "{file}"]
 ```
+
+Cada comando tiene como mucho `command_timeout` segundos (120), o los de su clase:
+`check_timeout` (`check_code` y la sintaxis), `test_timeout` (cada comando de `run_test`) y
+`program_timeout` (`run_program`). Corre en su propio grupo de procesos y, si se le acaba el
+tiempo, se mata el grupo entero (SIGTERM, un segundo de gracia y SIGKILL; en Windows,
+`taskkill /T`): matar solo el comando dejaba vivo el servidor que había arrancado
+`with_server`. En `run_command`, `{exe}` es el ejecutable que exista, con o sin `.exe` (GNAT se
+lo añade en Windows).
 
 GNAT ve más errores cuando genera código: una cadena de longitud fija asignada a otra de
 distinta longitud es, al compilar con código, el aviso «Constraint_Error will be raised at run
@@ -302,10 +392,12 @@ programa mismo o, para un servidor, un cliente que manda cada línea y escribe l
 (`["with_server", "session"]` en `atlas-socket-demo`).
 
 `check_code` se ofrece por MCP en cuanto hay `check_command`. `run_test` y `run_program`
-ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
-agente de serie las usa: `examples/agents/` trae dos de proyecto, `implementer` (cambia el
-código para cumplir un requisito y compila lo que cambia) y `tester` (escribe una prueba con
-entradas y salidas esperadas y la ejecuta). Las instrucciones de `tester` incluyen las reglas
+(y `run_tests` y `judge_changes`, de `judge.py`) ejecutan código, así que solo se ofrecen si se piden en `[mcp] tools` o en las herramientas de un agente. Ningún
+agente de serie las usa: `examples/agents/` trae cuatro de proyecto, `implementer` (cambia el
+código para cumplir un requisito y compila lo que cambia), `fixer` (arregla el código de un test
+que falla), `planner` (lee y dice cómo hacer un encargo) y `tester` (escribe una prueba con
+entradas y salidas esperadas y la ejecuta). Los tres primeros son los medidos con `gemma-4-26b`
+en `atlas develop` (ver [atlas.agents](../agents/README.md)). Las instrucciones de `tester` incluyen las reglas
 de Ada en las que falló `gemma4:12b` (`use type` para comparar valores de un tipo de otro
 paquete, `raise Program_Error with "..."`) y un modelo de prueba, que las pruebas de atlas
 compilan y ejecutan.
@@ -328,6 +420,58 @@ Lo medido con `gemma4:12b` en un Mac de 24 GB, sobre una copia de las muestras:
 Las herramientas hacen su parte: los errores que cometió el modelo (`Delete_Track` duplicado,
 nombres repetidos) los detecta `check_code` con GNAT, como comprueban las pruebas. Para que un
 agente los corrija hace falta un modelo que siga las instrucciones en tareas de varios pasos.
+
+## El proyecto GPR
+
+Un proyecto Ada real dice en sus `.gpr` dónde están sus fuentes (`Source_Dirs`), dónde deja
+el compilador lo que produce (`Object_Dir`), qué otros proyectos usa (`with`) y entre qué
+compilaciones se elige (las variables de escenario, `external`). Con `[sources.code] project`
+atlas lo lee:
+
+```toml
+[sources.code]
+project = "tms.gpr"                       # relativo a atlas.toml
+tool_path = ["~/.local/share/alire/toolchains/gnat_native_*/bin",
+             "~/.local/share/alire/toolchains/gprbuild_*/bin"]
+[sources.code.project_vars]
+BUILD = "debug"
+```
+
+`read_project(path, vars)` devuelve las carpetas de fuentes (con `**` expandido) y de objetos
+(`Object_Dir`, `Exec_Dir`, las de biblioteca) del proyecto y de los que importa, recursivamente,
+los proyectos importados, su `Main`, el valor que tomó cada `external` y los avisos. Con eso:
+
+| Clave | Sin darla, con `project` |
+|---|---|
+| `roots` | las carpetas de fuentes, sin las que están dentro de otra |
+| `exclude` | lo que se dé, más las carpetas de objetos que no tienen fuentes |
+| `check_command` | `["gprbuild", "-P", "{project}", "-XBUILD=debug", "--autoconf={build}/gprbuild.cgpr", "-c", "-u", "-f", "{file}"]` |
+| `check_commands` | `ads`: lo mismo con `-cargs -gnatc` (GNAT no genera código para una especificación sola) |
+| `test_command` | `["gprbuild", "-P", "{project}", "-XBUILD=debug", "--autoconf=...", "{file}", "-o", "{exe}"]` |
+| `language_server_project` | el proyecto, con `project_vars` como `scenarioVariables` del servidor |
+
+Un `external` toma su valor de `project_vars`, después del entorno (como gprbuild) y después
+el suyo por defecto. gprbuild compila en el `Object_Dir` del proyecto, como en una compilación
+normal; por eso esas carpetas se excluyen. `--autoconf` guarda la configuración de los
+compiladores, que gprbuild busca en cada llamada: con las muestras, cada comprobación tarda la
+mitad. Con GNAT 16.1 y gprbuild 26 sobre `examples/samples/ada/samples.gpr`, `check_code` de un
+cuerpo y de una especificación, el error de un nombre que no existe con su línea y `run_test`
+de `test_tracks.adb` funcionan como con `gcc` y `gnatmake`, y el Ada Language Server encuentra
+las declaraciones a través del proyecto.
+
+El lector no usa gprbuild ni dependencias: entiende `with` y `limited with`, `project X
+[extends "b.gpr"] is ... end X;` (también `abstract`, `library` y `aggregate`), tipos,
+variables con o sin tipo, `external` y `external_as_list`, listas, `&`, `case` con `when "a" |
+"b"` y `others`, `for Atributo [("índice")] use ...;` y referencias a variables (`V`,
+`Otro.V`) y atributos (`Project'Project_Dir`, `Otro'Object_Dir`). Salta los paquetes. Lo que no
+entiende es un aviso con su fichero y su línea (en el registro y en `atlas plugins`), y se
+sigue leyendo; un error de sintaxis deja sin leer el resto de ese fichero. No usa
+`Source_Files` ni `Source_List_File` (lee todos los ficheros de las carpetas), ni un `with` que
+no esté junto al proyecto que lo importa: una biblioteca instalada, que gprbuild encuentra en
+`GPR_PROJECT_PATH` o en el compilador, no es código del proyecto.
+
+`atlas plugins` imprime el proyecto, las variables, los proyectos importados, las carpetas
+excluidas, las raíces y cuántos ficheros `.ads` y `.adb` ve.
 
 ## Tests desde los procedimientos de prueba
 
@@ -382,7 +526,11 @@ agent = LlmAgent(..., tools=[tools.grep, tools.read_file, tools.edit_file])   # 
 
 ## Pruebas
 
-`tests/test_code.py` (etiquetas, análisis, mismo resultado que `ada_graph.py`),
+`tests/test_code.py` (etiquetas y los IDs de la convención, análisis, el fichero de la sonda con
+tareas, entradas, cuerpos protegidos, operadores, sobrecargas y atributos, posiciones de las
+llamadas, lo guardado por la 0.2, mismo resultado que `ada_graph.py`; el proyecto GPR con
+proyectos de pega —variables, `with`, `**`— y con GNAT, gprbuild y el Ada Language Server si
+están instalados),
 `tests/test_code_python.py` (el analizador de Python y sus pruebas en el grafo junto a las de
 Ada),
 `tests/test_code_tools.py` (confinamiento, lectura, búsqueda, reglas de edición,

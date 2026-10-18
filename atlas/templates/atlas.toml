@@ -8,12 +8,15 @@
 # da un valor por defecto. atlas rechaza una clave de API escrita tal cual para un
 # servidor que no sea local, y una contraseña en la URL del proxy o en el DSN de ODBC.
 #
-# Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas; la del
-# workspace, a la de este fichero.
+# Las rutas relativas (el workspace, las fuentes, tool_path...) lo son a la carpeta de este
+# fichero, se lance atlas desde donde se lance.
 
 [project]
 name = "mi-proyecto"
 workspace = "./workspace"              # atlas.db, salidas de documentos, grafo e informes
+# shared_cache = "//servidor/atlas/mi-proyecto-cache"   # cachés exportadas por otro puesto (solo lectura)
+# log_dir = "logs"                     # registro de cada ejecución en el workspace, un fichero por día; "" = no
+# log_keep_days = 14                   # días que se guardan esos ficheros
 
 # --- Modelos: cualquier API compatible con OpenAI ------------------------------------
 [llm]
@@ -22,12 +25,17 @@ model = "gemma4:12b"
 api_key = "${ATLAS_API_KEY:-local}"    # en el gateway: export ATLAS_API_KEY=... (o setx en Windows)
 max_tokens = 8192
 reasoning_effort = "none"              # gemma4 razona por defecto y tarda minutos por sección
+# context_tokens = 16384              # el contexto del modelo; atlas check lo pide al servidor y lo propone
+# concurrency = 10                     # peticiones al modelo a la vez; 0 = las workers. atlas status dice cuántas
+#                                      # llenan el cupo (requests_per_minute × latencia / 60)
 # reasoning_field = "reasoning"        # agentes: el razonamiento vuelve al modelo en este campo; "" = no
 #                                      # (atlas probe dice si el servidor lo aprovecha)
+# stream = ""                          # "" = en trozos salvo que el servidor no pueda; true / false lo fuerzan
 
 [embeddings]
 model = "embeddinggemma"               # sin base_url: el mismo servidor y la misma clave que [llm]
 batch = 64                             # textos por petición
+# family = "embeddinggemma"            # si el gateway lo publica con otro nombre: sus prefijos (atlas check los dice)
 
 [network]
 proxy = "${HTTPS_PROXY:-}"             # con usuario: "http://${PROXY_USER}:${PROXY_PASS}@proxy:8080"
@@ -39,6 +47,8 @@ requests_per_minute = 0                # 0 = sin límite; p. ej. 28 si el gatewa
 [pipeline]
 workers = 4                            # unidades a la vez; en docs, también peticiones al modelo
 steps = ["doors", "code", "docs", "graph", "index"]
+max_minutes = 0                        # para y guarda el estado pasados N minutos (0 = sin límite)
+max_requests = 0                       # o tras N peticiones a las API; `atlas run` sigue después
 
 # --- Fuentes: activa las que tengas ------------------------------------------------
 [[sources.docs]]
@@ -47,10 +57,12 @@ paths = ["docs"]                       # carpetas (se recorren enteras) o ficher
 patterns = ["*.pdf", "*.md"]
 analysis = "llm"                       # llm: resumen, requisitos y glosario; regex: solo requisitos; none
 lang = "Spanish"                       # idioma de los resúmenes
+# model = "none"                      # ningún texto de estos documentos sale del puesto (ni al gateway)
 
 [sources.doors]
 adapter = "exchange"                   # la base de intercambio que publica tools/doors_export
 enabled = false                        # true cuando tengas la base
+attributes = ["status", "verification"]   # los atributos que atlas enseña y por los que filtra (--attribute)
 [sources.doors.exchange]
 path = "requirements.sqlite"
 [sources.doors.convention]
@@ -58,7 +70,7 @@ id_pattern = "^(?:SRS|SSS)-\\d{3,6}$"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{3,6}\\b"
 
 [sources.code]
-roots = ["src"]
+roots = ["src"]                        # o, con un proyecto GPR, sin roots: project = "tms.gpr" (sus carpetas)
 languages = ["ada"]
 exclude = ["**/obj/**", "**/build/**"]
 test_patterns = ["**/tests/**"]        # sus subprogramas son pruebas
@@ -69,6 +81,13 @@ results = 8                            # resultados de atlas search y pasajes de
 per_document = 3                       # como mucho, de un mismo documento o unidad de código (0 = sin límite)
 scope = "auto"                         # auto: una pregunta amplia lee sus documentos enteros; passages: nunca
 scope_chars = 100000                   # lo que se lee de una vez; más, por partes (con el gateway, hasta 400000)
+context_radius = 1                     # vecinos de cada pasaje de una respuesta (fragmentos, requisitos de DOORS)
+# synonyms = "synonyms.toml"            # grupos de términos equivalentes del proyecto ([[groups]] terms = [...])
+# weights = {dense = 1.0, lexical = 1.0}   # peso de cada lista de la búsqueda; ajustarlo solo con atlas eval
+max_parts = 12                         # más partes: no se lee y se pide acotar (atlas ask --dry-run da el plan)
+
+# [index]
+# fts_tokenizer = "porter unicode61 remove_diacritics 2"   # raíces inglesas en la búsqueda léxica: «log» encuentra «logs»
 
 # --- Agentes y servidor MCP ------------------------------------------------------------
 [agents]

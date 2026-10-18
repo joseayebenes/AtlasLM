@@ -60,13 +60,119 @@ def test_same_names_in_two_packages_are_two_nodes(tmp_path):
     assert ("gamma.run", "beta.update") in calls          # a bare name: the unit it imports with `with`
     assert ("gamma.run", "alpha.update") in calls         # a qualified name
     assert {("omega.go", "alpha.reset"), ("omega.go", "beta.reset")} <= calls   # ambiguous: both
-    assert stats["ambiguous_calls"] == 1
+    assert stats["ambiguous_calls"] == 1 and stats["unimported_calls"] == 1   # omega imports neither
+    assert G.nodes["gamma.run"]["subprogram_kind"] == "procedure" and G.nodes["gamma.run"]["signature"] == "procedure Run"
     assert ("alpha", "alpha.spec_only") in _edges(G, "defines")           # declared without a body
     assert G.nodes["alpha.update"]["requirements"] == ["SYS-1"] and "beta.update" not in G.predecessors("SYS-1")
     g = KnowledgeGraph(G, root=tmp_path)
     assert [i["id"] for i in g.impact("alpha.reset")["items"]] == ["alpha.update", "omega.go", "gamma.run"]
     assert g.node("Update")["candidates"] == ["alpha.update", "beta.update"]     # by simple name: ambiguous
     assert g.node("Run")["id"] == "gamma.run"
+
+
+def test_overloads_tasks_and_operators_in_the_graph(tmp_path):
+    """The probe file of test_code: two Run of one package are one node with both bodies,
+    the task and the operator are subprograms with their calls and requirements."""
+    from test_code import PROBE
+    (tmp_path / "probe.adb").write_bytes(PROBE)
+    (tmp_path / "probe.ads").write_text("package Probe is\n   -- Runs.\n   -- Req: SRS-0016\n   procedure Run;\n"
+                                        "   procedure Reset;\nend Probe;\n")
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    run = G.nodes["probe.run"]
+    assert (run["start_line"], run["end_line"], run["bodies"]) == (30, 41, [[30, 37], [38, 41]])
+    assert run["requirements"] == ["SRS-0014", "SRS-0015", "SRS-0016"] and run["doc"] == "Runs.\nReq: SRS-0016"
+    assert {v for _, v in G.out_edges("probe.run")} >= {"log", "put_line", "probe.reset", "SRS-0015", "SRS-0014"}
+    assert ("probe.main_loop", "probe.run") in _edges(G, "calls") and "probe.t" not in G and "t" not in G
+    assert (G.nodes["probe.main_loop"]["subprogram_kind"], G.nodes['probe."+"']["subprogram_kind"]) == \
+        ("task", "operator")
+    assert ("probe.main_loop", "SRS-0011") in _edges(G, "implements")
+    assert ('probe."+"', "SRS-0013") in _edges(G, "implements") and "bodies" not in G.nodes["probe.seize"]
+    assert stats["subprogram_kinds"] == {"entry": 1, "operator": 1, "procedure": 3, "protected": 1, "task": 1}
+    assert stats["overloaded"] == 1 and stats["subprograms"] == 7
+    g = KnowledgeGraph(G, root=tmp_path)
+    source = g.read_source("probe.run")
+    assert source["bodies"] == [{"file": str(tmp_path / "probe.adb"), "start": 30, "end": 37},
+                                {"file": str(tmp_path / "probe.adb"), "start": 38, "end": 41}]
+    assert source["source"].count("procedure Run") == 2 and "\n      ...\n" in source["source"]
+    assert "Main_Loop" not in source["source"]
+    assert g.summary("probe.main_loop")["subprogram_kind"] == "task" and "subprogram_kind" not in g.summary("probe.run")
+    assert [i["id"] for i in g.impact("probe.run")["items"]] == ["probe.main_loop"]
+    from dataclasses import asdict
+    from atlas.index import code_records                      # the index has both bodies too
+    record = next(r for r in code_records("probe", [asdict(u) for u in _units([tmp_path / "probe.adb"])],
+                                          {str(tmp_path / "probe.adb"): PROBE.decode()}) if r["ref"] == "probe.run")
+    assert "probe.adb:30-37, 38-41" in record["text"] and record["text"].count("procedure Run") == 2
+
+
+USES_AND_ALIASES = {
+    "store.ads": "package Store is\n   procedure Put (X : Integer);\n   procedure Write (X : Integer) renames Put;\n"
+                 "end Store;\n",
+    "store.adb": "package body Store is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Store;\n",
+    "other.adb": "package body Other is\n   procedure Put (X : Integer) is\n   begin\n      null;\n   end Put;\n"
+                 "end Other;\n",
+    "stacks.adb": "package body Stacks is\n   procedure Push (X : Integer) is\n   begin\n      null;\n"
+                  "   end Push;\nend Stacks;\n",
+    "client.adb": """with Store; with Other; with Stacks; with Ada.Text_IO;
+use Store;
+package body Client is
+   procedure Log (S : String) renames Ada.Text_IO.Put_Line;
+   package Int_Stack is new Stacks (Integer);
+   package TIO renames Ada.Text_IO;
+   procedure Show (X : Integer) renames Other.Put;
+   procedure Run is
+   begin
+      Put (1);
+      Log ("x");
+      Int_Stack.Push (2);
+      Show (3);
+      Store.Write (4);
+      TIO.New_Line;
+   end Run;
+end Client;
+""",
+}
+
+
+def test_use_clauses_and_aliases_in_the_resolution(tmp_path):
+    for name, text in USES_AND_ALIASES.items():
+        (tmp_path / name).write_text(text)
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    calls = {v for u, v in _edges(G, "calls") if u == "client.run"}
+    assert calls == {"store.put", "ada.text_io.put_line", "stacks.push", "other.put", "ada.text_io.new_line"}
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"], stats["calls_through_aliases"]) == (0, 1, 5)
+    assert dict(stats["top_unresolved"]) == {"ada.text_io.new_line": 1, "ada.text_io.put_line": 1}
+    assert "log" not in G and "int_stack.push" not in G and "tio.new_line" not in G
+
+    # without the `use` clause, Put is in two units that Client imports: both
+    (tmp_path / "client.adb").write_text(USES_AND_ALIASES["client.adb"].replace("use Store;\n", ""))
+    G, stats = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert {("client.run", "store.put"), ("client.run", "other.put")} <= _edges(G, "calls")
+    assert (stats["ambiguous_calls"], stats["calls_through_uses"]) == (1, 0)
+
+    # a name of the unit itself wins over a subprogram of another unit with the same name
+    (tmp_path / "speeds.adb").write_text("package body Speeds is\n   subtype Knots is Integer range 0 .. 900;\n"
+                                         "   procedure Set (I : Integer) is\n      K : Knots;\n   begin\n"
+                                         "      K := Knots (I);\n   end Set;\nend Speeds;\n")
+    (tmp_path / "units.adb").write_text("package body Units is\n   procedure Knots (X : Integer) is\n   begin\n"
+                                        "      null;\n   end Knots;\nend Units;\n")
+    G, _ = build_code_graph(_units(sorted(tmp_path.glob("*.ad?"))))
+    assert ("speeds.set", "speeds.knots") in _edges(G, "converts") and ("speeds.set", "units.knots") not in G.edges
+
+
+def test_the_predefined_names_are_those_of_the_language_of_the_caller():
+    """Integer is a type of Ada, not of Python; and an analyzer of another language may give
+    its calls as bare names, without their place."""
+    from atlas.plugins import CodeUnit
+    ada = CodeUnit(file="a.adb", unit="a", language="ada",
+                   subprograms=[{"name": "go", "start_line": 1, "end_line": 3, "doc": "", "reqs": [],
+                                 "calls": [{"name": "integer", "line": 2, "column": 7}, "b.run", "b.run"]}])
+    py = CodeUnit(file="m.py", unit="m", language="python",
+                  subprograms=[{"name": "go", "start_line": 1, "end_line": 2, "doc": "", "reqs": [],
+                                "calls": [{"name": "integer", "line": 2, "column": 5}]}])
+    G, stats = build_code_graph([ada, py])
+    assert stats["edges_by_kind"]["predefined"] == 1 and _edges(G, "calls") == {("a.go", "b.run"), ("m.go", "integer")}
+    assert stats["unresolved_calls"] == 2
 
 
 def test_store_export_and_queries(sample_graph, tmp_path, samples, monkeypatch):
@@ -180,6 +286,7 @@ LINKS = [
     {"source": "SRS-0003", "target": "SRS-0002", "type": "references"},       # inside the module: no derivation
     {"source": "SRS-0004", "target": "SSS-0005", "type": "references"},       # the same pair again
 ]
+EXPORTS = {"SRS": {"exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS"}}   # SSS: not said
 SPEC = {"title": "Spec", "sections": [
     {"id": "001", "title": "1 Tracks", "path": ["1 Tracks"], "file": "sections/001-1-tracks.md", "page_start": 1,
      "page_end": 1, "body": "Req: SRS-0004 The TMF shall delete a track within 300 ms. Tracks.Delete_Track does "
@@ -199,7 +306,7 @@ def unified(samples, tmp_path):
     units = _units(sorted((samples / "ada").rglob("*.ad?")))
     store = GraphStore(tmp_path / "atlas.db")
     code = build_code_graph(units, test_patterns=["**/tests/**"])
-    doors = build_doors_graph(DOORS, LINKS)
+    doors = build_doors_graph(DOORS, LINKS, modules=EXPORTS)
     docs = build_docs_graph([{"name": "spec.pdf", "path": "docs/spec.pdf", "source": "normas",
                               "out_dir": str(tmp_path / "spec_pdf"), "structure": SPEC}], code_names(units))
     for origin, (G, stats) in (("code", code), ("doors", doors), ("docs", docs)):
@@ -230,12 +337,21 @@ def test_the_three_origins_in_one_graph(unified, tmp_path):
     from atlas.graph import build_doors_graph, document_names
     store, g, stats = unified
     G = g.G
+    assert stats["doors"].pop("id_shapes") == [{"prefix": "SRS", "separator": "-", "digits": 4, "count": 4,
+                                                "example": "SRS-0001"},
+                                               {"prefix": "SSS", "separator": "-", "digits": 4, "count": 2,
+                                                "example": "SSS-0005"}]          # the heading SSS-0900 is not one
     assert stats["doors"] == {"nodes": 10, "edges": 11, "modules": 2, "requirements": 6, "headings": 1,
                               "information": 0, "linked_outside": 1, "duplicate_links": 1,
-                              "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3}}
+                              "edges_by_kind": {"contains": 7, "references": 1, "satisfies": 3},
+                              "link_semantics": {"derives": [], "verifies": ["verifies"], "ignore": ["references"]},
+                              "top_modules": []}
     assert (stats["docs"]["sections"], stats["docs"]["requirements"], stats["docs"]["mentions"]) == (2, 2, 3)
     assert G.nodes["SSS-0900"]["kind"] == "heading" and ("SSS-0900", "SSS-0005") in _edges(G, "contains")
     assert ("module:SRS", "SRS-0004") in _edges(G, "contains") and G.nodes["SRS-0004"]["outline"] == "2"
+    assert (G.nodes["module:SRS"]["exported_at"], G.nodes["module:SRS"]["source"]) == ("2026-10-14T08:00:00+00:00",
+                                                                                      "/Project/SRS")
+    assert g.exports() == {"SRS": EXPORTS["SRS"], "SSS": {"exported_at": "", "source": ""}}
     assert "heading" not in G.nodes["SSS-0005"] and G.nodes["SSS-0005"]["attributes"] == {"status": "Approved"}
     assert _edges(G, "mentions") == {("doc:spec.pdf#001", "tracks.delete_track"),
                                      ("doc:spec.pdf#001", "tracks.hour_range"), ("doc:spec.pdf#002", "logger.log")}
@@ -260,10 +376,15 @@ def test_trace_and_trace_code(unified):
     _, g, _ = unified
     t = g.trace("srs-0004")
     assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
+    assert t["exported_at"] == "2026-10-14T08:00:00+00:00" and "exported_at" not in g.trace("SSS-0005")
+    from atlas.agents.context import build_context
+    context = build_context(g, "SRS-0004")
+    assert context["exported_at"] == t["exported_at"] and "DOORS export: 2026-10-14" in context["markdown"]
+    assert "exported_at" not in build_context(g, "tracks.delete_track")
     assert t["links_out"] == [{"id": "SSS-0005", "type": "satisfies"}, {"id": "SSS-0099", "type": "satisfies"}]
     assert t["documents"] == [{"id": "doc:spec.pdf#001", "document": "spec.pdf", "section": "001", "title": "1 Tracks",
-                               "text": "The TMF shall delete a track within 300 ms.",
-                               "values_differ": {"doors": ["320"], "document": ["300"]}}]
+                               "version": "", "page_start": 1, "text": "The TMF shall delete a track within 300 ms.",
+                               "values_differ": {"doors": ["320 ms"], "document": ["300 ms"], "kind": "value"}}]
     assert [i["id"] for i in t["implemented_by"]["items"]] == ["tracks.delete_track"]
     assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
     assert g.trace("SRS-0003")["parent"] == "SRS-0002" and g.trace("SRS-0002")["children"] == ["SRS-0003"]
@@ -281,6 +402,40 @@ def test_trace_and_trace_code(unified):
     assert [r["id"] for r in g.trace_code("tracks")["requirements"]] == ["SRS-0001", "SRS-0002", "SRS-0003",
                                                                          "SRS-0004"]
     assert "use trace" in g.trace_code("SRS-0004")["error"]
+
+
+def test_the_element_at_a_line_of_a_file(unified, samples, tmp_path):
+    """What the editor has open: a file (relative to the project, or absolute) and a line."""
+    import shutil
+    from atlas.agents.context import build_context
+    _, g, _ = unified
+    g = KnowledgeGraph(g.G, samples.parents[1])         # the folder of the project, where the editor is
+    body = "examples/samples/ada/src/tracks.adb"
+    assert (samples.parents[1] / body).read_text().splitlines()[11] == "   begin"     # line 12, in Delete_Track
+    assert g.at(body, 12) == ("tracks.delete_track", None)
+    assert g.at(str(samples / "ada" / "src" / "tracks.adb"), 3) == ("tracks.update", None)
+    assert g.at(body, 1) == ("tracks", None)                                       # `with`: the unit
+    spec = "examples/samples/ada/src/tracks.ads"
+    assert [g.at(spec, n)[0] for n in (4, 10, 17, 18)] == ["tracks.track", "tracks.trk_db", "tracks.delete_track",
+                                                           "tracks"]
+    assert g.at("examples/samples/ada/tests/test_tracks.adb", 5)[0] == "test_tracks.test_tracks"
+    assert "procedure Delete_Track" in build_context(g, f"{body}:12")["markdown"]
+    assert g.trace_code(f"{body}:12")["id"] == "tracks.delete_track"
+    _, err = g.at("src/elsewhere/tracks.adb", 12)
+    assert "is not a file of the graph" in err["error"]
+    assert [Path(f) for f in err["similar"]] == [samples / "ada" / "src" / "tracks.adb"]
+    _, err = g.resolve("C:\\src\\tracks.adb:42")                                  # a path of Windows, and its line
+    assert [Path(f) for f in err["similar"]] == [samples / "ada" / "src" / "tracks.adb"]
+
+    # lines added since the build: the file as it is now; if it cannot be read, the lines of the graph
+    ada = tmp_path / "ada"
+    shutil.copytree(samples / "ada", ada)
+    stale = KnowledgeGraph(build_code_graph(_units(sorted(ada.rglob("*.ad?"))))[0])
+    copy = ada / "src" / "tracks.adb"
+    copy.write_text(copy.read_text().replace("package body Tracks is\n", "package body Tracks is\n" + "   --\n" * 4))
+    assert stale.at(str(copy), 16) == ("tracks.delete_track", None) and stale.at(str(copy), 12)[0] == "tracks.update"
+    copy.unlink()
+    assert stale.at(str(copy), 12) == ("tracks.delete_track", None)
 
 
 def test_impact_of_code_and_of_requirements(unified):
@@ -306,17 +461,38 @@ def test_matrix_and_gaps(unified):
     assert [r["id"] for r in m["rows"]] == ["SRS-0001", "SRS-0002", "SRS-0003", "SRS-0004"]     # DOORS order
     assert m["rows"][3] == {"id": "SRS-0004", "text": "The TMF shall delete a track within 320 ms.",
                             "verification": "Test", "derived": [], "code": ["tracks.delete_track"],
-                            "tests": ["test_tracks.test_tracks"], "covering_tests": [],
-                            "documents": ["spec.pdf §1 Tracks"]}
-    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_documents": 1}
+                            "tests": ["test_tracks.test_tracks"], "covering_tests": [], "procedures": [],
+                            "documents": ["spec.pdf §1 Tracks p.1"]}
+    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_procedures": 0,
+                            "with_documents": 1}
+    assert {k: m["meta"][k] for k in ("module", "exported_at", "source", "modules")} == {
+        "module": "SRS", "exported_at": "2026-10-14T08:00:00+00:00", "source": "/Project/SRS",
+        "modules": {"SRS": EXPORTS["SRS"]}}
+    assert m["meta"]["atlas_version"] and set(m["meta"]["built_at"]) == {"code", "doors", "docs"}
+    assert m["meta"]["attributes"] == ["status", "verification"] and "code_revision" not in m["meta"]
+    assert g.matrix()["meta"]["exported_at"] == "2026-10-14T08:00:00+00:00"       # all: the oldest date known
+    assert g.matrix()["meta"]["modules"]["SSS"] == {"exported_at": "", "source": ""}
     assert m["gaps"]["without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
     m = g.matrix("SSS")                                           # implemented through the SRS that satisfy it
     assert [(r["id"], r["derived"], r["code"]) for r in m["rows"]] == [("SSS-0005", ["SRS-0004"], []),
                                                                       ("SSS-0006", ["SRS-0002"], [])]
     assert m["summary"]["with_code"] == 2 and m["gaps"]["without_tests"]["items"] == ["SSS-0006"]
     assert g.matrix("NOPE")["modules"] == ["SRS", "SSS"]
+    shown = KnowledgeGraph(g.G, attributes=["VERIFICATION", "outline", "Criticality"])   # [sources.doors] attributes
+    row = shown.matrix("SRS")["rows"][3]
+    assert (row["VERIFICATION"], row["outline"]) == ("Test", "2") and "Criticality" not in row and "verification" not in row
+    assert shown.list_requirements(module="SRS")["items"][3] == {"id": "SRS-0004", "module": "SRS", "VERIFICATION": "Test",
+                                                                 "outline": "2", "code": 1, "tests": 1, "documents": 1}
+    assert "status" not in KnowledgeGraph(g.G, attributes=[]).matrix("SSS")["rows"][0]
+    assert g.list_requirements(module="SSS")["items"][0]["status"] == "Approved"
     page = g.matrix("SRS", limit=2, offset=2)
     assert [r["id"] for r in page["rows"]] == ["SRS-0003", "SRS-0004"] and not page["truncated"]
+    built, row = [], g._row
+    g._row = lambda r: built.append(r) or row(r)                 # only the rows of the page are built
+    assert g.matrix("SRS", limit=1, offset=1)["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1,
+                                                             "with_procedures": 0, "with_documents": 1}
+    assert built == ["SRS-0002"]
+    del g._row
 
     gaps = g.gaps()
     assert gaps["requirements_without_code"]["count"] == 0
@@ -324,11 +500,133 @@ def test_matrix_and_gaps(unified):
     assert gaps["code_without_requirement"]["items"] == ["logger.next_id"]
     assert gaps["cited_in_code_not_in_doors"]["items"] == [{"id": "SRS-0103", "cited_by": ["logger.log"]}]
     assert gaps["stated_in_documents_not_in_doors"]["items"] == [{"id": "SRS-0103", "documents": ["spec.pdf §2 Logs"]}]
-    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks", "doors": ["320"],
-                                               "document": ["300"]}]
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0004", "section": "spec.pdf §1 Tracks p.1", "doors": ["320 ms"],
+                                               "document": ["300 ms"], "kind": "value"}]
     assert g.gaps("SSS")["requirements_without_tests"]["items"] == ["SSS-0006"]
     assert [r["id"] for r in g.list_requirements(module="SSS")["items"]] == ["SSS-0005", "SSS-0006"]
     assert g.list_requirements(prefix="srs-01")["items"] == [{"id": "SRS-0103", "code": 1, "tests": 1, "documents": 1}]
+
+
+def test_the_matrix_as_files_for_excel(unified, tmp_path):
+    import csv
+    from atlas.graph import write_matrix
+    store, g, _ = unified
+    res = g.matrix("SRS", limit=10**9)
+    res["rows"][0]["text"] = "=1+1 is not a formula"                 # a cell that starts with "="
+    files = write_matrix(res, tmp_path / "out" / "matrix-SRS", ["csv", "md"], ",")
+    assert [f.name for f in files] == ["matrix-SRS.csv", "matrix-SRS.md"]
+    rows = list(csv.reader(files[0].open(encoding="utf-8-sig", newline="")))
+    assert rows[0][:2] == ["id", "text"] and rows[4][0] == "SRS-0004"
+    res["rows"][3]["code"] = ["tracks.delete_track", "tracks.update"]    # a list: one per line in its cell
+    write_matrix(res, tmp_path / "out" / "matrix-SRS", ["csv"])
+    rows = list(csv.reader(files[0].open(encoding="utf-8-sig", newline=""), delimiter=";"))
+    assert rows[4][5] == "tracks.delete_track\ntracks.update"
+    assert "| tracks.delete_track; tracks.update |" not in files[1].read_text()      # not rewritten
+    with pytest.raises(ValueError, match="unknown matrix formats"):
+        write_matrix(res, tmp_path / "x", ["docx"])
+
+    openpyxl = pytest.importorskip("openpyxl")
+    [xlsx] = write_matrix(res, tmp_path / "out" / "matrix-SRS", ["xlsx"], builds=store.builds())
+    wb = openpyxl.load_workbook(xlsx)
+    assert wb.sheetnames == ["Matrix", "Gaps", "Summary"]
+    ws = wb["Matrix"]
+    assert [c.value for c in ws[1]][:3] == ["id", "text", "status"] and ws.auto_filter.ref == "A1:J5"
+    assert ws.freeze_panes == "A2" and ws["B2"].value == "=1+1 is not a formula" and ws["B2"].data_type == "s"
+    assert ws["F5"].value == "tracks.delete_track\ntracks.update" and ws["F5"].alignment.wrap_text
+    assert [[c.value for c in r] for r in wb["Gaps"].iter_rows(min_row=2)] == \
+        [["Without tests", "SRS-0001"], ["Without tests", "SRS-0002"], ["Without tests", "SRS-0003"]] + \
+        [["Without a test procedure", f"SRS-000{k}"] for k in range(1, 5)]       # no module of procedures
+    summary = {r[0].value: r[1].value for r in wb["Summary"].iter_rows()}
+    assert summary["Requirements"] == 4 and summary["With tests"] == 1
+    assert summary["DOORS read into the graph"] == store.builds()["doors"]["built_at"][:19].replace("T", " ")
+
+
+STP = [{"id": "STP-0101", "module": "STP", "text": "1. Delete track 1. 2. Check that it is not listed.",
+        "parent": None, "attributes": {"outline": "1"}}]
+STP_LINKS = [{"source": "STP-0101", "target": "SRS-0004", "type": "verifies"}]
+
+
+def test_test_procedures_are_neither_tests_nor_derived(unified):
+    """A test procedure of DOORS (STP -verifies-> SRS) is not a test of the code, nor a
+    requirement derived from the SRS: it has its own column, summary and gap."""
+    from atlas.graph import build_doors_graph
+    store, _, _ = unified
+    store.replace("doors", *build_doors_graph(DOORS + STP, LINKS + STP_LINKS))
+    g = KnowledgeGraph.open(store.path)
+    t = g.trace("SRS-0004")
+    assert t["verified_by"] == [{"id": "test_tracks.test_tracks", "how": "tag"}]
+    assert t["procedures"] == [{"id": "STP-0101", "type": "verifies",
+                                "text": "1. Delete track 1. 2. Check that it is not listed."}]
+    assert t["links_in"] == [{"id": "STP-0101", "type": "verifies"}]          # the link is still shown
+    m = g.matrix("SRS")
+    row = m["rows"][3]
+    assert (row["id"], row["derived"], row["tests"], row["procedures"]) == \
+        ("SRS-0004", [], ["test_tracks.test_tracks"], ["STP-0101"])
+    assert m["summary"] == {"requirements": 4, "with_code": 4, "with_tests": 1, "with_procedures": 1,
+                            "with_documents": 1}
+    assert m["gaps"]["without_test_procedure"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+    sss = g.matrix("SSS")                                     # verified through the SRS that satisfies it
+    assert [(r["id"], r["derived"], r["procedures"]) for r in sss["rows"]] == [("SSS-0005", ["SRS-0004"], []),
+                                                                              ("SSS-0006", ["SRS-0002"], [])]
+    assert sss["gaps"]["without_test_procedure"]["items"] == ["SSS-0006"]
+    i = g.impact("SRS-0004")
+    assert i["requirements"] == [] and i["procedures"] == ["STP-0101"]       # not a derived requirement
+    assert i["tests"] == ["test_tracks.test_tracks"]
+    i = g.impact("SSS-0005")
+    assert [r["id"] for r in i["requirements"]] == ["SRS-0004"] and i["procedures"] == ["STP-0101"]
+    i = g.impact("Delete_Track")
+    assert "STP-0101" not in [r["id"] for r in i["requirements"]] and i["procedures"] == ["STP-0101"]
+    gaps = g.gaps("SRS")
+    assert gaps["requirements_without_tests"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+    assert gaps["requirements_without_test_procedure"]["items"] == ["SRS-0001", "SRS-0002", "SRS-0003"]
+
+    # link_semantics: with no verifies type the procedure derives, as before; outside derives, it is ignored
+    old = KnowledgeGraph(g.G, convention={"link_semantics": {"verifies": []}})
+    assert old.matrix("SRS")["rows"][3]["derived"] == ["STP-0101"] and old.trace("SRS-0004")["procedures"] == []
+    only = KnowledgeGraph(g.G, convention={"link_semantics": {"derives": ["satisfies"], "verifies": []}})
+    assert only.matrix("SRS")["rows"][3]["derived"] == [] and only.impact("SRS-0004")["requirements"] == []
+    assert only.matrix("SSS")["rows"][0]["derived"] == ["SRS-0004"]
+
+
+SWD = [{"id": "SWD-0001", "module": "SWD", "text": "Delete_Track clears the slot of the track.", "parent": None,
+        "attributes": {}}]
+SWD_LINKS = [{"source": "SWD-0001", "target": "SRS-0004", "type": "derives_from"}]
+
+
+def test_ancestors_and_the_gaps_of_derivation(unified):
+    """trace gives the chain up to the system requirement; gaps, the requirements that derive
+    from nothing in another module and the IDs linked in modules that were not read."""
+    from atlas.graph import build_doors_graph
+    store, g, _ = unified
+    sss_0005 = {"id": "SSS-0005", "type": "satisfies", "level": 1, "via": "SRS-0004", "module": "SSS",
+                "text": "The system shall delete lost tracks."}
+    sss_0099 = {"id": "SSS-0099", "type": "satisfies", "level": 1, "via": "SRS-0004", "in_doors": False, "text": ""}
+    assert g.trace("SRS-0004")["ancestors"] == [sss_0005, sss_0099]
+    assert g.trace("SRS-0003")["ancestors"] == [] and g.trace("SSS-0005")["ancestors"] == []   # a reference; the top
+    assert g.trace("SRS-0103")["ancestors"] == []                                               # not in DOORS
+
+    gaps = g.gaps()
+    assert gaps["requirements_without_derivation"] == {"count": 4, "items": ["SRS-0001", "SRS-0003", "SSS-0005",
+                                                                             "SSS-0006"],
+                                                       "truncated": False, "by_module": {"SRS": 2, "SSS": 2}}
+    assert gaps["linked_to_modules_not_read"]["items"] == [{"id": "SSS-0099",
+                                                            "linked_by": [{"id": "SRS-0004", "type": "satisfies"}]}]
+    assert g.gaps("SRS")["linked_to_modules_not_read"]["count"] == 1
+    assert g.gaps("SSS")["linked_to_modules_not_read"]["count"] == 0         # linked from SRS, not from SSS
+    top = KnowledgeGraph(g.G, convention={"top_modules": ["SSS"]})           # the system requirements derive from nothing
+    assert top.gaps()["requirements_without_derivation"]["items"] == ["SRS-0001", "SRS-0003"]
+    assert top.gaps("SSS")["requirements_without_derivation"]["count"] == 0
+
+    # the convention of the build; two levels; a module of test procedures derives from nothing
+    store.replace("doors", *build_doors_graph(DOORS + SWD + STP, LINKS + SWD_LINKS + STP_LINKS, {"top_modules": ["SSS"]}))
+    g = KnowledgeGraph.open(store.path)
+    assert g.trace("SWD-0001")["ancestors"] == [
+        {"id": "SRS-0004", "type": "derives_from", "level": 1, "via": "SWD-0001", "module": "SRS",
+         "text": "The TMF shall delete a track within 320 ms."}, {**sss_0005, "level": 2}, {**sss_0099, "level": 2}]
+    gaps = g.gaps()
+    assert gaps["requirements_without_derivation"]["items"] == ["SRS-0001", "SRS-0003"]     # not SWD, not STP
+    assert g.gaps("STP")["requirements_without_derivation"]["count"] == 0
+    assert g.trace("STP-0101")["ancestors"] == []                                           # verifies is not a level
 
 
 def test_neighbors_and_communities(unified, tmp_path):
@@ -353,3 +651,112 @@ def test_neighbors_and_communities(unified, tmp_path):
     c = g.communities()
     assert c["count"] == len(set(groups.values())) and sum(x["size"] for x in c["items"]) == len(groups)
     assert c["items"][0]["size"] >= c["items"][-1]["size"]
+
+
+# --- the values of a requirement against those of a document ------------------------------
+
+VALUE_CASES = [   # (DOORS, document, kind of values_differ or None)
+    ("within 320 ms", "within 300 ms", "value"),                          # the one the old comparison got right
+    ("within 300 ms", "within 0.3 s", "unit_only"),                       # the same time: never converted
+    ("up to 1,000 tracks", "up to 1000 tracks", "format_only"),           # a thousands separator
+    ("within 300 ms (see section 3.2)", "within 300 ms", None),           # a reference is not a value
+    ("the rates of Table 3: 5 Hz", "5 Hz", None),
+    ("every 1.5 s", "every 1.50 s", "format_only"),                       # compared as numbers
+    ("two retries", "2 retries", "format_only"),                          # a number word
+    ("logs are kept 30 days", "logs are kept 60 days", "value"),          # no unit on either side
+    ("1,5 s", "1.5 seconds", "format_only"),                              # decimal comma, unit written out
+    ("0,125 s", "0.125 s", "format_only"),                                # 0,125 is not 125
+    ("1,000.5 m", "1000.5 m", "format_only"),
+    ("since 2026-10-14 (v2)", "since 2026-09-01 (v3)", None),             # dates and versions
+    ("SRS-0001: 95 %", "SRS-0002: 95%", None),                            # IDs; the same writing
+    ("group 1.1.1, 5 Hz", "5 Hz", None),                                  # the number of a section
+    ("anexo B.2 y figura 4: 10 km", "10 km", None),
+    ("within 300", "within 300 ms", "unit_only"),                         # a unit in only one text
+    ("1 kHz", "1000 Hz", "unit_only"),
+    ("within 300 ms", "within 300 ms for 500 tracks", None),              # the document says more
+    ("5-10 s", "5-12 s", "value"),
+    ("within 300 ms", "within 300 ms", None),
+]
+
+
+@pytest.mark.parametrize("official,document,kind", VALUE_CASES)
+def test_values_that_differ(official, document, kind):
+    from atlas.graph.values import values_differ
+    differ = values_differ(official, document)
+    assert (differ or {}).get("kind") == kind, differ
+
+
+def test_quantities():
+    from atlas.graph.values import quantities, values_differ
+    assert quantities("within 300 ms, up to 1,000 tracks and two retries") == [(300.0, "ms"), (1000.0, ""), (2.0, "")]
+    assert quantities("1.000.000 B, 2 MB, 3 M, 4 b, 50 %, 7 hercios") == [(1e6, "B"), (2.0, "MB"), (3.0, ""), (4.0, ""),
+                                                                         (50.0, "%"), (7.0, "Hz")]
+    assert quantities("see section 3.2, Table 4, p. 7, § 5.1, on 14/10/2026, release v1.3") == []
+    assert values_differ("within 320 ms", "within 300 ms for 500 tracks") == {
+        "doors": ["320 ms"], "document": ["300 ms", "500"], "kind": "value"}
+    assert values_differ("up to 1,000 tracks", "up to 1000 tracks") == {"doors": ["1,000"], "document": ["1000"],
+                                                                       "kind": "format_only"}
+
+
+def _stating(name: str, text: str, version: str, page: int = 3) -> dict:
+    return {"title": name, "doc_id": "TMS-SRS-001", "version": version, "date": "", "sections": [
+        {"id": "001", "title": "4 Timing", "path": ["4 Timing"], "page_start": page, "page_end": page, "body": text,
+         "analysis": {"requirements": [{"id": "SRS-0300", "text": text}]}}]}
+
+
+def test_authority_of_documents_and_documents_that_disagree(tmp_path):
+    from atlas.graph import build_docs_graph
+    docs = [{"name": "srs.pdf", "path": "a/srs.pdf", "source": "normative", "out_dir": str(tmp_path / "a"),
+             "authority": 1, "structure": _stating("SRS", "The TMF shall answer within 200 ms.", "3")},
+            {"name": "design.pdf", "path": "b/design.pdf", "source": "design", "out_dir": str(tmp_path / "b"),
+             "authority": 2, "structure": _stating("Design", "The TMF shall answer within 250 ms.", "2", 7)},
+            {"name": "notes.md", "path": "c/notes.md", "source": "notes", "out_dir": str(tmp_path / "c"),
+             "structure": _stating("Notes", "The TMF shall answer within 200 ms.", "")}]
+    G, stats = build_docs_graph(docs)
+    assert G.nodes["doc:srs.pdf"]["authority"] == 1 and G.nodes["doc:notes.md"]["authority"] == 0
+    assert G.nodes["doc:design.pdf"]["doc_id"] == "TMS-SRS-001" and G.nodes["doc:design.pdf"]["version"] == "2"
+    # same doc_id, lower version: only a warning
+    assert stats["superseded"] == [{"doc_id": "TMS-SRS-001", "document": "design.pdf", "version": "2",
+                                    "by": "srs.pdf", "by_version": "3"}]
+    g = KnowledgeGraph(G)
+
+    # not in DOORS: compared with the most authoritative document that states it
+    t = {x["document"]: x for x in g.trace("SRS-0300")["documents"]}
+    assert t["design.pdf"]["values_differ"] == {"against": "srs.pdf v3 §4 Timing p.3", "official": ["200 ms"],
+                                                "document": ["250 ms"], "kind": "value"}
+    assert (t["design.pdf"]["version"], t["design.pdf"]["page_start"]) == ("2", 7)
+    assert "values_differ" not in t["srs.pdf"] and "values_differ" not in t["notes.md"]
+    gaps = g.gaps()
+    assert gaps["values_differ"]["items"] == [{"id": "SRS-0300", "section": "design.pdf v2 §4 Timing p.7",
+                                               "against": "srs.pdf v3 §4 Timing p.3", "official": ["200 ms"],
+                                               "document": ["250 ms"], "kind": "value"}]
+    assert gaps["documents_disagree"]["items"] == [{
+        "id": "SRS-0300", "reference": "srs.pdf v3 §4 Timing p.3",
+        "sections": ["design.pdf v2 §4 Timing p.7", "notes.md §4 Timing p.3", "srs.pdf v3 §4 Timing p.3"],
+        "values": {"design.pdf v2 §4 Timing p.7": ["250 ms"], "notes.md §4 Timing p.3": ["200 ms"],
+                   "srs.pdf v3 §4 Timing p.3": ["200 ms"]}}]
+    assert g.matrix()["rows"][0]["documents"] == ["design.pdf v2 §4 Timing p.7", "notes.md §4 Timing p.3",
+                                                  "srs.pdf v3 §4 Timing p.3"]
+
+    # without any authority, the disagreement is still a gap, with no reference to compare with
+    for d in docs:
+        d["authority"] = 0
+    g = KnowledgeGraph(build_docs_graph(docs)[0])
+    assert all("values_differ" not in x for x in g.trace("SRS-0300")["documents"])
+    assert g.gaps()["documents_disagree"]["items"][0]["reference"] == ""
+
+
+def test_doc_id_version_and_date_of_the_samples(docs_samples, tmp_path):
+    from atlas.docs import DocsOptions, preview, process_document
+    opts = DocsOptions(analysis="regex", doc_id_regex=r"Doc\.\s+(\S+)", version_regex=r"\bIssue\s+(\w+)",
+                       date_regex=r"\b(\d{4}-\d{2}-\d{2})\b")
+    data = process_document(docs_samples / "spec_with_bookmarks.pdf", tmp_path / "spec", opts)
+    assert (data["doc_id"], data["version"], data["date"]) == ("TMS-SRS-001", "2", "")
+    assert all("Doc. TMS-SRS-001" not in s["body"] for s in data["sections"])     # clean_headers still removes it
+    p = preview(docs_samples / "spec_without_bookmarks.pdf", opts)
+    assert (p["doc_id"], p["version"]) == ("TMS-SRS-001", "2")
+    assert preview(docs_samples / "spec_with_bookmarks.pdf")["doc_id"] == ""           # no regex, nothing
+    from atlas.docs.structure import document_metadata
+    meta = {"modDate": "D:20261001120000+02'00'", "subject": "SDD-0042 rev B"}
+    assert document_metadata("no headers", meta, r"\b(SDD-\d+)", r"rev\s+(\w+)") == \
+        {"doc_id": "SDD-0042", "version": "B", "date": "2026-10-01"}

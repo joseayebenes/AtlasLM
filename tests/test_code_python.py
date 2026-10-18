@@ -53,10 +53,14 @@ def test_functions_methods_classes_and_their_tags(tmp_path):
     session = subs["test_session"]
     assert session["reqs"] == ["SRS-0002", "SRS-0003", "SRS-0004"]        # above, and in the body; not step's
     assert session["doc"] == "Req: SRS-0002, SRS-0003\nOpens a session and closes it."
-    assert session["calls"] == ["Client", "client.send", "step"]           # not print, not the calls of step
+    assert [c["name"] for c in session["calls"]] == ["Client", "client.send", "step"]   # not print, not step's
+    assert session["calls"][1] == {"name": "client.send", "line": 26, "column": 12}
+    assert session["kind"] == "function" and session["signature"] == "def test_session()"
+    assert subs["Client.send"]["kind"] == "method" and subs["Client.send"]["signature"] == "def send(self, line)"
+    assert subs["test_session.step"]["kind"] == "function"
     assert (session["start_line"], session["end_line"]) == (22, 32)        # from the decorator
     assert subs["test_session.step"]["reqs"] == ["SRS-0099"]
-    assert subs["Client.read"]["calls"] == ["helpers.read_line"]
+    assert [c["name"] for c in subs["Client.read"]["calls"]] == ["helpers.read_line"]
     assert [(t["name"], t["reqs"]) for t in unit.types] == [("Client", ["SRS-0001"])]
     assert [(v["name"], v["constant"]) for v in unit.variables] == [("PORT", True), ("timeout", False)]
 

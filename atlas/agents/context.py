@@ -4,7 +4,11 @@ plan). For an agent that is going to change that code (OpenCode, VS Code): one c
 of ten searches.
 
 The package is made of blocks in order of importance; a block that does not fit is cut at a
-line and the rest is left out (`omitted`). Tokens are estimated as characters / 4.
+line and the rest is left out (`omitted`). Tokens are estimated as characters / 4. The body of
+each block is in a <data> block (guard.data_block): the text of the requirements, documents,
+comments and code is data for the agent that reads it, never instructions. A block with a
+phrase written to steer a model ("ignore previous instructions") gets a warning in `warnings`
+(guard.py), with the target and the block.
 
     requirement   the requirement (DOORS text, links), the sections that state it, the code
                   that implements it (signatures), its tests, the callers of that code, and
@@ -13,23 +17,43 @@ line and the rest is left out (`omitted`). Tokens are estimated as characters / 
                   callees, its tests, the sections about it, and its source
     unit          what it defines (signatures, comments, requirements), its requirements,
                   its tests, the units that use it, and the source of its spec
+
+A requirement also gets, as the last block (the first one cut), requirements like it that
+already have code (similar_requirements): an example of how this project implements and
+tags one, so that the agent follows it.
+
+similar_requirements finds them without a model, in this order: those linked to it in DOORS
+(links either way, its parent) and those stated in the same sections; then, with an index,
+those whose text the search finds by IDs and words (no vectors). Only those with code count.
 """
 from __future__ import annotations
 
+import logging
+import re
 from pathlib import Path
 
+from atlas.agents.link import linked_requirements
+from atlas.agents import guard
+from atlas.agents.guard import data_block
 from atlas.graph.knowledge import REQUIREMENT_KINDS, KnowledgeGraph
 
-__all__ = ["build_context"]
+__all__ = ["build_context", "similar_requirements"]
+
+log = logging.getLogger(__name__)
 
 CHARS_PER_TOKEN = 4
 MAX_ITEMS = 25          # elements of a list inside a block
+MAX_SIMILAR = 10        # similar requirements at most
+BODY_LINES = 20         # lines of the body of the first similar requirement
+TAG_ABOVE = 5           # lines above an element where its Req: tag may be
 
 
 def _signature(g: KnowledgeGraph, n: str) -> str:
     """The first lines of a subprogram up to `is` or `;`, or the declaration of a type or
     variable."""
     d = g.G.nodes[n]
+    if d.get("local_only"):                 # local-only code (KnowledgeGraph.for_model)
+        return ""
     if d.get("source"):
         return d["source"].strip().splitlines()[0][:200]
     if d.get("kind") in ("subprogram", "test") and d.get("start_line"):
@@ -82,9 +106,12 @@ def _sections(items: list[dict]) -> str:
         line = f"- {x['document']} § {x['title']}"
         if x.get("text"):
             line += f": {x['text']}"
-        if x.get("values_differ"):
-            v = x["values_differ"]
-            line += f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+        v = x.get("values_differ")
+        if v and v.get("kind", "value") == "value":          # trace only gives these
+            line += (f" **(values differ from DOORS: {', '.join(v['doors'])} vs {', '.join(v['document'])})**"
+                     if "doors" in v else
+                     f" **(values differ from {v['against']}: {', '.join(v['official'])} vs "
+                     f"{', '.join(v['document'])})**")
         out.append(line)
     return "\n".join(out)
 
@@ -108,6 +135,8 @@ def _requirement_blocks(g: KnowledgeGraph, r: str) -> list[tuple[str, str]]:
     t = g.trace(r)
     head = [f"**{r}**" + (f" ({t['module']})" if t.get("module") else " (not in DOORS)")
             + (f": {t['text']}" if t.get("text") else "")]
+    if t.get("exported_at"):
+        head.append(f"DOORS export: {t['exported_at'][:10]}")
     attrs = {k: v for k, v in (t.get("attributes") or {}).items() if v not in ("", None)}
     if attrs:
         head.append("Attributes: " + ", ".join(f"{k} = {v}" for k, v in attrs.items()))
@@ -161,15 +190,114 @@ def _unit_blocks(g: KnowledgeGraph, n: str) -> list[tuple[str, str]]:
              if spec and "source" in g.read_file(spec, 1, 1) else "")]
 
 
-def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000) -> dict:
-    """The package of `target` (a requirement ID, a code identifier or simple name, or a
-    unit). {"target", "kind", "markdown", "tokens", "truncated", "omitted"} or {"error"}."""
+def _read(g: KnowledgeGraph, file: str) -> list[str]:
+    path = Path(file) if Path(file).is_absolute() else g.root / file
+    try:
+        return path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+
+
+def _tag(g: KnowledgeGraph, n: str, r: str) -> dict | None:
+    """Where the code of `n` cites requirement `r`: {"file", "line", "text"}, the nearest
+    line above or inside its source (that of read_source, with the lines of its comment),
+    or else above its declaration in the spec. None if neither cites it."""
+    d = g.G.nodes[n]
+    cites = re.compile(rf"(?<![\w-]){re.escape(r)}(?![\w-])", re.IGNORECASE)
+    declared = re.compile(rf"(?i)\b(?:procedure|function|type|subtype|def|class)\s+{re.escape(d.get('name', ''))}\b")
+    start = d.get("start_line") or d.get("line") or 0
+    places = [(d.get("file"), start, d.get("end_line") or start)] if start else []
+    if d.get("spec_file") and d["spec_file"] != d.get("file"):
+        places.append((d["spec_file"], 0, 0))
+    for file, lo, hi in places:
+        lines = _read(g, file or "")
+        if not lo:                                   # a spec: by the declaration of its name
+            lo = hi = next((i + 1 for i, line in enumerate(lines) if declared.search(line)), 0)
+        hits = [i for i in range(max(1, lo - TAG_ABOVE), min(hi, len(lines)) + 1) if cites.search(lines[i - 1])]
+        if hits:
+            return {"file": file, "line": hits[-1], "text": lines[hits[-1] - 1].strip()}
+    return None
+
+
+def _example(g: KnowledgeGraph, r: str, why: list[str], body: bool) -> dict:
+    """A similar requirement with its code: text, why, the element that implements it (a
+    subprogram first) and its signature, its Req: tag, and with `body` its first lines."""
+    code = g._code_of(r)
+    n = next((c for c in code if g._kind(c) in ("subprogram", "test")), code[0])
+    text = g.G.nodes[r].get("text") or next((x["text"] for x in g._documents(r) if x.get("text")), "")
+    out = {"id": r, "text": text, "why": why, "code": n, "signature": _signature(g, n), "tag": _tag(g, n, r)}
+    if len(code) > 1:
+        out["also"] = [c for c in code if c != n][:5]
+    if body:
+        source = g.read_source(n)
+        if "source" in source:
+            out["body"] = "\n".join(source["source"].splitlines()[:BODY_LINES])
+    return out
+
+
+def similar_requirements(g: KnowledgeGraph, req_id: str, k: int = 3, index=None) -> dict:
+    """Up to `k` requirements like `req_id` that already have code, without a model: those
+    linked to it in DOORS (either way, and its parent) and those stated in the same sections
+    (the sources of atlas.agents.link.candidates); then, with `index` (an atlas.index.Index),
+    those whose text the search finds, by IDs and words. {"id", "count", "similar": [{"id",
+    "text", "why", "code", "signature", "tag", "body" (the first one)}]} or {"error"}."""
+    r, err = g._requirement(req_id)
+    if err:
+        return err
+    k = max(1, min(k, MAX_SIMILAR))
+    t, found = g.trace(r), {}
+
+    def add(x: str | None, why: str) -> None:
+        if x and x != r and x in g.G and g._kind(x) in REQUIREMENT_KINDS and g._code_of(x):
+            reasons = found.setdefault(x, [])
+            if why not in reasons:
+                reasons.append(why)
+
+    for x in linked_requirements(t, g):
+        add(x["id"], f"linked in DOORS ({x['type']})")
+    add(t.get("parent"), "its parent in DOORS")
+    for section in t["documents"]:
+        for x in g._linked(section["id"], {"declares"}, incoming=False):
+            add(x, f"stated in the same section, {section['document']} › {section['title']}")
+    text = t.get("text") or next((x["text"] for x in t["documents"] if x.get("text")), "")
+    if index is not None and text and len(found) < k:
+        try:
+            hits = index.search(text, k=k * 4, kinds=["requirement"], dense=False, per_document=0)
+        except Exception as e:                       # an index that is not there: DOORS is enough
+            log.warning("similar requirements of %s: no search (%s)", r, e)
+            hits = []
+        for h in hits:
+            add(g._lower.get(str(h.get("ref") or "").lower()), "its text is alike (search)")
+    similar = [_example(g, x, why, body=i == 0) for i, (x, why) in enumerate(list(found.items())[:k])]
+    return {"id": r, "count": len(similar), "similar": similar}
+
+
+def _similar_block(g: KnowledgeGraph, r: str, index=None) -> str:
+    out = []
+    for x in similar_requirements(g, r, index=index)["similar"]:
+        d = g.G.nodes[x["code"]]
+        where = f"{d.get('file', '')}:{d.get('start_line') or d.get('line') or ''}".rstrip(":")
+        lines = [f"- **{x['id']}** ({'; '.join(x['why'])})" + (f": {x['text']}" if x["text"] else ""),
+                 f"  `{x['code']}` ({where})" + (f": `{x['signature']}`" if x["signature"] else "")]
+        if x["tag"]:
+            lines.append(f"  Tag: {x['tag']['file']}:{x['tag']['line']} `{x['tag']['text']}`")
+        if x.get("body"):
+            lines.append(f"\n```\n{x['body']}\n```")
+        out.append("\n".join(lines))
+    return "\n".join(out)
+
+
+def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000, index=None) -> dict:
+    """The package of `target` (a requirement ID, a code identifier or simple name, a unit,
+    or "file:line"). `index` (an atlas.index.Index) adds the similar requirements its search
+    finds. {"target", "kind", "markdown", "tokens", "truncated", "omitted"} or {"error"}."""
     n, err = g.resolve(target)
     if err:
         return err
     kind = g.G.nodes[n].get("kind")
     if kind in REQUIREMENT_KINDS:
-        blocks = _requirement_blocks(g, n)
+        blocks = _requirement_blocks(g, n) + [("Similar requirements already implemented",
+                                               _similar_block(g, n, index))]     # the first one cut
     elif kind == "unit":
         blocks = _unit_blocks(g, n)
     elif kind in ("subprogram", "test", "type", "variable", "constant"):
@@ -181,23 +309,26 @@ def build_context(g: KnowledgeGraph, target: str, budget_tokens: int = 4000) -> 
     for title, body in blocks:
         if not body.strip():
             continue
-        block = f"\n## {title}\n\n{body.strip()}\n"
+        block = f"\n## {title}\n\n{data_block(body)}\n"
         if truncated:
             omitted.append(title)
             continue
         if len(text) + len(block) > budget:
-            room = budget - len(text) - 40
-            lines, kept = block.splitlines(keepends=True), []
-            for line in lines:
+            room = budget - len(text) - len(block) + len(body.strip()) - 40
+            kept = []
+            for line in body.strip().splitlines(keepends=True):
                 if sum(map(len, kept)) + len(line) > room:
                     break
                 kept.append(line)
-            if len(kept) > 3:                       # more than the title: keep what fits
-                text += "".join(kept) + "\n[…cut to fit the budget]\n"
+            if kept:                                # some of the body fits: keep it
+                text += f"\n## {title}\n\n{data_block(''.join(kept) + '[…cut to fit the budget]')}\n"
             else:
                 omitted.append(title)
             truncated = True
             continue
         text += block
-    return {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
-            "truncated": truncated, "omitted": omitted}
+    out = {"target": n, "kind": kind, "markdown": text, "tokens": len(text) // CHARS_PER_TOKEN,
+           "truncated": truncated, "omitted": omitted}
+    if kind in REQUIREMENT_KINDS and g.exported_at(n):
+        out["exported_at"] = g.exported_at(n)
+    return guard.check(out, [(f"{n} ({title})", body) for title, body in blocks if title not in omitted])

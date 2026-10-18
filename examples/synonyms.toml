@@ -1,0 +1,18 @@
+# Sinónimos del proyecto para la búsqueda léxica ([search] synonyms = "examples/synonyms.toml").
+# Cada grupo es un conjunto de términos equivalentes: una consulta que trae uno de ellos busca
+# también los demás, como una lista más de la fusión. Aquí, el español de las preguntas y el
+# inglés de los documentos de las muestras.
+[[groups]]
+terms = ["track", "traza", "pista"]
+
+[[groups]]
+terms = ["log", "registro"]
+
+[[groups]]
+terms = ["alarm", "alarma"]
+
+[[groups]]
+terms = ["lost", "pierde", "pérdida"]
+
+[[groups]]
+terms = ["days", "días"]

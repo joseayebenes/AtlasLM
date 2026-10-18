@@ -65,3 +65,14 @@ def test_relative_links_lead_to_files_that_exist():
             if not (page.parent / target.split("#")[0]).exists():
                 broken.append(f"{page.relative_to(ROOT)} -> {target}")
     assert not broken, broken
+
+
+def test_every_action_is_in_the_usage_guide_or_the_readme():
+    """Each action of `atlas --help` (the docstring of atlas/cli.py) is explained to the
+    engineer: in docs/uso.md, or in the commands of the README."""
+    from atlas import cli
+    actions = sorted(set(re.findall(r"^[ \t]*atlas (\S+)", cli.__doc__, flags=re.M)))
+    assert len(actions) > 20, actions
+    text = (ROOT / "docs" / "uso.md").read_text(encoding="utf-8") + (ROOT / "README.md").read_text(encoding="utf-8")
+    missing = [a for a in actions if not re.search(rf"\batlas {re.escape(a)}(?![\w-])", text)]
+    assert not missing, f"actions of atlas/cli.py not in docs/uso.md nor README.md: {missing}"

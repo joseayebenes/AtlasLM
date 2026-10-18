@@ -5,7 +5,9 @@
     store.py       GraphStore: the graph in atlas.db, by origin; export to GraphML / JSON
     knowledge.py   KnowledgeGraph: queries (find_symbol, callers, impact, read_source...) and
                    traceability (trace, trace_code, matrix, gaps, neighbors, communities)
+    export.py      write_matrix: the matrix as CSV (for Excel), Markdown and XLSX
     tools.py       GraphTools: those queries as tools of agents and of the MCP server
+    values.py      quantities, values_differ: the values of DOORS against those of a document
 
     from atlas.graph import KnowledgeGraph
     g = KnowledgeGraph.from_config(cfg)
@@ -16,10 +18,12 @@
 from __future__ import annotations
 
 from atlas.graph.build import build_code_graph, find_communities
-from atlas.graph.knowledge import KnowledgeGraph
+from atlas.graph.export import write_matrix
+from atlas.graph.knowledge import KnowledgeGraph, display_attributes
 from atlas.graph.sources import build_docs_graph, build_doors_graph, code_names, document_names
 from atlas.graph.store import GraphStore, export_graph, to_mermaid
 from atlas.graph.tools import GraphTools
 
 __all__ = ["GraphStore", "GraphTools", "KnowledgeGraph", "build_code_graph", "build_docs_graph", "build_doors_graph",
-           "code_names", "document_names", "export_graph", "find_communities", "to_mermaid"]
+           "code_names", "display_attributes", "document_names", "export_graph", "find_communities", "to_mermaid",
+           "write_matrix"]

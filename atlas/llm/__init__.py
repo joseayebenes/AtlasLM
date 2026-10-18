@@ -1,18 +1,28 @@
 """Connection to the LLM and embeddings APIs (proxy, TLS, limits, retries).
 
-`connection.py` is legacy/conexion.py translated to English. In atlas the configuration
-comes from the [llm], [embeddings] and [network] sections of atlas.toml via `from_config`.
+`connection.py` is legacy/conexion.py translated to English, without its standalone mode
+(its own connection.toml): the configuration comes from the [llm], [embeddings] and
+[network] sections of atlas.toml via `from_config`.
 `structured.py` asks the chat model for JSON objects and repairs broken answers.
 """
 from __future__ import annotations
 
 from dataclasses import fields, replace
 
-from atlas.llm.connection import (  # noqa: F401
-    Connection, NetConfig, ServiceConfig, check, create_client, describe, diagnose,
-    effective_proxy, is_connection_error, mask_credentials, rate_limiter_for, show, usage,
+from atlas.llm.connection import (
+    Connection, NetConfig, ServiceConfig, check, check_service, create_client, describe, diagnose,
+    effective_proxy, is_connection_error, mask_credentials, note_usage, rate_limiter_for, set_usage_label, show, usage,
+    usage_label, usage_since,
 )
-from atlas.llm.structured import JsonLlm, TruncatedResponse, parse_json, repair_json  # noqa: F401
+from atlas.llm.structured import (
+    JsonLlm, TextAnswer, TruncatedResponse, parse_json, repair_json, structured_output, validate,
+)
+
+__all__ = ["Connection", "JsonLlm", "NetConfig", "ServiceConfig", "TextAnswer", "TruncatedResponse", "check",
+           "check_service", "create_client", "describe", "diagnose", "effective_proxy", "from_config",
+           "is_connection_error", "mask_credentials", "model_failed", "note_usage", "parse_json", "rate_limiter_for",
+           "repair_json", "set_usage_label", "show", "structured_output", "usage", "usage_label", "usage_since",
+           "validate"]
 
 
 def model_failed(e: BaseException, cfg=None) -> dict:
@@ -24,7 +34,7 @@ def model_failed(e: BaseException, cfg=None) -> dict:
 
 
 def from_config(cfg) -> Connection:
-    """Builds the Connection from atlas.toml (same keys as connection.toml)."""
+    """Builds the Connection from the [llm], [embeddings] and [network] sections of atlas.toml."""
     net_keys = {f.name for f in fields(NetConfig)}
     service_keys = {f.name for f in fields(ServiceConfig)} - {"net"}
 

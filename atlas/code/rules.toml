@@ -1,0 +1,29 @@
+# Rules for the new text of a change: the file tools apply the first [[rule]]s of the files of
+# [sources.code] rules, then these, to the lines that a change adds (every line of a new file).
+# `match` is a regular expression (on the whole text: \s also crosses line ends), `message`
+# what the agent gets with the line, and `level`: "error" (the change is not made) or
+# "warning" (it is made, and the message goes in its `notes`). `files`, optional, the file
+# names it applies to ("*.adb"). What neither the compiler nor the tests see: in the fourth run
+# of atlas develop (2026-10-14), a `when others => null` swallowed a Constraint_Error that no
+# test saw, and the client got no answer.
+
+[[rule]]
+match = '(?i)\bwhen\s+others\s*=>\s*null\s*;'
+message = """when others => null swallows every exception, and the error is lost: handle the ones you \
+expect by their name, or at least log or re-raise what you catch (raise; in the handler)."""
+level = "warning"
+files = ["*.adb", "*.ads", "*.ada"]
+
+[[rule]]
+match = '(?i)\bpragma\s+Suppress\b'
+message = """pragma Suppress turns off the checks of the language: a Constraint_Error becomes a wrong value \
+with no message. Fix the cause of the check that fails instead."""
+level = "warning"
+files = ["*.adb", "*.ads", "*.ada"]
+
+[[rule]]
+match = '\bexcept\s*(?:(?:Base)?Exception\s*)?:\s*pass\b'
+message = """except: pass swallows every exception, and the error is lost: catch the exceptions you expect \
+by their name, and log or re-raise what you cannot handle."""
+level = "warning"
+files = ["*.py"]

@@ -1,0 +1,16 @@
+# The code of examples/develop/calc for a case of atlas eval: [sources.code] and [agents] dirs
+# go over those of the configuration evaluated (its model, its network), in a copy of start.
+# ATLAS_PYTHON is the Python that runs atlas eval, unless it is set.
+[sources.code]
+roots = ["src", "tests"]
+languages = ["python"]
+exclude = ["**/__pycache__/**"]
+protected = ["tests/**"]
+test_patterns = ["tests/**"]
+check_command = ["${ATLAS_PYTHON:-python3}", "-m", "py_compile", "{file}"]
+
+[sources.code.test_commands]
+py = ["${ATLAS_PYTHON:-python3}", "{file}"]
+
+[agents]
+dirs = ["agents"]

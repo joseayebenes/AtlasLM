@@ -11,7 +11,8 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
 | Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
 | Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
-| Agentes | `build_context`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
+| Juez de `atlas develop` | `run_tests`, `judge_changes` | `atlas.code.JudgeTools` |
+| Agentes | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
 - Tres herramientas cambian de nombre para que no se confundan:
@@ -27,37 +28,115 @@ Cambios respecto a los servidores anteriores:
 - `get_section` acepta el ID que da `search` (`"004"`) y también el número o el título que
   la sección tiene en el documento (`"3"`, `"2.1"`, `"Logging"`). Si el número es el de un
   capítulo repartido en varias secciones, devuelve la lista de esas secciones.
+- Las que toman un elemento de código (`trace_code`, `impact`, `read_source`, `get_node`,
+  `build_context`...) aceptan también un fichero y una línea, `src/tracks.adb:12`: el
+  elemento que contiene esa línea. `context_at` (`path`, `line`) es lo mismo para el
+  fichero y la línea que el editor tiene abiertos.
 - Todas responden con un diccionario JSON. Un problema llega como una respuesta con `error`
   (y a menudo con sugerencias), no como un fallo.
 
 ## Qué herramientas ofrece
 
-- Con `[mcp] tools = []`, que es el valor por defecto, ofrece las de las fuentes
-  configuradas:
-  - con `[[sources.docs]]`, las de documentos;
-  - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
-    pasos;
-  - con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
-  - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
-    `list_requirements` y `neighbors`), si `graph` está entre los pasos;
-  - con el grafo, `build_context`.
+Con `[mcp] tools = []`, que es el valor por defecto, el perfil (`[mcp] profile`) elige
+entre las herramientas de las fuentes configuradas:
+
+| Perfil | Herramientas | Por defecto |
+|---|---|---|
+| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `similar_requirements`, `find_symbol`, `read_source`, `read_file` y `check_code` (si hay `check_command`) | con `[sources.code]` |
+| `trace` | `trace`, `matrix`, `gaps`, `list_requirements`, `neighbors`, `get_requirement` y `search` | |
+| `all` | todas las de las fuentes configuradas (abajo) | sin código |
+
+`editor` es lo que necesita el agente de un editor para cambiar código: 13 o 14
+herramientas en vez de 29. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
+descripción en cada petición. `trace` es para quien revisa la trazabilidad sin tocar el
+código.
+
+Las herramientas de las fuentes configuradas son:
+- con `[[sources.docs]]`, las de documentos;
+- con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
+  pasos;
+- con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
+- sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
+  `list_requirements` y `neighbors`), si `graph` está entre los pasos;
+- con el grafo, `build_context`, y con el del código, `context_at` y
+  `similar_requirements`.
+
+Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
+- Con una lista en `[mcp] tools`, ofrece exactamente esas herramientas, sea cual sea el
+  perfil.
 - `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` necesitan el
   modelo (y `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
-- Con una lista, ofrece exactamente esas herramientas.
 - `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
   y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
-  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, que ejecuta código.
+  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, `run_tests` y
+  `judge_changes`, que ejecutan código.
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
+
+Las instrucciones del servidor explican cada grupo de herramientas ofrecidas. El párrafo del
+grafo solo nombra las que se ofrecen: el flujo habitual (`find_symbol -> trace_code / impact
+-> read_source` en el perfil `editor`, con `get_node`, `callers` y `callees` en `all`) y lo
+que dan `trace`, `trace_code`, `impact`, `matrix` y `gaps`. Además cuentan, en un
+párrafo «Traceability of this project», cómo cita el código los requisitos (`req_tag` o
+`req_regex`), cómo son sus ID (`id_pattern`), qué módulos de DOORS hay y los pasos de un
+cambio: contexto (`context_at` o `build_context`), editar, `check_code` y `run_test` de las
+pruebas que da `trace`, con las herramientas que se ofrecen.
+
+Cada herramienta lleva un título (`Trace code`) y unas anotaciones que el cliente puede
+usar para pedir confirmación o repetir llamadas sin preguntar:
+- las que escriben (`edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) y las
+  que ejecutan código (`run_test`, `run_program`) son destructivas (`destructiveHint`);
+- las demás solo leen (`readOnlyHint`);
+- y las que no preguntan al modelo (todas menos `ask_docs`, `ask_atlas`,
+  `verify_requirement`, `link_requirement` y `check_compliance`) dan la misma respuesta a la
+  misma llamada y no salen del workspace y el código (`idempotentHint`, y `openWorldHint`
+  falso).
 
 El servidor responde con lo que hay en el workspace. Puedes lanzar `atlas run` con el
 servidor arrancado: el grafo y los vectores se vuelven a leer cuando cambian, sin
 reiniciarlo.
 
-Las rutas de las fuentes son relativas a la carpeta desde la que se lanza atlas, así que el
-cliente tiene que arrancar el servidor en la carpeta del proyecto (`cwd`). El servidor
+Las rutas de `atlas.toml` son relativas a su carpeta, así que el servidor encuentra las
+fuentes aunque el cliente lo arranque en otra; las rutas de las herramientas de ficheros
+también parten de ella. Aun así conviene arrancarlo en la carpeta del proyecto (`cwd`):
+`atlas.toml` se busca desde ahí si no se da su ruta completa. El servidor
 arranca en medio segundo y escribe su registro por stderr, porque stdout es el canal del
 protocolo.
+
+Cada llamada del editor queda en el registro de uso del workspace (la tabla `usage` de
+`atlas.db`, `[mcp] usage_log`): la herramienta, los milisegundos, si falló, si la respuesta
+de `ask_docs` tenía fuentes, y las peticiones, tokens y coste que costó. Por defecto sin el
+texto de los argumentos. `atlas usage --since 30d` lo resume por herramienta y semana.
+
+## El juez de `atlas develop` en el editor
+
+`atlas develop` juzga cada cambio de sus agentes sin modelo: qué compila, qué tests pasan y
+hasta dónde llegan los demás, y qué ha empeorado. Desde OpenCode o VS Code el agente del
+editor cambia el código con sus herramientas, y estas dos le dan ese juicio. Ejecutan código
+(los tests y el compilador), así que solo se ofrecen si se piden en `[mcp] tools`, y el
+servidor las marca como destructivas para que el editor pida confirmación:
+
+```toml
+[mcp]
+tools = ["search", "get_requirement", "trace", "build_context", "read_file", "check_code",
+         "run_tests", "judge_changes"]
+```
+
+- `run_tests(plan)` ejecuta los tests de un plan de `atlas develop` (`plan`: su TOML, relativo
+  a la carpeta del servidor) o, sin plan, los que escribe `atlas tests` (los `path` de
+  `[tests.languages]`). Por test: si pasa y, si no, hasta qué paso llegó (con `progress` del
+  plan), lo que dijo al fallar y el sitio del código que cita.
+- `judge_changes(paths)` dice qué ficheros de las raíces del código cambiaron (frente al
+  último commit si la carpeta es un repositorio de git; si no, desde la llamada anterior),
+  si compilan (`check_code` sobre ellos, o sobre `paths` si se dan) y qué tests avanzaron o
+  retrocedieron desde la última llamada a una de las dos. Los tests son los del último plan
+  que recibió `run_tests`, o los de `[tests]`.
+
+Lo que recuerdan entre llamadas (el hash de cada fichero, hasta dónde llegó cada test y el
+último plan) está en `<workspace>/judge.json`. No cambian código: deshacer lo que hace
+retroceder un test es cosa del agente del editor, al que las instrucciones del servidor se lo
+piden. Para que sea `atlas develop` quien encargue, juzgue y deshaga con un agente de fuera,
+ver `agent_command` en [atlas/agents](../agents/README.md#un-agente-de-fuera-bajo-el-mismo-juez).
 
 ## Configurar el editor
 
@@ -118,8 +197,8 @@ DocTools.from_config(cfg).get_requirement("SRS-0004")    # DOORS y documentos
 GraphTools.from_config(cfg).trace("SRS-0004")            # DOORS, documentos, código y pruebas
 ```
 
-`atlas.mcp.create_server(cfg)` da el servidor (de la librería `mcp`) sin arrancarlo, y
-`tool_names(cfg)` las herramientas que ofrecería.
+`atlas.mcp.create_server(cfg)` da el servidor (de la librería `mcp`) sin arrancarlo,
+`tool_names(cfg)` las herramientas que ofrecería y `profile(cfg)` el perfil que aplica.
 
 ## Pruebas
 

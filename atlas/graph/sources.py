@@ -1,15 +1,19 @@
 """The requirements and documents parts of the graph, next to the code graph of build.py.
 
 build_doors_graph (origin "doors"): the requirements of every module read by atlas.doors.
-  Nodes: module ("module:SRS_TMS"), requirement (its ID; text, module, parent and the
+  Nodes: module ("module:SRS_TMS"; with exported_at and source, when and from where it was
+  exported), requirement (its ID; text, module, parent and the
   attributes), heading and information (the DOORS objects that are not requirements).
   Edges: contains (module -> its top-level objects, parent -> child) and one edge per link,
   source -> target, with the type of the link as kind (satisfies, refines, references...).
   If two links join the same pair, the first one read stays: the link of the source before
-  the reference found in the text.
+  the reference found in the text. What each type of link means for the queries
+  ([sources.doors.convention] link_semantics: derives, verifies or ignore) goes in the
+  statistics of the build, so that every reader of the graph takes the same convention.
 
 build_docs_graph (origin "docs"): the documents processed by atlas.docs.
-  Nodes: document ("doc:hmi_manual.md"), section ("doc:hmi_manual.md#003": title, path,
+  Nodes: document ("doc:hmi_manual.md": title, path, source, its doc_id, version and date,
+  and the authority of its source: 1 = normative), section ("doc:hmi_manual.md#003": title, path,
   pages, the file of its Markdown and the requirements it states, with their text) and the
   requirements they state.
   Edges: contains (document -> section), declares (section -> requirement) and mentions
@@ -18,7 +22,9 @@ build_docs_graph (origin "docs"): the documents processed by atlas.docs.
   too common to tell).
 
 A requirement is the same node in the three origins (code, docs, doors): GraphStore.load
-merges them, and the kind of DOORS (heading, information) prevails.
+merges them, and the kind of DOORS (heading, information) prevails. The statistics of each
+origin have its `id_shapes`: the forms of the IDs as they are written (prefix, separator,
+digits), to see which convention the project follows.
 """
 from __future__ import annotations
 
@@ -30,17 +36,38 @@ from typing import Callable, Iterable
 import networkx as nx
 
 from atlas.code.common import REQ_ID_SHAPE
-from atlas.doors import normalize_id
+from atlas.doors import id_shapes, normalize_id
 from atlas.plugins import CodeUnit
 
-__all__ = ["build_docs_graph", "build_doors_graph", "code_names", "document_names"]
+__all__ = ["build_docs_graph", "build_doors_graph", "code_names", "document_names", "graph_convention"]
 
 OBJECT_KINDS = ("heading", "information")     # the DOORS objects that are not requirements
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*")
 
 
-def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tuple[nx.DiGraph, dict]:
-    """(graph, statistics) from the rows of Store.requirements() and Store.links()."""
+def graph_convention(convention: dict | None = None) -> dict:
+    """What the queries of the graph take from [sources.doors.convention]:
+    link_semantics, the types of link that derive a requirement from another (satisfies,
+    refines...; empty: every type that is neither in verifies nor in ignore), those of a
+    test procedure that verifies a requirement, and those that are only references (by
+    default "references" and the inline_reference_type); and top_modules, the modules that
+    derive from nothing (the system requirements), left out of
+    requirements_without_derivation. Idempotent: it takes its own result."""
+    conv = convention or {}
+    given = conv.get("link_semantics") or {}
+    inline = conv.get("inline_reference_type") or "references"
+    semantics = {"derives": list(given.get("derives") or []),
+                 "verifies": list(given.get("verifies", ["verifies"])),
+                 "ignore": list(given.get("ignore", sorted({"references", inline})))}
+    return {"link_semantics": semantics, "top_modules": list(conv.get("top_modules") or [])}
+
+
+def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict], convention: dict | None = None,
+                      modules: dict[str, dict] | None = None) -> tuple[nx.DiGraph, dict]:
+    """(graph, statistics) from the rows of Store.requirements() and Store.links(), and
+    `modules` (Store.modules_info()): when and from where each module was exported; the
+    statistics carry graph_convention(convention)."""
+    modules = modules or {}
     G = nx.DiGraph()
     reqs = list(requirements)
     for r in reqs:
@@ -51,7 +78,9 @@ def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tu
                    text=r["text"] or "", parent=r.get("parent") or "", raw_id=r.get("raw_id") or "",
                    attributes=attributes, **extra)
     for module in sorted({r["module"] for r in reqs}):
-        G.add_node(f"module:{module}", kind="module", name=module)
+        info = modules.get(module, {})
+        G.add_node(f"module:{module}", kind="module", name=module, exported_at=info.get("exported_at", ""),
+                   source=info.get("source", ""))
     for r in reqs:
         parent = r.get("parent")
         inside = parent and parent in G and G.nodes[parent].get("module") == r["module"]
@@ -77,7 +106,10 @@ def build_doors_graph(requirements: Iterable[dict], links: Iterable[dict]) -> tu
                "modules": sum(1 for _, d in G.nodes(data=True) if d["kind"] == "module"),
                "requirements": count("requirement"), "headings": count("heading"),
                "information": count("information"), "linked_outside": missing,
-               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items()))}
+               "duplicate_links": duplicates, "edges_by_kind": dict(sorted(kinds.items())),
+               "id_shapes": id_shapes(r.get("raw_id") or r["id"] for r in reqs
+                                      if G.nodes[r["id"]]["kind"] == "requirement"),
+               **graph_convention(convention)}
 
 
 def code_names(units: Iterable[CodeUnit | dict]) -> dict[str, str]:
@@ -87,7 +119,7 @@ def code_names(units: Iterable[CodeUnit | dict]) -> dict[str, str]:
     qualified: dict[str, str] = {}
     simple: dict[str, set[str]] = defaultdict(set)
     for u in units:
-        u = u if isinstance(u, CodeUnit) else CodeUnit(**u)
+        u = u if isinstance(u, CodeUnit) else CodeUnit.from_dict(u)
         if "." in u.unit or "_" in u.unit:
             qualified[u.unit] = u.unit
         for item in (*u.subprograms, *u.declarations, *u.types, *u.variables):
@@ -109,27 +141,41 @@ def document_names(documents: Iterable[dict]) -> dict[str, str]:
 
 
 def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = None,
-                     normalize: Callable[[str], str] = normalize_id) -> tuple[nx.DiGraph, dict]:
+                     normalize: Callable[[str], str] = normalize_id,
+                     ids: re.Pattern | None = None) -> tuple[nx.DiGraph, dict]:
     """(graph, statistics) from the processed documents: each one a dict with `name` (as in
-    document_names), `path`, `source`, `out_dir` and `structure` (its structure.json).
-    `names` (code_names) are the code elements a section can mention."""
+    document_names), `path`, `source`, `out_dir`, `structure` (its structure.json) and
+    `authority` (of its source; 0 = none). `names` (code_names) are the code elements a
+    section can mention. With `ids` (the expression of an ID), the ID that the analysis gives
+    a requirement is the IDs it finds in it ("SRS-0004 / SRS-0005" is two, "Req. SRS-0004" is
+    SRS-0004). The statistics say in `superseded` which documents have the same doc_id as
+    another one of a higher version (only a warning: both stay in the graph)."""
     names = names or {}
     G = nx.DiGraph()
     stats = {"documents": 0, "sections": 0, "requirements": 0, "mentions": 0}
+    raw_ids: list[str] = []
     for d in documents:
         st = d["structure"]
         doc = f"doc:{d['name']}"
         G.add_node(doc, kind="document", name=d["name"], title=st.get("title", ""), path=d["path"],
-                   source=d.get("source", ""), out_dir=d["out_dir"])
+                   source=d.get("source", ""), out_dir=d["out_dir"],
+                   **{k: str(st.get(k) or "") for k in ("doc_id", "version", "date")},
+                   authority=int(d.get("authority") or 0))
         stats["documents"] += 1
         for s in st.get("sections", []):
             sec = f"{doc}#{s['id']}"
             analysis = s.get("analysis") if isinstance(s.get("analysis"), dict) else {}
             reqs = {}
             for r in analysis.get("requirements") or []:
-                rid = normalize(str(r.get("id") or "")) if isinstance(r, dict) else ""
-                if rid and REQ_ID_SHAPE.match(rid) and rid not in reqs:
-                    reqs[rid] = " ".join(str(r.get("text") or "").split())
+                if not isinstance(r, dict):
+                    continue
+                given = str(r.get("id") or "")
+                for raw in ([m.group(0) for m in ids.finditer(given)] if ids is not None else [given]):
+                    rid = normalize(raw)
+                    if rid and REQ_ID_SHAPE.match(rid):
+                        raw_ids.append(raw)
+                        if rid not in reqs:
+                            reqs[rid] = " ".join(str(r.get("text") or "").split())
             G.add_node(sec, kind="section", name=s.get("title", ""), document=d["name"], section=s["id"],
                        path=s.get("path", []), page_start=s.get("page_start") or 0, page_end=s.get("page_end") or 0,
                        file=str(Path(d["out_dir"]) / s["file"]) if s.get("file") else "",
@@ -147,4 +193,27 @@ def build_docs_graph(documents: Iterable[dict], names: dict[str, str] | None = N
                 G.add_edge(sec, code, kind="mentions")
                 stats["mentions"] += 1
     stats["requirements"] = sum(1 for _, d in G.nodes(data=True) if d.get("kind") == "requirement")
-    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats}
+    return G, {"nodes": G.number_of_nodes(), "edges": G.number_of_edges(), **stats, "id_shapes": id_shapes(raw_ids),
+               "superseded": superseded(G)}
+
+
+def _version_key(version: str) -> list:
+    """"1.10" after "1.9", "B" after "A"."""
+    return [(0, int(x), "") if x.isdigit() else (1, 0, x.lower()) for x in re.findall(r"\d+|[A-Za-z]+", version)]
+
+
+def superseded(G: nx.DiGraph) -> list[dict]:
+    """The documents with the same doc_id as another one of a higher version: each one
+    with the newest of them (`by`)."""
+    by_id: dict[str, list[str]] = defaultdict(list)
+    for n, d in G.nodes(data=True):
+        if d.get("kind") == "document" and d.get("doc_id") and d.get("version"):
+            by_id[d["doc_id"]].append(n)
+    out = []
+    for doc_id, docs in sorted(by_id.items()):
+        newest = max(docs, key=lambda n: (_version_key(G.nodes[n]["version"]), n))
+        for n in sorted(docs):
+            if _version_key(G.nodes[n]["version"]) < _version_key(G.nodes[newest]["version"]):
+                out.append({"doc_id": doc_id, "document": G.nodes[n]["name"], "version": G.nodes[n]["version"],
+                            "by": G.nodes[newest]["name"], "by_version": G.nodes[newest]["version"]})
+    return out

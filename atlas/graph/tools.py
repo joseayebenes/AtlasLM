@@ -18,7 +18,9 @@ so as not to be confused with the document tools. Its `read_file` is not here: t
 atlas.code.CodeTools only reads inside the code roots.
 
 The graph is read from atlas.db and read again when `atlas run` rebuilds it: a long-lived
-process (atlas serve) always answers with the last build. They are registered as "tool"
+process (atlas serve) always answers with the last build. In the context of an agent
+(`for_model`), whose tool results go to the model, it is the graph without the text of the
+local-only sources (KnowledgeGraph.for_model). They are registered as "tool"
 plugins with these names, for [agents.*] tools and [mcp] tools.
 """
 from __future__ import annotations
@@ -27,7 +29,7 @@ import threading
 from pathlib import Path
 from typing import Any, Callable
 
-from atlas.graph.knowledge import MAX_LIST, KnowledgeGraph
+from atlas.graph.knowledge import DEFAULT_ATTRIBUTES, MAX_LIST, KnowledgeGraph, display_attributes
 from atlas.graph.store import GraphStore
 from atlas.plugins import register_methods
 
@@ -42,26 +44,31 @@ NO_GRAPH = "there is no graph yet: run `atlas run` with \"graph\" in [pipeline] 
 
 
 class GraphTools:
-    def __init__(self, db: str | Path, root: str | Path = "."):
+    def __init__(self, db: str | Path, root: str | Path = ".", attributes=DEFAULT_ATTRIBUTES, local: Any = None):
         self.store = GraphStore(db)
         self.root = root
+        self.attributes = list(attributes)
+        self.local = local          # LocalOnly: the graph that a model may see
         self._graph: KnowledgeGraph | None = None
         self._builds: dict | None = None
         self._lock = threading.Lock()
 
     @classmethod
-    def from_config(cls, cfg) -> "GraphTools":
-        """Over the atlas.db of the workspace; file paths from the current directory, as the
-        code roots of atlas.toml."""
-        return cls(cfg.workspace / "atlas.db")
+    def from_config(cls, cfg, for_model: bool = False) -> "GraphTools":
+        """Over the atlas.db of the workspace; file paths from the folder of atlas.toml, as
+        the code roots; the attributes of [sources.doors] attributes. `for_model`: for an
+        agent, without the text of the local-only sources."""
+        from atlas.outbound import LocalOnly
+        return cls(cfg.workspace / "atlas.db", cfg.home, attributes=display_attributes(cfg),
+                   local=LocalOnly.from_config(cfg) if for_model else None)
 
     @classmethod
     def for_context(cls, context: Any) -> "GraphTools":
         """One instance per context, shared by every tool plugin."""
         tools = getattr(context, "_graph_tools", None)
         if tools is None:
-            tools = cls.from_config(context.cfg)
-            setattr(context, "_graph_tools", tools)
+            tools = cls.from_config(context.cfg, getattr(context, "for_model", False))
+            context._graph_tools = tools
         return tools
 
     def graph(self) -> KnowledgeGraph | None:
@@ -69,7 +76,8 @@ class GraphTools:
         builds = self.store.builds()
         with self._lock:
             if builds != self._builds:
-                self._graph = KnowledgeGraph(self.store.load(), self.root, builds) if builds else None
+                self._graph = KnowledgeGraph(self.store.load(), self.root, builds,
+                                             attributes=self.attributes).for_model(self.local) if builds else None
                 self._builds = builds
             return self._graph
 
@@ -112,7 +120,7 @@ class GraphTools:
         """What changing a code element or a requirement affects. Code: every subprogram
         that depends on it, directly or transitively, up to `depth` levels, nearest first,
         and the requirements, tests and document sections affected. Requirement: the
-        requirements derived from it, their code, tests and sections."""
+        requirements derived from it, their code, tests, test procedures and sections."""
         return self._ask(lambda g: g.impact(name, depth, limit))
 
     def call_chain(self, source: str, target: str) -> dict:
@@ -139,7 +147,9 @@ class GraphTools:
     def trace(self, req_id: str, limit: int = MAX_LIST) -> dict:
         """Everything about a requirement ID: its DOORS text and attributes, parent,
         children and links; the document sections that state it (with the values that
-        differ from DOORS); the code that implements it; the tests that verify or cover it."""
+        differ from DOORS); the code that implements it; the tests of the code that verify or
+        cover it (verified_by); the test procedures of DOORS that verify it (procedures);
+        the requirements it derives from, up to the system level (ancestors)."""
         return self._ask(lambda g: g.trace(req_id, limit))
 
     def trace_code(self, name: str, limit: int = MAX_LIST) -> dict:
@@ -149,19 +159,21 @@ class GraphTools:
 
     def matrix(self, module: str = "", limit: int = 50, offset: int = 0) -> dict:
         """Traceability matrix of a DOORS module (empty: every requirement): requirement ->
-        code -> tests -> documents, a summary, and the requirements without code or tests.
-        `limit` and `offset` page the rows."""
+        code -> tests -> test procedures -> documents, a summary, and the requirements
+        without code, tests or test procedure. `limit` and `offset` page the rows."""
         return self._ask(lambda g: g.matrix(module, limit, offset))
 
     def gaps(self, module: str = "", limit: int = MAX_LIST) -> dict:
-        """What traceability lacks: requirements without code or tests, subprograms that
-        cite no requirement, IDs of the code or the documents that are not in DOORS, and
-        values (deadlines, limits) that differ between DOORS and the documents."""
+        """What traceability lacks: requirements without code, tests, test procedure or a
+        link to the module above, subprograms that cite no requirement, IDs of the code or
+        the documents that are not in DOORS, IDs linked in DOORS modules that were not read,
+        and values (deadlines, limits) that differ between DOORS and the documents."""
         return self._ask(lambda g: g.gaps(module, limit))
 
     def list_requirements(self, prefix: str = "", module: str = "", limit: int = 100) -> dict:
         """Requirements of the graph (optionally those whose ID starts with `prefix`, or
-        those of a DOORS module), with how many code elements, tests and sections each has."""
+        those of a DOORS module), with their DOORS attributes (status, verification...) and
+        how many code elements, tests and sections each has."""
         return self._ask(lambda g: g.list_requirements(prefix, module, limit))
 
     def untraced(self, kind: str = "subprogram", limit: int = MAX_LIST) -> dict:

@@ -17,6 +17,11 @@ DOORS ──(1) doors_download.py──► doors_raw.sqlite ──(2) publish.py
 2. **Publicación** (`publish.py`). Aplica `mapping.toml` y escribe la base de intercambio.
    No necesita DOORS: si cambias la correspondencia, solo vuelves a publicar.
 
+Si no se puede ejecutar DXL por COM y la administración de DOORS solo entrega ReqIF,
+[tools/reqif_import](../reqif_import/README.md) rellena la misma base desde los ficheros
+ReqIF, con el mismo `mapping.toml` (su clase `Mapping`, la clasificación por `[kinds]` y los
+avisos de `publish.py`).
+
 Viene del script de dos ficheros del proyecto doors_kb (`legacy/doors_kb/`: `scripts/descargar_requisitos.py`
 y `scripts/modelo_sqlite.py`). Está traducido al inglés y además lee la jerarquía y los
 enlaces, guarda la definición de los atributos y tiene versión de esquema. Una base de
@@ -58,6 +63,25 @@ adapter = "exchange"
 [sources.doors.exchange]
 path = "requirements.sqlite"
 ```
+
+## Quién exporta y cada cuánto
+
+La exportación es un paso manual: alguien con acceso a DOORS lanza la descarga en su PC y
+publica la base. atlas no sabe si DOORS ha cambiado desde entonces, así que todo lo que sale
+de los requisitos (`atlas status`, `atlas graph`, la matriz, `trace`) dice de qué exportación
+viene: `publish.py` escribe la fecha de cada módulo en la base (`filled_at`, con su ruta de
+DOORS en `source`).
+
+Conviene acordarlo en el proyecto:
+- **Quién**: una persona con acceso de lectura a los módulos en DOORS, normalmente quien
+  lleva la gestión de requisitos o la integración, y una suplente.
+- **Cada cuánto**: una vez por semana mientras los requisitos cambian, y siempre antes de una
+  revisión formal (la matriz de la revisión debe salir de una exportación del mismo día o
+  del anterior). La descarga es incremental: repetirla cuesta poco.
+- **Dónde**: la base publicada va a la ruta que lee `[sources.doors.exchange] path`; el
+  siguiente `atlas run` la lee.
+- **El aviso**: `[sources.doors] max_age_days = 7` hace que `atlas run` y `atlas serve`
+  avisen de los módulos exportados hace más de 7 días.
 
 ## La correspondencia (`mapping.toml`)
 

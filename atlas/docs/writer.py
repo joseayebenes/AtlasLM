@@ -79,7 +79,7 @@ def _write_section(out: Path, s: dict, source: str, reqs: list[dict]) -> None:
     if a["open_issues"]:
         md.append("## Open issues\n\n" + "\n".join(f"- {p}" for p in a["open_issues"]) + "\n")
     md.append("## Source text\n\n~~~~text\n" + s["body"] + "\n~~~~\n")
-    (out / section_file(s)).write_text("\n".join(md), encoding="utf-8")
+    (out / section_file(s)).write_text("\n".join(md), encoding="utf-8", newline="\n")
 
 
 def write_document(out: Path, doc_title: str, source: str, model: str, sections: list[dict],
@@ -120,7 +120,7 @@ def write_document(out: Path, doc_title: str, source: str, model: str, sections:
                   f"{sum(1 for r in reqs if r['section'] == s['id'])} | "
                   f"{'⚠ analysis pending' if s.get('analysis_error') else cell(s['analysis']['summary'].split('. ')[0])[:160]} |"
                   for s in sections) + "\n")
-    (out / "index.md").write_text("\n".join(md), encoding="utf-8")
+    (out / "index.md").write_text("\n".join(md), encoding="utf-8", newline="\n")
 
     # requirements.md
     md = [frontmatter({"title": f"Requirements — {doc_title}", "count": len(reqs), "verification": dict(status)}),
@@ -129,14 +129,14 @@ def write_document(out: Path, doc_title: str, source: str, model: str, sections:
           "document. Check the `not_found` ones by hand.\n",
           "| ID | Text | Section | Verification |\n|---|---|---|---|"]
     md += [f"| {cell(r['id']) or '—'} | {cell(r['text'])} | {link(r['section'])} | {r['status']} |" for r in reqs]
-    (out / "requirements.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (out / "requirements.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
 
     # glossary.md
     md = [frontmatter({"title": f"Glossary — {doc_title}", "count": len(cons["glossary"])}),
           "# Glossary\n", "| Term | Definition | Sections |\n|---|---|---|"]
     md += [f"| **{cell(g['term'])}** | {cell(' / '.join(g['definitions'][:3]))} | "
            f"{', '.join(link(x) for x in g['sections'])} |" for g in cons["glossary"]]
-    (out / "glossary.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (out / "glossary.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
 
     # entities.md (grouped by kind)
     md = [frontmatter({"title": f"Entities — {doc_title}", "count": len(cons["entities"])}), "# Entities\n"]
@@ -147,13 +147,13 @@ def write_document(out: Path, doc_title: str, source: str, model: str, sections:
             md.append(f"\n## {kind}\n")
         md.append(f"- **{e['name']}**" + (f": {e['description']}" if e["description"] else "") +
                   f" — {', '.join(link(x) for x in e['sections'])}")
-    (out / "entities.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (out / "entities.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
 
     # open_issues.md
     md = [frontmatter({"title": f"Open issues — {doc_title}", "count": len(cons["open_issues"])}),
           "# Open issues (TBD / TBC)\n"]
     md += [f"- {p['text']} — {link(p['section'])}" for p in cons["open_issues"]] or ["None."]
-    (out / "open_issues.md").write_text("\n".join(md) + "\n", encoding="utf-8")
+    (out / "open_issues.md").write_text("\n".join(md) + "\n", encoding="utf-8", newline="\n")
 
     # structure.json: everything together for tools (index, graph, MCP)
     data = {"title": doc_title, "source": source, "model": model, "overview": overview,
@@ -162,5 +162,6 @@ def write_document(out: Path, doc_title: str, source: str, model: str, sections:
                          | {"file": section_file(s), "analysis_error": s.get("analysis_error", "")}
                          for s in sections],
             **cons, **(extra or {})}
-    (out / "structure.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out / "structure.json").write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8",
+                                        newline="\n")
     return data

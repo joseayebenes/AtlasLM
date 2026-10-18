@@ -1,33 +1,24 @@
-#!/usr/bin/env python3
 """
 connection.py — Everything related to connecting to the APIs (LLM and embeddings):
-configuration file, proxy, certificates, OpenAI client creation and error
-diagnosis.
+configuration model, proxy, certificates, OpenAI client creation and error diagnosis.
 
-Priority of each value (lowest to highest):
-  1. defaults (some read standard variables: HTTPS_PROXY, NO_PROXY, SSL_CERT_FILE,
-     OPENAI_BASE_URL, OPENAI_API_KEY, LLM_MODEL, EMBED_MODEL)
-  2. configuration file: common [network] section, then [llm] / [embeddings] and
-     their subsections [llm.network] / [embeddings.network]
-  3. command-line arguments
+The configuration comes from the [llm], [embeddings] and [network] sections of atlas.toml
+(`atlas.llm.from_config`). The defaults of the network read the standard variables
+HTTPS_PROXY, NO_PROXY and SSL_CERT_FILE. The standalone mode with its own connection.toml
+is kept in legacy/conexion.py.
 
-File: --config PATH, or the RAG_CONFIG variable, or connection.toml in the current
-directory, or connection.toml next to this module. Values accept ${VARIABLE} and
-${VARIABLE:-default}, so keys and passwords need not be written in the file.
+Warnings (rate-limit rejections, retries) go to the "atlas.llm" logger; a configuration
+that cannot work (a CA certificate that does not exist, a missing package) raises
+ConfigError.
 
-Standalone use:
-  python -m atlas.llm.connection init     # writes an example connection.toml
-  python -m atlas.llm.connection show     # effective configuration (secrets masked)
-  python -m atlas.llm.connection check    # real request to the LLM and embeddings
-
-Requirements: pip install openai  (+ tomli on Python < 3.11, + truststore for ca_cert="system")
+Requirements: pip install openai  (+ truststore for ca_cert="system")
 """
 
 from __future__ import annotations
 
-import argparse
 import importlib
 import json
+import logging
 import os
 import random
 import re
@@ -37,12 +28,20 @@ import threading
 import time
 from collections import deque
 from email.utils import parsedate_to_datetime
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
-FILE_NAME = "connection.toml"
+from atlas.config import ConfigError
+
+__all__ = ["CHECK_MAX_TOKENS", "Connection", "NetConfig", "RateLimiter", "ServiceConfig", "SharedWindow",
+           "bypasses_proxy", "check", "check_service", "create_client", "describe", "diagnose", "effective_proxy",
+           "is_connection_error", "limits_dir", "mask_credentials", "mask_key", "note_usage", "rate_limiter_for",
+           "reasoning_of", "served_context", "set_usage_label", "show", "ssl_context", "usage", "usage_label",
+           "usage_since"]
+
+log = logging.getLogger("atlas.llm")
 
 
 # --------------------------------------------------------------------------
@@ -67,13 +66,16 @@ class NetConfig:
     no_proxy: str = field(default_factory=lambda: _env(
         "RAG_NO_PROXY", "NO_PROXY", "no_proxy", default="localhost,127.0.0.1,::1"))
     insecure: bool = False
-    timeout: float = 600.0
+    timeout: float = 600.0       # connecting, and between two reads of a request that is not a chat turn
+    idle_timeout: float = 120.0  # chat turn: seconds without a chunk (streamed) before it is cut; 0 = no limit
+    turn_timeout: float = 600.0  # chat turn: seconds in all before it is cut and asked again; 0 = no limit
     # API limits (0 = unlimited). If the LLM and embeddings go to the same server with
     # the same key, they share the counter.
     requests_per_minute: int = 0
     tokens_per_minute: int = 0   # estimated as characters/4 of the request body
     adaptive: bool = True        # slow down only when the server rejects for rate limit
-    max_concurrent: int = 0
+    max_concurrent: int = 0      # in this process
+    shared_limit: bool = True    # with a limit: the window is shared with the other processes of the workstation
     max_retries: int = 6              # retries on 5xx or connection errors
     max_backoff: float = 60.0
     rate_limit_max_wait: float = 900.0  # max total wait per request on 409/429 (s)
@@ -91,7 +93,13 @@ class ServiceConfig:
     extra_body: dict = field(default_factory=dict)   # LLM only: fields added as is to every chat request
     reasoning_field: str = "reasoning"   # LLM only: the field of an assistant message with tool calls in which
                                          # an agent gives the model back its reasoning; "" = never
+    stream: str = ""             # LLM only: "" = stream unless the server cannot (atlas.llm.chat); true/false force it
+    concurrency: int = 0         # LLM only: requests of one JsonLlm in flight; 0 = no cap (in docs, the workers)
+    context_tokens: int = 0      # LLM only: the context of the model (input + output); 0 = unknown
     batch: int = 32              # embeddings only
+    family: str = ""             # embeddings only: embeddinggemma | nomic | e5 | none; "" = from the model name
+    query_prefix: str = ""       # embeddings only: literal prefixes, instead of those of the family
+    document_prefix: str = ""
     net: NetConfig = field(default_factory=NetConfig)
 
 
@@ -100,153 +108,6 @@ class Connection:
     llm: ServiceConfig
     embeddings: ServiceConfig
     file: str = ""               # path of the loaded file ("" if none)
-
-
-# --------------------------------------------------------------------------
-# Loading the file
-# --------------------------------------------------------------------------
-
-_VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
-
-
-def _expand(value):
-    if isinstance(value, str):
-        return _VAR.sub(lambda m: os.environ.get(m.group(1)) or (m.group(2) or ""), value)
-    if isinstance(value, dict):
-        return {k: _expand(v) for k, v in value.items()}
-    return value
-
-
-def _read_toml(path: Path) -> dict:
-    try:
-        import tomllib                      # Python 3.11+
-    except ImportError:
-        try:
-            import tomli as tomllib         # Python < 3.11: pip install tomli
-        except ImportError:
-            sys.exit("To read the configuration file on Python < 3.11: pip install tomli")
-    try:
-        with open(path, "rb") as f:
-            return _expand(tomllib.load(f))
-    except tomllib.TOMLDecodeError as e:
-        sys.exit(f"Syntax error in {path}: {e}")
-
-
-def find_config_file(explicit: str | None) -> Path | None:
-    if explicit:
-        p = Path(explicit).expanduser()
-        if not p.exists():
-            sys.exit(f"configuration file {p} does not exist")
-        return p
-    for candidate in (os.environ.get("RAG_CONFIG"), Path.cwd() / FILE_NAME,
-                      Path(__file__).resolve().parent / FILE_NAME):
-        if candidate and Path(candidate).exists():
-            return Path(candidate)
-    return None
-
-
-_NET_KEYS = {f.name for f in fields(NetConfig)}
-_SERVICE_KEYS = {f.name for f in fields(ServiceConfig)} - {"net"}
-
-
-def _apply(obj, data: dict, where: str, allowed: set[str]):
-    changes = {}
-    for k, v in data.items():
-        if k not in allowed:
-            print(f"[warning] unknown key '{k}' in {where} (ignored)", file=sys.stderr)
-            continue
-        kind = type(getattr(obj, k))
-        if kind is bool and isinstance(v, str):
-            v = v.strip().lower() in ("1", "true", "yes", "si", "sí", "on")
-        try:
-            changes[k] = v if isinstance(v, kind) else kind(v)
-        except (TypeError, ValueError):
-            sys.exit(f"invalid value for '{k}' in {where}: {v!r}")
-    return replace(obj, **changes)
-
-
-# --------------------------------------------------------------------------
-# Command-line arguments
-# --------------------------------------------------------------------------
-
-def add_args(ap: argparse.ArgumentParser, embeddings: bool = True) -> None:
-    """All connection options. A None value means 'not given' (the file decides)."""
-    g = ap.add_argument_group("connection (also in connection.toml)")
-    g.add_argument("--config", default=None, help="configuration file (default connection.toml)")
-    g.add_argument("--base-url", default=None, help="LLM API URL")
-    g.add_argument("--model", default=None, help="chat model")
-    g.add_argument("--api-key", default=None)
-    g.add_argument("--temperature", type=float, default=None)
-    if embeddings:
-        g.add_argument("--embed-base-url", default=None, help="embeddings URL (default: the LLM one)")
-        g.add_argument("--embed-model", default=None)
-        g.add_argument("--embed-api-key", default=None)
-    r = ap.add_argument_group("network: proxy and certificates (shared by LLM and embeddings)")
-    r.add_argument("--proxy", default=None, help="http://user:password@proxy:8080")
-    r.add_argument("--ca-cert", default=None, help="PEM with the corporate CA, or 'system'")
-    r.add_argument("--client-cert", default=None, help="client certificate (mutual TLS)")
-    r.add_argument("--client-key", default=None, help="private key of the client certificate")
-    r.add_argument("--no-proxy", default=None, help="comma-separated hosts without proxy ('' = none)")
-    r.add_argument("--insecure", action="store_true", default=None,
-                   help="no TLS verification (for diagnosis only)")
-    r.add_argument("--timeout", type=float, default=None, help="per-request timeout (s)")
-    r.add_argument("--rpm", type=int, default=None, help="max requests per minute to the API")
-    r.add_argument("--tpm", type=int, default=None, help="approximate max tokens per minute")
-    r.add_argument("--max-concurrent", type=int, default=None, help="max simultaneous requests")
-    if embeddings:
-        r.add_argument("--embed-proxy", default=None, help="different proxy for embeddings only")
-        r.add_argument("--embed-ca-cert", default=None, help="different CA for embeddings only")
-
-
-def _from_args(args, mapping: dict[str, str]) -> dict:
-    return {fld: getattr(args, option) for fld, option in mapping.items()
-            if getattr(args, option, None) is not None}
-
-
-def load(args: argparse.Namespace | None = None, file: str | None = None) -> Connection:
-    """Builds the effective configuration: defaults < file < command line."""
-    path = find_config_file(file or (getattr(args, "config", None) if args else None))
-    data = _read_toml(path) if path else {}
-    unknown = set(data) - {"network", "llm", "embeddings"}
-    for k in unknown:
-        print(f"[warning] unknown section [{k}] in {path} (ignored)", file=sys.stderr)
-
-    # Common network
-    net = NetConfig()
-    net = _apply(net, data.get("network", {}), f"{path} [network]", _NET_KEYS)
-
-    def service(name: str, defaults: ServiceConfig) -> ServiceConfig:
-        sec = dict(data.get(name, {}))
-        sub_net = sec.pop("network", {})
-        s = _apply(defaults, sec, f"{path} [{name}]", _SERVICE_KEYS)
-        return replace(s, net=_apply(net, sub_net, f"{path} [{name}.network]", _NET_KEYS))
-
-    llm = service("llm", ServiceConfig(
-        base_url=_env("OPENAI_BASE_URL", default="http://localhost:11434/v1"),
-        model=_env("LLM_MODEL", default="gemma4"),
-        api_key=_env("OPENAI_API_KEY", default="local")))
-    emb = service("embeddings", ServiceConfig(model=_env("EMBED_MODEL", default="embeddinggemma")))
-
-    # Command line
-    if args is not None:
-        net_cli = _from_args(args, {"proxy": "proxy", "ca_cert": "ca_cert", "client_cert": "client_cert",
-                                    "client_key": "client_key", "no_proxy": "no_proxy",
-                                    "insecure": "insecure", "timeout": "timeout",
-                                    "requests_per_minute": "rpm", "tokens_per_minute": "tpm",
-                                    "max_concurrent": "max_concurrent"})
-        llm = replace(llm, **_from_args(args, {"base_url": "base_url", "model": "model",
-                                               "api_key": "api_key", "temperature": "temperature"}),
-                      net=replace(llm.net, **net_cli))
-        emb = replace(emb, **_from_args(args, {"base_url": "embed_base_url", "model": "embed_model",
-                                               "api_key": "embed_api_key"}),
-                      net=replace(emb.net, **{**net_cli, **_from_args(
-                          args, {"proxy": "embed_proxy", "ca_cert": "embed_ca_cert"})}))
-
-    # Embeddings inherit the LLM URL and key when not given. The key is only inherited
-    # together with the URL: a key is never sent from one server to a different one.
-    if not emb.base_url:
-        emb = replace(emb, base_url=llm.base_url, api_key=emb.api_key or llm.api_key)
-    return Connection(llm=llm, embeddings=emb, file=str(path) if path else "")
 
 
 # --------------------------------------------------------------------------
@@ -281,10 +142,17 @@ def ssl_context(net: NetConfig) -> ssl.SSLContext | bool:
         try:
             import truststore
         except ImportError:
-            sys.exit('ca_cert = "system" needs: pip install truststore')
+            raise ConfigError('ca_cert = "system" needs: pip install truststore') from None
         ctx = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     else:
         ctx = ssl.create_default_context()      # on Windows it already includes the system store
+        if sys.version_info >= (3, 13) and hasattr(ssl, "VERIFY_X509_STRICT"):
+            # 3.13 turns on the strict X.509 checks of OpenSSL, which reject certificates
+            # without an Authority Key Identifier, such as those of some proxies that inspect
+            # TLS. Off, as in 3.12: the chain and the host name are still verified.
+            ctx.verify_flags &= ~ssl.VERIFY_X509_STRICT
+            log.debug("TLS: VERIFY_X509_STRICT off (as in Python 3.12); the chain and the host name "
+                      "are still verified")
         try:
             import certifi
             ctx.load_verify_locations(cafile=certifi.where())
@@ -293,7 +161,7 @@ def ssl_context(net: NetConfig) -> ssl.SSLContext | bool:
         if net.ca_cert:
             path = Path(net.ca_cert).expanduser()
             if not path.exists():
-                sys.exit(f"CA certificate {path} does not exist")
+                raise ConfigError(f"CA certificate {path} does not exist")
             if path.is_dir():
                 ctx.load_verify_locations(capath=str(path))
             else:
@@ -309,8 +177,109 @@ WINDOW = 60.0   # seconds of the requests_per_minute / tokens_per_minute window
 RATE_STATUSES = {409, 429}
 
 
+_LOGGER = logging.getLogger("atlas.llm")
+
+
 def _log(msg: str) -> None:
-    print(msg, file=sys.stderr, flush=True)
+    """A notice of the limiter or of the retries: a warning of atlas.llm, which [project]
+    log_level governs and the log file keeps."""
+    _LOGGER.warning(msg)
+
+
+def limits_dir() -> Path:
+    r"""The folder of the windows that the limiter shares between the processes of the
+    workstation: ATLAS_LIMITS_DIR, or %LOCALAPPDATA%\atlas\limits on Windows, or
+    ~/.atlas/limits."""
+    if os.environ.get("ATLAS_LIMITS_DIR"):
+        return Path(os.environ["ATLAS_LIMITS_DIR"]).expanduser()
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        return Path(os.environ["LOCALAPPDATA"]) / "atlas" / "limits"
+    return Path.home() / ".atlas" / "limits"
+
+
+def limit_file(cfg: "ServiceConfig") -> Path:
+    """<limits_dir>/<host>-<port>.json: one window per destination. Neither the name nor the
+    content has anything of the key (docs/seguridad.md: no hash of a secret on disk)."""
+    u = urlparse(cfg.base_url)
+    host = re.sub(r"[^A-Za-z0-9._-]", "_", u.hostname or "server")
+    return limits_dir() / f"{host}-{u.port or (443 if u.scheme == 'https' else 80)}.json"
+
+
+class SharedWindow:
+    """The window of a destination shared by the processes of the workstation (atlas serve,
+    a long atlas run, atlas develop): a JSON file with the times of the sends of the last
+    minute and the adapted pace, read and written under the operating system's lock on a
+    file beside it (flock on POSIX, msvcrt.locking on Windows), as the workspace lock of
+    atlas.pipeline. The lock is only held while one send is decided, never during a request.
+
+    A broken file is written again from scratch; a window nobody touched for STALE seconds
+    starts afresh (a pace lowered yesterday does not hold today)."""
+
+    LOCK_WAIT = 2.0      # seconds trying to lock before pacing alone
+    STALE = 600.0
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.lock_path = self.path.with_suffix(".lock")
+        self._fd: int | None = None
+
+    def _try_lock(self, fd: int) -> bool:
+        try:
+            if os.name == "nt":
+                import msvcrt
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def acquire(self) -> dict:
+        """Locks and returns the state ({} if there is none, it is broken or stale). Raises
+        OSError if the file cannot be made or locked within LOCK_WAIT seconds."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        deadline = time.monotonic() + self.LOCK_WAIT
+        while not self._try_lock(fd):
+            if time.monotonic() > deadline:
+                os.close(fd)
+                raise OSError(f"{self.lock_path} stayed locked for {self.LOCK_WAIT:g} s")
+            time.sleep(0.01)
+        self._fd = fd
+        try:
+            state = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(state, dict) or not isinstance(state.get("stamps", []), list):
+                raise ValueError("not a window")
+            [float(t) for t in state.get("stamps", [])]
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError, TypeError):
+            _log(f"[limits] {self.path} was broken: it is rewritten")
+            return {}
+        if time.time() - float(state.get("updated", 0) or 0) > self.STALE:
+            return {}
+        return state
+
+    def release(self, state: dict | None) -> None:
+        """Writes `state` (None: nothing changed) and unlocks."""
+        fd, self._fd = self._fd, None
+        try:
+            if state is not None:
+                tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
+                tmp.write_text(json.dumps({**state, "updated": time.time()}), encoding="utf-8")
+                os.replace(tmp, self.path)
+        finally:
+            if fd is not None:
+                if os.name == "nt":
+                    try:
+                        import msvcrt
+                        os.lseek(fd, 0, os.SEEK_SET)
+                        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+                    except OSError:
+                        pass
+                os.close(fd)             # on POSIX this releases the flock
 
 
 class RateLimiter:
@@ -323,9 +292,12 @@ class RateLimiter:
     - Adaptive: each rate-limit rejection lowers the pace by 30 %; after a minute without
       rejections it slowly recovers. If no rpm is configured, it discovers it.
     - Shared pause: after a rejection, or if the server says no requests are left, all
-      threads wait."""
+      threads wait.
+    - With `shared` (a SharedWindow), the window, the adapted pace and the pauses are those
+      of every process of the workstation that goes to the same destination; if the file
+      cannot be locked, this process paces on its own, in memory."""
 
-    def __init__(self, net: NetConfig, label: str):
+    def __init__(self, net: NetConfig, label: str, shared: "SharedWindow | None" = None):
         self.label = label
         self.rpm_conf = net.requests_per_minute
         self.rpm = float(net.requests_per_minute)
@@ -333,6 +305,8 @@ class RateLimiter:
         self.adaptive = net.adaptive
         self.sem = threading.BoundedSemaphore(net.max_concurrent) if net.max_concurrent > 0 else None
         self.lock = threading.Lock()
+        self.shared = shared
+        self.clock = time.time if shared else time.monotonic     # the shared window is in epoch seconds
         self.stamps: deque[float] = deque()
         self.tokens: deque[tuple[float, int]] = deque()
         self.last_send = 0.0
@@ -342,60 +316,105 @@ class RateLimiter:
         self.rejections = 0
         self.diagnosed = False
 
+    # -- the shared window (with self.lock held) ------------------------------------------
+    def _load(self) -> bool:
+        """Takes the state of the shared window; False if there is none (or it failed)."""
+        if self.shared is None:
+            return False
+        try:
+            st = self.shared.acquire()
+        except OSError as e:
+            _log(f"[API {self.label}] the window shared with other processes ({self.shared.path}) cannot be "
+                 f"used ({e}): this process paces on its own")
+            self.shared = None
+            return False
+        self.stamps = deque(sorted(float(t) for t in st.get("stamps", [])))
+        self.tokens = deque((float(t), int(n)) for t, n in st.get("tokens", []))
+        for name in ("last_send", "paused_until", "last_rejection", "last_increase"):
+            setattr(self, name, float(st.get(name, 0) or 0))
+        self.rejections = int(st.get("rejections", 0) or 0)
+        adapted = float(st.get("rpm", 0) or 0)
+        self.rpm = min(adapted, self.rpm_conf) if adapted and self.rpm_conf else (adapted or float(self.rpm_conf))
+        return True
+
+    def _save(self, changed: bool = True) -> None:
+        if self.shared is None:
+            return
+        self.shared.release({"stamps": list(self.stamps), "tokens": [list(t) for t in self.tokens],
+                             "rpm": self.rpm if self.rejections else 0, "rejections": self.rejections,
+                             "last_send": self.last_send, "paused_until": self.paused_until,
+                             "last_rejection": self.last_rejection, "last_increase": self.last_increase}
+                            if changed else None)
+
     def _purge(self, now: float) -> None:
         while self.stamps and now - self.stamps[0] >= WINDOW:
             self.stamps.popleft()
         while self.tokens and now - self.tokens[0][0] >= WINDOW:
             self.tokens.popleft()
 
-    def _recover(self, now: float) -> None:
+    def _recover(self, now: float) -> bool:
         """Raises the pace by +1 req/min every 30 s without rejections, up to the configured one."""
         if not self.adaptive or not self.rejections or not self.rpm:
-            return
+            return False
         if now - self.last_rejection < WINDOW or now - self.last_increase < WINDOW / 2:
-            return
+            return False
         if self.rpm_conf and self.rpm >= self.rpm_conf:
-            return
+            return False
         self.rpm = min(self.rpm + 1, self.rpm_conf or self.rpm + 1)
         self.last_increase = now
+        return True
 
     def wait(self, tokens: int = 0) -> None:
         while True:
             with self.lock:
-                now = time.monotonic()
-                self._purge(now)
-                self._recover(now)
-                delay = self.paused_until - now
-                if self.rpm:
-                    if len(self.stamps) >= int(self.rpm):
-                        delay = max(delay, WINDOW - (now - self.stamps[0]))
-                    delay = max(delay, self.last_send + WINDOW / self.rpm - now)
-                if self.tpm and self.tokens and sum(n for _, n in self.tokens) + tokens > self.tpm:
-                    delay = max(delay, WINDOW - (now - self.tokens[0][0]))
+                shared = self._load()
+                try:
+                    now = self.clock()
+                    self._purge(now)
+                    recovered = self._recover(now)
+                    delay = self.paused_until - now
+                    if self.rpm:
+                        if len(self.stamps) >= int(self.rpm):
+                            delay = max(delay, WINDOW - (now - self.stamps[0]))
+                        delay = max(delay, self.last_send + WINDOW / self.rpm - now)
+                    if self.tpm and self.tokens and sum(n for _, n in self.tokens) + tokens > self.tpm:
+                        delay = max(delay, WINDOW - (now - self.tokens[0][0]))
+                    if delay <= 0:
+                        self.stamps.append(now)
+                        if self.tpm:
+                            self.tokens.append((now, tokens))
+                        self.last_send = now
+                finally:
+                    if shared:
+                        self._save(changed=delay <= 0 or recovered)
                 if delay <= 0:
-                    self.stamps.append(now)
-                    if self.tpm:
-                        self.tokens.append((now, tokens))
-                    self.last_send = now
                     return
             time.sleep(min(delay, 2.0) + 0.01)
 
     def pause(self, seconds: float) -> None:
         with self.lock:
-            self.paused_until = max(self.paused_until, time.monotonic() + seconds)
+            shared = self._load()
+            self.paused_until = max(self.paused_until, self.clock() + seconds)
+            if shared:
+                self._save()
 
     def rejected(self) -> None:
         """The server rejected for rate limit: lower the pace (at most once every 10 s, so
-        that several threads rejected at the same time do not sink it)."""
+        that several threads, or processes, rejected at the same time do not sink it)."""
         with self.lock:
-            now = time.monotonic()
-            self.rejections += 1
-            if not self.adaptive or now - self.last_rejection < 10:
-                return
-            self._purge(now)
-            base = self.rpm or max(len(self.stamps), 2)
-            self.rpm = max(1.0, base * 0.7)
-            self.last_rejection = now
+            shared = self._load()
+            try:
+                now = self.clock()
+                self.rejections += 1
+                if not self.adaptive or now - self.last_rejection < 10:
+                    return
+                self._purge(now)
+                base = self.rpm or max(len(self.stamps), 2)
+                self.rpm = max(1.0, base * 0.7)
+                self.last_rejection = now
+            finally:
+                if shared:
+                    self._save()
         _log(f"[API {self.label}] rate-limit rejection: pace lowered to {self.rpm:.0f} req/min "
              f"(it recovers on its own once rejections stop)")
 
@@ -405,13 +424,18 @@ _LIMITERS_LOCK = threading.Lock()
 
 
 def rate_limiter_for(cfg: ServiceConfig) -> RateLimiter:
+    """The limiter of the destination of `cfg` in this process (one per server and key) and,
+    with [network] shared_limit and a limit, on the window that the processes of the
+    workstation share (SharedWindow)."""
     u = urlparse(cfg.base_url)
     key = (u.scheme, u.hostname, u.port, cfg.api_key)
     n = cfg.net
     with _LIMITERS_LOCK:
         lim = _LIMITERS.get(key)
         if lim is None:
-            lim = _LIMITERS[key] = RateLimiter(n, u.hostname or cfg.base_url)
+            shared = SharedWindow(limit_file(cfg)) if n.shared_limit and (
+                n.requests_per_minute > 0 or n.tokens_per_minute > 0) else None
+            lim = _LIMITERS[key] = RateLimiter(n, u.hostname or cfg.base_url, shared)
         else:                                    # if they differ, the most restrictive wins
             if n.requests_per_minute and (not lim.rpm_conf or n.requests_per_minute < lim.rpm_conf):
                 lim.rpm_conf = n.requests_per_minute
@@ -504,8 +528,12 @@ def _http_module():
 # What went to the APIs since the process started, through every client: the time
 # profiles of `atlas run` keep what each step added.
 _USAGE: dict[str, float] = {"chat": 0, "embeddings": 0, "other": 0, "rejected": 0, "retried": 0,
-                            "wait_seconds": 0.0, "api_seconds": 0.0, "sent_kb": 0.0}
+                            "wait_seconds": 0.0, "api_seconds": 0.0, "chat_seconds": 0.0, "embeddings_seconds": 0.0,
+                            "other_seconds": 0.0, "sent_kb": 0.0,
+                            "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0, "cached_tokens": 0,
+                            "embedding_tokens": 0, "cost": 0.0}
 _USAGE_LOCK = threading.Lock()
+_LABEL = ["", ""]       # (command, step or agent): see set_usage_label
 
 
 def _count(**deltas: float) -> None:
@@ -518,10 +546,68 @@ def usage() -> dict[str, float]:
     """Cumulative counters of the requests of this process to the APIs: requests sent by
     endpoint (`chat`, `embeddings`, `other`), rate-limit rejections (`rejected`), retries
     after 5xx or connection errors (`retried`), seconds waiting for the pace or a pause of
-    the limiter (`wait_seconds`) and for the server (`api_seconds`), and kilobytes sent
-    (`sent_kb`)."""
+    the limiter (`wait_seconds`) and for the server (`api_seconds`, and by endpoint
+    `chat_seconds`, `embeddings_seconds`, `other_seconds`: divided by the requests, the
+    latency), kilobytes sent (`sent_kb`), and what the servers said each answer used (see
+    note_usage): tokens of the chat prompts (`prompt_tokens`, of them `cached_tokens`), of
+    its answers (`completion_tokens`, of them `reasoning_tokens`), of the texts embedded
+    (`embedding_tokens`), and `cost` when the server gives it (OpenRouter)."""
     with _USAGE_LOCK:
         return dict(_USAGE)
+
+
+def usage_since(before: dict[str, float]) -> dict[str, float]:
+    """What usage() grew since `before` (an earlier usage()), without the counters that did
+    not move."""
+    return {k: round(v - before.get(k, 0), 6) for k, v in usage().items() if v != before.get(k, 0)}
+
+
+def _number(obj, name: str) -> float:
+    value = obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def note_usage(response, endpoint: str = "chat") -> dict[str, float]:
+    """Adds to usage() what the `usage` of an answer says: prompt and completion tokens,
+    reasoning tokens (completion_tokens_details), cached prompt tokens (prompt_tokens_details)
+    and the cost when the server gives it. The prompt tokens of an `embeddings` answer go to
+    `embedding_tokens`. Returns what it added; nothing if the answer has no usage. Called by
+    every place that gets an answer: JsonLlm, Embedder, AtlasLlm, check and probe."""
+    u = getattr(response, "usage", None)
+    if u is None:
+        return {}
+    field = lambda name: u.get(name) if isinstance(u, dict) else getattr(u, name, None)   # a streamed answer: a dict
+    grown = {"prompt_tokens": _number(u, "prompt_tokens"), "completion_tokens": _number(u, "completion_tokens"),
+             "reasoning_tokens": _number(field("completion_tokens_details"), "reasoning_tokens"),
+             "cached_tokens": _number(field("prompt_tokens_details"), "cached_tokens"),
+             "cost": _number(u, "cost")}
+    if endpoint == "embeddings":
+        grown = {"embedding_tokens": grown["prompt_tokens"], "cost": grown["cost"]}
+    grown = {k: v for k, v in grown.items() if v}
+    if grown:
+        _count(**grown)
+    return grown
+
+
+def set_usage_label(command: str, step_or_agent: str = "") -> None:
+    """What this process is doing: the command (atlas.cli sets it when it starts: run, ask,
+    serve...) and its step or agent (the Runner sets it for each step). It goes in the lines
+    of the log file and in the usage log of the workspace."""
+    _LABEL[:] = [command, step_or_agent]
+
+
+def usage_label() -> tuple[str, str]:
+    """(command, step or agent) of set_usage_label."""
+    return _LABEL[0], _LABEL[1]
+# The chat turn (atlas.llm.chat) that the request of this thread belongs to: the transport tells
+# it when the request goes out, so that its time does not count the wait for the limiter
+_TURN = threading.local()
+
+
+def _sent() -> None:
+    watch = getattr(_TURN, "watch", None)
+    if watch is not None:
+        watch.sent()
 
 
 def _endpoint(request) -> str:
@@ -533,6 +619,35 @@ def _endpoint(request) -> str:
 def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
     """HTTP transport that honours the limit and retries 409/429/5xx with growing waits,
     using Retry-After and the x-ratelimit-* headers if the server sends them."""
+
+    class Held(hx.SyncByteStream):
+        """The body of a response that holds its slot of max_concurrent until it is closed: a
+        streamed answer is in flight until its last chunk, not just until its headers."""
+
+        def __init__(self, stream, release):
+            self.stream, self.release = stream, release
+
+        def __iter__(self):
+            yield from self.stream
+
+        def close(self):
+            try:
+                self.stream.close()
+            finally:
+                self.release()
+
+    def slot():
+        """The release of a slot of max_concurrent, once whatever happens."""
+        if not lim.sem:
+            return lambda: None
+        lim.sem.acquire()
+        released = threading.Event()
+
+        def release():
+            if not released.is_set():
+                released.set()
+                lim.sem.release()
+        return release
 
     class RateLimitedTransport(hx.BaseTransport):
         def handle_request(self, request):
@@ -548,12 +663,12 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
             connection_failures = 0
             while True:
                 queued = time.monotonic()
-                if lim.sem:
-                    lim.sem.acquire()
+                release = slot()
                 try:
                     lim.wait(tokens)
                     sent = time.monotonic()
                     _count(**{endpoint: 1}, wait_seconds=sent - queued, sent_kb=size / 1024)
+                    _sent()
                     try:
                         resp = inner.handle_request(request)
                     except hx.ConnectError as e:
@@ -564,10 +679,15 @@ def _transport(hx, inner, lim: RateLimiter, net: NetConfig, label: str):
                             raise
                         resp = None
                     finally:
-                        _count(api_seconds=time.monotonic() - sent)
-                finally:
-                    if lim.sem:
-                        lim.sem.release()
+                        took = time.monotonic() - sent
+                        _count(api_seconds=took, **{f"{endpoint}_seconds": took})
+                except BaseException:
+                    release()
+                    raise
+                if resp is None:
+                    release()
+                else:
+                    resp.stream = Held(resp.stream, release)
 
                 is_limit = resp is not None and resp.status_code in RATE_STATUSES
                 if is_limit:
@@ -629,7 +749,7 @@ def create_client(cfg: ServiceConfig):
     try:
         from openai import OpenAI, DefaultHttpxClient
     except ImportError:
-        sys.exit("Install the client: pip install openai")
+        raise ConfigError("Install the client: pip install openai") from None
     hx = _http_module()
     proxy = effective_proxy(cfg) or None
     inner = hx.HTTPTransport(verify=ssl_context(cfg.net),
@@ -648,7 +768,7 @@ def create_client(cfg: ServiceConfig):
 
 def is_connection_error(e: BaseException) -> bool:
     """Errors after which it makes no sense to go on with the next request."""
-    return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "RateLimitError",
+    return type(e).__name__ in ("APIConnectionError", "APITimeoutError", "TurnTimeout", "RateLimitError",
                                 "ConflictError", "AuthenticationError", "PermissionDeniedError") \
         or getattr(e, "status_code", None) == 402          # no credit left
 
@@ -673,6 +793,10 @@ def diagnose(e: BaseException) -> str:
     text = " | ".join(f"{type(c).__name__}: {c}" for c in chain)
     said = _server_message(chain)
     said = f" (the server says: {said})" if said else ""
+    if any(m in text for m in ("Missing Authority Key Identifier", "Missing Subject Key Identifier", "X509_V_FLAG")):
+        return ("the server certificate (or that of a proxy that inspects TLS) does not pass the strict "
+                "X.509 checks of OpenSSL: it lacks an extension that Python 3.13 requires. Set ca_cert = "
+                "\"system\" (the certificate store of the system), or use Python 3.12.")
     if "CERTIFICATE_VERIFY_FAILED" in text or any(isinstance(c, ssl.SSLCertVerificationError) for c in chain):
         return ("server certificate not verified. If a proxy inspects TLS, set the corporate "
                 "root CA in ca_cert (or ca_cert = \"system\" to use the system certificate "
@@ -708,16 +832,22 @@ def describe(cfg: ServiceConfig) -> str:
            f"extra CA {n.ca_cert}" if n.ca_cert else "system CAs + certifi")
     return (f"{mask_credentials(cfg.base_url)}  model={cfg.model}  api_key={mask_key(cfg.api_key) or '—'}"
             + (f"  max_tokens={cfg.max_tokens}" if cfg.max_tokens else "")
+            + (f"  context_tokens={cfg.context_tokens}" if cfg.context_tokens else "")
             + (f"  reasoning_effort={cfg.reasoning_effort}" if cfg.reasoning_effort else "")
-            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "") + "\n"
+            + (f"  extra_body={json.dumps(cfg.extra_body, ensure_ascii=False)}" if cfg.extra_body else "")
+            + (f"  stream={str(cfg.stream).lower()}" if str(cfg.stream).strip() not in ("", "auto") else "") + "\n"
             f"  proxy: {mask_credentials(effective_proxy(cfg)) or 'direct'} | TLS: {tls}"
             + (f" | client cert {n.client_cert}" if n.client_cert else "")
             + f" | timeout {n.timeout:g}s"
+            + (f"; a chat turn: {n.idle_timeout:g}s idle, {n.turn_timeout:g}s in all"
+               if n.idle_timeout or n.turn_timeout else "")
             + f"\n  limits: {n.requests_per_minute or 'unlimited'} req/min"
             + (f", ~{n.tokens_per_minute} tokens/min" if n.tokens_per_minute else "")
             + f", {n.max_concurrent or 'unlimited'} simultaneous; on 409/429 waits up to "
             f"{n.rate_limit_max_wait / 60:g} min, on 5xx {n.max_retries} retries"
-            + (", adaptive pace" if n.adaptive else ""))
+            + (", adaptive pace" if n.adaptive else "")
+            + (f"; shared with the other processes of this workstation ({limit_file(cfg)})"
+               if n.shared_limit and (n.requests_per_minute or n.tokens_per_minute) else ""))
 
 
 # Output budget of the check request. Reasoning models think before answering and that
@@ -769,33 +899,111 @@ def _check_chat(response) -> tuple[bool, str]:
     return False, f"the server answered, but the model returned no text (finish_reason={choice.finish_reason})"
 
 
-def check(conn: Connection) -> int:
-    """Real chat and embeddings request. Returns 0 if everything works."""
+def served_context(cfg: ServiceConfig, client) -> tuple[int, str]:
+    """The context of the model of `cfg` in tokens, as its server publishes it, and where it
+    says so: GET /models with `context_length` (OpenRouter) or `max_model_len` (vLLM), or
+    Ollama's /api/show (outside /v1) with the `num_ctx` of the model. (0, why) when it says
+    nothing usable: Ollama without num_ctx only says what the model admits, not what the
+    server gives it (OLLAMA_CONTEXT_LENGTH)."""
+    try:
+        listed = client.get("/models", cast_to=object)
+    except Exception:
+        listed = None
+    for m in (listed.get("data") or []) if isinstance(listed, dict) else []:
+        if not isinstance(m, dict) or m.get("id") != cfg.model:
+            continue
+        for key, where in (("context_length", "context_length of GET /models, as OpenRouter publishes it"),
+                           ("max_model_len", "max_model_len of GET /models, as vLLM publishes it")):
+            if isinstance(m.get(key), int) and not isinstance(m[key], bool) and m[key] > 0:
+                return m[key], where
+    root = re.sub(r"/v1/?$", "", cfg.base_url.rstrip("/"))
+    try:
+        shown = client.with_options(base_url=root).post("/api/show", body={"model": cfg.model}, cast_to=object)
+    except Exception:
+        return 0, ""
+    if not isinstance(shown, dict):
+        return 0, ""
+    found = re.search(r"\bnum_ctx\s+(\d+)", str(shown.get("parameters") or ""))
+    if found:
+        return int(found[1]), "num_ctx of the model in Ollama (/api/show)"
+    admits = next((v for k, v in (shown.get("model_info") or {}).items() if k.endswith(".context_length")), 0)
+    return 0, (f"Ollama says the model admits {admits} tokens, but it gives it OLLAMA_CONTEXT_LENGTH (or the num_ctx "
+               "of a Modelfile): set [llm] context_tokens to that" if admits else "")
+
+
+def _check_context(cfg: ServiceConfig, client) -> str:
+    """The line of `check` about the context of the model: the one the server publishes,
+    proposed for [llm] context_tokens or compared with it."""
+    tokens, where = served_context(cfg, client)
+    mine = cfg.context_tokens
+    if not tokens:
+        return (f"  context: {where}" if where else "  context: the server does not publish it") + \
+            (f"; [llm] context_tokens = {mine}" if mine else "; set [llm] context_tokens by hand (0 = unknown)")
+    if not mine:
+        return f"  context: {tokens} tokens ({where}): set [llm] context_tokens = {tokens}"
+    if mine != tokens:
+        return f"  WARNING context: [llm] context_tokens = {mine}, but the server says {tokens} ({where})"
+    return f"  context: {tokens} tokens, as [llm] context_tokens ({where})"
+
+
+def _structured_output(cfg: ServiceConfig) -> str:
+    """The response_format tier the server accepts (json_schema | json_object | none), with
+    one small request per tier it rejects."""
+    from atlas.llm.structured import JsonLlm
+    try:
+        return JsonLlm(cfg).probe_structured()
+    except Exception as e:
+        return f"unknown ({diagnose(e)})"
+
+
+def check_service(name: str, cfg: ServiceConfig) -> dict:
+    """One real request to a service ("LLM": a short chat; otherwise an embedding):
+    {"ok", "detail", "seconds"}, and "warning" when the chat model reasons and
+    reasoning_effort does not say anything. A failure comes with the diagnosis in "detail"."""
+    t0, warning = time.time(), ""
+    try:
+        client, _ = create_client(cfg)
+        if name == "LLM":
+            r = client.chat.completions.create(
+                model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
+                messages=[{"role": "user", "content": "Reply with: ok"}],
+                **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
+                **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
+            note_usage(r)
+            ok, detail = _check_chat(r)
+            if _reasoning(r, r.choices[0].message) and not cfg.reasoning_effort:
+                warning = ("the model reasons and reasoning_effort is empty: documents will be analysed more "
+                           "slowly. Set reasoning_effort = \"none\" in [llm] (an agent that needs reasoning "
+                           "turns it on in its file)")
+        else:
+            r = client.embeddings.create(model=cfg.model, input=["test"])
+            note_usage(r, "embeddings")
+            ok, detail = True, f"dimension {len(r.data[0].embedding)}"
+    except ConfigError:
+        raise
+    except Exception as e:
+        return {"ok": False, "detail": diagnose(e), "seconds": time.time() - t0}
+    return {"ok": ok, "detail": detail, "seconds": time.time() - t0, **({"warning": warning} if warning else {})}
+
+
+def check(conn: Connection, notes: dict[str, list[str]] | None = None) -> int:
+    """Real chat and embeddings request. Returns 0 if everything works. `notes`: lines
+    printed under a service ("LLM", "Embeddings") after its result."""
     print(f"configuration: {conn.file or 'no file (defaults + environment + arguments)'}")
     failures = 0
     for name, cfg in (("LLM", conn.llm), ("Embeddings", conn.embeddings)):
         print(f"\n{name}: {describe(cfg)}")
-        try:
-            client, _ = create_client(cfg)
-            t0 = time.time()
-            if name == "LLM":
-                r = client.chat.completions.create(
-                    model=cfg.model, max_tokens=CHECK_MAX_TOKENS,
-                    messages=[{"role": "user", "content": "Reply with: ok"}],
-                    **({"reasoning_effort": cfg.reasoning_effort} if cfg.reasoning_effort else {}),
-                    **({"extra_body": cfg.extra_body} if cfg.extra_body else {}))
-                ok, detail = _check_chat(r)
-            else:
-                r = client.embeddings.create(model=cfg.model, input=["test"])
-                ok, detail = True, f"dimension {len(r.data[0].embedding)}"
-            print(f"  {'OK' if ok else 'FAILED'} ({time.time() - t0:.1f}s): {detail}")
-            if not ok:
-                failures += 1
-        except SystemExit:
-            raise
-        except Exception as e:
-            failures += 1
-            print(f"  FAILED: {diagnose(e)}")
+        res = check_service(name, cfg)
+        print(f"  {'OK' if res['ok'] else 'FAILED'} ({res['seconds']:.1f}s): {res['detail']}")
+        if res.get("warning"):
+            print(f"  [warning] {res['warning']}")
+        failures += not res["ok"]
+        if res["ok"] and name == "LLM":
+            print(f"  structured output: {_structured_output(cfg)}")
+            print(_check_context(cfg, create_client(cfg)[0]))
+        if res["ok"]:
+            for line in (notes or {}).get(name, []):
+                print(f"  {line}")
     if conn.llm.net.insecure or conn.embeddings.net.insecure:
         print("\n[warning] insecure turns TLS verification off; use it only for diagnosis.")
     return 1 if failures else 0
@@ -807,85 +1015,3 @@ def show(conn: Connection) -> None:
         print(f"\n{name}: {describe(cfg)}")
         if cfg.net.no_proxy:
             print(f"  no_proxy: {cfg.net.no_proxy}")
-
-
-# --------------------------------------------------------------------------
-# Template
-# --------------------------------------------------------------------------
-
-TEMPLATE = '''# connection.toml — connection to the LLM and embeddings APIs
-# Priority: command-line arguments > this file > environment variables > defaults.
-# Any value accepts ${VARIABLE} or ${VARIABLE:-default} so secrets need not be stored here.
-
-[network]                       # shared by LLM and embeddings
-proxy = "${HTTPS_PROXY:-}"      # "http://user:${PROXY_PASS}@proxy.company:8080"
-ca_cert = ""                    # "C:/certs/corporate_root.pem", or "system" (Windows store)
-client_cert = ""                # only if the server requires mutual TLS
-client_key = ""                 # key password: RAG_CLIENT_KEY_PASSWORD variable
-no_proxy = "localhost,127.0.0.1,::1"
-insecure = false                # true ONLY to diagnose certificate problems
-timeout = 600
-
-# API limits. If the LLM and embeddings go to the same server with the same key, they
-# share the counter. Leave some margin below the real limit.
-requests_per_minute = 0         # 0 = unlimited; e.g. 28 if the server allows 30
-tokens_per_minute = 0           # 0 = unlimited; only if the server also limits by tokens
-adaptive = true                 # slows down on rejections and recovers afterwards
-max_concurrent = 0              # simultaneous requests; 0 = unlimited
-max_retries = 6                 # retries on 5xx or connection errors
-rate_limit_max_wait = 900       # on 409/429 it waits (without failing) up to this total per request (s)
-max_backoff = 60                # max wait between retries when there is no Retry-After (s)
-retry_statuses = [409, 429, 500, 502, 503, 504]
-
-[llm]
-base_url = "http://localhost:11434/v1"
-model = "gemma4"                # the tag shown by `ollama list`
-api_key = "${OPENAI_API_KEY:-local}"
-temperature = 0.1
-max_tokens = 0                  # 0 = the server default; raise it (e.g. 8192) if answers come out cut
-reasoning_effort = ""           # "none" turns reasoning off (gemma4 in Ollama reasons by default)
-reasoning_field = "reasoning"   # agents: the reasoning of a turn with tool calls goes back to the model in this
-                                # field of the message (gemma 4 asks for it); "reasoning_content" for some
-                                # servers; "" = never
-
-# [llm.extra_body]              # fields added as is to every chat request, for options of the server
-# provider = { order = ["deepinfra"], allow_fallbacks = false }   # OpenRouter: always the same provider
-# chat_template_kwargs = { enable_thinking = false }              # vLLM: no reasoning with Qwen3
-
-# [llm.network]                 # uncomment to override the network for the LLM only
-# proxy = ""
-
-[embeddings]
-base_url = ""                   # empty = the same server as the LLM
-model = "embeddinggemma"
-api_key = ""                    # empty = the same as the LLM
-batch = 32
-
-# [embeddings.network]          # e.g. local embeddings without proxy
-# proxy = ""
-'''
-
-
-def main() -> None:
-    ap = argparse.ArgumentParser(description="API connection configuration")
-    ap.add_argument("action", choices=["init", "show", "check"])
-    ap.add_argument("--force", action="store_true", help="init: overwrite if it exists")
-    add_args(ap)
-    args = ap.parse_args()
-
-    if args.action == "init":
-        target = Path(args.config or FILE_NAME)
-        if target.exists() and not args.force:
-            sys.exit(f"{target} already exists (use --force to overwrite it)")
-        target.write_text(TEMPLATE, encoding="utf-8")
-        print(f"created {target}")
-        return
-    conn = load(args)
-    if args.action == "show":
-        show(conn)
-    else:
-        sys.exit(check(conn))
-
-
-if __name__ == "__main__":
-    main()

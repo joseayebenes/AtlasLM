@@ -1,0 +1,22 @@
+# A small plan for atlas eval (examples/eval/develop.yaml): two tasks on a Python calculator,
+# from the folder start, copied to a temporary folder before each run.
+agent = "python_implementer"
+check = ["src/*.py"]
+tests = ["tests/test_*.py"]
+progress = 'Step (\d+)'
+build_fixes = 1
+advance_fixes = 1
+fix_rounds = 2
+stuck_rounds = 1
+restarts = 0
+
+[[tasks]]
+id = "add"
+text = "In src/calc.py, add returns the sum of its two numbers (integers or floats)."
+advances = ["test_add.py"]
+
+[[tasks]]
+id = "divide"
+text = """In src/calc.py, add a function divide(a, b) that returns a / b. Dividing by zero raises \
+ValueError with the message "division by zero"."""
+advances = ["test_divide.py"]

@@ -2,6 +2,9 @@
 
     build_context        everything about a requirement, a code element or a unit, in one
                          Markdown package within a budget of tokens, without a model
+    context_at           the same for the element at a line of a file (what the editor has open)
+    similar_requirements requirements like one that already have code, with the signature and
+                         the Req: tag of that code: examples to follow, without a model
     verify_requirement   whether the official text of a requirement and the documents agree,
                          judged by the agent requirement_verifier (needs the model)
     link_requirement     the code that may implement a requirement, proposed by the agent
@@ -15,15 +18,19 @@ They are registered as "tool" plugins with these names, for agent files and [mcp
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from atlas.agents.context import build_context
+from atlas.agents.context import build_context, similar_requirements
 from atlas.graph.tools import NO_GRAPH, GraphTools
 from atlas.plugins import register_methods
 
 __all__ = ["AgentTools", "TOOL_NAMES"]
 
-TOOL_NAMES = ("build_context", "verify_requirement", "link_requirement", "check_compliance", "ask_atlas")
+TOOL_NAMES = ("build_context", "context_at", "similar_requirements", "verify_requirement", "link_requirement",
+              "check_compliance", "ask_atlas")
+
+log = logging.getLogger(__name__)
 
 
 class AgentTools:
@@ -31,6 +38,7 @@ class AgentTools:
         self.graph = graph
         self.cfg = cfg
         self.context = context
+        self._search: Any = None           # the index, opened on first use; False if there is none
 
     @classmethod
     def for_context(cls, context: Any) -> "AgentTools":
@@ -38,7 +46,7 @@ class AgentTools:
         tools = getattr(context, "_agent_tools", None)
         if tools is None:
             tools = cls(GraphTools.for_context(context), context.cfg, context)
-            setattr(context, "_agent_tools", tools)
+            context._agent_tools = tools
         return tools
 
     def build_context(self, target: str, budget_tokens: int = 4000) -> dict:
@@ -47,7 +55,42 @@ class AgentTools:
         signatures and comments, callers and callees, tests, document sections and source.
         Call it before changing code, instead of many searches."""
         g = self.graph.graph()
-        return build_context(g, target, budget_tokens) if g is not None else {"error": NO_GRAPH}
+        return build_context(g, target, budget_tokens, self._index()) if g is not None else {"error": NO_GRAPH}
+
+    def context_at(self, path: str, line: int, budget_tokens: int = 4000) -> dict:
+        """build_context of the code at a line of a file: the subprogram that holds it (or
+        the type, variable or unit), with its requirements, callers, tests, documents and
+        source. For the file and the line that the editor has open, before changing them.
+        `path` is relative to the folder of the project, or absolute."""
+        g = self.graph.graph()
+        if g is None:
+            return {"error": NO_GRAPH}
+        n, err = g.at(path, line)
+        if err or n is None:
+            return err or {"error": f"nothing at {path}:{line}"}
+        return build_context(g, n, budget_tokens, self._index())
+
+    def similar_requirements(self, req_id: str, k: int = 3) -> dict:
+        """Up to `k` requirements like this one that already have code, as examples of how
+        this project implements and tags one: those linked to it in DOORS or stated in the
+        same sections, then those whose text is alike. For each one, its text, why it is
+        similar, the subprogram that implements it with its signature, the line of its
+        `Req:` tag and, for the first one, the start of its body. Without a model."""
+        g = self.graph.graph()
+        return similar_requirements(g, req_id, k, self._index()) if g is not None else {"error": NO_GRAPH}
+
+    def _index(self) -> Any:
+        """The index of the workspace for the searches without vectors, or None if there is
+        none (no atlas.db, or atlas.index cannot be imported)."""
+        if self._search is None:
+            self._search = False
+            if self.cfg is not None and (self.cfg.workspace / "atlas.db").exists():
+                try:
+                    from atlas.index import Index
+                    self._search = Index.from_config(self.cfg)
+                except Exception as e:
+                    log.info("no index for the similar requirements: %s", e)
+        return self._search or None
 
     def verify_requirement(self, req_id: str) -> dict:
         """Whether the official text of a requirement (DOORS) and the documents say the same:
@@ -104,17 +147,29 @@ class AgentTools:
     def ask_atlas(self, question: str) -> dict:
         """Asks the assistant of atlas, an agent that answers from the documents, the DOORS
         requirements and the code with its own tools, citing them. One call that does the
-        searches behind; slower than the other tools. Returns the answer and the tools it
-        called."""
+        searches behind; slower than the other tools. Returns the answer, the tools it
+        called and its `status`: "answered" (every ID and value of the answer is in what its
+        tools returned), "partial" (some are not: those sentences in `uncited`) or
+        "not_found" (no answer, or no tool gave anything); a partial answer must be given as
+        such."""
+        import json
         import openai
         from atlas.agents.runtime import run_agent
+        from atlas.index.search import grounded_status
         from atlas.llm import model_failed
+        record: list = []
         try:
-            return run_agent("assistant", question, self.cfg, self.context)
+            res = run_agent("assistant", question, self.cfg, self.context, record=record)
         except ImportError as e:
             return {"error": str(e)}
         except openai.APIError as e:
             return model_failed(e, self.cfg)
+        results = [json.dumps(c["result"], ensure_ascii=False, default=str) for c in record
+                   if not (isinstance(c["result"], dict) and "error" in c["result"])]
+        status = grounded_status(res["answer"], results)
+        if res.get("stopped") and status["status"] == "answered":
+            status["status"] = "partial"
+        return {**res, **status}
 
 
 register_methods(AgentTools, TOOL_NAMES)

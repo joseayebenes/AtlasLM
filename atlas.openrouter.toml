@@ -54,17 +54,19 @@ min_chars = 300
 
 [sources.doors]
 adapter = "exchange"                        # la base de intercambio de requisitos (atlas.doors.exchange)
-modules = ["SSS_MISSION", "SRS_TMS"]        # SRS_TMS_OLD queda fuera
+modules = ["SSS_MISSION", "SRS_TMS", "STP_TMS"]   # SRS_TMS_OLD queda fuera
 
 [sources.doors.exchange]
 path = "examples/samples/requirements.sqlite"   # la rellena tools/doors_export (aquí, make_samples.py)
 kinds = ["requirement", "heading", "information"]
 
 [sources.doors.convention]                  # cómo casan los IDs con documentos y código
-id_pattern = "^(?:SRS|SSS)-\\d{4}$"
+id_pattern = "^(?:SRS|SSS|STP)-\\d{4}$"
 id_normalize = "upper"
 inline_reference_regex = "\\b(?:SRS|SSS)-\\d{4}\\b"
 inline_reference_type = "references"
+link_semantics = { derives = ["satisfies", "refines", "derives_from"], verifies = ["verifies"], ignore = ["references"] }
+top_modules = ["SSS_MISSION"]               # los requisitos de sistema: no derivan de nada
 
 [sources.code]
 roots = ["examples/samples/ada"]
@@ -72,7 +74,6 @@ languages = ["ada"]
 exclude = ["**/build/**"]
 req_tag = "Req:"
 test_patterns = ["**/tests/**"]
-summaries = "none"
 # el compilador para los agentes (check_code, run_test): GNAT instalado con Alire
 check_command = ["gcc", "-c", "-gnatc", "{include}", "{file}"]
 test_command = ["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]
@@ -90,6 +91,24 @@ dirs = ["agents", "examples/agents"]
 [agents.assistant]                          # los agentes de serie apagan el razonamiento en su fichero:
 max_steps = 10                              # para probarlo, reasoning_effort en [agents.<nombre>]
 reasoning_effort = "${ATLAS_REASONING:-none}"
+# Los agentes de código de examples/agents, con el muestreo con el que se midieron con
+# gemma-4-26b (atlas-socket-demo, 2026-10-13 a 15): razonamiento low y lo que recomienda la
+# ficha de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64). Con otro modelo, revísalos.
+[agents.implementer]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+[agents.fixer]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
+[agents.planner]
+reasoning_effort = "low"
+temperature = 1.0
+top_p = 0.95
+top_k = 64
 [agents.eval]
 sets = ["examples/eval/assistant.yaml",     # el asistente (necesita el modelo)
         "examples/eval/retrieval.yaml"]     # el índice y el grafo, sin modelo

@@ -1,4 +1,5 @@
 import os
+
 import pytest
 from atlas.config import ConfigError, load_config
 
@@ -54,6 +55,13 @@ def test_unknown_key_fails_with_context(toml):
     assert "[pipeline]" in str(e.value) and "workerz" in str(e.value)
 
 
+def test_keys_without_effect_are_gone_and_attributes_are_names(toml):
+    with pytest.raises(ConfigError, match="unknown key: 'summaries'"):       # [sources.code] summaries, before 0.3
+        load_config(toml('[sources.code]\nroots = []\nsummaries = "none"'))
+    from atlas.graph.knowledge import display_attributes
+    assert display_attributes(load_config(toml())) == ["status", "verification"]
+
+
 def test_search_settings(toml):
     cfg = load_config(toml('[search]\nresults = 12'))
     assert cfg["search"]["results"] == 12 and cfg["search"]["scope"] == "auto"          # the rest by default
@@ -63,6 +71,46 @@ def test_search_settings(toml):
         load_config(toml('[search]\nresults = 0'))
     # what search and ask take changes nothing of the index
     assert load_config(toml('[search]\nresults = 3')).fingerprint("index") == cfg.fingerprint("index")
+    assert cfg["search"]["rrf_k"] == 60 and cfg["search"]["weights"] == {"ids": 1.0, "dense": 1.0, "lexical": 1.0,
+                                                                           "keywords": 1.0}
+    cfg = load_config(toml('[search]\nrrf_k = 20\nweights = {dense = 1.5, lexical = 0}'))
+    assert cfg["search"]["rrf_k"] == 20 and cfg["search"]["weights"] == {"dense": 1.5, "lexical": 0}
+    with pytest.raises(ConfigError, match=r"\[search.weights\] unknown list: 'bm25'"):
+        load_config(toml('[search]\nweights = {bm25 = 1.0}'))
+    with pytest.raises(ConfigError, match=r"'dense' must be a number, 0 or more"):
+        load_config(toml('[search]\nweights = {dense = -1}'))
+    with pytest.raises(ConfigError, match="'rrf_k' must be at least 1"):
+        load_config(toml('[search]\nrrf_k = 0'))
+    cfg = load_config(toml('[search.rewrite]\nmodel = "small"\nreasoning_effort = "none"'))
+    assert cfg["search"]["rewrite"] == {"model": "small", "reasoning_effort": "none"} and cfg["search"]["answer"] == {}
+    with pytest.raises(ConfigError, match=r"\[search.answer\] unknown key: 'temperature'"):
+        load_config(toml('[search.answer]\ntemperature = 0.5'))
+    with pytest.raises(ConfigError, match=r"\[search.rewrite\] 'model' must be of type str"):
+        load_config(toml('[search.rewrite]\nmodel = 3'))
+
+
+def test_matrix_settings(toml):
+    cfg = load_config(toml('[graph]\ncommunities = true'))
+    assert cfg["graph"]["matrix_formats"] == ["csv", "md", "json"] and cfg["graph"]["csv_delimiter"] == ";"
+    with pytest.raises(ConfigError, match="unknown matrix_formats \\['docx'\\]"):
+        load_config(toml('[graph]\nmatrix_formats = ["csv", "docx"]'))
+    with pytest.raises(ConfigError, match="csv_delimiter must be one character"):
+        load_config(toml('[graph]\ncsv_delimiter = ";;"'))
+
+
+def test_link_semantics(toml):
+    conv = "link_semantics = "               # the extra of toml() goes inside [sources.doors.convention]
+    cfg = load_config(toml(conv + '{ derives = ["satisfies"], verifies = ["verifies"], ignore = ["references"] }'))
+    assert cfg["sources"]["doors"]["convention"]["link_semantics"]["derives"] == ["satisfies"]
+    with pytest.raises(ConfigError, match="unknown key 'tests'"):
+        load_config(toml(conv + '{ tests = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="'verifies' is in derives and in verifies"):
+        load_config(toml(conv + '{ derives = ["verifies"], verifies = ["verifies"] }'))
+    with pytest.raises(ConfigError, match="must be a list"):
+        load_config(toml(conv + '{ derives = "satisfies" }'))
+    assert load_config(toml('top_modules = ["SSS"]'))["sources"]["doors"]["convention"]["top_modules"] == ["SSS"]
+    with pytest.raises(ConfigError, match="top_modules must be a list"):
+        load_config(toml('top_modules = "SSS"'))
 
 
 def test_wrong_type(toml):
@@ -122,3 +170,96 @@ def test_check_masks_the_credentials_of_urls():
     text = describe(ServiceConfig(base_url="https://jane:Secret1@gateway/v1", model="m", api_key="sk-0123456789",
                                   net=NetConfig(proxy="http://jane:Secret1@proxy:8080", no_proxy="")))
     assert "Secret1" not in text and "sk-0123456789" not in text and "gateway/v1" in text
+
+
+def test_paths_are_relative_to_the_toml_wherever_atlas_runs(tmp_path, monkeypatch):
+    """Config.resolve: a relative path from the folder of atlas.toml, an absolute one as it
+    is. Config.relative: the name of a file for the engine, relative to that folder when it
+    is inside it (what the versions that ran there stored) and absolute when it is not."""
+    project = tmp_path / "project"
+    project.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    monkeypatch.chdir(tmp_path / "elsewhere")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    p = project / "atlas.toml"
+    p.write_text('[project]\nworkspace = "ws"\n', encoding="utf-8")
+    cfg = load_config(p)
+    home = p.resolve().parent
+    assert cfg.home == home and cfg.workspace == home / "ws"
+    assert cfg.resolve("docs") == home / "docs" and cfg.resolve("./src/../docs") == home / "docs"
+    assert cfg.resolve(tmp_path / "x") == tmp_path / "x" and cfg.resolve("~/x") == tmp_path / "x"
+    assert cfg.resolve("tools/*/bin") == home / "tools" / "*" / "bin"            # a glob stays a glob
+    assert cfg.relative("docs/a.pdf") == os.path.join("docs", "a.pdf")
+    assert cfg.relative(home / "docs" / "a.pdf") == os.path.join("docs", "a.pdf")
+    outside = os.path.abspath(home.parent / "other" / "a.pdf")
+    assert cfg.relative("../other/a.pdf") == outside and cfg.relative(outside) == outside
+
+
+def test_the_synonyms_file_is_checked(tmp_path):
+    from atlas.config import ConfigError, load_config
+    toml = tmp_path / "atlas.toml"
+    toml.write_text('[search]\nsynonyms = "synonyms.toml"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="cannot read"):
+        load_config(toml)
+    syn = tmp_path / "synonyms.toml"
+    syn.write_text('[[groups]]\nterms = ["track"]\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="group 1 of synonyms.toml needs terms"):
+        load_config(toml)
+    syn.write_text('[[groups]]\nterms = ["track", "traza"]\n', encoding="utf-8")
+    cfg = load_config(toml)                                     # relative to atlas.toml
+    assert cfg["search"]["synonyms"] == str(syn.resolve())
+    assert cfg["index"]["fts_tokenizer"] == "unicode61 remove_diacritics 2"
+    toml.write_text('[index]\nfts_tokenizer = " "\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="fts_tokenizer"):
+        load_config(toml)
+
+
+def test_the_model_of_each_source(toml, tmp_path):
+    """model = "none" keeps the text of a source away from every model: its documents are
+    analysed with regex, and asking for the model is an error."""
+    from atlas.outbound import LocalOnly
+    cfg = load_config(toml('''
+[[sources.docs]]
+name = "client"
+paths = ["x"]
+model = "none"
+[[sources.docs]]
+name = "ours"
+paths = ["y"]
+[sources.code]
+model = "none"
+'''))
+    assert cfg["sources"]["docs"][0]["analysis"] == "regex" and "analysis" not in cfg["sources"]["docs"][1]
+    local = LocalOnly.from_config(cfg)
+    assert local.source("client") and not local.source("ours") and local.code and not local.module("SRS_TMS")
+    assert local.index_doc("client:x/a.pdf") and local.index_doc("code:tracks") and not local.index_doc("ours:y/b.md")
+    assert local.describe() == ["docs:client", "code"] and not LocalOnly()
+
+    def alone(text: str):                   # the fixture has its own [sources.doors]
+        (tmp_path / "alone.toml").write_text(text, encoding="utf-8")
+        return load_config(tmp_path / "alone.toml")
+
+    doors = LocalOnly.from_config(alone('[sources.doors]\nlocal_only = ["SSS_MISSION"]'))
+    assert doors.index_doc("doors:SSS_MISSION") and not doors.index_doc("doors:SRS_TMS")
+    assert LocalOnly.from_config(alone('[sources.doors]\nmodel = "none"')).module("SRS_TMS")
+    for text, error in (('[[sources.docs]]\nname = "a"\npaths = ["x"]\nmodel = "none"\nanalysis = "llm"',
+                         'cannot be "llm"'),
+                        ('[sources.code]\nmodel = "local"', "model must be one of full, none"),
+                        ('[sources.doors]\nlocal_only = "SRS_TMS"', "must be a list"),
+                        ('[sources.doors]\nlocal_only = [3]', "list of module names")):
+        with pytest.raises(ConfigError, match=error):
+            alone(text)
+
+
+def test_the_context_of_the_model_sizes_what_search_reads(toml):
+    from atlas.config import search_budget
+    cfg = load_config(toml('[llm]\ncontext_tokens = 200000\nmax_tokens = 8192\n'))
+    assert cfg["search"]["scope_chars"] == search_budget(200000, 8192) == 460339
+    assert cfg["search"]["context_chars"] == 14000                       # passages: never more than before
+    small = load_config(toml('[llm]\ncontext_tokens = 4096\nmax_tokens = 1024\n'))
+    assert small["search"]["scope_chars"] == small["search"]["context_chars"] == 7372
+    given = load_config(toml('[llm]\ncontext_tokens = 4096\n[search]\nscope_chars = 50000\n'))
+    assert given["search"]["scope_chars"] == 50000 and given["search"]["context_chars"] == 9830
+    assert load_config(toml())["search"]["scope_chars"] == 100000          # unknown context: as before
+    with pytest.raises(ConfigError, match="context_tokens"):
+        load_config(toml('[llm]\ncontext_tokens = 1000\nmax_tokens = 8192\n'))

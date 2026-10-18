@@ -7,6 +7,7 @@ Each document is indexed at several granularities, each one a `kind`:
     section_summary   summary and key points of each section
     chunk             ~chunk_chars pieces of the text of each section, with overlap
     requirement       each requirement, with its ID in `ref`
+    table             each table of a section (Markdown rows), with its caption
     definition        each glossary term, with the term in `ref`
     open_issue        each TBD / TBC
 
@@ -21,6 +22,12 @@ A code unit (an Ada package: its spec and its body) is one more document too: ea
 subprogram, test, type, variable and constant is a `code_doc` record, with its qualified
 name (`tracks.delete_track`) in `ref` and, as text, its header comment, the requirements it
 cites and its code.
+
+Each record also has `meta`, what a search can be narrowed by (keys in lower case, values
+as text): in a DOORS module, `module` and the attributes of [sources.doors] attributes
+(`status`, `verification` by default), which also go in its text, so that they weigh in the
+search too; `chapter`, the first heading of its path, in every record that has one; in a
+code unit, `kind` (subprogram | test | type | variable | constant) and `file`.
 """
 from __future__ import annotations
 
@@ -28,31 +35,103 @@ import re
 from pathlib import Path
 from typing import Iterable
 
-__all__ = ["CODE_PREFIX", "DOORS_PREFIX", "KINDS", "build_records", "chunk_text", "code_records", "reflow",
-           "requirement_records"]
+from atlas.docs.structure import TABLE_ROW, TABLE_RULE, tables_in
+
+__all__ = ["ATTRIBUTES", "CODE_PREFIX", "DOORS_PREFIX", "KINDS", "asks_for", "build_records", "chunk_text",
+           "code_records", "reflow", "requirement_records", "table_pieces"]
 
 DOORS_PREFIX = "doors:"     # key of a DOORS module in the index: "doors:SRS_TMS"
 CODE_PREFIX = "code:"       # key of a code unit in the index: "code:tracks"
-KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc")
+KINDS = ("overview", "section_summary", "chunk", "requirement", "definition", "open_issue", "code_doc", "table")
+ATTRIBUTES = ("status", "verification")     # [sources.doors] attributes by default
+
+# a line that starts a new line even inside a paragraph: a bullet, a numbered step, a table row
+LIST_ITEM = re.compile(r"^(?:[-•*▪◦‣–]\s|\(?\d{1,3}[.)]\s|[a-z]\)\s)")
+
+
+def _is_table(par: str) -> bool:
+    return all(TABLE_ROW.match(l) for l in par.split("\n"))
+
+
+def asks_for(wanted: str, title: str) -> bool:
+    """Whether `wanted` names a section or chapter with that title: the whole title, its
+    number ("3", "2.1") or the title without its number, in any case."""
+    norm = lambda t: " ".join(str(t).split()).lower().rstrip(".")
+    wanted, title = norm(wanted), norm(title)
+    number, _, rest = title.partition(" ")
+    names = {title} | ({number, rest} if re.fullmatch(r"(\d+|[a-z])(\.\d+)*", number) and rest else set())
+    return bool(wanted) and wanted in names
+
+
+def _chapter(path: list[str] | str) -> dict:
+    """The meta of a record with that path: its first element, the chapter."""
+    first = (path.split(" > ")[0] if isinstance(path, str) else (path or [""])[0]).strip()
+    return {"chapter": first} if first else {}
 
 
 def reflow(text: str) -> str:
-    """Joins the lines broken by the PDF inside each paragraph."""
-    pars = [" ".join(l.strip() for l in p.split("\n") if l.strip()) for p in re.split(r"\n\s*\n", text)]
-    return "\n\n".join(p for p in pars if p)
+    """Joins the lines broken by the PDF inside each paragraph, except before a bullet, a
+    numbered step or a table row ("| c1 | c2 |"), which keep their line."""
+    pars = []
+    for p in re.split(r"\n\s*\n", text):
+        lines: list[str] = []
+        for l in (l.strip() for l in p.split("\n")):
+            if not l:
+                continue
+            if lines and not (LIST_ITEM.match(l) or TABLE_ROW.match(l) or TABLE_ROW.match(lines[-1])):
+                lines[-1] += " " + l
+            else:
+                lines.append(l)
+        pars += [x for x in _split_tables(lines) if x]
+    return "\n\n".join(pars)
+
+
+def _split_tables(lines: list[str]) -> list[str]:
+    """The lines of a paragraph, with each run of table rows as a paragraph of its own."""
+    out, run, table = [], [], None
+    for l in lines:
+        row = bool(TABLE_ROW.match(l))
+        if run and row != table:
+            out.append("\n".join(run))
+            run = []
+        run.append(l)
+        table = row
+    if run:
+        out.append("\n".join(run))
+    return out
+
+
+def table_pieces(table: str, size: int) -> list[str]:
+    """A table in pieces of ~size characters by rows, each one with the header row (and
+    its "|---|" line) in front. A row is never split, however long."""
+    rows = table.split("\n")
+    head = rows[:2] if len(rows) > 1 and TABLE_RULE.match(rows[1]) else rows[:1]
+    pieces, buf = [], []
+    for r in rows[len(head):]:
+        if buf and len("\n".join(head + buf + [r])) > size:
+            pieces.append("\n".join(head + buf))
+            buf = []
+        buf.append(r)
+    if buf or not pieces:
+        pieces.append("\n".join(head + buf))
+    return pieces
 
 
 def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list[str]:
-    """Pieces of ~size characters by paragraphs and sentences, with overlap."""
+    """Pieces of ~size characters by paragraphs and sentences, with overlap. A table is
+    never split inside a row: a large one goes in pieces by rows that repeat its header,
+    and the overlap never takes part of a table."""
     units = []
     for par in reflow(text).split("\n\n"):
-        if len(par) <= size:
-            units.append(par)
+        if _is_table(par):
+            units += [(t, True) for t in table_pieces(par, size)]
+        elif len(par) <= size:
+            units.append((par, False))
         else:
-            units.extend(re.split(r"(?<=[.;:!?])\s+", par))
-    chunks, buf = [], ""
-    for u in units:
-        while len(u) > size:                       # huge sentence (flattened table)
+            units += [(x, False) for x in re.split(r"(?<=[.;:!?])\s+", par)]
+    chunks, buf, last_table, last_lines = [], "", False, False
+    for u, table in units:
+        while len(u) > size and not table:         # huge sentence
             if buf:
                 chunks.append(buf)
                 buf = ""
@@ -60,10 +139,13 @@ def chunk_text(text: str, size: int = 1200, overlap: int = 200) -> list[str]:
             u = u[size - overlap:]
         if buf and len(buf) + len(u) + 1 > size:
             chunks.append(buf)
-            tail = buf[-overlap:]
+            tail = "" if table or last_table else buf[-overlap:]
             m = re.search(r"[.;:!?]\s+", tail)          # the overlap starts at a whole sentence
             buf = tail[m.end():] if m else (tail[tail.find(" ") + 1:] if " " in tail else "")
-        buf = f"{buf} {u}".strip() if buf else u
+        # paragraphs joined in one line, unless one keeps its lines (a list, a table)
+        sep = "\n\n" if table or last_table else "\n" if last_lines or "\n" in u else " "
+        buf = f"{buf}{sep}{u}".strip() if buf else u
+        last_table, last_lines = table, "\n" in u
     if buf:
         chunks.append(buf)
     return chunks
@@ -85,7 +167,8 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
         a = s.get("analysis") or {}
         path = " > ".join(s.get("path") or [s["title"]])
         base = {"section_id": s["id"], "section_title": s["title"], "path": path,
-                "page_start": s.get("page_start") or 0, "page_end": s.get("page_end") or 0}
+                "page_start": s.get("page_start") or 0, "page_end": s.get("page_end") or 0,
+                "meta": _chapter(s.get("path") or [s["title"]])}
         header = f"{title} > {path}"
 
         if a.get("summary"):
@@ -94,17 +177,30 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
 
         # contextual retrieval: each chunk is embedded with its path and its section summary
         context = f"{header}\n{a.get('summary', '')}".strip()
-        for k, ch in enumerate(chunk_text(s.get("body", ""), chunk_chars, chunk_overlap)):
+        body = s.get("body", "")
+        tables = tables_in(body)
+        if tables and (kinds is None or "table" in kinds):
+            # the tables are records of their own, with the path and the caption: not in the chunks
+            body = "\n".join(l for l in body.split("\n") if not TABLE_ROW.match(l.strip()))
+            seq = 0
+            for t in tables:
+                for piece in table_pieces(t["text"], chunk_chars):
+                    text = f"{t['caption']}\n{piece}" if t["caption"] else piece
+                    records.append({**base, "kind": "table", "seq": seq, "text": text,
+                                    "embed_text": f"{header}\n{text}"})
+                    seq += 1
+        for k, ch in enumerate(chunk_text(body, chunk_chars, chunk_overlap)):
             records.append({**base, "kind": "chunk", "seq": k, "text": ch, "embed_text": f"{context}\n\n{ch}"})
 
     for r in data.get("requirements", []):
         sec = next((s for s in data["sections"] if s["id"] == r["section"]), {})
         text = (f"{r['id']}: " if r["id"] else "") + r["text"]
+        path = " > ".join(sec.get("path", []))
         records.append({"kind": "requirement", "ref": r["id"], "text": text,
-                        "section_id": r["section"], "section_title": r.get("section_title", ""),
-                        "path": " > ".join(sec.get("path", [])),
+                        "section_id": r["section"], "section_title": r.get("section_title", ""), "path": path,
                         "page_start": sec.get("page_start") or 0, "page_end": sec.get("page_end") or 0,
-                        "embed_text": f"{title} > requirement\n{text}"})
+                        "meta": _chapter(sec.get("path", [])),
+                        "embed_text": f"{title} > {path + ' > ' if path else ''}requirement\n{text}"})
     titles = {s["id"]: s["title"] for s in data["sections"]}
     for g in data.get("glossary", []):
         text = f"{g['term']}: {' / '.join(g['definitions'][:3])}"
@@ -122,11 +218,20 @@ def build_records(data: dict, chunk_chars: int = 1200, chunk_overlap: int = 200,
     return records
 
 
-def requirement_records(module: str, requirements: list[dict], kinds: Iterable[str] | None = None) -> list[dict]:
+def requirement_records(module: str, requirements: list[dict], kinds: Iterable[str] | None = None,
+                        attributes: Iterable[str] = ATTRIBUTES) -> list[dict]:
     """Records of a DOORS module from its rows in atlas.db (Store.requirements): one
     `requirement` per requirement, with its ID in `ref`, and one `chunk` per information
-    object. The headings above each one are its path; the nearest, its section."""
+    object. The headings above each one are its path; the nearest, its section. The
+    `attributes` a requirement has (by name, in any case) go in its meta and, as a line
+    "status: Approved; verification: Test", in its text."""
     by_id = {r["id"]: r for r in requirements}
+    attributes = list(dict.fromkeys(attributes))
+
+    def shown(r: dict) -> list[tuple[str, str]]:
+        values = {str(k).lower(): v for k, v in (r.get("attributes") or {}).items()}
+        return [(a, str(values[a.lower()]).strip()) for a in attributes
+                if values.get(a.lower()) is not None and str(values[a.lower()]).strip()]
     kind_of = lambda r: (r.get("attributes") or {}).get("kind", "requirement")
 
     def title(r: dict) -> str:
@@ -146,14 +251,16 @@ def requirement_records(module: str, requirements: list[dict], kinds: Iterable[s
         above.reverse()
         path = " > ".join(title(h) for h in above)
         base = {"section_id": above[-1]["id"] if above else "", "section_title": title(above[-1]) if above else "",
-                "path": path}
+                "path": path, "meta": {"module": module, **_chapter([title(h) for h in above])}}
         header = " > ".join(x for x in (module, path) if x)
         if kind_of(r) == "information":
             records.append({**base, "kind": "chunk", "seq": 0, "text": r["text"],
                             "embed_text": f"{header}\n\n{r['text']}"})
         else:
-            text = f"{r['id']}: {r['text']}"
+            values = shown(r)
+            text = f"{r['id']}: {r['text']}" + ("\n" + "; ".join(f"{a}: {v}" for a, v in values) if values else "")
             records.append({**base, "kind": "requirement", "ref": r["id"], "text": text,
+                            "meta": {**{a.lower(): v for a, v in values}, **base["meta"]},
                             "embed_text": f"{header} > requirement\n{text}"})
     if kinds is not None:
         wanted = set(kinds)
@@ -167,11 +274,13 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
     as a dict; an Ada package has its spec and its body): one `code_doc` per subprogram,
     test, type, variable and constant. The comment of a subprogram is the one of its
     declaration in the spec, if there is one; its code, the body (up to chunk_chars
-    characters). `sources` has the text of each file and `tests` the files that are tests."""
+    characters; an overloaded name, all its bodies). `sources` has the text of each file and
+    `tests` the files that are tests."""
     if kinds is not None and "code_doc" not in set(kinds):
         return []
     tests = set(tests)
     elements: dict[str, dict] = {}
+    overloads: set[tuple[str, str]] = set()        # (name, file) of the bodies already read
 
     def element(name: str, kind: str) -> dict:
         return elements.setdefault(name, {"name": name, "kind": kind, "doc": "", "reqs": [], "where": "", "code": ""})
@@ -194,8 +303,14 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
             e = element(sp["name"], "subprogram")
             e["kind"] = "test" if file in tests else e["kind"]
             merge(e, sp)
+            body = lines(file, sp["start_line"], sp["end_line"])
+            if (e["name"], file) in overloads:            # another body of the same name: both go
+                e["where"] += f", {sp['start_line']}-{sp['end_line']}"
+                e["code"] = f"{e['code']}\n{body}" if body else e["code"]
+                continue
+            overloads.add((e["name"], file))
             e["where"] = f"{name}:{sp['start_line']}-{sp['end_line']}"
-            e["code"] = lines(file, sp["start_line"], sp["end_line"]) or e["code"]
+            e["code"] = body or e["code"]
         for t in part.get("types", []):
             e = element(t["name"], "type")
             merge(e, t)
@@ -214,6 +329,7 @@ def code_records(unit: str, parts: list[dict], sources: dict[str, str], tests: I
         unsaid = [r for r in e["reqs"] if r not in e["doc"] and r not in code]      # the Req: tag usually says them
         body = "\n".join(x for x in (e["doc"], f"Requirements: {', '.join(unsaid)}" if unsaid else "", code) if x)
         records.append({"kind": "code_doc", "ref": ref, "section_id": ref, "section_title": f"{ref} · {e['where']}",
-                        "path": unit, "seq": n, "text": f"{ref} ({e['kind']}, {e['where']})\n{body}",
+                        "path": unit, "seq": n, "meta": {"kind": e["kind"], "file": e["where"].split(":")[0]},
+                        "text": f"{ref} ({e['kind']}, {e['where']})\n{body}",
                         "embed_text": f"{language} unit {unit} > {e['kind']} {ref}\n{body}"})
     return records

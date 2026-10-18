@@ -24,11 +24,13 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
+from atlas.docs.structure import tables_in
 from atlas.llm.structured import JsonLlm, TruncatedResponse
 from atlas.pipeline import atomic_write
 
-__all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "analyze_section", "consolidate",
-           "empty_overview", "normalize", "overview", "regex_requirements", "section_cache_file", "verify"]
+__all__ = ["ANALYSES", "DEFAULT_REQ_REGEX", "PROMPT_VERSION", "add_requirements", "analyze_section", "consolidate",
+           "empty_overview", "is_cached", "normalize", "overview", "overview_cache_file", "regex_requirements",
+           "section_cache_file", "table_requirements", "verify"]
 
 log = logging.getLogger(__name__)
 
@@ -229,11 +231,12 @@ def _analyze_text(llm: JsonLlm, s: dict, body: str, doc_title: str, lang: str,
 
 
 def analyze_section(llm: JsonLlm, s: dict, doc_title: str, lang: str = "", cache: Path | None = None,
-                    failures: Path | None = None) -> dict:
-    """Analysis of a section with the model, from the cache if it is there. `failures`
-    is a folder where the invalid answers of the model are kept for diagnosis."""
+                    failures: Path | None = None, shared=None) -> dict:
+    """Analysis of a section with the model, from the cache if it is there (or from the
+    shared cache, atlas.cache.SharedCache, which is only read). `failures` is a folder
+    where the invalid answers of the model are kept for diagnosis."""
     file = section_cache_file(cache, llm.model, s, doc_title, lang)
-    cached = _read_cache(file)
+    cached = _read_cache(file, shared)
     if cached is not None:
         return cached
     result = _analyze_text(llm, s, s["body"], doc_title, lang, failures)
@@ -242,11 +245,23 @@ def analyze_section(llm: JsonLlm, s: dict, doc_title: str, lang: str = "", cache
     return result
 
 
-def _read_cache(file: Path | None) -> dict | None:
+def _read_cache(file: Path | None, shared=None) -> dict | None:
     """A cached analysis, or None if there is none. A damaged file (written by a version
-    that did not write atomically and was cut) counts as missing."""
-    if not file or not file.exists():
+    that did not write atomically and was cut) counts as missing. Without a local file,
+    the one of the same name in the shared cache, if any, which is copied to the local
+    cache (the shared one is never written)."""
+    if not file:
         return None
+    if not file.exists():
+        content = shared.analysis(file.name) if shared is not None else None
+        if content is None:
+            return None
+        try:
+            data = json.loads(content)
+        except ValueError:
+            return None
+        atomic_write(file, content)
+        return data
     try:
         return json.loads(file.read_text(encoding="utf-8"))
     except (ValueError, OSError) as e:
@@ -254,17 +269,37 @@ def _read_cache(file: Path | None) -> dict | None:
         return None
 
 
-def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
-             max_chars: int = 12000, cache: Path | None = None) -> dict:
-    """Overview of the whole document from the section summaries. Hierarchical: if the
-    summaries do not fit in one request, they are summarised in groups first."""
-    items = [f"[{s['title']}] {s['analysis']['summary']}" for s in sections if s["analysis"]["summary"]]
-    key = hashlib.sha256(f"{PROMPT_VERSION}|{llm.model}|{lang}|{doc_title}|{items}"
+def _overview_items(sections: list[dict]) -> list[str]:
+    return [f"[{s['title']}] {s['analysis']['summary']}" for s in sections if s["analysis"]["summary"]]
+
+
+def overview_cache_file(cache: Path | None, model: str, sections: list[dict], doc_title: str,
+                        lang: str) -> Path | None:
+    """Cache file of the overview of a document: it depends on the summaries of its
+    sections (so they must be analysed), the title, the model, the language and
+    PROMPT_VERSION."""
+    if not cache:
+        return None
+    key = hashlib.sha256(f"{PROMPT_VERSION}|{model}|{lang}|{doc_title}|{_overview_items(sections)}"
                          .encode("utf-8")).hexdigest()[:20]
-    file = Path(cache) / f"overview_{key}.json" if cache else None
-    cached = _read_cache(file)
+    return Path(cache) / f"overview_{key}.json"
+def is_cached(file: Path | None, shared=None) -> bool:
+    """Whether the analysis of `file` is in the local cache or in the shared one."""
+    return bool(file) and (file.exists() or (shared is not None and shared.has_analysis(file.name)))
+
+
+def overview(llm: JsonLlm, sections: list[dict], doc_title: str, lang: str = "",
+             max_chars: int = 12000, cache: Path | None = None, shared=None, sent: list | None = None) -> dict:
+    """Overview of the whole document from the section summaries. Hierarchical: if the
+    summaries do not fit in one request, they are summarised in groups first. `sent`, a
+    list, gets an item when the model is asked (not from the cache)."""
+    items = _overview_items(sections)
+    file = overview_cache_file(cache, llm.model, sections, doc_title, lang)
+    cached = _read_cache(file, shared)
     if cached is not None:
         return cached
+    if sent is not None and items:
+        sent.append(doc_title)
     result = _overview(llm, items, doc_title, lang, max_chars)
     if file:
         atomic_write(file, json.dumps(result, ensure_ascii=False, indent=1))
@@ -298,25 +333,63 @@ def _overview(llm: JsonLlm, items: list[str], doc_title: str, lang: str, max_cha
 _SENTENCE_END = re.compile(r"[.!?][\"')\]]*\s*$")
 
 
-def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
+# What may come between the IDs of one statement: "SRS-0004, SRS-0005", "SRS-0004 / SRS-0005",
+# "SRS-0004 and SRS-0005", "[SRS-0002]:"
+_CLOSING = re.compile(r"[\])}]*")
+_BETWEEN_IDS = re.compile(r"(?:[\s,;/&:()\[\]]|\b(?:and|or|y|o)\b)*", re.IGNORECASE)
+
+
+def _leading_ids(body: str, start: int, ids: re.Pattern) -> tuple[list[str], int]:
+    """The IDs written one after the other from `start` (only separators between them), and
+    where the text after them starts. None at the start: the first ID of the rest of the
+    line after a word or two ("Req: see SRS-0004"), not one that the statement cites ("Req:
+    The TMF shall log as SRS-0100 says")."""
+    found, pos = [], start
+    while True:
+        gap = _BETWEEN_IDS.match(body, pos)
+        m = ids.match(body, gap.end())
+        if not m or m.end() == m.start():
+            break
+        found.append(m.group(0))
+        pos = m.end()
+    if not found:
+        line_end = body.find("\n", start)
+        m = ids.search(body, start, len(body) if line_end < 0 else line_end)
+        if m and len(body[start:m.start()].split()) <= 2:
+            found, pos = [m.group(0)], m.end()
+    return found, _CLOSING.match(body, pos).end()      # "[SRS-0002]: The TMF..." -> ": The TMF..."
+
+
+def regex_requirements(body: str, pattern: re.Pattern | str, ids: re.Pattern | str | None = None) -> list[dict]:
     """Requirements marked by a regular expression, without a model.
 
     Each match starts a requirement. Its ID is the first word of group 1 (without
     brackets or punctuation); without groups, it has no ID and the text starts at the
-    match. The text runs from the ID to the next match, a blank line or the end of a line
-    that closes a sentence, whichever comes first, with the lines joined. A blank line
-    does not end an unfinished sentence that goes on in lower case after it (a page break
-    in the middle of the sentence)."""
+    match. With `ids` (the expression of an ID, from [sources.doors.convention]), its IDs
+    are the ones written one after the other from group 1 ("Req: SRS-0004 and SRS-0005 The
+    TMF shall..." gives the same requirement twice, one per ID), or the first one of group 1
+    if it does not start with one. The text runs from the IDs to the next match, a blank
+    line or the end of a line that closes a sentence, whichever comes first, with the lines
+    joined. A blank line does not end an unfinished sentence that goes on in lower case
+    after it (a page break in the middle of the sentence)."""
     pattern = re.compile(pattern) if isinstance(pattern, str) else pattern
+    ids = re.compile(ids) if isinstance(ids, str) and ids else (ids or None)
     matches = list(pattern.finditer(body))
     out = []
     for k, m in enumerate(matches):
-        if pattern.groups and (m.group(1) or "").split():
+        rids = [""]
+        if pattern.groups and ids is not None and m.group(1) is not None:
+            found, start = _leading_ids(body, m.start(1), ids)
+            if found:
+                rids = list(dict.fromkeys(found))
+            else:
+                start = m.start(1)
+        elif pattern.groups and (m.group(1) or "").split():
             token = m.group(1).split()[0]
-            rid = token.strip(".,;:()[]")
+            rids = [token.strip(".,;:()[]")]
             start = m.start(1) + m.group(1).find(token) + len(token)
         else:
-            rid, start = "", m.start()
+            start = m.start()
         end = matches[k + 1].start() if k + 1 < len(matches) else len(body)
         lines: list[str] = []
         chunk = body[start:end].split("\n")
@@ -336,8 +409,46 @@ def regex_requirements(body: str, pattern: re.Pattern | str) -> list[dict]:
             i += 1
         text = " ".join(lines).lstrip(" -–—:")
         if text:
-            out.append({"id": rid, "text": text})
+            out.extend({"id": rid, "text": text} for rid in rids)
     return out
+
+
+def table_requirements(body: str, columns: dict) -> list[dict]:
+    """One requirement per row of each Markdown table of the section whose header has the
+    columns of `columns` ({"id": "ID", "text": "Requirement"}, any case): the ID is the
+    first word of its cell, the text the cell of `text`. Rows without text are skipped."""
+    want_id, want_text = (str(columns.get(k, "")).strip().lower() for k in ("id", "text"))
+    out = []
+    for t in tables_in(body):
+        header = [h.lower() for h in t["header"]]
+        if want_id not in header or want_text not in header:
+            continue
+        i, j = header.index(want_id), header.index(want_text)
+        for row in t["rows"]:
+            text = " ".join(row[j].split()) if j < len(row) else ""
+            rid = row[i].split()[0].strip(".,;:()[]") if i < len(row) and row[i].split() else ""
+            if text:
+                out.append({"id": rid, "text": text})
+    return out
+
+
+def add_requirements(analysis: dict, extra: list[dict]) -> dict:
+    """`analysis` with the requirements of `extra` (the rows of the tables) that it does not
+    have: one whose ID it has is skipped, one whose text it has without an ID gives it that
+    ID, and the rest are added."""
+    reqs = [dict(r) for r in analysis["requirements"]]
+    ids = {r["id"].upper() for r in reqs if r["id"]}
+    without_id = {_canon(r["text"]): r for r in reqs if not r["id"]}
+    for r in extra:
+        if r["id"] and r["id"].upper() in ids:
+            continue
+        same = without_id.pop(_canon(r["text"]), None)
+        if same is not None:
+            same["id"] = r["id"]
+        elif r["id"] or _canon(r["text"]) not in {_canon(x["text"]) for x in reqs}:
+            reqs.append(dict(r))
+        ids.add(r["id"].upper())
+    return {**analysis, "requirements": reqs}
 
 
 # --------------------------------------------------------------------------

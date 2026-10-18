@@ -42,6 +42,7 @@ def legacy():
         sys.path.remove(str(LEGACY))
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("name", ["spec_with_bookmarks.pdf", "spec_without_bookmarks.pdf", "hmi_manual.md"])
 def test_same_result_as_pdf_struct(name, legacy, docs_samples, tmp_path, fake):
     ps, cx = legacy

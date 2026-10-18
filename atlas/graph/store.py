@@ -14,12 +14,13 @@ element a document mentions, when there is no code graph) is dropped with its ed
 from __future__ import annotations
 
 import json
-import sqlite3
 import threading
 from datetime import datetime
 from pathlib import Path
 
 import networkx as nx
+
+from atlas.db import connect
 
 __all__ = ["GraphStore", "export_graph", "to_mermaid"]
 
@@ -39,9 +40,7 @@ CREATE TABLE IF NOT EXISTS graph_builds (origin TEXT PRIMARY KEY, stats TEXT, bu
 class GraphStore:
     def __init__(self, path: str | Path):
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.db.execute("PRAGMA busy_timeout=30000")
+        self.db = connect(self.path)
         self.db.executescript(SCHEMA)
         self.lock = threading.RLock()
 

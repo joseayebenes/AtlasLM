@@ -4,17 +4,21 @@ go through the same proxy, TLS, request limit and retries as the rest of atlas.
 ADK speaks in google.genai types (Content, Part, FunctionCall, FunctionDeclaration); the
 servers atlas talks to (Ollama, vLLM, LM Studio, a gateway) speak the OpenAI chat API. This
 module translates one into the other: the conversation with its tool calls and results, and
-the tools with their JSON schema. One request per model turn, without streaming.
+the tools with their JSON schema. One request per model turn, streamed if the server allows it
+([llm] stream, atlas.llm.chat): the chunks are put together into one answer, so ADK sees no
+difference.
 
 A reasoning model can spend the whole max_tokens thinking and answer nothing (finish_reason
 "length", no text, no tool call); ADK would take that empty turn as the final answer and end
 the agent in silence. That turn is asked again with twice the max_tokens, at most RETRIES
 times, with a warning.
 
-A turn has at most [llm.network] timeout seconds in all, and is asked again when it takes
-longer (TURN_RETRIES times). The timeout of the HTTP client is between two reads, and a server
-that keeps the connection alive while the model works (OpenRouter sends blanks) never reaches
-it: a request of gemma-4-26b hung there for an hour, with the agent waiting.
+A turn is cut when nothing comes for [llm.network] idle_timeout seconds (streamed) or when it
+takes more than turn_timeout in all, and is asked again (TURN_RETRIES times): atlas.llm.chat
+watches the request and shuts its connection down, so nothing is left running in the gateway
+nor holding a slot of max_concurrent. The timeout of the HTTP client alone was not enough: it
+is between two reads, and a server that keeps the connection alive while the model works
+(OpenRouter sends blanks) never reaches it; a request of gemma-4-26b hung there for an hour.
 
 The reasoning of a turn comes back to ADK as a thought part, and goes back to the model in the
 next requests, in the assistant message of its tool calls ([llm] reasoning_field, "reasoning"
@@ -29,6 +33,16 @@ takes its place. JetBrains found this as good as summarizing with the model, at 
 (The Complexity Trap, 2025); in a run of atlas develop, the turns of a fix carried 55 000
 tokens of input, most of them old reads. The old results go in steps of MASK_STEP, so that the
 beginning of the conversation changes seldom (servers reuse the prompt they have seen).
+
+With [llm] context_tokens, a turn has to fit in the context of the model: before each one, its
+tokens are estimated (characters / 4, the tools included) and, if they go over context_tokens -
+max_tokens, the old tool results are left out with a smaller keep, MASK_STEP at a time, until
+it fits, with a warning. Without it, a long run of atlas develop went on sending turns that the
+server cut or rejected.
+
+Every tool result goes to the model inside <tool_result name="...">…</tool_result> (guard.py):
+what a tool returns (a requirement, a comment of the code, what a test printed) is data, and the
+mark says so, for the sentence of the agents (guard.DATA_RULE) to point at.
 """
 from __future__ import annotations
 
@@ -44,18 +58,21 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import ConfigDict, PrivateAttr
 
+from atlas.agents.guard import tool_result
 from atlas.llm import ServiceConfig, create_client
+from atlas.llm.chat import complete
 from atlas.llm.connection import reasoning_of
 from atlas.llm.structured import repair_json
 
-__all__ = ["AtlasLlm", "reasoning_of", "to_llm_response", "to_messages", "to_tools"]
+__all__ = ["AtlasLlm", "estimate_tokens", "fit_context", "reasoning_of", "to_llm_response", "to_messages",
+           "to_tools"]
 
 log = logging.getLogger(__name__)
 RETRIES = 2      # times an empty turn cut by max_tokens is asked again, doubling max_tokens
-TURN_RETRIES = 2  # times a turn that takes longer than [llm.network] timeout in all is asked again
 MASK_STEP = 5     # old tool results are left out in groups of this many
 SMALL_RESULT = 600   # characters of a tool result that always stays
 SHORT_FIELD = 120    # characters of a field of a left-out result that stays in its note
+CHARS_PER_TOKEN = 4  # the estimate of the tokens of a turn
 
 SCHEMA_KEYS = ("description", "enum", "required", "default", "format", "minimum", "maximum", "title")
 FINISH = {"stop": types.FinishReason.STOP, "tool_calls": types.FinishReason.STOP,
@@ -86,10 +103,13 @@ class AtlasLlm(BaseLlm):
 
     async def generate_content_async(self, llm_request: LlmRequest,
                                      stream: bool = False) -> AsyncGenerator[LlmResponse, None]:
-        kwargs = {"model": self.service.model,
-                  "messages": to_messages(llm_request, self.service.reasoning_field, self.keep_tool_results),
-                  "temperature": self.service.temperature}
         tools = to_tools(llm_request)
+        budget = self.service.context_tokens - (self.service.max_tokens or 0) if self.service.context_tokens else 0
+        kwargs = {"model": self.service.model,
+                  "messages": to_messages(llm_request, self.service.reasoning_field, self.keep_tool_results,
+                                          budget, len(json.dumps(tools, ensure_ascii=False)) if tools else 0,
+                                          self.service.context_tokens),
+                  "temperature": self.service.temperature}
         if tools:
             kwargs["tools"] = tools
         if self.service.max_tokens:
@@ -112,37 +132,32 @@ class AtlasLlm(BaseLlm):
         yield to_llm_response(response)
 
     async def _create(self, kwargs: dict) -> Any:
-        """One request to the model, at most [llm.network] timeout seconds in all, asked again
-        TURN_RETRIES times. The client is sync: it runs in a daemon thread, which a request that
-        hangs leaves behind without holding the agent or the end of the process."""
-        limit = self.service.net.timeout or None
-        for attempt in range(TURN_RETRIES + 1):
-            loop, done = asyncio.get_running_loop(), None
-            done = loop.create_future()
+        """One turn of the model, bounded and asked again by atlas.llm.chat (see the module). The
+        client is sync: it runs in a thread of its own, which ends with the turn; if the agent
+        is cancelled, the request is cut at once."""
+        loop, cancel = asyncio.get_running_loop(), threading.Event()
+        done = loop.create_future()
 
-            def settle(ok: bool, value: Any) -> None:
-                if not done.done():
-                    done.set_result(value) if ok else done.set_exception(value)
+        def settle(ok: bool, value: Any) -> None:
+            if not done.done():
+                done.set_result(value) if ok else done.set_exception(value)
 
-            def work() -> None:
-                try:
-                    result = (True, self.client.chat.completions.create(**kwargs))
-                except BaseException as e:            # to the agent, as if it were raised here
-                    result = (False, e)
-                try:
-                    loop.call_soon_threadsafe(settle, *result)
-                except RuntimeError:                  # the loop is gone: nobody waits for it
-                    pass
-
-            threading.Thread(target=work, daemon=True, name="atlas-llm-turn").start()
+        def work() -> None:
             try:
-                return await asyncio.wait_for(done, limit)
-            except asyncio.TimeoutError:
-                if attempt == TURN_RETRIES:
-                    raise TimeoutError(f"the model {self.service.model} did not answer in {limit:g} s, "
-                                       f"{TURN_RETRIES + 1} times ([llm.network] timeout)") from None
-                log.warning("the model %s did not answer in %g s ([llm.network] timeout): asking again",
-                            self.service.model, limit)
+                result = (True, complete(self.client, self.service, kwargs, cancel=cancel))
+            except BaseException as e:            # to the agent, as if it were raised here
+                result = (False, e)
+            try:
+                loop.call_soon_threadsafe(settle, *result)
+            except RuntimeError:                  # the loop is gone: nobody waits for it
+                pass
+
+        threading.Thread(target=work, daemon=True, name="atlas-llm-turn").start()
+        try:
+            return await done
+        except asyncio.CancelledError:
+            cancel.set()
+            raise
 
 
 def _empty_and_cut(response: Any) -> bool:
@@ -166,12 +181,15 @@ def _text(value: Any) -> str:
     return str(getattr(value, "text", "") or "")
 
 
-def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_tool_results: int = 0) -> list[dict]:
+def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_tool_results: int = 0,
+                budget_tokens: int = 0, extra_chars: int = 0, context_tokens: int = 0) -> list[dict]:
     """The conversation of an ADK request as OpenAI chat messages: the system instruction,
     the turns of the user, those of the model (text and tool calls) and the tool results.
     The reasoning of a turn of the model with tool calls goes in its `reasoning_field`
     ("" = it is left out). With keep_tool_results, the old tool results are left out (see
-    the module and masked)."""
+    the module and masked); with budget_tokens, also as many as it takes to fit in it
+    (fit_context; `extra_chars` are those of the tools, `context_tokens` for the warning).
+    Each tool result is in its frame (guard.tool_result)."""
     messages = []
     system = _text(request.config.system_instruction) if request.config else ""
     if system:
@@ -206,10 +224,48 @@ def to_messages(request: LlmRequest, reasoning_field: str = "reasoning", keep_to
             messages.append({"role": "user", "content": "\n".join(texts)})
     if keep_tool_results > 0:
         masked(messages, keep_tool_results)
+    if budget_tokens > 0:
+        before, after, left = fit_context(messages, budget_tokens, keep_tool_results, extra_chars)
+        if before > budget_tokens:
+            log.warning("turn of %d tokens over a context of %d (%d for the input): %d old tool results left out%s",
+                        before, context_tokens or budget_tokens, budget_tokens, left,
+                        f"; it still has {after}" if after > budget_tokens else "")
     for m in messages:
-        m.pop("_name", None)
+        name = m.pop("_name", None)
         m.pop("_response", None)
+        if m["role"] == "tool":
+            m["content"] = tool_result(name or "tool", m["content"])
     return messages
+
+
+def estimate_tokens(messages: list[dict], extra_chars: int = 0) -> int:
+    """The tokens of a request, as characters / CHARS_PER_TOKEN: the texts, the reasoning and
+    the tool calls of its messages, and `extra_chars` (the tools)."""
+    chars = extra_chars
+    for m in messages:
+        chars += 8 + len(m.get("content") or "") + sum(len(v) for k, v in m.items() if k.startswith("reason")
+                                                        and isinstance(v, str))
+        if m.get("tool_calls"):
+            chars += len(json.dumps(m["tool_calls"], ensure_ascii=False))
+    return chars // CHARS_PER_TOKEN
+
+
+def fit_context(messages: list[dict], budget_tokens: int, keep: int = 0, extra_chars: int = 0) -> tuple[int, int, int]:
+    """Leaves out, in place, old tool results (masked with a smaller keep each time, MASK_STEP
+    at a time) until the messages fit in `budget_tokens`, or only the last ones are left.
+    Returns (tokens before, tokens after, results left out). The messages must still have
+    their _name and _response (to_messages)."""
+    before = estimate_tokens(messages, extra_chars)
+    if before <= budget_tokens:
+        return before, before, 0
+    tools = [m for m in messages if m["role"] == "tool"]
+    original = [m["content"] for m in tools]
+    k, after = (keep if keep > 0 else len(tools)), before
+    while k > 0 and after > budget_tokens:
+        k = max(0, k - MASK_STEP)
+        masked(messages, k)
+        after = estimate_tokens(messages, extra_chars)
+    return before, after, sum(m["content"] != c for m, c in zip(tools, original))
 
 
 def masked(messages: list[dict], keep: int) -> None:

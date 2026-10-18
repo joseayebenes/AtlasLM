@@ -10,3 +10,4 @@ dist/
 faults.json
 .venv/
 firebase-debug.log
+reports/

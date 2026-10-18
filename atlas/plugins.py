@@ -20,14 +20,19 @@ in the source configuration (e.g. languages = ["ada"] only uses the "ada" analyz
 
 from __future__ import annotations
 
+import functools
 import importlib
 import inspect
 import logging
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any, Callable, Iterable
+
+__all__ = ["KINDS", "CodeAnalyzer", "CodeUnit", "DocumentExtractor", "Link", "Requirement", "RequirementsAdapter",
+           "Tool", "available", "describe", "get", "load_plugins", "plugin", "register", "register_methods"]
 
 log = logging.getLogger(__name__)
 
@@ -40,16 +45,35 @@ KINDS = ("code_analyzer", "requirements", "extractor", "tool")
 
 @dataclass
 class CodeUnit:
-    """Result of analysing a code file: the minimum the graph needs."""
+    """Result of analysing a code file: the minimum the graph needs.
+
+    A subprogram is {name, start_line, end_line, calls, doc, reqs} and, if the analyzer
+    knows them, `kind` (procedure, function, method, task, entry, operator) and `signature`
+    (its profile as written, on one line). A call is the name as written ("pkg.op") or
+    {"name", "line", "column"}: where that name starts, both counted from 1, so that a
+    language server can be asked what it is."""
     file: str
     unit: str                                   # compilation unit / module name
     language: str
-    subprograms: list[dict] = field(default_factory=list)   # {name, start_line, end_line, calls, doc, reqs}
+    subprograms: list[dict] = field(default_factory=list)   # {name, kind, start_line, end_line, calls, doc, reqs, signature?}
     types: list[dict] = field(default_factory=list)
     variables: list[dict] = field(default_factory=list)
     imports: list[str] = field(default_factory=list)        # withs / includes
-    tests: list[dict] = field(default_factory=list)         # {name, covers:[...], reqs:[...]}
-    declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, line, doc, reqs}
+    declarations: list[dict] = field(default_factory=list)  # specs / headers: {name, kind, line, doc, reqs}
+    uses: list[str] = field(default_factory=list)           # Ada `use`: units looked into after the own one
+    aliases: dict[str, str] = field(default_factory=dict)   # renamings and generic instances: name -> target
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CodeUnit":
+        """A CodeUnit from its stored form, without the fields this version no longer has
+        (`tests`, before 0.3)."""
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in data.items() if k in known})
+
+
+def call_name(call: str | dict) -> str:
+    """The name of a call of a CodeUnit, with or without its position."""
+    return call if isinstance(call, str) else call["name"]
 
 
 class CodeAnalyzer(ABC):
@@ -57,6 +81,7 @@ class CodeAnalyzer(ABC):
     unit of the incremental engine)."""
     name: str = ""                # "ada", "cpp"...
     extensions: tuple[str, ...] = ()
+    predefined: frozenset[str] = frozenset()   # names of the language that are never calls (Ada: Integer...)
 
     def __init__(self, config: dict):
         self.config = config
@@ -89,7 +114,8 @@ class Link:
 class RequirementsAdapter(ABC):
     """Reads requirements and links from a source. `snapshot()` returns something whose
     hash changes when the source changes (e.g. export date or table hash), so the engine
-    knows whether to read it again."""
+    knows whether to read it again. `exported_at()` says when the module was exported from
+    its source, if the source says it: atlas shows it next to everything that comes from it."""
     name: str = ""
 
     def __init__(self, config: dict):
@@ -107,19 +133,37 @@ class RequirementsAdapter(ABC):
     @abstractmethod
     def links(self, module: str) -> Iterable[Link]: ...
 
+    def exported_at(self, module: str) -> str:
+        """When the module was exported from its source (ISO 8601); "" if it does not say."""
+        return ""
+
+    def module_info(self, module: str) -> dict:
+        """{"exported_at", "source"}: when and from where the module was exported ("" if
+        the source does not say)."""
+        return {"exported_at": self.exported_at(module), "source": ""}
+
 
 class DocumentExtractor(ABC):
     """Turns a document into text (with \\f between pages if it has them). When several
-    enabled extractors handle an extension, the one with the highest `priority` is used."""
+    enabled extractors handle an extension, the one with the highest `priority` is used.
+    `license` is that of the third-party library that does the work, as `atlas plugins`
+    shows it ("" if there is none)."""
     name: str = ""
     extensions: tuple[str, ...] = ()
     priority: int = 0
+    license: str = ""
 
     def __init__(self, config: dict):
         self.config = config
 
     @abstractmethod
     def extract(self, path: Path) -> str: ...
+
+    def read(self, path: Path) -> tuple[str, dict]:
+        """The text and what the extractor knows about the file: `pages`,
+        `pages_without_text` (pages with images and no text: a scan) and `metadata` (of
+        the PDF). An extractor that knows nothing of that only implements `extract`."""
+        return self.extract(path), {}
 
 
 class Tool(ABC):
@@ -227,6 +271,52 @@ def load_plugins(modules: Iterable[str] = (), use_entry_points: bool = True) -> 
         loaded.append(m)
     _LOADED = True
     return loaded
+
+
+PLAIN = (str, int, float, bool, list, dict, type(None))
+
+
+def instrumented(function: Callable[..., Any], sink: Callable[[dict], None], name: str | None = None,
+                 **fields: Any) -> Callable[..., Any]:
+    """`function` wrapped so that each call goes to `sink` as an event: {"name", "args" (its
+    arguments by name, only plain values: never a configuration or a context), "result",
+    "error" (when it raised; the exception goes on), "seconds", "usage" (what
+    atlas.llm.usage() grew during the call: requests, tokens, cost) and `fields`}. With
+    functools.wraps, so that ADK and the MCP server still read its signature and its
+    docstring. A sink that fails does not fail the call. The tools of the MCP server and of
+    the agents, and the commands of the CLI, go through it (see atlas.usage)."""
+    tool = name or function.__name__
+    try:
+        signature = inspect.signature(function)
+    except (TypeError, ValueError):
+        signature = None
+
+    def arguments(args: tuple, kwargs: dict) -> dict:
+        try:
+            bound = signature.bind_partial(*args, **kwargs).arguments if signature else kwargs
+        except TypeError:
+            bound = kwargs
+        return {k: v for k, v in bound.items() if isinstance(v, PLAIN)}
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from atlas.llm.connection import usage, usage_since
+        before, t0 = usage(), time.perf_counter()
+        result, error = None, None
+        try:
+            result = function(*args, **kwargs)
+            return result
+        except Exception as e:
+            error = f"{type(e).__name__}: {e}"[:500]
+            raise
+        finally:
+            event = {"name": tool, "args": arguments(args, kwargs), "result": result, "error": error,
+                     "seconds": round(time.perf_counter() - t0, 3), "usage": usage_since(before), **fields}
+            try:
+                sink(event)
+            except Exception as e:                 # the log must never break the tool
+                log.warning("the call to %s was not logged: %s", tool, e)
+    return wrapper
 
 
 def describe() -> dict[str, list[str]]:

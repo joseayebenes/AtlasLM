@@ -2,6 +2,7 @@
 legacy/doc_rag.py on the sample documents, with the fake API as the model and the
 embeddings. To be deleted together with legacy/."""
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -30,20 +31,39 @@ def legacy():
         sys.path.remove(str(LEGACY))
 
 
-def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_path, fake_llm, fake_embeddings):
+def _with_path(construir_registros):
+    """The records of doc_rag.py with the one change made on purpose: the embed_text of a
+    requirement carries the path of its section."""
+    def records(data: dict) -> list[dict]:
+        out = construir_registros(data)
+        for r in out:
+            if r["kind"] == "requirement" and r.get("path"):
+                r["embed_text"] = r["embed_text"].replace(" > requirement\n", f" > {r['path']} > requirement\n", 1)
+        return out
+    return records
+
+
+def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_path, fake_llm, fake_embeddings,
+                                                     monkeypatch):
     rag, ps, cx = legacy
+    monkeypatch.setattr(rag, "construir_registros", _with_path(rag.construir_registros))
+    # the fake vectors tie often: atlas takes equal scores in the order of the records, and
+    # doc_rag.py in the order of np.argsort (quicksort), which is arbitrary among ties
+    argsort = rag.np.argsort
+    monkeypatch.setattr(rag.np, "argsort", lambda a, kind="stable", **kw: argsort(a, kind=kind, **kw))
     llm = fake_llm[0]
     net = cx.NetConfig(proxy="", no_proxy="*")
     old_llm = cx.ServiceConfig(base_url=llm.base_url, model="fake", api_key="x", net=net)
     old_emb = cx.ServiceConfig(base_url=llm.base_url, model="embeddinggemma", api_key="x",
                                batch=fake_embeddings.batch, net=net)
     old_store, old_embedder = rag.Store(str(tmp_path / "rag.db")), rag.Embedder(old_emb)
-    new = Index(tmp_path / "atlas.db", fake_embeddings, llm,
+    new = Index(tmp_path / "atlas.db", replace(fake_embeddings, document_prefix="title: none | text: "), llm,
                 {"per_document": 0, "scope": "passages"})                # what doc_rag.py did
 
     for f in ("spec_with_bookmarks.pdf", "spec_without_bookmarks.pdf", "hmi_manual.md"):
         data = process_document(docs_samples / f, tmp_path / "docs" / f, DocsOptions(), llm=llm)
-        assert build_records(data) == rag.construir_registros(data)
+        without_meta = [{k: v for k, v in r.items() if k != "meta"} for r in build_records(data)]   # atlas only
+        assert without_meta == rag.construir_registros(data)
         rag.indexar(old_store, old_embedder, dict(data), f)
         new.add_document(data, doc=f"docs:{f}", name=f, out_dir=data["out_dir"])
 
@@ -61,4 +81,10 @@ def test_same_records_search_and_sources_as_doc_rag(legacy, docs_samples, tmp_pa
     old = rag.responder(old_store, old_embedder, old_llm_client, question)
     res = new.answer(question)
     assert res["answer"] == old["answer"]
-    assert [s["cite"] for s in res["sources"]] == [s["cite"] for s in old["sources"]]
+    # the cited ones and the rest; the context is wider than in doc_rag.py ([search] context_radius):
+    # a section summary brings the chunks of its section, which later hits would have repeated,
+    # so fewer sources go out
+    sent = sorted(res["sources"] + res["unused"], key=lambda s: s["n"])
+    new_cites, old_cites = [s["cite"] for s in sent], [s["cite"] for s in old["sources"]]
+    assert new_cites[0] == old_cites[0] and len(new_cites) <= len(old_cites)
+    assert set(new_cites) - set(old_cites) <= {c.replace("(chunk)", "(section_summary)") for c in old_cites}

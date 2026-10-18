@@ -10,6 +10,7 @@ desarrollar atlas, ver [Instalación para desarrollo](#instalación-para-desarro
 | `atlaslm-<versión>-py3-none-any.whl` | atlas: código Python puro, el mismo para Windows, macOS y Linux |
 | `wheelhouse-win_amd64-py312/` | el wheel de atlas y todas sus dependencias, para Windows de 64 bits con Python 3.12: se instala sin red |
 | `constraints.txt` | la versión exacta de cada dependencia con la que pasan las pruebas |
+| `THIRD_PARTY_NOTICES.md`, `sbom.cdx.json` | dentro del wheelhouse: la licencia de cada dependencia y el SBOM (CycloneDX) de lo que contiene |
 
 El wheelhouse vale para un sistema y una versión de Python. Se prepara desde cualquier
 equipo con red (ver [Preparar la entrega](#preparar-la-entrega)).
@@ -45,7 +46,7 @@ Si el wheel está publicado en el repositorio interno (Nexus, Artifactory, devpi
 
 ```powershell
 py -3.12 -m venv C:\atlas\venv
-C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.2.0" -c constraints.txt --index-url https://<repositorio>/simple
+C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.3.0" -c constraints.txt --index-url https://<repositorio>/simple
 ```
 
 `-c constraints.txt` instala exactamente las versiones probadas.
@@ -64,9 +65,10 @@ python3.12 -m venv ~/atlas/venv
 
 | Extra | Para qué | Sin él |
 |---|---|---|
-| `docs` | leer PDF y Office (markitdown, pymupdf) | solo Markdown y texto |
+| `docs` | leer PDF y Office (markitdown, pymupdf; pymupdf es AGPL-3.0, ver [seguridad](seguridad.md#pymupdf-y-la-agpl-30)) | solo Markdown y texto |
 | `code` | analizar Ada y construir el grafo (tree-sitter, networkx) | sin código ni grafo |
 | `mcp` | `atlas serve`, el servidor para OpenCode y VS Code | sin servidor MCP |
+| `xlsx` | `atlas matrix` en `.xlsx` (openpyxl); no está en `all` | solo CSV y Markdown |
 | `agents` | agentes ADK: `atlas agent`, `verify`, `impact`, `coverage`, `eval` (google-adk 2.11) | sin agentes |
 
 Por ejemplo, `"atlaslm[docs,code,mcp]"` para procesar y servir sin agentes.
@@ -95,12 +97,18 @@ ya use GNAT Pro pone sus comandos en `check_command` y `test_command`.
 ```powershell
 mkdir C:\proyectos\tms
 cd C:\proyectos\tms
-C:\atlas\venv\Scripts\atlas init
+C:\atlas\venv\Scripts\atlas init --profile gateway
 ```
 
-`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Hay que cambiar:
+`atlas init` escribe un `atlas.toml` comentado con todas las secciones. Con `--profile
+gateway`, el del gateway corporativo, con los valores que ya se saben buenos:
+`reasoning_effort = "none"` (gemma 4 razona por defecto; un agente que lo necesita lo
+enciende en su fichero), `requests_per_minute = 28`, `max_concurrent = 6`, `workers = 6`,
+`ca_cert = "system"` y `[search] scope_chars = 300000`. Sin `--profile` (o con `--profile
+ollama`), el de un modelo local en Ollama. Hay que cambiar:
 
-1. `[llm] base_url` y `model`: el gateway o el modelo local.
+1. `[llm] base_url` y `model`: el gateway (`https://<gateway>/v1` en la plantilla) o el
+   modelo local.
 2. Las fuentes que se tengan: `[[sources.docs]] paths`, `[sources.code] roots` y, con la
    base de requisitos, `[sources.doors] enabled = true` y su `path`.
 
@@ -108,11 +116,13 @@ La [guía de configuración](configuracion.md) explica cada clave.
 
 ## 3. Secretos y red
 
-La clave del gateway no se escribe en `atlas.toml`: se lee del entorno. La plantilla ya
-dice `api_key = "${ATLAS_API_KEY:-local}"`.
+La clave del gateway no se escribe en `atlas.toml`: se lee del entorno, siempre de
+`ATLAS_API_KEY`. La plantilla del gateway dice `api_key = "${ATLAS_API_KEY}"` (y la de Ollama,
+`"${ATLAS_API_KEY:-local}"`, que sin la variable vale `local`).
 
 ```powershell
 setx ATLAS_API_KEY "la-clave"            # Windows: abre otra terminal después
+setx PYTHONUTF8 1                        # UTF-8 también en lo que no pasa por atlas (scripts de tools/)
 ```
 
 ```bash
@@ -131,11 +141,29 @@ atlas solo se conecta a las URL de `[llm]` y `[embeddings]`. Ver
 ## 4. Comprobar y procesar
 
 ```powershell
+atlas doctor atlas.toml     # lo que puede fallar en este puesto, antes de procesar nada
 atlas check atlas.toml      # una petición real al chat y otra a los embeddings
 atlas probe atlas.toml      # el modelo como agente: herramientas y razonamiento (antes de usar agentes)
 atlas run atlas.toml        # procesamiento incremental: la primera vez, todo
-atlas status atlas.toml     # qué hay, qué falló y el perfil de tiempos de la última ejecución
+atlas status atlas.toml     # qué hay, qué falló, qué se ha enviado a cada modelo y el perfil de tiempos
 ```
+
+`atlas doctor` solo lee: no crea el workspace ni toca las fuentes. Imprime una tabla con una
+línea por comprobación (`OK`, `WARN` o `FAIL`, dónde y qué; debajo, cómo arreglarlo) y sale
+con 1 si algo falla:
+
+- la versión de Python y la plataforma;
+- los extras que importan los pasos y herramientas configurados (`tree_sitter_ada`,
+  `pymupdf`, `mcp`, `google.adk`);
+- cada ruta de `[[sources.docs]] paths` y de `[sources.code] roots`: si existe y cuántos
+  ficheros daría (0 es un aviso: una raíz mal escrita no procesa nada);
+- la base de intercambio de DOORS (`[sources.doors.exchange] path`): si abre, su versión de
+  esquema, sus módulos y cuándo se rellenó;
+- los comandos de `[sources.code]` (`check_command`, `test_command`, `syntax_commands`,
+  `language_server`...) buscados en el `PATH` y en las carpetas de `tool_path`;
+- las variables de entorno que nombra el TOML y no están puestas;
+- si el workspace existe y se puede escribir;
+- y, al final, la conexión: la misma petición al chat y a los embeddings que `atlas check`.
 
 Si `check` falla, dice por qué: certificado, proxy, credenciales, URL o modelo. Con
 `C:\atlas\venv\Scripts` en el `PATH` basta con `atlas`; si no, la ruta completa.
@@ -143,10 +171,81 @@ Si `check` falla, dice por qué: certificado, proxy, credenciales, URL o modelo.
 `atlas run` se puede interrumpir (Ctrl+C, un corte de red, un apagado): al relanzarlo sigue
 donde se quedó. Una segunda ejecución sin cambios no hace ninguna petición al modelo.
 
+### Cuánto va a tardar
+
+Con el gateway (28 peticiones por minuto, unos 30 s cada una) la primera ingesta de un
+proyecto real son horas. Antes de lanzarla:
+
+```powershell
+atlas estimate atlas.toml               # por paso: unidades, peticiones y tiempo
+atlas estimate atlas.toml --latency 30  # sin ninguna ejecución anterior que mida la latencia
+```
+
+```
+docs.process: 80 units, 2160 chat requests, about 77-85 min at 28/min
+index.documents: after docs.process
+```
+
+Las peticiones de `docs.process` son las secciones que no están en la caché más un resumen
+por documento; el tiempo va de esa cifra a la misma con un 10 % más (secciones que se
+dividen). Los pasos que dependen de otros con trabajo pendiente («after docs.process») no
+se pueden estimar hasta que esos terminen. `atlas status` repite la estimación y `atlas
+run` la escribe al empezar cada paso y, mientras trabaja, una línea de progreso cada 30 s o
+cada 25 unidades:
+
+```
+docs.process 12/80 units, 15 min, ~1 h 10 min left
+```
+
+### De noche, con un límite
+
+`atlas run` puede parar solo, con el estado guardado, y seguir la próxima vez:
+
+```powershell
+atlas run atlas.toml --until 07:00      # no empieza nada después de las 7:00 (de mañana, si ya pasó)
+atlas run atlas.toml --max-minutes 300  # o pasadas 5 horas
+atlas run atlas.toml --max-requests 5000
+```
+
+También en `atlas.toml`, `[pipeline] max_minutes` y `max_requests` (ver
+[configuración](configuracion.md#pipeline)). Al llegar al límite no empieza ninguna unidad
+más, un documento a medias deja de pedir secciones (las que ya tiene quedan en la caché) y
+sale con el código 3; la siguiente ejecución lo retoma sin repetir lo hecho.
+
+Para lanzarla cada noche en Windows, con el **Programador de tareas**:
+
+1. *Crear tarea…* (no «tarea básica»), con un nombre como `atlas nocturno`; marca
+   «Ejecutar tanto si el usuario inició sesión como si no» si el puesto se queda bloqueado.
+2. *Desencadenadores*: diario, a las 21:00.
+3. *Acciones*: iniciar un programa.
+   - Programa: `C:\atlas\venv\Scripts\atlas.exe`
+   - Argumentos: `run atlas.toml --until 07:00`
+   - Iniciar en: la carpeta del proyecto, la del `atlas.toml` (las rutas de las fuentes son
+     relativas a ella).
+4. *Configuración*: «Detener la tarea si se ejecuta durante más de» 12 horas, como red de
+   seguridad. Aunque el Programador la mate, el motor sobrevive: la próxima ejecución
+   rehace solo la unidad que estaba en marcha.
+
+Las variables de la clave y del proxy tienen que estar en el entorno del usuario de la
+tarea (variables de usuario de Windows, no las de una consola abierta). Para guardar el
+registro, una acción con `cmd.exe` y los argumentos
+`/c atlas run atlas.toml --until 07:00 >> logs\atlas-run.log 2>&1`. Por la mañana,
+`atlas status atlas.toml` dice qué se hizo y qué queda.
+
+### Códigos de salida de `atlas run`
+
+| Código | Qué pasó | Qué hacer |
+|---|---|---|
+| 0 | todo al día | nada |
+| 1 | alguna unidad falló (se anota y se sigue) | `atlas status` dice cuáles y por qué; la próxima ejecución las reintenta |
+| 2 | un error fatal paró la ejecución (conexión, credenciales, cupo agotado) | corregir la causa y relanzar: sigue donde se quedó |
+| 3 | se alcanzó el límite (`--until`, `--max-minutes`, `max_requests`) | relanzar cuando toque: sigue donde se quedó |
+
 ## 5. Conectar el editor
 
-`atlas serve atlas.toml` es un servidor MCP por stdio. El editor lo arranca en la carpeta
-del proyecto.
+`atlas serve atlas.toml` es un servidor MCP por stdio. Conviene que el editor lo arranque en
+la carpeta del proyecto (`cwd`), para que encuentre `atlas.toml`; las rutas de dentro del
+fichero son relativas a él, así que con su ruta completa funciona desde cualquier carpeta.
 
 OpenCode (`opencode.json` en la carpeta del proyecto):
 
@@ -207,13 +306,110 @@ WARNING atlas.mcp: HTTPS_PROXY of atlas.toml not set in the environment of atlas
 Las herramientas que usan el modelo (`search`, `ask_docs`, `ask_atlas`...) añaden esas
 variables al error que devuelven, y `atlas check` también las nombra.
 
+## 6. Varios puestos: cachés compartidas
+
+«Procesar una vez» vale por workspace: sin más, cada puesto que hace su primer `atlas run`
+sobre el proyecto vuelve a pedir al gateway el análisis de cada sección y el vector de cada
+texto. En el proyecto real son unas 2000 secciones y 20 000 textos: horas por puesto con 28
+peticiones por minuto. Las dos cachés no dependen del puesto ni de las rutas: un análisis se
+guarda por el texto de la sección, el modelo de chat, el idioma y la versión del prompt, y un
+vector por el modelo de embeddings y el texto. Lo que calculó un puesto sirve a todos.
+
+Un workspace (`atlas.db`) **nunca se comparte** entre puestos: es de un solo proceso. Lo que
+se comparte es una caché exportada.
+
+### Un puesto procesa, los demás importan
+
+1. Un puesto (o un servidor) procesa el proyecto, por ejemplo de noche, y exporta su caché:
+
+   ```powershell
+   atlas run atlas.toml
+   atlas cache export \\servidor\atlas\tms-cache\tms-2026-10-17.sqlite atlas.toml
+   ```
+
+   `--with-judgements` añade las cachés de juicios de `atlas verify`, `comply` y `link`.
+2. Cada puesto importa la caché antes de su primer `atlas run`, con el mismo `atlas.toml`
+   (los mismos modelos) y su propio workspace:
+
+   ```powershell
+   atlas cache import \\servidor\atlas\tms-cache\tms-2026-10-17.sqlite atlas.toml
+   atlas run atlas.toml
+   ```
+
+   `import` solo añade lo que falta y nunca sustituye nada; dice cuántos vectores y análisis
+   entraron. Se puede repetir con una caché más nueva.
+
+El `atlas run` siguiente solo pide al modelo lo que no estaba en la caché: las secciones y
+los textos que hayan cambiado desde la exportación. Para eso hace falta el mismo modelo de
+chat, el mismo de embeddings y la misma versión de atlas (que fija la versión del prompt); las
+rutas de las fuentes pueden ser otras. `import` rechaza una caché de otro modelo de
+embeddings (sus vectores nunca casarían) y avisa si los análisis son de otro modelo de chat.
+
+### La carpeta compartida, sin importar
+
+Con `[project] shared_cache` apuntando a la carpeta de las cachés exportadas, cada puesto la
+consulta solo:
+
+```toml
+[project]
+workspace = "C:/atlas/tms"
+shared_cache = "//servidor/atlas/tms-cache"
+```
+
+Lo que el workspace no tiene se busca en los `*.sqlite` de la carpeta, del más nuevo al más
+viejo, y se copia al workspace: la carpeta solo se lee y `atlas run` nunca escribe en ella.
+La rellena un administrador con `atlas cache export`. Si la carpeta no está accesible (sin
+red, sin permisos), atlas sigue sin ella y lo avisa una vez.
+
+Los ficheros de la carpeta se abren sin bloqueos, como inmutables: no se reescribe uno que
+pueda estar en uso. Cada exportación va a un fichero nuevo (con la fecha en el nombre) y los
+viejos se borran cuando nadie procesa. En Windows tampoco se puede sustituir un fichero
+abierto por otro proceso.
+
+La caché exportada contiene texto de los documentos (los requisitos, literales; los
+resúmenes de cada sección) y sus vectores: la carpeta necesita
+los mismos permisos que el workspace (ver [seguridad](seguridad.md#qué-se-guarda)).
+
 ## Actualizar y desinstalar
 
 - **Actualizar**: el mismo `pip install` con el wheelhouse o la versión nueva y
-  `--upgrade`. El workspace sirve: atlas añade lo que le falte a `atlas.db` al abrirlo. Si
-  la versión nueva cambia cómo se procesa algo, lo reprocesa solo (lo dice el CHANGELOG).
+  `--upgrade`. El workspace sirve: atlas pone `atlas.db` al día al abrirlo (ver «Al
+  actualizar»). Si la versión nueva cambia cómo se procesa algo, lo reprocesa solo (lo dice
+  el CHANGELOG).
 - **Desinstalar**: borrar la carpeta del entorno (`C:\atlas\venv`). Los datos están en el
   workspace de cada proyecto.
+
+### Al actualizar
+
+`atlas.db` lleva el número de versión de su esquema (sus tablas y columnas); `atlas status`
+lo muestra junto a la versión de atlas de la última ejecución:
+
+```
+schema: version 2; last run with atlas 0.3.0
+```
+
+La primera orden que abre un workspace de un atlas anterior (`atlas run`, `status`,
+`serve`...) lo migra:
+
+1. Copia `atlas.db` en `atlas.db.bak-<n>`, en la misma carpeta; `<n>` es la versión de la
+   que viene (0 para los workspaces de la 0.1 y la 0.2).
+2. Aplica los cambios en una sola transacción: si algo falla, `atlas.db` queda como estaba,
+   la orden termina con el error y la siguiente lo vuelve a intentar.
+3. Lo anota en el registro: `INFO atlas.db: ... schema migrated from version 0 to 2; the
+   previous one is in ...atlas.db.bak-0`.
+
+Si otro proceso abre el workspace a la vez, espera a que termine. `reference.db` se migra
+igual, con su `reference.db.bak-<n>`. Un workspace nuevo nace con la versión actual y sin
+copia.
+
+La copia ocupa lo mismo que `atlas.db` y se puede borrar cuando la versión nueva funcione.
+Para volver a la versión anterior de atlas: instalarla y poner la copia en su sitio
+(renombrar `atlas.db.bak-<n>` a `atlas.db`); lo procesado con la versión nueva se pierde y
+la siguiente ejecución lo repite.
+
+Un workspace de un atlas más nuevo no se abre: «this workspace is from a newer atlas:
+update atlas or use another workspace». Pasa si dos puestos con versiones distintas
+comparten workspace: hay que actualizar el atrasado.
 
 ## Preparar la entrega
 
@@ -223,13 +419,24 @@ Desde el repositorio, en cualquier equipo con red:
 make wheel                         # dist/atlaslm-<versión>-py3-none-any.whl
 make wheelhouse-windows            # dist/wheelhouse-win_amd64-py312/ (WIN_PY=3.11 para otro Python)
 make wheelhouse                    # dist/wheelhouse/ para este sistema y este Python
+make wheelhouse-windows EXTRAS=all,dev   # con pytest, para pasar las pruebas en el puesto
 make check-install                 # instalación limpia desde dist/wheelhouse, sin red
+make audit                         # vulnerabilidades conocidas en constraints.txt (pip-audit)
+make licenses                      # dist/THIRD_PARTY_NOTICES.md y dist/sbom.cdx.json del entorno instalado
 ```
+
+Cada wheelhouse lleva su `THIRD_PARTY_NOTICES.md` y su `sbom.cdx.json`, sacados de los
+wheels que contiene (`tools/licenses.py --wheelhouse`). La lista completa de pasos de una
+versión está en el [README](../README.md#antes-de-publicar-una-versión).
 
 `make check-install` (`tools/check_install.py`) hace los pasos de esta guía en una carpeta
 nueva: entorno, instalación sin red, `atlas init`, la plantilla apuntando a las muestras y
 a la API falsa, `check`, dos `run` (el segundo no procesa nada), `status`, `trace` y
 `search`.
+
+El [guion de aceptación](aceptacion.md) dice qué comprobar y medir en el primer puesto
+Windows y con el proyecto real; los errores conocidos, con su remedio, están en la
+[FAQ](faq.md).
 
 Para publicar en el repositorio interno, se sube el wheel (y, si se quiere, el `.tar.gz`)
 con la herramienta del repositorio, por ejemplo
@@ -255,8 +462,29 @@ git clone <repositorio> && cd AtlasLM
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[all,dev]" -c constraints.txt
 python examples/make_samples.py          # datos de ejemplo
-python -m pytest -q                      # sin modelo; las de Ollama se omiten si no está
+python -m pytest -q                      # sin modelo; las de modelo se omiten si atlas check falla
 ```
 
-El [README](../README.md) explica los tres niveles de modelo (servidor falso, Ollama y
+El [README](../README.md) explica los niveles de modelo (servidor falso, Ollama, OpenRouter y
 gateway) y cómo probar con cada uno.
+
+### Las pruebas con modelo en un puesto con el gateway
+
+Las siete pruebas con modelo (marcador `model`) leen la configuración de
+`ATLAS_TEST_CONFIG`; por defecto, `atlas.dev.toml` (Ollama). Con el gateway prueban lo que
+el servidor falso no puede: que el modelo de producción llama a las herramientas a través
+del proxy, con la CA de la empresa y el cupo de peticiones. Hace falta el repositorio con
+el extra `[agents]` y las muestras, y un `atlas.toml` con `[llm]`, `[embeddings]` y
+`[network]` como los de la sección 3 (la clave en `GW_KEY`, nunca escrita en el fichero):
+
+```powershell
+python examples/make_samples.py
+$env:GW_KEY = "..."
+atlas check atlas.toml                   # debe pasar: si no, las pruebas se omiten y dicen por qué
+$env:ATLAS_TEST_CONFIG = "atlas.toml"
+python -m pytest -q -m model             # en macOS o Linux: make test-gateway
+```
+
+Las pruebas escriben sus propias configuraciones con las secciones `[llm]`, `[embeddings]`
+y `[network]` de ese fichero tal como están escritas (las variables `${...}` siguen siendo
+variables) y el modelo de `[agents] model`. Solo leen las muestras, que son sintéticas.

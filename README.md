@@ -41,6 +41,7 @@ preguntas amplias. Los cambios de cada versión están en el [CHANGELOG](CHANGEL
 | [tools/doors_export](tools/doors_export/README.md) | el exportador de DOORS a la base de intercambio |
 | [tools/reqif_import](tools/reqif_import/README.md) | el importador de ReqIF a la base de intercambio |
 | [Plan del proyecto](legacy/PLAN.md) | objetivos, arquitectura, fases y su estado |
+| [Análisis de mejoras](docs/analisis-mejoras-2026-10.md) | qué mejorar tras la 0.2.0: el contexto para el editor, `atlas develop`, la aceptación en el proyecto real; hoja de ruta de la 0.3 y la 0.4 |
 
 ## Puesta en marcha para desarrollar
 

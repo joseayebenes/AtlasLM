@@ -7,6 +7,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 ## [Sin publicar]
 
 ### Añadido
+- [Análisis de mejoras](docs/analisis-mejoras-2026-10.md) sobre la 0.2.0: 83 hallazgos
+  verificados contra el código en siete áreas (servidor MCP y contexto para el editor,
+  `atlas develop`, índice, grafo y DOORS, capa de modelo, arquitectura, adopción), lo que
+  ningún análisis cubría, las decisiones que conviene tomar antes y la hoja de ruta de la
+  0.3 («el editor») y la 0.4 («el proyecto real»).
 - `[mcp] profile`: qué herramientas ofrece `atlas serve` cuando `[mcp] tools` está vacío.
   `editor` (por defecto con `[sources.code]`) da las que necesita el agente de un editor para
   cambiar código: `search`, `get_requirement`, `get_section`, `list_documents`, `trace`,

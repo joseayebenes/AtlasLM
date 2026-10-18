@@ -46,7 +46,7 @@ Si el wheel está publicado en el repositorio interno (Nexus, Artifactory, devpi
 
 ```powershell
 py -3.12 -m venv C:\atlas\venv
-C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.2.0" -c constraints.txt --index-url https://<repositorio>/simple
+C:\atlas\venv\Scripts\python -m pip install "atlaslm[all]==0.3.0" -c constraints.txt --index-url https://<repositorio>/simple
 ```
 
 `-c constraints.txt` instala exactamente las versiones probadas.
@@ -385,7 +385,7 @@ los mismos permisos que el workspace (ver [seguridad](seguridad.md#qué-se-guard
 lo muestra junto a la versión de atlas de la última ejecución:
 
 ```
-schema: version 2; last run with atlas 0.2.0
+schema: version 2; last run with atlas 0.3.0
 ```
 
 La primera orden que abre un workspace de un atlas anterior (`atlas run`, `status`,

@@ -1,4 +1,3 @@
-import sys
 from pathlib import Path
 
 import pytest
@@ -213,35 +212,6 @@ def test_spec_declarations_types_and_variables(samples):
     track = next(t for t in unit.types if t["name"] == "track")
     assert track["record"] and track["reqs"] == ["SRS-0001"] and "Az   : Float;" in track["source"]
     assert {(v["name"], v["constant"]) for v in unit.variables} == {("trk_db", False), ("max_tracks", True)}
-
-
-LEGACY = Path(__file__).resolve().parents[1] / "legacy"
-
-
-@pytest.mark.skipif(not (LEGACY / "ada_graph.py").exists(), reason="legacy/ has been removed")
-def test_same_analysis_as_ada_graph(samples, tmp_path):
-    """The analysis of every sample file is the one of legacy/ada_graph.analizar, which
-    lists types in no stable order and has no `kind` (to be deleted together with legacy/)."""
-    sys.path.insert(0, str(LEGACY))
-    try:
-        import ada_graph
-    finally:
-        sys.path.remove(str(LEGACY))
-    from atlas.code.ada import analyze_ada
-    pattern = requirement_pattern({})
-    files = sorted((samples / "ada").rglob("*.ad?")) + [tmp_path / "radar.adb"]
-    files[-1].write_bytes(SOURCE)
-    for f in files:
-        old = ada_graph.analizar(f, pattern)
-        new = analyze_ada(f, f.read_bytes(), pattern)
-        in_order = lambda items: sorted(items, key=lambda x: (x.get("line") or x["start_line"], x["name"]))
-        assert new["withs"] == old["withs"] and new["unit"] == old["unit"], f
-        without_kind = lambda items: [{k: v for k, v in x.items() if k != "kind"} for x in items]
-        assert without_kind(new["declarations"]) == in_order(old["decls"]), f
-        names = [{**{k: v for k, v in s.items() if k not in ("kind", "signature")},
-                  "calls": sorted({call_name(c) for c in s["calls"]})} for s in new["subprograms"]]
-        assert names == in_order(old["subprogramas"]), f
-        assert new["types"] == in_order(old["tipos"]) and new["variables"] == in_order(old["variables"]), f
 
 
 # --- the GPR project ([sources.code] project) ------------------------------------------------

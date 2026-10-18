@@ -1,4 +1,4 @@
-"""Deterministic Markdown output of an analysed document (section 5 of legacy/pdf_struct.py).
+"""Deterministic Markdown output of an analysed document.
 The model never writes files: everything comes from the sections and their analysis.
 
     <out>/

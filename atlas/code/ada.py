@@ -1,4 +1,4 @@
-"""Ada analyzer with tree-sitter-ada, one file at a time (the analysis of legacy/ada_graph.py).
+"""Ada analyzer with tree-sitter-ada, one file at a time.
 
 For each file: the `with` and `use` clauses, the renamings and generic instances (as
 aliases: name -> what it stands for), the subprogram declarations of the spec (their header
@@ -125,7 +125,7 @@ def _grammar() -> SimpleNamespace:
 
 def _captures(query, node) -> dict:
     """Captures by name, each list in source order: with several patterns the binding does
-    not guarantee any order (legacy/ada_graph.py changed order from one run to the next)."""
+    not guarantee any order (it can change from one run to the next)."""
     g = _grammar()
     caps = g.cursor(query).captures(node) if g.cursor is not None else query.captures(node)
     return {k: sorted(v, key=lambda n: n.start_byte) for k, v in caps.items()}

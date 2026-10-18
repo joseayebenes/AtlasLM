@@ -1,4 +1,4 @@
-"""Documents: text extraction, structure, analysis and Markdown output (legacy/pdf_struct.py).
+"""Documents: text extraction, structure, analysis and Markdown output.
 
     structure.py   sections without a model: bookmarks, headings or fixed size
     analysis.py    section analysis: llm | regex | none; verification and consolidation

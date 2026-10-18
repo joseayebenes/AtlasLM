@@ -1,9 +1,9 @@
 # Aceptación en el proyecto real
 
 El guion de las dos primeras semanas con atlas en el proyecto: un puesto Windows, el
-gateway corporativo por el proxy, DOORS, los PDF y el código Ada de verdad. Es lo que el
-plan deja sin marcar en la fase 6 ([legacy/PLAN.md](../legacy/PLAN.md)): la instalación
-limpia en un puesto Windows y las metas medibles sobre el proyecto real.
+gateway corporativo por el proxy, DOORS, los PDF y el código Ada de verdad. Es lo que quedó
+sin cerrar de la fase 6 del plan del proyecto: la instalación limpia en un puesto Windows y
+las metas medibles sobre el proyecto real.
 
 Cada paso tiene una casilla y **una cifra** que apuntar. Lo que falle y tenga remedio va a
 la [FAQ](faq.md); lo que no, a una incidencia con el comando, la salida y `atlas status`.
@@ -146,10 +146,9 @@ En el PC con DOORS, con el usuario de Windows de DOORS ([tools/doors_export](../
   cuánto tardó. La [guía de uso](uso.md) dice qué herramienta conviene para cada tarea.
   Cifras: **preguntas**, **útiles** y **segundos** típicos.
 
-### 7. Las metas, en el plan
+### 7. Las metas medibles
 
-- [ ] Rellenar en [legacy/PLAN.md](../legacy/PLAN.md), en la tabla de las metas medibles,
-  una columna con el proyecto real:
+- [ ] Apuntar en esta tabla, con el proyecto real, la cifra de cada meta medible:
 
 | Meta | Cifra de este guion |
 |---|---|
@@ -161,4 +160,4 @@ En el PC con DOORS, con el usuario de Windows de DOORS ([tools/doors_export](../
 | 6. Trazabilidad | trazas completas de 10 (paso 3) |
 | 7. Evaluable | lo que da `atlas eval` con las 20 preguntas (paso 5) |
 
-Y marcar las dos casillas de aceptación de la fase 6, o anotar qué falta.
+Y anotar si se cumplen la instalación limpia y las metas, o qué falta.

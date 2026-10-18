@@ -1,4 +1,4 @@
-"""Document tools for agents and the MCP server (the MCP of legacy/doc_rag.py).
+"""Document tools for agents and the MCP server.
 
     list_documents    the indexed documents and DOORS modules, with their summary
     search            hybrid search in the documents and in the requirements of DOORS

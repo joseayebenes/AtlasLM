@@ -22,7 +22,7 @@ Si no se puede ejecutar DXL por COM y la administración de DOORS solo entrega R
 ReqIF, con el mismo `mapping.toml` (su clase `Mapping`, la clasificación por `[kinds]` y los
 avisos de `publish.py`).
 
-Viene del script de dos ficheros del proyecto doors_kb (`legacy/doors_kb/`: `scripts/descargar_requisitos.py`
+Viene del script de dos ficheros del proyecto doors_kb (`scripts/descargar_requisitos.py`
 y `scripts/modelo_sqlite.py`). Está traducido al inglés y además lee la jerarquía y los
 enlaces, guarda la definición de los atributos y tiene versión de esquema. Una base de
 aquel script se actualiza sola al abrirla, y en módulos muy grandes ya no falla el

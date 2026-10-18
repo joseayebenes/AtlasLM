@@ -1,6 +1,6 @@
 """Document structure without a model: header and footer cleaning, sections from the PDF
 bookmarks, from the headings of the text or in fixed-size blocks, and the heading
-diagnosis. Comes from section 2 of legacy/pdf_struct.py.
+diagnosis.
 
 A section is a dict with `level`, `title`, `path` (list of titles from the chapter down),
 `body`, `page_start` and `page_end`; `prepare_sections` adds `id` and `includes` (titles

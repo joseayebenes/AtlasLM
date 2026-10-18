@@ -10,4 +10,4 @@ from atlas.config import Config, ConfigError, load_config as load
 
 __all__ = ["Config", "ConfigError", "__version__", "load"]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

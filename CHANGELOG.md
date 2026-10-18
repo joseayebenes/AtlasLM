@@ -6,6 +6,16 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+## [0.3.0] — 2026-10-18
+
+Desde la 0.2.0, las mejoras del [análisis de octubre](docs/analisis-mejoras-2026-10.md): el
+contexto para el editor por MCP (perfiles de herramientas, el elemento de un fichero y una
+línea, el juez de `atlas develop`), `atlas develop` que se reanuda, lleva encargos a la vez y
+propone parches, `atlas chat`, la búsqueda con filtros por metadatos y léxico, la semántica de
+los enlaces de DOORS y ReqIF, fuentes que no salen al gateway y registro de lo enviado, un cupo
+del gateway compartido entre procesos, la caché compartida entre puestos, el esquema de
+`atlas.db` versionado, y CI con Windows, ruff y mypy.
+
 ### Añadido
 - [Análisis de mejoras](docs/analisis-mejoras-2026-10.md) sobre la 0.2.0: 83 hallazgos
   verificados contra el código en siete áreas (servidor MCP y contexto para el editor,
@@ -837,11 +847,11 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Con el adaptador `exchange`, cada módulo de DOORS se vuelve a leer una vez (su huella
   lleva ahora la fecha de la exportación) y la parte `doors` del grafo se reconstruye. No
   hay peticiones al modelo ni a los embeddings.
-- El código se vuelve a analizar entero (`ada-3`, `python-2`) y el grafo se reconstruye
-  (`graph-4`), sin modelo. Pueden aparecer subprogramas nuevos (tareas, entradas,
-  operadores) con sus requisitos, desaparecer llamadas falsas a tipos con atributos y
-  dejar de ser ambiguas las llamadas que un `use` o un alias deciden.
-  `index.code` vuelve a embeber el código.
+- El código se vuelve a analizar entero (`ada-4`, `python-3`) y el grafo se reconstruye
+  (`graph-5`), sin modelo y sin cambios en la configuración. Pueden aparecer subprogramas
+  nuevos (tareas, entradas, operadores) con sus requisitos, desaparecer llamadas falsas a
+  tipos con atributos y dejar de ser ambiguas las llamadas que un `use` o un alias deciden;
+  cada llamada guarda su línea y su columna. `index.code` vuelve a embeber el código.
 - Con `id_pattern` (o `id_regex`) en `[sources.doors.convention]`, el código y los documentos
   con `analysis = "regex"` se vuelven a analizar una vez, sin modelo, y las etiquetas dan los
   IDs que antes se perdían: pueden aparecer requisitos implementados nuevos y, en `gaps`,
@@ -849,10 +859,12 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Con `embeddinggemma`, el primer `atlas run` vuelve a embeber todos los textos del índice (el
   prefijo de documento cambia y es parte de la clave de la caché). Con otros modelos, se
   reindexa desde la caché, sin peticiones.
-- El índice se reconstruye una vez (`index-2`): la siguiente `atlas run` reescribe todos sus
-  registros. Solo se embeben de nuevo los requisitos de DOORS con atributos, cuyo texto
-  cambia; lo demás sale de la caché de vectores. Un `atlas.db` anterior gana la columna `meta`
-  al abrirse, y sus registros no casan con ningún filtro hasta esa ejecución.
+- El índice se reconstruye una vez (`index-3`): la siguiente `atlas run` reescribe todos sus
+  registros. Cambian los fragmentos con listas o pasos numerados (que ahora conservan sus
+  líneas), el texto que se embebe de cada requisito (el de los de DOORS con atributos) y las
+  tablas, que tienen registro propio. Lo que no cambia sale de la caché de vectores (salvo con
+  `embeddinggemma`, ver arriba). Un `atlas.db` anterior gana la columna `meta` al abrirse, y
+  sus registros no casan con ningún filtro hasta esa ejecución.
 - Los módulos de DOORS se vuelven a leer una vez: su huella ya no incluye `attributes`.
 - `attributes` estaba «reservada: todavía sin efecto». Si alguien la puso como lista de lo que
   se importa, ahora decide lo que se enseña y por lo que se filtra; con `[]`, nada.
@@ -877,9 +889,6 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 - Todos los documentos se vuelven a procesar una vez (`docs-2`), para que `structure.json`
   tenga `doc_id`, `version`, `date` y las páginas sin texto. El texto de las secciones no
   cambia: el análisis sale de la caché y no se pregunta nada al modelo.
-- El índice se reconstruye una vez (`index-2`): cambian los fragmentos con listas o pasos
-  numerados (que ahora conservan sus líneas) y el texto que se embebe de cada requisito.
-  Los textos que no cambian salen de la caché de vectores; el resto se embebe otra vez.
 - `[index] kinds` tiene `table` por defecto. Si tu `atlas.toml` da su propia lista, añade
   `"table"` para que las tablas tengan registro propio.
 - Encender `tables` en una fuente vuelve a procesar sus documentos, y como el texto de las
@@ -892,8 +901,6 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   vez después de actualizar se vuelve a preguntar por cada requisito en caché.
 - Los agentes del proyecto copiados de `examples/agents` no tienen la frase nueva: conviene
   añadirla (está en `atlas/agents/guard.py`, `DATA_RULE`).
-- La primera ejecución vuelve a analizar todo el código (`ada-2`, `python-2`) y reconstruye
-  la parte de código del grafo (`graph-3`). Sin cambios en la configuración.
 - Un analizador propio que pase `tests=` a `CodeUnit` tiene que quitarlo.
 
 ### Pendiente

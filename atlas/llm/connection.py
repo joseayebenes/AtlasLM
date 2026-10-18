@@ -4,8 +4,7 @@ configuration model, proxy, certificates, OpenAI client creation and error diagn
 
 The configuration comes from the [llm], [embeddings] and [network] sections of atlas.toml
 (`atlas.llm.from_config`). The defaults of the network read the standard variables
-HTTPS_PROXY, NO_PROXY and SSL_CERT_FILE. The standalone mode with its own connection.toml
-is kept in legacy/conexion.py.
+HTTPS_PROXY, NO_PROXY and SSL_CERT_FILE.
 
 Warnings (rate-limit rejections, retries) go to the "atlas.llm" logger; a configuration
 that cannot work (a CA certificate that does not exist, a missing package) raises

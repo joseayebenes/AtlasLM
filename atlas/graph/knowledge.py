@@ -1,5 +1,5 @@
-"""Queries on the graph of code, requirements and documents (the tools of
-legacy/ada_graph_mcp.py and the traceability of phase 4), as methods.
+"""Queries on the graph of code, requirements and documents (the code tools and the
+traceability), as methods.
 
 Every answer is a compact, JSON-serialisable dict, ready to be a tool of an agent or of
 the MCP server: lists are capped (`limit`) and say whether they were `truncated`; a name

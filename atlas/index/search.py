@@ -1,4 +1,4 @@
-"""Hybrid search and cited answers (the retrieval part of legacy/doc_rag.py).
+"""Hybrid search and cited answers.
 
 A search merges several rankings with Reciprocal Rank Fusion, which needs no calibration
 between scores of different kinds:

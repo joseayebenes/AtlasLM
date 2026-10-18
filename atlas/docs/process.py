@@ -1,4 +1,4 @@
-"""A whole document, from the file to the Markdown output (`procesar` of legacy/pdf_struct.py).
+"""A whole document, from the file to the Markdown output.
 
     from atlas.docs import DocsOptions, process_document
     data = process_document("spec.pdf", "out/spec", DocsOptions(analysis="regex"))
@@ -160,8 +160,8 @@ def _metadata(raw: str, extracted: dict, options: DocsOptions) -> dict[str, str]
 
 def preview(path: str | Path, options: DocsOptions | None = None, disabled: Iterable[str] = (),
             ocr_dir: str | Path | None = None) -> dict:
-    """The sections a document would have, without analysing it (the --dry-run of the
-    legacy script): title, extractor, structure source, sections and, when the structure
+    """The sections a document would have, without analysing it: title, extractor,
+    structure source, sections and, when the structure
     did not come from the bookmarks or some section had to be split in many parts, the
     heading diagnosis; `doc_id`, `version` and `date` as in structure.json.
     `pages_without_text` counts the pages that are only an image, and `scanned` warns

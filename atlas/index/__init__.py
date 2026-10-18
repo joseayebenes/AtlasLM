@@ -1,4 +1,4 @@
-"""Index and hybrid search over the documents (legacy/doc_rag.py).
+"""Index and hybrid search over the documents.
 
     records.py      search records of a document (overview, sections, chunks, requirements...),
                     of a DOORS module (its requirements) and of a code unit (its elements)

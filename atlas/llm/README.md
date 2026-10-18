@@ -2,7 +2,7 @@
 
 Todo lo que habla con una API compatible con OpenAI pasa por aquí: el análisis de
 documentos, los embeddings del índice, las respuestas y los agentes (`AtlasLlm` usa este
-mismo cliente). Viene de `legacy/conexion.py`, traducido al inglés (`connection.py`).
+mismo cliente).
 
 | Fichero | Qué tiene |
 |---|---|

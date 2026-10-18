@@ -1,8 +1,7 @@
 """Connection to the LLM and embeddings APIs (proxy, TLS, limits, retries).
 
-`connection.py` is legacy/conexion.py translated to English, without its standalone mode
-(its own connection.toml): the configuration comes from the [llm], [embeddings] and
-[network] sections of atlas.toml via `from_config`.
+In `connection.py`, the configuration comes from the [llm], [embeddings] and [network]
+sections of atlas.toml via `from_config`.
 `structured.py` asks the chat model for JSON objects and repairs broken answers.
 """
 from __future__ import annotations

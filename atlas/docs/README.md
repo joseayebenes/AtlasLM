@@ -1,7 +1,7 @@
 # atlas.docs — documentos
 
 Extrae el texto de cada documento, lo divide en secciones y las analiza, y escribe el
-resultado en Markdown y en `structure.json`. Viene de `legacy/pdf_struct.py`.
+resultado en Markdown y en `structure.json`.
 
 | Fichero | Qué tiene |
 |---|---|
@@ -131,5 +131,4 @@ print(data["requirements"][0])
 
 `tests/test_docs_structure.py`, `test_docs_analysis.py`, `test_docs_process.py` (caché,
 reintentos, división de secciones cortadas, Ctrl+C, caché dañada, PDF escaneados,
-`ocr_command` y tablas) y `test_docs_legacy.py`
-(mismo resultado que `pdf_struct.py`).
+`ocr_command` y tablas).

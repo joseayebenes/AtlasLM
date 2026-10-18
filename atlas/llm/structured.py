@@ -1,7 +1,6 @@
 """Structured answers: ask the chat model for one JSON object and get a dict back.
 
-Comes from the `LLM` class and the JSON helpers of legacy/pdf_struct.py. Small models
-often wrap the JSON in prose or a ```json block, cut it when they reach max_tokens or
+Small models often wrap the JSON in prose or a ```json block, cut it when they reach max_tokens or
 leave trailing commas, so the answer goes through three stages:
 
 1. `parse_json`: the largest JSON object in the text that has one of the expected keys.

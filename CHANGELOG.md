@@ -6,6 +6,24 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+### Añadido
+- `[network] limits_dir`: la carpeta de las ventanas del límite compartido, `limits` dentro
+  del workspace por defecto; una absoluta común a varios workspaces hace que lo compartan.
+
+### Cambiado
+- Todo lo que atlas escribe para funcionar se queda en el workspace: las ventanas del límite
+  de peticiones compartido (`[network] shared_limit`) pasan de `~/.atlas/limits` (en Windows,
+  `%LOCALAPPDATA%\atlas\limits`) a `<workspace>/limits`; las copias con OCR de
+  `atlas sections --json`, de una carpeta temporal del sistema a `<workspace>/docs/.ocr`, como
+  sin `--json`; y las copias de los casos `develop` de la evaluación, de `%TEMP%` a
+  `<workspace>/eval`. Los logs ya iban a `<workspace>/logs`.
+
+### Al actualizar
+- El límite compartido ya es de los procesos del mismo workspace, no de todo el puesto: dos
+  workspaces contra el mismo gateway vuelven a sumar sus límites. Para que lo compartan, la
+  misma `[network] limits_dir` absoluta en los dos (o la variable `ATLAS_LIMITS_DIR`).
+  `~/.atlas/limits` (o `%LOCALAPPDATA%\atlas\limits`) ya no se usa y se puede borrar.
+
 ### Quitado
 - `legacy/`: los scripts de partida (`ada_graph.py`, `ada_graph_mcp.py`, `conexion.py`,
   `doc_rag.py`, `pdf_struct.py`...), el proyecto `doors_kb` y el plan del proyecto

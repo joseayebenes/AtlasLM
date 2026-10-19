@@ -25,7 +25,7 @@ A set is a YAML file, a list of cases of four kinds, by the key that holds the q
       document: hmi_manual.md                # optional, and scope (auto, passages, whole) and section
     - id: calc-from-start                    # a plan of atlas develop (needs the model and [agents])
       develop: examples/develop/calc/plan.toml
-      from: examples/develop/calc/start      # copied to a temporary folder before each run
+      from: examples/develop/calc/start      # copied to <workspace>/eval before each run
       expect_tests_passed: 2                 # it passes with at least these tests passing at the end
       runs: 1                                # optional: [agents.eval] runs otherwise
       config: examples/develop/calc/atlas.toml   # optional: the atlas.toml next to the plan
@@ -56,7 +56,7 @@ the query contains every expected text; the graph has no ranking and no randomne
 figures of the search and of the graph for each tag as well as for the whole set.
 
 A develop case runs a plan on a copy of its starting folder: the folder of `from` goes to a
-temporary one, atlas develop runs there (its paths are relative to it) with [sources.code] and
+temporary one in <workspace>/eval, atlas develop runs there (its paths are relative to it) with [sources.code] and
 the [agents] dirs of `config` over those of the configuration evaluated, which gives the model;
 ATLAS_PYTHON is the Python of atlas, for the commands of a Python project. Of each run it keeps
 the tests that pass, the edits made and failed, the compilations with errors, the calls, the
@@ -403,7 +403,8 @@ def evaluate_develop(cases: list[dict], cfg: Config, runs: int = 1, client: Any 
             raise ConfigError(f"develop case {case['id']}: " + (f"no plan {plan}" if not plan.is_file()
                                                                 else f"no folder {start} to start from"))
         for n in range(1, int(case.get("runs") or runs) + 1):
-            folder = Path(tempfile.mkdtemp(prefix=f"atlas-eval-{case['id']}-"))
+            (cfg.workspace / "eval").mkdir(parents=True, exist_ok=True)
+            folder = Path(tempfile.mkdtemp(prefix=f"{case['id']}-", dir=cfg.workspace / "eval"))
             project = folder / start.name
             shutil.copytree(start, project, ignore=shutil.ignore_patterns(".git", "__pycache__"))
             run_cfg = _develop_config(cfg, case, plan, folder / "workspace", project)

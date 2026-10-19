@@ -88,7 +88,7 @@ SCHEMA: dict[str, dict[str, Any]] = {
                 "no_proxy": str, "insecure": bool, "timeout": float, "idle_timeout": float, "turn_timeout": float,
                 "requests_per_minute": int,
                 "tokens_per_minute": int, "adaptive": bool, "max_concurrent": int, "shared_limit": bool,
-                "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
+                "limits_dir": str, "max_retries": int, "max_backoff": float, "rate_limit_max_wait": float,
                 "retry_statuses": list},
     "pipeline": {"workers": int, "step_workers": dict, "on_error": str, "max_attempts": int,
                  "retry_quarantined": bool, "prune_missing": bool, "steps": list, "max_minutes": int,

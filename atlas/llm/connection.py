@@ -74,7 +74,8 @@ class NetConfig:
     tokens_per_minute: int = 0   # estimated as characters/4 of the request body
     adaptive: bool = True        # slow down only when the server rejects for rate limit
     max_concurrent: int = 0      # in this process
-    shared_limit: bool = True    # with a limit: the window is shared with the other processes of the workstation
+    shared_limit: bool = True    # with a limit: the window is shared with the other processes of the workspace
+    limits_dir: str = "limits"   # the folder of that window, relative to the workspace (atlas.llm.from_config)
     max_retries: int = 6              # retries on 5xx or connection errors
     max_backoff: float = 60.0
     rate_limit_max_wait: float = 900.0  # max total wait per request on 409/429 (s)
@@ -185,27 +186,31 @@ def _log(msg: str) -> None:
     _LOGGER.warning(msg)
 
 
-def limits_dir() -> Path:
-    r"""The folder of the windows that the limiter shares between the processes of the
-    workstation: ATLAS_LIMITS_DIR, or %LOCALAPPDATA%\atlas\limits on Windows, or
-    ~/.atlas/limits."""
+def limits_dir(net: NetConfig | None = None) -> Path | None:
+    """The folder of the windows that the limiter shares between the processes of the
+    workspace: ATLAS_LIMITS_DIR, or the limits_dir of `net` once atlas.llm.from_config made
+    it absolute (<workspace>/limits by default); None otherwise (a NetConfig made by hand,
+    or limits_dir = ""): nothing is written outside the workspace unless asked."""
     if os.environ.get("ATLAS_LIMITS_DIR"):
         return Path(os.environ["ATLAS_LIMITS_DIR"]).expanduser()
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "atlas" / "limits"
-    return Path.home() / ".atlas" / "limits"
+    folder = Path(net.limits_dir).expanduser() if net is not None and net.limits_dir else None
+    return folder if folder is not None and folder.is_absolute() else None
 
 
-def limit_file(cfg: "ServiceConfig") -> Path:
-    """<limits_dir>/<host>-<port>.json: one window per destination. Neither the name nor the
-    content has anything of the key (docs/seguridad.md: no hash of a secret on disk)."""
+def limit_file(cfg: "ServiceConfig") -> Path | None:
+    """<limits_dir>/<host>-<port>.json: one window per destination; None without a folder.
+    Neither the name nor the content has anything of the key (docs/seguridad.md: no hash of
+    a secret on disk)."""
+    folder = limits_dir(cfg.net)
+    if folder is None:
+        return None
     u = urlparse(cfg.base_url)
     host = re.sub(r"[^A-Za-z0-9._-]", "_", u.hostname or "server")
-    return limits_dir() / f"{host}-{u.port or (443 if u.scheme == 'https' else 80)}.json"
+    return folder / f"{host}-{u.port or (443 if u.scheme == 'https' else 80)}.json"
 
 
 class SharedWindow:
-    """The window of a destination shared by the processes of the workstation (atlas serve,
+    """The window of a destination shared by the processes of the workspace (atlas serve,
     a long atlas run, atlas develop): a JSON file with the times of the sends of the last
     minute and the adapted pace, read and written under the operating system's lock on a
     file beside it (flock on POSIX, msvcrt.locking on Windows), as the workspace lock of
@@ -293,7 +298,7 @@ class RateLimiter:
     - Shared pause: after a rejection, or if the server says no requests are left, all
       threads wait.
     - With `shared` (a SharedWindow), the window, the adapted pace and the pauses are those
-      of every process of the workstation that goes to the same destination; if the file
+      of every process of the workspace that goes to the same destination; if the file
       cannot be locked, this process paces on its own, in memory."""
 
     def __init__(self, net: NetConfig, label: str, shared: "SharedWindow | None" = None):
@@ -425,15 +430,16 @@ _LIMITERS_LOCK = threading.Lock()
 def rate_limiter_for(cfg: ServiceConfig) -> RateLimiter:
     """The limiter of the destination of `cfg` in this process (one per server and key) and,
     with [network] shared_limit and a limit, on the window that the processes of the
-    workstation share (SharedWindow)."""
+    workspace share (SharedWindow)."""
     u = urlparse(cfg.base_url)
     key = (u.scheme, u.hostname, u.port, cfg.api_key)
     n = cfg.net
     with _LIMITERS_LOCK:
         lim = _LIMITERS.get(key)
         if lim is None:
-            shared = SharedWindow(limit_file(cfg)) if n.shared_limit and (
+            path = limit_file(cfg) if n.shared_limit and (
                 n.requests_per_minute > 0 or n.tokens_per_minute > 0) else None
+            shared = SharedWindow(path) if path else None
             lim = _LIMITERS[key] = RateLimiter(n, u.hostname or cfg.base_url, shared)
         else:                                    # if they differ, the most restrictive wins
             if n.requests_per_minute and (not lim.rpm_conf or n.requests_per_minute < lim.rpm_conf):
@@ -845,8 +851,8 @@ def describe(cfg: ServiceConfig) -> str:
             + f", {n.max_concurrent or 'unlimited'} simultaneous; on 409/429 waits up to "
             f"{n.rate_limit_max_wait / 60:g} min, on 5xx {n.max_retries} retries"
             + (", adaptive pace" if n.adaptive else "")
-            + (f"; shared with the other processes of this workstation ({limit_file(cfg)})"
-               if n.shared_limit and (n.requests_per_minute or n.tokens_per_minute) else ""))
+            + (f"; shared with the other processes of this workspace ({limit_file(cfg)})"
+               if n.shared_limit and (n.requests_per_minute or n.tokens_per_minute) and limit_file(cfg) else ""))
 
 
 # Output budget of the check request. Reasoning models think before answering and that

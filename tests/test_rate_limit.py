@@ -105,6 +105,22 @@ def test_two_processes_share_the_quota(fake, fake_stats, tmp_path, shared):
         assert min(b - a for a, b in zip(times, times[1:])) < 0.45     # two series 0.5 s apart, any offset
 
 
+def test_the_window_stays_in_the_workspace(toml, monkeypatch, tmp_path):
+    """Without ATLAS_LIMITS_DIR the window is <workspace>/limits, or [network] limits_dir
+    (relative to the workspace, or absolute); "" or a NetConfig made by hand: not shared."""
+    from atlas.config import load_config
+    from atlas.llm import from_config
+    from atlas.llm.connection import limit_file
+    monkeypatch.delenv("ATLAS_LIMITS_DIR")
+    cfg = load_config(toml('[network]\nrequests_per_minute = 28\n'))
+    assert limit_file(from_config(cfg).llm).parent == cfg.workspace / "limits"
+    cfg = load_config(toml(f'[network]\nlimits_dir = "rpm"\n[embeddings.network]\nlimits_dir = "{(tmp_path / "all").as_posix()}"\n'))
+    conn = from_config(cfg)
+    assert limit_file(conn.llm).parent == cfg.workspace / "rpm" and limit_file(conn.embeddings).parent == tmp_path / "all"
+    assert limit_file(from_config(load_config(toml('[network]\nlimits_dir = ""\n'))).llm) is None
+    assert limit_file(ServiceConfig(base_url="https://gw.example/v1", net=NetConfig(requests_per_minute=1))) is None
+
+
 def test_shared_limit_comes_from_the_network_of_atlas_toml(toml):
     from atlas.config import load_config
     from atlas.llm import from_config

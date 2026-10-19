@@ -20,8 +20,8 @@ mismo cliente).
   sistema);
 - respeta el límite de peticiones y de tokens por minuto, repartiendo las peticiones en el
   tiempo. Lo comparten todos los clientes que van al mismo servidor con la misma clave y,
-  con `[network] shared_limit` (por defecto, si hay límite), todos los procesos del puesto:
-  `SharedWindow` guarda en `~/.atlas/limits/<servidor>-<puerto>.json` las horas de los envíos
+  con `[network] shared_limit` (por defecto, si hay límite), todos los procesos del workspace:
+  `SharedWindow` guarda en `<workspace>/limits/<servidor>-<puerto>.json` las horas de los envíos
   del último minuto, el ritmo adaptado y las pausas, y cada envío se decide con el fichero
   bloqueado (`flock` o `msvcrt.locking`, como el workspace). Sin poder bloquearlo, el proceso
   lleva su ritmo solo; `max_concurrent` sigue siendo de cada proceso;

@@ -1139,14 +1139,14 @@ def sections(cfg: Config, as_json: bool = False) -> int:
     """The sections of every document of [[sources.docs]], without analysing them: to
     tune structure, heading_regex, max_chars and min_chars before a run."""
     from atlas.docs import preview
-    ctx = _context(cfg)
+    ctx, ocr = _context(cfg), cfg.workspace / "docs" / ".ocr"
     if as_json:
-        _print_json({"documents": [{"source": d["name"], "file": str(f), **preview(f, options, ctx.disabled)}
+        _print_json({"documents": [{"source": d["name"], "file": str(f), **preview(f, options, ctx.disabled, ocr_dir=ocr)}
                                    for d, options in doc_sources(ctx) for f in doc_files(ctx, d)]})
         return 0
     for d, options in doc_sources(ctx):
         for f in doc_files(ctx, d):
-            p = preview(f, options, ctx.disabled, ocr_dir=cfg.workspace / "docs" / ".ocr")
+            p = preview(f, options, ctx.disabled, ocr_dir=ocr)
             print(f"\n[{d['name']}] {f} — '{p['title']}': {p['chars']} chars, {len(p['sections'])} sections")
             if any(p[k] for k in ("doc_id", "version", "date")):
                 print("  " + "; ".join(f"{k}: {p[k]}" for k in ("doc_id", "version", "date") if p[k]))

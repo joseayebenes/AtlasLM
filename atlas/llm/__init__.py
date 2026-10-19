@@ -7,6 +7,7 @@ sections of atlas.toml via `from_config`.
 from __future__ import annotations
 
 from dataclasses import fields, replace
+from pathlib import Path
 
 from atlas.llm.connection import (
     Connection, NetConfig, ServiceConfig, check, check_service, create_client, describe, diagnose,
@@ -41,10 +42,17 @@ def from_config(cfg) -> Connection:
         return replace(base, **{k: v for k, v in (extra or {}).items() if k in net_keys})
 
     common = net(NetConfig(), cfg.get("network"))
+    workspace = getattr(cfg, "workspace", None)
+
+    def in_workspace(n: NetConfig) -> NetConfig:      # limits_dir, relative to the workspace
+        p = Path(n.limits_dir).expanduser() if n.limits_dir else None
+        if p is not None and not p.is_absolute():
+            p = Path(workspace) / p if workspace else None
+        return replace(n, limits_dir=str(p) if p else "")
 
     def service(section: dict, defaults: ServiceConfig) -> ServiceConfig:
         s = replace(defaults, **{k: v for k, v in section.items() if k in service_keys})
-        return replace(s, net=net(common, section.get("network")))
+        return replace(s, net=in_workspace(net(common, section.get("network"))))
 
     llm = service(cfg.get("llm", {}), ServiceConfig(base_url="http://localhost:11434/v1",
                                                     model="gemma4", api_key="local"))

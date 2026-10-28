@@ -89,6 +89,7 @@ module = [
     "atlas.cli",
     "atlas.code.ada",
     "atlas.code.build",
+    "atlas.code.files",
     "atlas.code.library",
     "atlas.code.lsp",
     "atlas.code.procedures",

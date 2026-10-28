@@ -193,10 +193,11 @@ def tool_groups() -> dict[str, tuple[str, ...]]:
     from atlas.code.build import BUILD_TOOL_NAMES
     from atlas.code.judge import JUDGE_TOOL_NAMES
     from atlas.code.lsp import LSP_TOOL_NAMES
-    from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
+    from atlas.code.files import READ_TOOL_NAMES
+    from atlas.code.toolchain import TOOLCHAIN_TOOL_NAMES
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": tuple(n for n in FILE_TOOLS if n not in WRITING_TOOLS),
-              "edit": WRITING_TOOLS, "build": (*BUILD_TOOL_NAMES, *JUDGE_TOOL_NAMES), "lsp": LSP_TOOL_NAMES}
+    groups = {"docs": DOC_TOOLS, "files": READ_TOOL_NAMES, "edit": WRITING_TOOLS,
+              "build": (*BUILD_TOOL_NAMES, *TOOLCHAIN_TOOL_NAMES, *JUDGE_TOOL_NAMES), "lsp": LSP_TOOL_NAMES}
     try:                                    # networkx, of the [code] extra
         from atlas.agents.tools import TOOL_NAMES as AGENT_TOOLS
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS

@@ -2045,9 +2045,9 @@ def probe(cfg: Config) -> int:
 
 def reference(cfg: Config) -> int:
     """The manuals and the library for search_reference: built, or brought up to date."""
-    from atlas.code import BuildTools
+    from atlas.code import Toolchain
     _logging(cfg)
-    tools = BuildTools.from_config(cfg)
+    tools = Toolchain.from_config(cfg)
     if not (tools.reference.patterns or tools.library.folders):
         print("nothing to index: [sources.code] reference (manuals) and library (specs)", file=sys.stderr)
         return 1

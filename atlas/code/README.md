@@ -8,9 +8,11 @@ un agente de código, confinadas a las carpetas del proyecto.
 | `ada.py` | `AdaAnalyzer`, el analizador de Ada (plugin `code_analyzer:ada`) |
 | `python.py` | `PythonAnalyzer`, el de Python (plugin `code_analyzer:python`), sin dependencias |
 | `common.py` | la etiqueta de trazabilidad (`req_tag`, `req_regex`) |
-| `tools.py` | `CodeTools`: `list_files`, `grep`, `read_file`, `outline`, `read_subprogram`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
+| `files.py` | `CodeReader`: `list_files`, `grep`, `read_file`, `outline` y `read_subprogram`, la lectura del código |
+| `tools.py` | `CodeTools`: un `CodeReader` que además cambia ficheros: `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram` |
 | `symbols.py` | los subprogramas de un fichero con sus líneas (Ada con tree-sitter, Python con `ast`), para las herramientas que cambian un subprograma entero |
-| `build.py` | `BuildTools`: `check_code`, `run_test`, `run_program` y `library_spec`, el compilador, las pruebas y el programa del proyecto |
+| `toolchain.py` | `Toolchain`: `tool_path`, la carpeta de compilación, `library_spec` y `search_reference`, sin ejecutar nada |
+| `build.py` | `BuildTools`: un `Toolchain` que ejecuta `check_code`, `run_test` y `run_program`, el compilador, las pruebas y el programa del proyecto |
 | `judge.py` | `JudgeTools`: `run_tests` y `judge_changes`, el juez de `atlas develop` para el agente de un editor (ver [atlas/mcp](../mcp/README.md#el-juez-de-atlas-develop-en-el-editor)) |
 | `library.py` | `Library`: las declaraciones públicas de las especificaciones del proyecto y del runtime del compilador (`[sources.code] library`) |
 | `reference.py` | `Reference`: los manuales (`[sources.code] reference`) y las declaraciones de la biblioteca en un índice léxico propio, `<workspace>/reference.db` |

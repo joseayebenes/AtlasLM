@@ -168,28 +168,28 @@ def _command(patterns: list[str]) -> list[str]:
 
 
 class LanguageTools:
-    def __init__(self, build, command: list[str], project: str = "", scenario: dict | None = None):
-        self.build = build                       # BuildTools: the files and their confinement, tool_path, build folder
-        self.files = build.files
+    def __init__(self, toolchain, command: list[str], project: str = "", scenario: dict | None = None):
+        self.toolchain = toolchain               # Toolchain: the files and their confinement, tool_path, build folder
+        self.files = toolchain.files
         self.command = _command(command)
         self.project = project
         self.scenario = dict(scenario or {})     # the scenario variables of the project (project_vars)
 
     @classmethod
-    def from_config(cls, cfg, build=None) -> "LanguageTools":
-        from atlas.code.build import BuildTools
+    def from_config(cls, cfg, toolchain=None) -> "LanguageTools":
         from atlas.code.gpr import code_config
+        from atlas.code.toolchain import Toolchain
         sc = code_config(cfg)
         project = sc.get("language_server_project", "")
-        return cls(build or BuildTools.from_config(cfg), sc.get("language_server", []),
+        return cls(toolchain or Toolchain.from_config(cfg), sc.get("language_server", []),
                    str(cfg.resolve(project)) if project else "", sc.get("project_vars", {}))
 
     @classmethod
     def for_context(cls, context: Any) -> "LanguageTools":
         tools = getattr(context, "_language_tools", None)
         if tools is None:
-            from atlas.code.build import BuildTools
-            tools = cls.from_config(context.cfg, BuildTools.for_context(context))
+            from atlas.code.toolchain import Toolchain
+            tools = cls.from_config(context.cfg, Toolchain.for_context(context))
             context._language_tools = tools
         return tools
 
@@ -200,11 +200,11 @@ class LanguageTools:
             return self.project
         folders = sorted({p.parent for root in self.files.roots if root.is_dir() for p in root.rglob("*")
                           if p.suffix.lower() in ADA and not self.files._excluded(p)})
-        self.build.build_dir.mkdir(parents=True, exist_ok=True)
-        gpr = self.build.build_dir / "atlas_lsp.gpr"
+        self.toolchain.build_dir.mkdir(parents=True, exist_ok=True)
+        gpr = self.toolchain.build_dir / "atlas_lsp.gpr"
         dirs = ", ".join(f'"{f.as_posix()}"' for f in folders)
         text = (f"project Atlas_Lsp is\n   for Source_Dirs use ({dirs});\n"
-                f'   for Object_Dir use "{(self.build.build_dir / "lsp").as_posix()}";\nend Atlas_Lsp;\n')
+                f'   for Object_Dir use "{(self.toolchain.build_dir / "lsp").as_posix()}";\nend Atlas_Lsp;\n')
         if not gpr.exists() or gpr.read_text(encoding="utf-8") != text:
             gpr.write_text(text, encoding="utf-8")
         return str(gpr)
@@ -215,8 +215,8 @@ class LanguageTools:
         with _servers_lock:
             server = _servers.get(key)
             if server is None or server.proc is None or server.proc.poll() is not None:
-                from atlas.code.build import on_path
-                env = {**os.environ, "PATH": os.pathsep.join([*self.build.tool_path, os.environ.get("PATH", "")])}
+                from atlas.code.toolchain import on_path
+                env = {**os.environ, "PATH": os.pathsep.join([*self.toolchain.tool_path, os.environ.get("PATH", "")])}
                 settings = {"projectFile": self._gpr(), **({"scenarioVariables": self.scenario} if self.scenario else {})}
                 server = LanguageServer(on_path(self.command, env["PATH"]), root, {"ada": settings}, env)
                 server.start()

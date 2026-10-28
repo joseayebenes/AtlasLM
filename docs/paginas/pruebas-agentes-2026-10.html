@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pruebas de atlas con gemma</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a lab report — one reading column, tables that may scroll on their own, result bars drawn to scale (0–100 %). */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #18202b;
+  --muted: #5a6575;
+  --rule: #d9dee6;
+  --accent: #1f5fa8;
+  --accent-soft: #e3ecf7;
+  --good: #23824f;
+  --warn: #b26a00;
+  --bad: #b53a32;
+  --bar: #9db8da;
+  --bar-best: #1f5fa8;
+  --font-display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --surface: #171e27; --ink: #e6ebf2; --muted: #9aa6b6; --rule: #2a3442;
+    --accent: #7fb0ea; --accent-soft: #1d2b3d; --good: #5cc98d; --warn: #e3a13c; --bad: #ef7d73;
+    --bar: #36506f; --bar-best: #7fb0ea; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --surface: #171e27; --ink: #e6ebf2; --muted: #9aa6b6; --rule: #2a3442;
+  --accent: #7fb0ea; --accent-soft: #1d2b3d; --good: #5cc98d; --warn: #e3a13c; --bad: #ef7d73;
+  --bar: #36506f; --bar-best: #7fb0ea; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 1rem; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 60rem; margin: 0 auto; padding-block: 2.5rem 4rem; display: flex; flex-direction: column; gap: 3rem; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(1.9rem, 4vw, 2.6rem); font-weight: 700; }
+h2 { font-size: 1.5rem; font-weight: 700; }
+h3 { font-size: 1.1rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+section { display: flex; flex-direction: column; gap: 1rem; }
+.eyebrow { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+header { display: flex; flex-direction: column; gap: .75rem; border-bottom: 1px solid var(--rule); padding-bottom: 1.5rem; }
+.lede { font-size: 1.1rem; color: var(--muted); }
+.meta { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; font-family: var(--font-mono); font-size: .82rem; color: var(--muted); }
+code, .mono { font-family: var(--font-mono); font-size: .88em; }
+code { background: var(--accent-soft); padding: .05em .35em; border-radius: 3px; }
+ul { margin: 0; padding-left: 1.2rem; display: flex; flex-direction: column; gap: .4rem; max-width: 70ch; }
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 1rem; }
+.finding { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: .4rem; min-width: 0; }
+.finding .k { font-family: var(--font-mono); font-size: .75rem; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+.finding p { font-size: .95rem; }
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; font-variant-numeric: tabular-nums; }
+th, td { padding: .5rem .7rem; text-align: right; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: .75rem; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); background: var(--bg); }
+th:first-child, td:first-child { text-align: left; }
+td.l, th.l { text-align: left; }
+tbody tr:last-child td { border-bottom: 0; }
+tr.group td { background: var(--accent-soft); font-family: var(--font-mono); font-size: .78rem; text-transform: uppercase; letter-spacing: .05em; color: var(--accent); text-align: left; }
+tr.best td { font-weight: 700; }
+.bar { display: flex; align-items: center; gap: .5rem; justify-content: flex-end; }
+.bar i { display: block; height: .55rem; width: 6rem; background: var(--rule); border-radius: 2px; position: relative; overflow: hidden; }
+.bar i b { position: absolute; inset: 0 auto 0 0; background: var(--bar); }
+tr.best .bar i b { background: var(--bar-best); }
+.pill { display: inline-block; font-family: var(--font-mono); font-size: .72rem; padding: .1em .5em; border-radius: 999px; border: 1px solid currentColor; }
+.ok { color: var(--good); } .mid { color: var(--warn); } .ko { color: var(--bad); }
+.note { font-size: .9rem; color: var(--muted); max-width: 70ch; }
+.fix { display: grid; grid-template-columns: 7rem 1fr; gap: .3rem 1rem; padding: .9rem 0; border-top: 1px solid var(--rule); }
+.fix:first-of-type { border-top: 0; }
+.fix .c { font-family: var(--font-mono); font-size: .82rem; color: var(--accent); }
+.fix div { min-width: 0; display: flex; flex-direction: column; gap: .3rem; }
+@media (max-width: 520px) { .fix { grid-template-columns: 1fr; } .bar i { width: 3.5rem; } }
+@media (prefers-reduced-motion: no-preference) { .bar i b { transition: width .3s; } }
+a { color: var(--accent); }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow">AtlasLM · pruebas del 28 de octubre de 2026</span>
+    <h1>Pruebas de atlas con gemma</h1>
+    <p class="lede">Cuántas herramientas MCP ofrecer, qué agent.md ayuda al agente a entender el proyecto, y qué configuración de agentes conviene en OpenCode y VS Code. Tres pruebas con gemma-4-26b y gpt-oss-120b sobre el proyecto de ejemplo.</p>
+    <div class="meta">
+      <span>Modelos: gemma-4-26b-a4b-it, gpt-oss-120b (OpenRouter)</span>
+      <span>Respuestas evaluadas: 2 970</span>
+      <span>Coste total ≈ 1,6 $</span>
+    </div>
+  </header>
+
+  <section>
+    <h2>Conclusiones</h2>
+    <div class="findings">
+      <div class="finding"><span class="k">Herramientas</span><h3>Bastan 5</h3><p><code>build_context</code>, <code>search</code>, <code>trace</code>, <code>impact</code> y <code>find_symbol</code> aciertan igual o más que 13 o 29, con la mitad de tokens de entrada. Ya es el perfil por defecto de <code>atlas serve</code>.</p></div>
+      <div class="finding"><span class="k">Entender el proyecto</span><h3>Un AGENTS.md corto</h3><p>Con solo el MCP, el agente de OpenCode acierta 46 de 54; con un AGENTS.md de 228 palabras, 51. Alargarlo con recetas no mejora: más llamadas y más bucles.</p></div>
+      <div class="finding"><span class="k">Razonamiento</span><h3>gemma con <code>low</code></h3><p>Sin razonamiento falla las cadenas de varios saltos; con <code>low</code> acierta 97 de 98 con la guía breve, a cambio de duplicar el tiempo (≈ 7 s por respuesta).</p></div>
+      <div class="finding"><span class="k">Agentes</span><h3>Uno o varios aciertan igual</h3><p>Un agente <code>atlas</code> propio, que solo lee, gasta la mitad de tokens. Delegar en un subagente tarda un 40–60 % más; solo compensa si el que programa es otro agente.</p></div>
+    </div>
+  </section>
+
+  <section id="herramientas">
+    <span class="eyebrow">Prueba 1</span>
+    <h2>¿Cuántas herramientas MCP?</h2>
+    <p>28 preguntas (24 de asistente y 4 de editor), cada una dos veces, para 5, 13 (el perfil <code>editor</code> de antes) y 29 herramientas (<code>all</code>). Los agentes llevan las instrucciones que da <code>atlas serve</code>. Acierto: la respuesta contiene los ID, nombres o valores esperados.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Modelo · razonamiento</th><th>Herram.</th><th>Aciertos</th><th>Acierto</th><th>Mediana</th><th>Tokens entrada</th><th>Coste</th></tr></thead>
+        <tbody>
+          <tr class="group"><td colspan="7">gemma-4-26b</td></tr>
+          <tr class="best"><td>none</td><td>5</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>3,7 s</td><td>4,4k</td><td>0,016 $</td></tr>
+          <tr><td>none</td><td>13</td><td>54/56</td><td><span class="bar">96 %<i><b style="width:96.4%"></b></i></span></td><td>5,1 s</td><td>6,1k</td><td>0,023 $</td></tr>
+          <tr><td>none</td><td>29</td><td>54/56</td><td><span class="bar">96 %<i><b style="width:96.4%"></b></i></span></td><td>4,2 s</td><td>9,1k</td><td>0,032 $</td></tr>
+          <tr><td>low</td><td>5</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>10,1 s</td><td>5,2k</td><td>0,023 $</td></tr>
+          <tr><td>low</td><td>13</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>10,9 s</td><td>6,7k</td><td>0,026 $</td></tr>
+          <tr><td>low</td><td>29</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>8,6 s</td><td>10,0k</td><td>0,035 $</td></tr>
+          <tr><td>medium</td><td>5</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>10,6 s</td><td>5,1k</td><td>0,023 $</td></tr>
+          <tr><td>medium</td><td>13</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>10,7 s</td><td>6,7k</td><td>0,026 $</td></tr>
+          <tr><td>medium</td><td>29</td><td>55/56</td><td><span class="bar">98 %<i><b style="width:98.2%"></b></i></span></td><td>9,6 s</td><td>9,7k</td><td>0,036 $</td></tr>
+          <tr><td>high</td><td>5</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>10,4 s</td><td>5,3k</td><td>0,023 $</td></tr>
+          <tr><td>high</td><td>13</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>9,6 s</td><td>6,7k</td><td>0,026 $</td></tr>
+          <tr><td>high</td><td>29</td><td>56/56</td><td><span class="bar">100 %<i><b style="width:100%"></b></i></span></td><td>8,4 s</td><td>10,1k</td><td>0,036 $</td></tr>
+          <tr class="group"><td colspan="7">gpt-oss-120b</td></tr>
+          <tr><td>low</td><td>5</td><td>53/56</td><td><span class="bar">95 %<i><b style="width:94.6%"></b></i></span></td><td>5,7 s</td><td>4,4k</td><td>0,006 $</td></tr>
+          <tr><td>low</td><td>13</td><td>51/56</td><td><span class="bar">91 %<i><b style="width:91.1%"></b></i></span></td><td>5,2 s</td><td>5,4k</td><td>0,007 $</td></tr>
+          <tr><td>low</td><td>29</td><td>52/56</td><td><span class="bar">93 %<i><b style="width:92.9%"></b></i></span></td><td>5,2 s</td><td>9,4k</td><td>0,010 $</td></tr>
+          <tr><td>medium</td><td>5</td><td>52/56</td><td><span class="bar">93 %<i><b style="width:92.9%"></b></i></span></td><td>8,2 s</td><td>6,1k</td><td>0,009 $</td></tr>
+          <tr><td>medium</td><td>13</td><td>54/56</td><td><span class="bar">96 %<i><b style="width:96.4%"></b></i></span></td><td>7,2 s</td><td>8,2k</td><td>0,010 $</td></tr>
+          <tr><td>medium</td><td>29</td><td>52/56</td><td><span class="bar">93 %<i><b style="width:92.9%"></b></i></span></td><td>7,1 s</td><td>10,7k</td><td>0,012 $</td></tr>
+          <tr><td>high</td><td>5</td><td>54/56</td><td><span class="bar">96 %<i><b style="width:96.4%"></b></i></span></td><td>24,4 s</td><td>8,6k</td><td>0,018 $</td></tr>
+          <tr><td>high</td><td>13</td><td>53/56</td><td><span class="bar">95 %<i><b style="width:94.6%"></b></i></span></td><td>23,4 s</td><td>12,5k</td><td>0,021 $</td></tr>
+          <tr><td>high</td><td>29</td><td>53/56</td><td><span class="bar">95 %<i><b style="width:94.6%"></b></i></span></td><td>20,9 s</td><td>14,7k</td><td>0,022 $</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Sumando los cuatro niveles, gemma acierta 224/224 con 5 herramientas, 222 con 13 y 221 con 29; gpt-oss, 159/168, 158 y 157. Con 13 o 29 herramientas, gpt-oss en <code>high</code> se pierde leyendo ficheros hasta agotar los 10 pasos. gpt-oss sale unas 3 veces más barato y acierta algo menos. Las preguntas son fáciles: una diferencia de 1 a 3 aciertos está dentro del ruido; el ahorro de tokens no.</p>
+  </section>
+
+  <section id="agent-md">
+    <span class="eyebrow">Prueba 2</span>
+    <h2>¿Qué agent.md entiende mejor el proyecto?</h2>
+    <p>gemma con 5 herramientas, en el runtime de agentes de atlas. Seis versiones del mismo agente; solo cambia lo que dicen del proyecto y de las herramientas. 49 preguntas (21 difíciles y las 28 anteriores), dos veces cada una: 98 respuestas por versión.</p>
+    <ul>
+      <li><strong>sin guía</strong>: solo el papel del agente (61 palabras).</li>
+      <li><strong>servidor</strong>: más lo que decía <code>atlas serve</code> hasta ahora, que nombraba herramientas no ofrecidas (355).</li>
+      <li><strong>filtrado</strong>: lo mismo, nombrando solo las 5 herramientas (247).</li>
+      <li><strong>mapa</strong>: más un mapa del proyecto: módulos de DOORS y sus enlaces, documentos, unidades de código y cómo leer <code>trace</code> (458).</li>
+      <li><strong>recetas</strong>: más qué herramienta para cada tipo de pregunta y cómo responder (582).</li>
+      <li><strong>breve</strong>: mapa y recetas en pocas líneas (228).</li>
+    </ul>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Versión</th><th>Palabras</th><th>Sin razonamiento</th><th>Mediana</th><th>Con low</th><th>Mediana</th></tr></thead>
+        <tbody>
+          <tr><td>sin guía</td><td>61</td><td><span class="bar">92/98<i><b style="width:93.9%"></b></i></span></td><td>3,5 s</td><td><span class="bar">94/98<i><b style="width:95.9%"></b></i></span></td><td>8,8 s</td></tr>
+          <tr><td>servidor</td><td>355</td><td><span class="bar">91/98<i><b style="width:92.9%"></b></i></span></td><td>3,9 s</td><td><span class="bar">95/98<i><b style="width:96.9%"></b></i></span></td><td>7,9 s</td></tr>
+          <tr><td>filtrado</td><td>247</td><td><span class="bar">90/98<i><b style="width:91.8%"></b></i></span></td><td>4,0 s</td><td><span class="bar">96/98<i><b style="width:98%"></b></i></span></td><td>6,7 s</td></tr>
+          <tr><td>mapa</td><td>458</td><td><span class="bar">93/98<i><b style="width:94.9%"></b></i></span></td><td>3,7 s</td><td><span class="bar">94/98<i><b style="width:95.9%"></b></i></span></td><td>8,1 s</td></tr>
+          <tr><td>recetas</td><td>582</td><td><span class="bar">92/98<i><b style="width:93.9%"></b></i></span></td><td>4,1 s</td><td><span class="bar">95/98<i><b style="width:96.9%"></b></i></span></td><td>7,8 s</td></tr>
+          <tr class="best"><td>breve</td><td>228</td><td><span class="bar">92/98<i><b style="width:93.9%"></b></i></span></td><td>3,8 s</td><td><span class="bar">97/98<i><b style="width:99%"></b></i></span></td><td>7,3 s</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>Las preguntas difíciles, por tipo de trampa</h3>
+    <p class="note">Cada celda: aciertos sin razonamiento → con low. «parent»: confundir el padre en el esquema de DOORS con el requisito que se satisface. «conflicto»: DOORS y el PDF dan valores distintos. «sin código»: un requisito sin implementación cuya respuesta está en el que refina. «cadena»: varios saltos (código → requisito → requisito de sistema).</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Versión</th><th>parent</th><th>conflicto</th><th>sin código</th><th>cadena</th><th>documentos</th><th>editor</th></tr></thead>
+        <tbody>
+          <tr><td>sin guía</td><td>6 → 6 /6</td><td>4 → 4 /4</td><td>0 → 0 /2</td><td>16 → 20 /20</td><td>4 → 2 /4</td><td>10 → 10 /10</td></tr>
+          <tr><td>servidor</td><td>6 → 6</td><td>4 → 4</td><td>0 → 0</td><td>17 → 19</td><td>4 → 4</td><td>8 → 10</td></tr>
+          <tr><td>filtrado</td><td>6 → 6</td><td>4 → 4</td><td>0 → 1</td><td>16 → 20</td><td>4 → 3</td><td>8 → 10</td></tr>
+          <tr><td>mapa</td><td>6 → 6</td><td>4 → 4</td><td>0 → 0</td><td>17 → 18</td><td>4 → 4</td><td>10 → 10</td></tr>
+          <tr><td>recetas</td><td>6 → 6</td><td>4 → 4</td><td>0 → 1</td><td>18 → 19</td><td>4 → 3</td><td>8 → 10</td></tr>
+          <tr class="best"><td>breve</td><td>6 → 6</td><td>4 → 4</td><td>0 → 1</td><td>17 → 20</td><td>4 → 4</td><td>9 → 10</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="note">Sin razonamiento, la guía apenas cambia el acierto (90–93): lo que falla en todas es el segundo salto, porque el modelo responde tras el primer <code>trace</code>. Con <code>low</code> sigue las cadenas, y la guía breve es la que mejor lo aprovecha. Esta prueba se hizo con tres ejecuciones; la tercera se descartó por el fallo de la guarda de bucles (abajo).</p>
+  </section>
+
+  <section id="opencode">
+    <span class="eyebrow">Prueba 3</span>
+    <h2>Uno o varios agentes, en OpenCode de verdad</h2>
+    <p>OpenCode 1.18 con <code>opencode run</code>, gemma sin razonamiento y atlas como servidor MCP con 5 herramientas. 27 preguntas (21 difíciles y 6 fáciles), dos veces: 54 respuestas por configuración. Cada configuración en su propia carpeta y con sus propios datos de OpenCode.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="l">Configuración</th><th>Aciertos</th><th>Acierto</th><th>Mediana</th><th>Tokens en total</th></tr></thead>
+        <tbody>
+          <tr><td><code>build</code> con atlas por MCP, nada más</td><td>46/54</td><td><span class="bar">85 %<i><b style="width:85.2%"></b></i></span></td><td>7,5 s</td><td>1,50 M</td></tr>
+          <tr><td><code>build</code> + <code>AGENTS.md</code> (guía breve)</td><td>51/54</td><td><span class="bar">94 %<i><b style="width:94.4%"></b></i></span></td><td>7,1 s</td><td>1,48 M</td></tr>
+          <tr><td>agente <code>atlas</code> propio, solo lee</td><td>51/54</td><td><span class="bar">94 %<i><b style="width:94.4%"></b></i></span></td><td>7,4 s</td><td>0,71 M</td></tr>
+          <tr><td><code>build</code> delega en un subagente <code>atlas</code></td><td>53/54</td><td><span class="bar">98 %<i><b style="width:98.1%"></b></i></span></td><td>12,1 s</td><td>1,73 M</td></tr>
+          <tr class="best"><td>plantilla final, preguntando a <code>atlas</code></td><td>51/54</td><td><span class="bar">94 %<i><b style="width:94.4%"></b></i></span></td><td>5,5 s</td><td>0,78 M</td></tr>
+          <tr><td>plantilla final, preguntando a <code>build</code> (delega)</td><td>50/54</td><td><span class="bar">93 %<i><b style="width:92.6%"></b></i></span></td><td>9,9 s</td><td>1,77 M</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li>Con solo el MCP, el agente cae en la trampa de <code>parent</code> (4 de 6) y no llega del requisito de sistema al código; el <code>AGENTS.md</code> lo corrige.</li>
+      <li>El agente propio acierta lo mismo con la mitad de tokens: no carga el prompt de sistema de OpenCode (unos 7 000 tokens) ni sus herramientas.</li>
+      <li>Las 2 respuestas de más del subagente están dentro del ruido. Su ventaja real, que esta prueba no mide, es dejar los resultados de atlas fuera del contexto del agente que programa.</li>
+      <li>VS Code no se pudo medir igual: Copilot no tiene modo sin interfaz. Su configuración es la traducción de esta.</li>
+    </ul>
+  </section>
+
+  <section id="arreglos">
+    <span class="eyebrow">Lo que salió por el camino</span>
+    <h2>Fallos encontrados y arreglados</h2>
+    <p>Fusionados en develop (<span class="mono">f2560b1</span>) y subidos a origin, con sus pruebas. La batería completa pasa: 458 pruebas.</p>
+    <div>
+      <div class="fix"><span class="c">03cba7a</span><div><h3>La guarda de bucles contaba por agente, no por pregunta</h3><p>La misma llamada tres veces seguidas no se ejecuta. Pero la cuenta duraba lo que el agente, y <code>atlas eval</code> reutiliza el agente: la tercera ejecución de cada caso recibía el error en su primera llamada y entraba en bucle (de 3 a 12 respuestas largas más por versión). Ahora cada pregunta empieza la cuenta.</p></div></div>
+      <div class="fix"><span class="c">b28fd52</span><div><h3>Los guiones de Unicode rompían los ID</h3><p>gpt-oss escribe «SRS‑0004» con el guion que no parte línea (U+2011). <code>atlas eval</code> lo daba por fallo y gpt-oss parecía acertar un 60 % de lo que acertaba un 94 %; <code>trace</code> y <code>get_requirement</code> tampoco encontraban el requisito. Ahora se normalizan guiones y espacios antes de comparar o buscar.</p></div></div>
+      <div class="fix"><span class="c">d49a029</span><div><h3>El MCP, con 5 herramientas e instrucciones que solo nombran las ofrecidas</h3><p>El perfil <code>editor</code> pasa de 13 a 5 herramientas. Las instrucciones ya no hablan de <code>get_section</code>, <code>ask_docs</code> o <code>context_at</code> si no se ofrecen, y explican cómo leer <code>trace</code>: lo que un requisito satisface está en <code>ancestors</code> y <code>links_out</code>, y <code>parent</code> es solo su sitio en el esquema de DOORS. Los dos modelos los confundían.</p></div></div>
+    </div>
+  </section>
+
+  <section id="metodo">
+    <span class="eyebrow">Método y límites</span>
+    <h2>Cómo se midió</h2>
+    <ul>
+      <li>Proyecto de ejemplo de AtlasLM (<code>examples/samples</code>): tres módulos de DOORS (SSS, SRS, STP), dos PDF de especificación, un manual en Markdown y dos unidades de Ada con su prueba.</li>
+      <li>Las preguntas difíciles se escribieron sobre las trampas reales del ejemplo: <code>parent</code> frente a <code>satisfies</code>, plazos de DOORS distintos de los del PDF, requisitos sin código y cadenas de varios saltos. Antes se comprobó que las herramientas devuelven lo esperado.</li>
+      <li>Acierto: la respuesta contiene todos los textos esperados (ID, nombres, valores), sin distinguir mayúsculas y con los guiones normalizados. No se juzga la calidad de la redacción.</li>
+      <li>Modelos por OpenRouter, embeddings con <code>embeddinggemma</code> en Ollama. En el gateway corporativo el modelo es el mismo, pero el cupo de 28 peticiones por minuto puede alargar los tiempos.</li>
+      <li>No se probaron tareas de programación (escribir y compilar), solo preguntas sobre el proyecto, ni las herramientas propias del editor junto a las de atlas, salvo en OpenCode.</li>
+    </ul>
+  </section>
+</main>

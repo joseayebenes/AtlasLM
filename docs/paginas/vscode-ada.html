@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VS Code para Ada con atlas</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Familjen+Grotesk:wght@500;600;700&family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an installation guide — one reading column, numbered steps (the order matters), each file in its own code block with its path and a copy button. */
+:root {
+  --bg: #f6f7f9;
+  --surface: #ffffff;
+  --ink: #18202b;
+  --muted: #5a6575;
+  --rule: #d9dee6;
+  --accent: #1f5fa8;
+  --accent-soft: #e3ecf7;
+  --code-bg: #f0f3f7;
+  --warn: #9a5b00;
+  --warn-soft: #fbf1e1;
+  --font-display: "Familjen Grotesk", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Atkinson Hyperlegible", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11161d; --surface: #171e27; --ink: #e6ebf2; --muted: #9aa6b6; --rule: #2a3442;
+    --accent: #7fb0ea; --accent-soft: #1d2b3d; --code-bg: #0d1218; --warn: #e3a13c; --warn-soft: #2b2316; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11161d; --surface: #171e27; --ink: #e6ebf2; --muted: #9aa6b6; --rule: #2a3442;
+  --accent: #7fb0ea; --accent-soft: #1d2b3d; --code-bg: #0d1218; --warn: #e3a13c; --warn-soft: #2b2316; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body {
+  background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 1rem; line-height: 1.6;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+main { max-width: 52rem; margin: 0 auto; padding-block: 2.5rem 4rem; display: flex; flex-direction: column; gap: 2.75rem; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 1.2; margin: 0; }
+h1 { font-size: clamp(1.9rem, 4vw, 2.6rem); font-weight: 700; }
+h2 { font-size: 1.45rem; font-weight: 700; display: flex; gap: .7rem; align-items: baseline; }
+h2 .n { font-family: var(--font-mono); font-size: .95rem; color: var(--accent); font-weight: 500; }
+h3 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; max-width: 68ch; }
+section { display: flex; flex-direction: column; gap: .9rem; min-width: 0; }
+header { display: flex; flex-direction: column; gap: .75rem; border-bottom: 1px solid var(--rule); padding-bottom: 1.5rem; }
+.eyebrow { font-family: var(--font-mono); font-size: .78rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.lede { font-size: 1.1rem; color: var(--muted); }
+code { font-family: var(--font-mono); font-size: .88em; background: var(--accent-soft); padding: .05em .35em; border-radius: 3px; }
+ul, ol { margin: 0; padding-left: 1.3rem; display: flex; flex-direction: column; gap: .4rem; max-width: 70ch; }
+.file { border: 1px solid var(--rule); border-radius: 6px; background: var(--code-bg); min-width: 0; }
+.file .bar { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .35rem .5rem .35rem .8rem; border-bottom: 1px solid var(--rule); font-family: var(--font-mono); font-size: .8rem; color: var(--muted); }
+.file .bar span { overflow-wrap: anywhere; }
+.file button { font: inherit; font-size: .75rem; color: var(--accent); background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: .2rem .6rem; cursor: pointer; flex-shrink: 0; }
+.file button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.file pre { margin: 0; padding: .8rem .9rem; overflow-x: auto; font-family: var(--font-mono); font-size: .82rem; line-height: 1.5; }
+.callout { border-left: 3px solid var(--warn); background: var(--warn-soft); padding: .7rem .9rem; border-radius: 0 6px 6px 0; font-size: .93rem; max-width: 70ch; }
+.callout strong { color: var(--warn); }
+.map { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: .8rem; }
+.map div { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: .8rem .95rem; display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+.map .k { font-family: var(--font-mono); font-size: .74rem; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); }
+.map p { font-size: .93rem; }
+.scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: .9rem; }
+th, td { padding: .5rem .7rem; text-align: left; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-family: var(--font-mono); font-weight: 500; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); background: var(--bg); }
+tbody tr:last-child td { border-bottom: 0; }
+a { color: var(--accent); }
+</style>
+
+<main>
+  <header>
+    <span class="eyebrow">AtlasLM · guía de puesto · octubre de 2026</span>
+    <h1>VS Code para Ada con atlas</h1>
+    <p class="lede">Cómo dejar VS Code listo para programar en Ada con el agente de Copilot, el modelo del gateway corporativo (gemma-4) en lugar de los de GitHub, y atlas como servidor MCP para que el agente conozca requisitos, documentos y trazabilidad.</p>
+  </header>
+
+  <section>
+    <h2>Qué hace cada pieza</h2>
+    <div class="map">
+      <div><span class="k">Modelo</span><h3>gemma-4 del gateway</h3><p>Se añade como <em>Custom Endpoint</em> (BYOM). El agente de Copilot lo usa en modo agente, sin modelos de GitHub.</p></div>
+      <div><span class="k">Lenguaje</span><h3>Ada &amp; SPARK de AdaCore</h3><p>Navegación, errores, compilación y depuración, sobre GNAT y gprbuild instalados con Alire.</p></div>
+      <div><span class="k">Conocimiento</span><h3>atlas por MCP</h3><p>Cinco herramientas que solo leen: <code>build_context</code>, <code>search</code>, <code>trace</code>, <code>impact</code> y <code>find_symbol</code>.</p></div>
+      <div><span class="k">Agentes</span><h3>atlas y ada</h3><p><code>AGENTS.md</code> explica el proyecto; el agente <code>atlas</code> responde preguntas y el agente <code>ada</code> programa y le pregunta antes de cambiar nada.</p></div>
+    </div>
+    <p>Esta configuración traduce a VS Code la que se midió en OpenCode el 28 de octubre (94 % de acierto con la mitad de tokens). VS Code no se pudo medir del mismo modo, y lo marcado como <em>por comprobar</em> sale de su documentación, no de una prueba.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">1</span>Instalar</h2>
+    <ol>
+      <li><strong>VS Code</strong> y la extensión <strong>GitHub Copilot Chat</strong>, que es la que tiene el modo agente, también con un modelo propio.</li>
+      <li>La extensión <strong>Ada &amp; SPARK for Visual Studio Code</strong> (<code>AdaCore.ada</code>). No trae compilador.</li>
+      <li><strong>GNAT y gprbuild</strong> con Alire, en una terminal:</li>
+    </ol>
+    <div class="file"><div class="bar"><span>PowerShell</span><button type="button" data-copy>Copiar</button></div><pre>alr -n toolchain --select gnat_native gprbuild</pre></div>
+    <ol start="4">
+      <li><strong>atlas</strong>, desde el repositorio (el perfil de 5 herramientas está en <code>develop</code>, aún sin versión publicada):</li>
+    </ol>
+    <div class="file"><div class="bar"><span>PowerShell, en la carpeta de AtlasLM</span><button type="button" data-copy>Copiar</button></div><pre>python -m venv C:/atlas/venv
+C:/atlas/venv/Scripts/python -m pip install -e ".[all]" -c constraints.txt</pre></div>
+  </section>
+
+  <section>
+    <h2><span class="n">2</span>El modelo del gateway</h2>
+    <p>En VS Code: paleta de órdenes → <strong>Chat: Manage Language Models</strong> → <strong>Add Models</strong> → <strong>Custom Endpoint</strong>. Pon un nombre de grupo, la clave y el tipo <strong>Chat Completions</strong>. VS Code abre <code>chatLanguageModels.json</code>; déjalo así:</p>
+    <div class="file"><div class="bar"><span>chatLanguageModels.json</span><button type="button" data-copy>Copiar</button></div><pre>[
+  {
+    "name": "Gateway",
+    "vendor": "customendpoint",
+    "apiKey": "${input:gatewayKey}",
+    "apiType": "chat-completions",
+    "models": [
+      {
+        "id": "gemma-4",
+        "name": "gemma-4 (gateway)",
+        "url": "https://gateway.empresa/v1/chat/completions",
+        "toolCalling": true,
+        "vision": false,
+        "maxInputTokens": 180000,
+        "maxOutputTokens": 8192,
+        "thinking": true,
+        "modelOptions": { "reasoning_effort": "low", "temperature": 1.0 }
+      }
+    ]
+  }
+]</pre></div>
+    <ul>
+      <li><code>toolCalling: true</code> es obligatorio: sin él el modelo no aparece en modo agente.</li>
+      <li><code>maxInputTokens</code> + <code>maxOutputTokens</code> no pueden pasar del contexto del modelo (unos 200 000 tokens en el gateway).</li>
+      <li><code>reasoning_effort: "low"</code> es lo que mejor funcionó en las pruebas: sin razonamiento gemma no sigue las cadenas de varios saltos. <em>Por comprobar</em> que el gateway lo recibe así desde <code>modelOptions</code>.</li>
+      <li>Si el gateway pide una cabecera propia para la clave, va en <code>requestHeaders</code> del modelo.</li>
+      <li>Después elige <strong>gemma-4 (gateway)</strong> en el selector de modelos del chat. Si no aparece, reinicia VS Code.</li>
+    </ul>
+    <h3>Sin cuenta de GitHub</h3>
+    <p>Un modelo propio funciona sin cuenta de GitHub ni plan de Copilot en las sesiones <em>Local</em> del chat. En ese caso, los títulos y mensajes de commit también tienen que ir al modelo propio. Según la documentación de octubre de 2026 (<em>por comprobar</em> en el puesto), estos ajustes de usuario lo dejan así:</p>
+    <div class="file"><div class="bar"><span>settings.json de usuario</span><button type="button" data-copy>Copiar</button></div><pre>{
+  "chat.editor.localAgent.enabled": true,
+  "chat.defaultToCopilotHarness": false,
+  "chat.editor.preferCopilotHarness": false,
+  "chat.byokUtilityModelDefault": "Main Agent Model"
+}</pre></div>
+    <div class="callout"><strong>Copilot Business o Enterprise.</strong> El administrador tiene que permitir la política <em>Bring Your Own Language Model Key in VS Code</em>; si está apagada, el modelo propio no aparece.</div>
+  </section>
+
+  <section>
+    <h2><span class="n">3</span>La red corporativa</h2>
+    <p>VS Code usa el almacén de certificados de Windows, donde ya está la raíz corporativa que inspecciona TLS. El proxy se le da en sus ajustes:</p>
+    <div class="file"><div class="bar"><span>settings.json de usuario</span><button type="button" data-copy>Copiar</button></div><pre>{
+  "http.proxy": "http://proxy.empresa:8080",
+  "http.proxyStrictSSL": true,
+  "http.systemCertificates": true
+}</pre></div>
+    <ul>
+      <li>La documentación del modelo propio no dice si sus peticiones pasan por <code>http.proxy</code> (<em>por comprobar</em>). Si el gateway es interno y va directo, no hace falta proxy para él.</li>
+      <li>El servidor de atlas no hereda nada de esto: arranca con su propio entorno. El proxy y la clave se le dan en un fichero fuera del repositorio (paso 5).</li>
+      <li>El gateway admite 28 peticiones por minuto. Un agente que encadena llamadas rápidas puede recibir un 409 o un 429; si pasa, la respuesta tarda más o se corta.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="n">4</span>El proyecto Ada</h2>
+    <p>La extensión necesita saber qué proyecto GPR abrir. En la carpeta del proyecto:</p>
+    <div class="file"><div class="bar"><span>.vscode/settings.json</span><button type="button" data-copy>Copiar</button></div><pre>{
+  "ada.projectFile": "tms.gpr",
+  "ada.scenarioVariables": { "BUILD_MODE": "debug" },
+  "chat.useAgentsMdFile": true
+}</pre></div>
+    <ul>
+      <li>Cambia <code>tms.gpr</code> por tu proyecto, y quita <code>ada.scenarioVariables</code> si el GPR no tiene variables de escenario.</li>
+      <li>GNAT tiene que estar en el <code>PATH</code> con el que arranca VS Code. Lo más sencillo es abrirlo desde Alire: <code>alr exec -- code .</code> en la carpeta del proyecto, o añadir la carpeta <code>bin</code> de la toolchain de Alire al <code>PATH</code> de la cuenta.</li>
+      <li>Compilar: paleta → <strong>Ada: Build current project</strong>. Ejecutar: <strong>Ada: Build and run project main...</strong>. Depurar: configuración de tipo <code>ada</code> en <code>launch.json</code>.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="n">5</span>atlas como servidor MCP</h2>
+    <p>Junto al GPR, un <code>atlas.toml</code> con el código, DOORS y los documentos, y el modelo del gateway para procesar:</p>
+    <div class="file"><div class="bar"><span>atlas.toml (lo que importa aquí)</span><button type="button" data-copy>Copiar</button></div><pre>[llm]
+base_url = "https://gateway.empresa/v1"
+model = "gemma-4"
+api_key = "${ATLAS_API_KEY}"
+
+[sources.code]
+roots = ["src", "tests"]
+languages = ["ada"]
+req_tag = "Req:"
+test_patterns = ["**/tests/**"]
+# solo si añades hephesto (paso 7): la carpeta bin de GNAT que dejó Alire
+# tool_path = ["C:/ruta/de/alire/toolchains/gnat_native_*/bin"]
+
+[mcp]
+profile = "editor"      # las 5 herramientas; es el de por defecto con código</pre></div>
+    <p>Después, con el Python de atlas, una vez:</p>
+    <div class="file"><div class="bar"><span>PowerShell, en la carpeta del proyecto</span><button type="button" data-copy>Copiar</button></div><pre>C:/atlas/venv/Scripts/python -m atlas init --vscode
+C:/atlas/venv/Scripts/atlas doctor atlas.toml
+C:/atlas/venv/Scripts/atlas run atlas.toml</pre></div>
+    <p><code>atlas init --vscode</code> escribe <code>.vscode/mcp.json</code>. Añádele <code>envFile</code>, para que el proxy y la clave no queden en el repositorio:</p>
+    <div class="file"><div class="bar"><span>.vscode/mcp.json</span><button type="button" data-copy>Copiar</button></div><pre>{
+  "servers": {
+    "atlas": {
+      "type": "stdio",
+      "command": "C:/atlas/venv/Scripts/python.exe",
+      "args": ["-m", "atlas", "serve", "atlas.toml"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${userHome}/.atlas/atlas.env"
+    }
+  }
+}</pre></div>
+    <div class="file"><div class="bar"><span>%USERPROFILE%/.atlas/atlas.env (fuera del repositorio)</span><button type="button" data-copy>Copiar</button></div><pre>ATLAS_API_KEY=...
+HTTPS_PROXY=http://usuario:contraseña@proxy.empresa:8080
+NO_PROXY=gateway.empresa</pre></div>
+    <p>Comprueba que arranca: paleta → <strong>MCP: List Servers</strong> → <code>atlas</code> → <strong>Start Server</strong>, y en la salida <strong>MCP: atlas</strong> debe aparecer <code>with 5 tools (profile editor)</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">6</span>Los agentes</h2>
+    <p>Tres ficheros en el repositorio del proyecto. <code>AGENTS.md</code> es lo que más cambió el acierto en las pruebas: sin él, el agente confunde el <code>parent</code> de DOORS con el requisito que se satisface. Cambia los nombres de módulos, documentos y unidades por los de tu proyecto.</p>
+    <div class="file"><div class="bar"><span>AGENTS.md</span><button type="button" data-copy>Copiar</button></div><pre># The project
+
+An engineering project: requirements in DOORS, specifications and manuals, and Ada code. The atlas
+MCP server knows all of it and how it is linked: ask it before reading files, and answer questions
+about requirements, documents and traceability from what it returns.
+
+## The project and its tools
+
+DOORS: `SSS_MISSION` (system requirements) &lt;- satisfied by `SRS_TMS` (software requirements of the
+track function; some refine another SRS) &lt;- verified by `STP_TMS` (test procedures). Documents: the
+specification PDFs (they restate the SRS) and `hmi_manual.md`. Ada code: units `tracks` and
+`logger`, tests in `tests/`; the code cites its requirements with `-- Req: &lt;ID&gt;`.
+
+- Requirement ID -&gt; `trace`. What it satisfies: `ancestors`/`links_out` (never `parent`, which is
+  only its place in the DOORS outline). Who satisfies or refines it: `links_in`.
+- Code name or `file:line` -&gt; `build_context` (`find_symbol` if unsure); a change -&gt; `impact`.
+- Text or values of the documents -&gt; `search` (narrow with `document`, `module`).
+- Chains: one tool per hop, with the IDs the previous one returned. An error with `similar`: retry
+  with the suggestion.
+- DOORS and a document disagree (`values_differ`): give both, DOORS is the reference. Empty
+  `implemented_by`: no code yet, say so.
+
+Write IDs and names as the tools do and cite the source of each fact.</pre></div>
+    <div class="file"><div class="bar"><span>.github/agents/atlas.agent.md</span><button type="button" data-copy>Copiar</button></div><pre>---
+name: atlas
+description: Knows the project's requirements (DOORS), documents, Ada code and their traceability; use it for any question about them or about what a change affects
+target: vscode
+tools: ['read', 'search', 'atlas/*']
+---
+You answer questions about an engineering project (standards and specifications, requirements in
+DOORS, Ada code) with the tools of atlas, the MCP server that knows the project. Answer from what
+the tools return, never from memory, and cite the requirement IDs, code identifiers and documents
+you rely on. Answer briefly. You never change files: when asked for a change, say what it affects
+and which requirements and tests are involved.</pre></div>
+    <div class="file"><div class="bar"><span>.github/agents/ada.agent.md</span><button type="button" data-copy>Copiar</button></div><pre>---
+name: ada
+description: Changes the Ada code of the project; asks the atlas agent about requirements and traceability before changing anything
+target: vscode
+tools: ['read', 'search', 'edit', 'execute', 'agent']
+agents: ['atlas']
+---
+You change the Ada code of an engineering project (requirements in DOORS, specifications, Ada).
+Before changing any code, run the subagent `atlas` with the question you need answered (which
+requirements the code implements, what a change affects, what a requirement asks) and use its
+answer, with its IDs and sources.
+
+Make one small change at a time. After each change, build in the terminal with
+`gprbuild -P tms.gpr -q` and fix every error before going on; then run the tests that atlas
+named. Cite the requirement a subprogram or type implements in a comment `-- Req: &lt;ID&gt;` next to
+its declaration. Do not change code you were not asked to change.</pre></div>
+    <ul>
+      <li><strong>atlas</strong> para preguntar: solo lee y gasta la mitad de tokens que el agente general.</li>
+      <li><strong>ada</strong> para programar: no tiene las herramientas de atlas, se las pide al subagente <code>atlas</code> (<code>agents: ['atlas']</code>), así sus resultados no llenan el contexto del que programa.</li>
+      <li>El modelo de cada agente se elige en el selector del chat; no hace falta ponerlo en el fichero.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2><span class="n">7</span>Opcional: que el agente compile y juzgue con hephesto</h2>
+    <p>atlas solo lee. Si quieres que el agente compile un fichero, pase las pruebas y reciba el juicio de cada cambio como en <code>hephesto develop</code> (qué compila, qué pruebas avanzan o retroceden), añade el servidor de hephesto:</p>
+    <div class="file"><div class="bar"><span>PowerShell, en la carpeta de AtlasLM y luego en la del proyecto</span><button type="button" data-copy>Copiar</button></div><pre>C:/atlas/venv/Scripts/python -m pip install -e "./hephestolm[all]" -c constraints.txt
+C:/atlas/venv/Scripts/python -m hephesto init --vscode</pre></div>
+    <p>Ofrece <code>check_code</code>, <code>run_test</code>, <code>run_tests</code> y <code>judge_changes</code>. Añade <code>'hephesto/*'</code> a las <code>tools</code> del agente <code>ada</code>.</p>
+  </section>
+
+  <section>
+    <h2><span class="n">8</span>Si algo falla</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Síntoma</th><th>Dónde mirar</th></tr></thead>
+        <tbody>
+          <tr><td>El modelo no aparece en modo agente</td><td><code>toolCalling: true</code>; la política BYOK de la organización; reiniciar VS Code.</td></tr>
+          <tr><td>Error de certificado o 407 al hablar con el gateway</td><td><code>http.proxy</code> y la raíz corporativa en el almacén de Windows.</td></tr>
+          <tr><td>atlas no arranca o no tiene herramientas</td><td>Salida <strong>MCP: atlas</strong>: dice qué variables de <code>atlas.toml</code> faltan y cómo llega al modelo.</td></tr>
+          <tr><td>La extensión de Ada no encuentra GNAT</td><td>Abrir VS Code con <code>alr exec -- code .</code> o poner GNAT en el <code>PATH</code> de la cuenta.</td></tr>
+          <tr><td>El agente responde sin preguntar a atlas</td><td>Que <code>AGENTS.md</code> esté en la raíz y <code>chat.useAgentsMdFile</code> activo; usar el agente <code>atlas</code> o <code>ada</code>, no el general.</td></tr>
+          <tr><td>Respuestas que se cortan o tardan mucho</td><td>El cupo del gateway (28 por minuto): 409 o 429 en el registro de Copilot.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+document.querySelectorAll("[data-copy]").forEach(function (button) {
+  button.addEventListener("click", function () {
+    var pre = button.closest(".file").querySelector("pre");
+    var done = function (label) { button.textContent = label; setTimeout(function () { button.textContent = "Copiar"; }, 1600); };
+    var select = function () {
+      var range = document.createRange(); range.selectNodeContents(pre);
+      var sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range); done("Seleccionado");
+    };
+    try {
+      navigator.clipboard.writeText(pre.textContent).then(function () { done("Copiado"); }, select);
+    } catch (e) { select(); }
+  });
+});
+</script>

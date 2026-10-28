@@ -34,6 +34,8 @@ gateway bajo control. Los cambios de cada versión están en el [CHANGELOG](CHAN
 | [Uso](docs/uso.md) | para el ingeniero, por tareas: qué pide un requisito, qué rompo si cambio algo, qué falta por trazar, la matriz, código desde el editor, preguntas |
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
 | [atlas en VS Code](docs/vscode.md) | `atlas init --vscode`: el servidor MCP en el editor, y el de hephesto a su lado |
+| [VS Code para Ada](docs/paginas/vscode-ada.html) | guía de puesto (HTML): VS Code, la extensión de Ada, gemma del gateway como modelo propio, atlas por MCP y los agentes |
+| [Pruebas de agentes (2026-10)](docs/paginas/pruebas-agentes-2026-10.html) | resultados (HTML): cuántas herramientas MCP, qué AGENTS.md y qué configuración de OpenCode, medidos con gemma y gpt-oss |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
 | [Aceptación](docs/aceptacion.md) | el guion de las dos primeras semanas en Windows con el proyecto real, con una cifra por paso |

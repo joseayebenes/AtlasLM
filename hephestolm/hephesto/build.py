@@ -622,4 +622,4 @@ def _kill_group(proc: subprocess.Popen) -> None:
             time.sleep(0.05)
 
 
-register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"))
+register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"), runs=BUILD_TOOL_NAMES)

@@ -1,11 +1,10 @@
-"""atlas knows and reads; hephesto writes and runs. atlas never imports hephesto, but for the few
-modules that still mix both sides (TRANSITIONAL), until they are split."""
+"""atlas knows and reads; hephesto writes and runs. atlas never imports hephesto, and its tools
+never write or run the code of the project."""
 import ast
 from pathlib import Path
 
 ATLAS = Path(__file__).resolve().parents[1] / "atlas"
 
-TRANSITIONAL = {"atlas.mcp"}
 
 
 def _module(path: Path) -> str:
@@ -55,8 +54,6 @@ def test_atlas_does_not_import_hephesto():
     wrong = {}
     for path in ATLAS.rglob("*.py"):
         module = _module(path)
-        if module in TRANSITIONAL:
-            continue
         bad = sorted(i for i in _imports(path, module) if i == "hephesto" or i.startswith("hephesto."))
         if bad:
             wrong[module] = bad

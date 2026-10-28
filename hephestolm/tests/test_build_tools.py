@@ -257,13 +257,13 @@ def test_an_output_or_its_code_with_an_instruction_is_warned_about(project):
     assert "warnings" not in tools.run_test(str(test))
 
 
-def test_offered_by_the_mcp_server(project, toml):
+def test_offered_by_hephesto_serve(project, toml):
     from atlas.mcp import default_tools
+    from hephesto.mcp import tool_names
     ada, make = project
     cfg = load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\ncheck_command = ["cc", "{{file}}"]\n'))
-    assert "check_code" in default_tools(cfg) and "run_test" not in default_tools(cfg)     # run_test runs code
-    assert "run_program" not in default_tools(cfg)
-    assert "check_code" not in default_tools(load_config(toml(f'[sources.code]\nroots = ["{ada.as_posix()}"]\n')))
+    assert "check_code" in tool_names(cfg) and "check_code" not in default_tools(cfg)    # hephesto's, not atlas's
+    assert "run_program" not in tool_names(cfg)                                           # no program_command
 
 
 # --- with GNAT --------------------------------------------------------------------------------

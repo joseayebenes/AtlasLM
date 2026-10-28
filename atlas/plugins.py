@@ -172,6 +172,7 @@ class Tool(ABC):
     name: str = ""
     description: str = ""
     writes: bool = False            # changes files or data (MCP clients may ask before calling it)
+    runs: bool = False              # runs commands of the project: its compiler, its tests, its program
 
     def __init__(self, context: Any):
         self.context = context      # access to graph, index, requirements, code
@@ -207,12 +208,13 @@ def plugin(kind: str, name: str) -> Callable[[type], type]:
     return lambda cls: register(kind, name, cls)
 
 
-def register_methods(owner: type, methods: Iterable[str], writes: Iterable[str] = ()) -> None:
+def register_methods(owner: type, methods: Iterable[str], writes: Iterable[str] = (), runs: Iterable[str] = ()) -> None:
     """Registers methods of `owner` as "tool" plugins with their own names. Every tool of a
     context shares the object `owner.for_context(context)` returns; the function of a tool
     is its bound method, whose typed signature and docstring ADK and the MCP server turn
-    into the tool's schema and description."""
-    writes = set(writes)
+    into the tool's schema and description. `writes` and `runs` say which ones change files
+    and which run commands of the project (atlas serve offers neither)."""
+    writes, runs = set(writes), set(runs)
     for method in methods:
         class MethodTool(Tool):
             name = method
@@ -229,6 +231,7 @@ def register_methods(owner: type, methods: Iterable[str], writes: Iterable[str] 
                 return self.function()(**kwargs)
 
         MethodTool.writes = method in writes
+        MethodTool.runs = method in runs
         MethodTool.__name__ = MethodTool.__qualname__ = "".join(w.title() for w in method.split("_")) + "Tool"
         register("tool", method, MethodTool)
 

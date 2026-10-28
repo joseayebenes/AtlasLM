@@ -12,6 +12,9 @@ atlas.toml of the project, the same one atlas reads.
                                          by the patterns of [tests], without the model; * = all
     hephesto eval    [atlas.toml]        the evaluation sets of [agents.eval], with their develop cases
                      [--compare] [--set FILE]   (atlas eval, which leaves those out)
+    hephesto serve   [atlas.toml]        MCP server over stdio for an editor: check_code, run_test, run_tests
+                     [--edit]            and judge_changes; --edit: the file tools too (atlas serve, beside
+                                         it, gives what atlas knows)
     hephesto --version
 
 What atlas does (atlas run, trace, search, serve...) stays in atlas: `atlas --help`.
@@ -30,7 +33,8 @@ from atlas.pipeline import FatalError
 __all__ = ["main"]
 
 OPTIONS = {"develop": {"--check": bool, "--resume": bool},
-           "eval": {"--compare": bool, "--set": str}}
+           "eval": {"--compare": bool, "--set": str},
+           "serve": {"--edit": bool}}
 
 
 def tests(cfg: Config, target: str) -> int:
@@ -152,6 +156,16 @@ def evaluate(cfg: Config, compare: bool = False, set: str = "") -> int:
     return atlas_evaluate(cfg, compare=compare, set=set, runners=RUNNERS)
 
 
+def serve(cfg: Config, edit: bool = False) -> int:
+    """The MCP server of hephesto over stdio (hephesto/mcp.py), until the client closes it."""
+    from hephesto.mcp import serve as serve_mcp
+    try:
+        serve_mcp(cfg, _context(cfg), edit=edit)
+    except ImportError as e:            # without the mcp package
+        sys.exit(str(e))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> None:
     for stream in (sys.stdout, sys.stderr):        # a Windows console is cp1252 (see atlas.cli.main)
         if hasattr(stream, "reconfigure"):
@@ -180,7 +194,7 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _dispatch(action: str, rest: list[str]) -> None:
-    actions = {"eval": evaluate}
+    actions = {"eval": evaluate, "serve": serve}
     with_text = {"develop": develop, "hints": hints, "tests": tests}
     if action not in actions and action not in with_text:
         sys.exit(f"unknown action '{action}'. {__doc__}")

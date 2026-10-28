@@ -1,4 +1,4 @@
-"""atlas.mcp and `atlas serve`: one MCP server with the document, graph and file tools."""
+"""atlas.mcp and `atlas serve`: one MCP server with the document, graph and file tools, which only read."""
 import json
 import shutil
 import sys
@@ -37,7 +37,7 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert names == ["list_documents", "search", "get_section", "get_requirement", "find_symbol", "impact",
                      "read_source", "trace", "trace_code", "build_context", "context_at", "similar_requirements", "read_file"]
     checked = load_config(toml(code + 'check_command = ["gcc", "-c", "{file}"]\n' + docs))
-    assert tool_names(checked)[-1] == "check_code"
+    assert tool_names(checked) == names                 # a compiler: hephesto serve offers check_code
     names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "all"\n')))
     assert names[:5] == ["list_documents", "search", "get_section", "get_requirement", "ask_docs"]
     assert {"find_symbol", "impact", "trace", "trace_code", "matrix", "gaps", "build_context",
@@ -73,12 +73,11 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert {"attribute", "module", "chapter"} <= set(tools["search"]["inputSchema"]["properties"])
     assert "status=Approved;verification=Test" in tools["search"]["description"]
 
-    # a list of its own, writing tools included; repeated names count once
-    server = create_server(load_config(toml(code + '[mcp]\ntools = ["search", "edit_file", "search", "ask_atlas"]\n')))
+    # a list of its own; repeated names count once
+    server = create_server(load_config(toml(code + '[mcp]\ntools = ["search", "read_file", "search", "ask_atlas"]\n')))
     tools = _tools(server)
-    assert list(tools) == ["search", "edit_file", "ask_atlas"]
+    assert list(tools) == ["search", "read_file", "ask_atlas"]
     assert "`ask_atlas` asks the assistant" in server.instructions
-    assert tools["edit_file"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
     assert tools["ask_atlas"]["annotations"] == {"readOnlyHint": True, "destructiveHint": False}   # the model
     with pytest.raises(ConfigError, match=r"unknown tools \['graph_query'\]"):
         create_server(load_config(toml('[mcp]\ntools = ["search", "graph_query"]\n')))
@@ -91,9 +90,9 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
 
 
 def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(toml, samples):
-    """Each tool, offered alone, has its paragraph in the instructions (the compiler and the
-    language server had none), the one of the graph names no other graph tool, and only the
-    tools that write or run code are not read-only."""
+    """Each tool of atlas, offered alone, has its paragraph in the instructions (the library and
+    the language server had none), the one of the graph names no other graph tool, and every one
+    is read-only (those of hephesto, which write or run the code, are not offered)."""
     pytest.importorskip("mcp")
     import re
     from atlas.mcp import INSTRUCTIONS, create_server, graph_instructions, tool_groups
@@ -103,6 +102,8 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
     code = f'[sources.code]\nroots = ["{(samples / "ada").as_posix()}"]\nlanguages = ["ada"]\n'
     groups = tool_groups()
     for name in plugins.available("tool"):
+        if plugins.get("tool", name).writes or plugins.get("tool", name).runs:
+            continue
         cfg = load_config(toml(f'{code}[mcp]\ntools = ["{name}"]\n'))
         server = create_server(cfg)
         paragraphs = [INSTRUCTIONS[g] for g, tools in groups.items() if name in tools]
@@ -111,10 +112,7 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
             graph = graph_instructions([name])
             assert graph in server.instructions, name
             assert not [t for t in groups["graph"] if t != name and re.search(rf"\b{t}\b", graph)], name
-        tool = plugins.get("tool", name)
-        assert _tools(server)[name]["annotations"]["readOnlyHint"] is (not tool.writes), name
-    assert "`run_program` runs the program" in create_server(load_config(
-        toml(code + '[mcp]\ntools = ["run_program"]\n'))).instructions
+        assert _tools(server)[name]["annotations"]["readOnlyHint"] is True, name
 
     # how this project cites requirements, its IDs and modules, and the steps of a change
     cfg = load_config(toml(code))
@@ -127,10 +125,9 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
     assert "A change: `context_at` or `build_context` of the code to change -> edit it -> compile it -> run the " \
            "tests that `trace` gives for its requirements." in text
     text = create_server(load_config(toml(code.replace("languages", 'req_regex = "@req (.+)"\nlanguages') +
-                                          '[mcp]\ntools = ["read_file", "check_code", "run_test"]\n'))).instructions
+                                          '[mcp]\ntools = ["read_file"]\n'))).instructions
     assert "in comments that match `@req (.+)`" in text
-    assert "A change: read the code to change -> edit it -> `check_code` the file until it has no errors -> " \
-           "`run_test` its tests." in text
+    assert "A change: read the code to change -> edit it -> compile it -> run its tests." in text
 
 
 @pytest.fixture
@@ -285,89 +282,6 @@ def test_serve_logs_how_it_reaches_the_model(toml, monkeypatch, caplog):
         _log_connection(load_config(path))
     assert "model: https://gateway/v1 through the proxy http://***@proxy:8080" in caplog.text
     assert "Secret1" not in caplog.text and not any(r.levelno == logging.WARNING for r in caplog.records)
-
-
-CALC_TEST = """import sys
-sys.path.insert(0, "SRC")
-import calc
-def check(step, got, want):
-    if got != want:
-        print(f"Step {step}: expected {want}, received {got}")
-        sys.exit(1)
-check(1, calc.add(1, 2), 3)
-check(2, getattr(calc, "mul", lambda a, b: None)(2, 3), 6)
-"""
-
-
-def test_the_judge_of_atlas_develop_for_an_editor(toml, tmp_path, monkeypatch):
-    """run_tests and judge_changes over the Python project of test_develop: by test, how far
-    it gets; after a change, what changed, whether it compiles and which tests moved."""
-    pytest.importorskip("mcp")
-    import anyio
-    from atlas.mcp import create_server, default_tools
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / "src").mkdir()
-    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return 0\n")
-    (tmp_path / "tests").mkdir()
-    (tmp_path / "tests" / "test_calc.py").write_text(CALC_TEST.replace("SRC", (tmp_path / "src").as_posix()))
-    (tmp_path / "plan.toml").write_text("tests = [\"tests/test_*.py\"]\nprogress = 'Step (\\d+)'\n")
-    code = f'''[sources.code]
-roots = ["src", "tests"]
-exclude = ["**/__pycache__/**"]
-protected = ["tests/**"]
-check_command = ["{sys.executable}", "-m", "py_compile", "{{file}}"]
-[sources.code.test_commands]
-py = ["{sys.executable}", "{{file}}"]
-'''
-    plugins.load_plugins()
-    cfg = load_config(toml(code))
-    assert not {"run_tests", "judge_changes"} & set(default_tools(cfg))         # they run code: only if asked for
-    cfg = load_config(toml(code + '[mcp]\ntools = ["read_file", "run_tests", "judge_changes"]\n'))
-    server = create_server(cfg)
-    tools = _tools(server)
-    assert tools["run_tests"]["annotations"] == {"readOnlyHint": False, "destructiveHint": True}
-    assert tools["judge_changes"]["annotations"]["destructiveHint"] is True
-    assert "`judge_changes` says after a change" in server.instructions
-
-    def call(name, **arguments):
-        async def go():
-            return await server.call_tool(name, arguments)
-        result = anyio.run(go)                       # mcp 1.x: (content, structured); 2.x: CallToolResult
-        content = result[0] if isinstance(result, tuple) else getattr(result, "content", result)
-        return json.loads(content[0].text)
-
-    assert call("run_tests", plan="plan.toml") == {
-        "tests_of": "plan.toml", "passed": 0, "of": 1,
-        "tests": {"tests/test_calc.py": {"passed": False, "progress": 1.0, "output": "Step 1: expected 3, received 0"}}}
-    assert call("run_tests", plan="../outside.toml")["error"].startswith("../outside.toml is not a plan file")
-    first = call("judge_changes")                      # not a git repository: the first call takes the snapshot
-    assert first["changed"] == [] and first["changed_since"].startswith("nothing")
-    assert first["tests"]["advanced"] == [] and first["tests"]["went_back"] == []
-
-    (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")       # gets to step 2
-    judged = call("judge_changes")
-    assert judged["changed_since"] == "the last call" and judged["changed"] == ["src/calc.py"]
-    assert judged["compiles"] == ["src/calc.py"] and "does_not_compile" not in judged
-    assert judged["tests"]["advanced"] == ["tests/test_calc.py"] and judged["tests"]["tests_of"] == "plan.toml"
-
-    (tmp_path / "src" / "calc.py").write_text("def add(a, b:\n    return a + b\n")        # breaks it
-    judged = call("judge_changes")
-    assert list(judged["does_not_compile"]) == ["src/calc.py"] and judged["compiles"] == []
-    back = judged["tests"]["went_back"]
-    assert [b["test"] for b in back] == ["tests/test_calc.py"] and back[0]["was"] == "got to 2"
-    assert json.loads((cfg.workspace / "judge.json").read_text())["plan"] == "plan.toml"
-
-    # in a git repository, the changes are against the last commit
-    if shutil.which("git"):
-        import subprocess
-        (tmp_path / "src" / "calc.py").write_text("def add(a, b):\n    return a + b\n")
-        for command in (["init", "-q"], ["add", "src", "tests", "plan.toml"],
-                        ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "x"]):
-            subprocess.run(["git", *command], cwd=tmp_path, check=True)
-        (tmp_path / "src" / "more.py").write_text("X = 1\n")
-        judged = call("judge_changes", paths=["src/more.py", "src/none.py"])
-        assert judged["changed_since"] == "the last commit (git)" and judged["changed"] == ["src/more.py"]
-        assert judged["compiles"] == ["src/more.py"] and list(judged["does_not_compile"]) == ["src/none.py"]
 
 
 def test_serve_turned_off(toml):

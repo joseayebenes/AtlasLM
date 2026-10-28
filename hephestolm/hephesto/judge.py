@@ -225,4 +225,4 @@ class JudgeTools:
         return out
 
 
-register_methods(JudgeTools, JUDGE_TOOL_NAMES, writes=JUDGE_TOOL_NAMES)
+register_methods(JudgeTools, JUDGE_TOOL_NAMES, writes=JUDGE_TOOL_NAMES, runs=JUDGE_TOOL_NAMES)

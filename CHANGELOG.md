@@ -45,6 +45,16 @@ orden.
   `[mcp] tools`, donde pedirla es un error que remite a `hephesto serve`. `check_code` sale
   del perfil `editor`, y las instrucciones del servidor cambian el párrafo de compilar por el
   de la biblioteca.
+- El perfil `editor` de `atlas serve`, el de por defecto con código, ofrece cinco herramientas:
+  `build_context`, `search`, `trace`, `impact` y `find_symbol` (eran 13). Medido con
+  gemma-4-26b y gpt-oss-120b: con 5 aciertan igual o más que con 13 o 29, con la mitad de tokens
+  de entrada; los ficheros los lee el editor.
+- Las instrucciones de `atlas serve` solo nombran las herramientas que ofrece: los párrafos de
+  los documentos y del contexto se construyen como el del grafo (antes hablaban de
+  `get_section`, `ask_docs`, `context_at`... aunque no se ofrecieran). Con `trace`, dicen cómo
+  leerlo: lo que un requisito satisface está en `ancestors`/`links_out` y `parent` es solo su
+  sitio en el esquema de DOORS (gemma y gpt-oss los confundían), si DOORS y un documento
+  difieren manda DOORS, y un `implemented_by` vacío es que no hay código.
 - `mcp` pasa a ser una dependencia de atlaslm: el servidor viene siempre. `atlaslm[mcp]` se
   sigue aceptando.
 - `atlas eval` comprueba los casos `develop` y los cuenta en `skipped`, sin ejecutarlos.
@@ -57,7 +67,25 @@ orden.
   sin `--json`; y las copias de los casos `develop` de la evaluación, de `%TEMP%` a
   `<workspace>/eval`. Los logs ya iban a `<workspace>/logs`.
 
+### Corregido
+- La guarda de bucles de los agentes (la misma llamada tres veces seguidas no se ejecuta)
+  contaba las llamadas de toda la vida del agente, no las de una respuesta. `atlas eval`
+  reutiliza el agente entre ejecuciones: con `runs = 3`, la tercera ejecución de cada caso
+  recibía el error en su primera llamada, la misma que las otras dos, y el modelo entraba en
+  bucle (de 3 a 12 respuestas largas más por conjunto, medido con gemma-4-26b). En `atlas chat`
+  pasaba igual al repetir una pregunta. Ahora cada pregunta empieza la cuenta
+  (`atlas.agents.runtime.reset_loop_guard`).
+- Un ID escrito con un guion o un espacio de Unicode ("SRS‑0004" con U+2011, como lo escribe
+  gpt-oss-120b, o con una raya de un PDF) ya es el ID: lo encuentran `trace`, `impact`,
+  `build_context`, `get_requirement` y las sugerencias de un ID que falta, y `atlas eval` lo
+  da por dicho en la respuesta de un caso `agent` o `ask` (antes gpt-oss parecía acertar un
+  60 % de lo que acertaba un 94 %). `atlas.text.plain` los convierte en los ASCII.
+
 ### Al actualizar
+- Un editor que usaba de `atlas serve` `get_requirement`, `get_section`, `list_documents`,
+  `trace_code`, `context_at`, `similar_requirements`, `read_source` o `read_file` sin
+  `[mcp] tools` ya no las tiene: `[mcp] profile = "all"`, o una lista en `[mcp] tools` con las
+  que quieras.
 - `atlas develop`, `atlas hints` y `atlas tests` son ahora `hephesto develop`, `hephesto hints` y
   `hephesto tests`: `pip install hephestolm` (desde el repositorio, `make install`). Las de
   atlas lo dicen y salen con error. Los planes y `atlas.toml` no cambian.

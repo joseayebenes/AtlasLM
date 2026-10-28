@@ -51,6 +51,7 @@ from atlas.graph.build import CODE_KINDS, find_communities
 from atlas.graph.sources import graph_convention
 from atlas.graph.store import GraphStore, to_mermaid
 from atlas.graph.values import quantities, values_differ
+from atlas.text import plain
 
 __all__ = ["KnowledgeGraph"]
 
@@ -194,7 +195,7 @@ class KnowledgeGraph:
     def resolve(self, name: str) -> tuple[str | None, dict | None]:
         """(identifier, None) or (None, error answer). "file:line" is the element at that
         line (`at`), when what follows the last ':' is a number: C:\\src\\tracks.adb:42 too."""
-        key = name.strip().lower()
+        key = plain(name).strip().lower()
         if key in self._lower:
             return self._lower[key], None
         file, sep, line = name.strip().rpartition(":")
@@ -329,7 +330,7 @@ class KnowledgeGraph:
 
     def _requirement(self, req_id: str) -> tuple[str | None, dict | None]:
         """(ID, None) or (None, error answer)."""
-        key = "".join(req_id.split()).lower()
+        key = "".join(plain(req_id).split()).lower()          # SRS‑0004 (U+2011) is SRS-0004
         r = self._lower.get(key)
         if r is not None and self._kind(r) in REQUIREMENT_KINDS:
             return r, None

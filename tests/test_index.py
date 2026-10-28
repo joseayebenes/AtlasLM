@@ -175,6 +175,7 @@ def test_doc_tools(docs, tmp_path, fake_llm, fake_embeddings):
     assert "003: 2 Alarms" in tools.get_section("hmi_manual.md", "099")["sections"]
     req = tools.get_requirement("SRS-0102")                    # not in DOORS here: only the documents
     assert "official" not in req and req["documents"][0]["cite"].startswith("hmi_manual.md › 2 Alarms")
+    assert tools.get_requirement("SRS‑0102") == req                # as a model writes it, with U+2011
     assert tools.get_requirement("SRS-9999") == {"error": "requirement 'SRS-9999' not found", "similar": []}
 
 

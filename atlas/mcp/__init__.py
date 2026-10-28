@@ -7,10 +7,10 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
     atlas serve atlas.toml        stdio, the transport of local MCP clients
 
 [mcp] tools chooses the tools. When it is empty, [mcp] profile does:
-    editor   what the agent of an editor needs to know before changing code (search,
-             get_requirement, get_section, list_documents, trace, trace_code, impact,
-             build_context, context_at, similar_requirements, find_symbol, read_source,
-             read_file); the default with [sources.code]
+    editor   what the agent of an editor needs to know before changing code, in five tools
+             (build_context, search, trace, impact, find_symbol); the default with
+             [sources.code]. Measured with gemma-4-26b and gpt-oss-120b: as right as with 13
+             or 29 tools, or more, with half the input tokens; the editor reads the files
     trace    the traceability of DOORS and the documents (trace, matrix, gaps,
              list_requirements, neighbors, get_requirement, search)
     all      the tools of the configured sources; the default without code
@@ -48,31 +48,20 @@ from atlas import plugins
 from atlas.config import Config, ConfigError
 from atlas.store import Store
 
-__all__ = ["create_server", "default_tools", "graph_instructions", "instructions", "profile", "profile_tools", "serve",
-           "tool_groups", "tool_names", "traceability"]
+__all__ = ["context_instructions", "create_server", "default_tools", "docs_instructions", "graph_instructions",
+           "instructions", "profile", "profile_tools", "serve", "tool_groups", "tool_names", "traceability"]
 
 log = logging.getLogger(__name__)
 
 MODEL_TOOLS = ("ask_docs", "ask_atlas", "verify_requirement", "link_requirement", "check_compliance")
-EDITOR_TOOLS = ("search", "get_requirement", "get_section", "list_documents", "trace", "trace_code", "impact",
-                "build_context", "context_at", "similar_requirements", "find_symbol", "read_source", "read_file")
+EDITOR_TOOLS = ("build_context", "search", "trace", "impact", "find_symbol")   # measured: see the docstring
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
         "what the tools return, and say where it comes from.",
-    "docs": "Documents (standards, specifications, manuals): `search` finds passages and gives their "
-            "citation; narrow it, rather than searching again with other words, with `document`, `module` (a "
-            "DOORS module), `chapter` (its number or title), `kind` (e.g. requirement) and `attribute` "
-            "(\"status=Approved;verification=Test\": the DOORS attributes each result shows in its `meta`); "
-            "`get_section` reads a whole section; `get_requirement` gives the exact text of a "
-            "requirement ID, from DOORS and from the documents; `ask_docs` writes an answer with citations. "
-            "Cite document and section.",
+    "docs": "Documents (standards, specifications, manuals):",
     "graph": "Graph of code, requirements and documents: code identifiers are `unit.name` in lower case.",
-    "context": "`build_context` gives in one call everything about a requirement, a code element or a unit "
-               "(requirements, signatures, callers, tests, documents and source): use it before changing code. "
-               "`context_at` gives the same for a file and a line, those the editor has open; the tools that "
-               "take a code element also take \"file:line\". `similar_requirements` gives requirements like "
-               "one that already have code, with that code and its `Req:` tag: follow them.",
+    "context": "",
     "agents": "`ask_atlas` asks the assistant of atlas, which searches by itself and answers with citations "
               "(slower: use it for questions that need several searches); `verify_requirement` checks with the "
               "model whether a requirement and the documents agree; `link_requirement` proposes the code that "
@@ -87,6 +76,29 @@ INSTRUCTIONS = {
            "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
 GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "library", "lsp")
+DOCS_CLAUSES = (              # the paragraph of the documents: a clause for each tool offered
+    ("search", "`search` finds passages and gives their citation; narrow it, rather than searching again with other "
+               "words, with `document`, `module` (a DOORS module), `chapter` (its number or title), `kind` (e.g. "
+               "requirement) and `attribute` (\"status=Approved;verification=Test\": the DOORS attributes each "
+               "result shows in its `meta`)"),
+    ("list_documents", "`list_documents` lists the documents"),
+    ("get_section", "`get_section` reads a whole section"),
+    ("get_requirement", "`get_requirement` gives the exact text of a requirement ID, from DOORS and from the "
+                        "documents"),
+    ("ask_docs", "`ask_docs` writes an answer with citations"),
+)
+CONTEXT_CLAUSES = (
+    ("build_context", "`build_context` gives in one call everything about a requirement, a code element or a unit "
+                      "(requirements, signatures, callers, tests, documents and source): use it before changing code; "
+                      "it also takes \"file:line\", like the other tools that take a code element"),
+    ("context_at", "`context_at` gives everything about the code at a file and a line, those the editor has open"),
+    ("similar_requirements", "`similar_requirements` gives requirements like one that already have code, with that "
+                             "code and its `Req:` tag: follow them"),
+)
+TRACE_READING = ("In `trace`, what a requirement satisfies or derives from is in `ancestors` and `links_out`, and "
+                 "what satisfies or refines it in `links_in`; `parent` is only its place in the DOORS outline (a "
+                 "heading or another requirement). When DOORS and a document give different values "
+                 "(`values_differ`), DOORS is the reference: give both. An empty `implemented_by`: no code yet.")
 GRAPH_FLOW = (("find_symbol",), ("get_node",), ("callers", "callees", "trace_code", "impact"), ("read_source",))
 GRAPH_CLAUSES = (                           # the first one whose tools are all offered and not said yet
     (("trace",), "everything about a requirement (DOORS, documents, code, tests)"),
@@ -209,12 +221,25 @@ def instructions(names: list[str], cfg: Config | None = None, store: Store | Non
     traceability of the project (traceability). `extra`: the paragraphs of other tools
     (those of hephesto), each with its tools, after those of atlas."""
     groups = tool_groups()
-    parts = [INSTRUCTIONS[""]] + [graph_instructions(names) if g == "graph" else INSTRUCTIONS[g]
+    built = {"graph": graph_instructions, "docs": docs_instructions, "context": context_instructions}
+    parts = [INSTRUCTIONS[""]] + [built[g](names) if g in built else INSTRUCTIONS[g]
                                   for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
     parts += [text for tools, text in extra if set(tools) & set(names)]
     if cfg is not None:
         parts.append(traceability(cfg, names, store))
     return "\n\n".join(p for p in parts if p)
+
+
+def docs_instructions(names: list[str]) -> str:
+    """The paragraph of the documents, with a clause for each document tool offered."""
+    clauses = [text for tool, text in DOCS_CLAUSES if tool in names]
+    return f"{INSTRUCTIONS['docs']} {'; '.join(clauses)}. Cite document and section." if clauses else ""
+
+
+def context_instructions(names: list[str]) -> str:
+    """The paragraph of build_context, context_at and similar_requirements: those offered."""
+    clauses = [text for tool, text in CONTEXT_CLAUSES if tool in names]
+    return "; ".join(clauses) + "." if clauses else ""
 
 
 def graph_instructions(names: list[str]) -> str:
@@ -232,7 +257,8 @@ def graph_instructions(names: list[str]) -> str:
     text = INSTRUCTIONS["graph"]
     if len(steps) > 1:
         text += " Usual flow: " + " -> ".join(steps) + "."
-    return text + (" " + "; ".join(clauses) + "." if clauses else "")
+    text += " " + "; ".join(clauses) + "." if clauses else ""
+    return text + (" " + TRACE_READING if "trace" in offered else "")
 
 
 def traceability(cfg: Config, names: list[str], store: Store | None = None) -> str:

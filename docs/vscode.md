@@ -57,14 +57,15 @@ El servidor responde desde lo que `atlas run` deja en el workspace. Puedes volve
    modelo y qué variables de `atlas.toml` le faltan:
 
    ```text
-   INFO atlas.mcp: MCP server over C:\proyecto\workspace with 13 tools (profile editor): ...
+   INFO atlas.mcp: MCP server over C:\proyecto\workspace with 5 tools (profile editor): ...
    INFO atlas.mcp: model: https://gateway.empresa/v1 through the proxy http://proxy:8080
    ```
 
 4. En el chat, en modo agente, las herramientas de atlas aparecen en el selector de
-   herramientas. Con código en `[sources.code]`, el perfil `editor` da `build_context`,
-   `context_at`, `trace`, `trace_code`, `impact`, `similar_requirements`, `read_file`... y la
-   búsqueda en los documentos ([configuración](configuracion.md), `[mcp] profile`).
+   herramientas. Con código en `[sources.code]`, el perfil `editor` da cinco: `build_context`,
+   `search`, `trace`, `impact` y `find_symbol`; los ficheros los lee el propio editor. Con
+   `[mcp] profile = "all"` o una lista en `[mcp] tools` ofrece más
+   ([configuración](configuracion.md)).
 
 El proxy y la clave tienen que estar en el entorno de VS Code, no solo en el de una terminal:
 mira [el entorno del servidor](instalacion.md#el-entorno-del-servidor-proxy-y-clave). Con

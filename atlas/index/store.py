@@ -36,6 +36,7 @@ import numpy as np
 
 from atlas.db import connect
 from atlas.index.records import CODE_PREFIX, DOORS_PREFIX, asks_for
+from atlas.text import plain
 
 __all__ = ["DEFAULT_FTS_TOKENIZER", "IndexStore", "REF_PATTERN", "recreate_fts"]
 
@@ -473,5 +474,5 @@ class IndexStore:
     def requirement(self, req_id: str) -> list[dict]:
         """Records of the requirement with that exact ID, in every document."""
         rows = self._query("SELECT id FROM index_records WHERE kind = 'requirement' AND UPPER(ref) = ?",
-                           (req_id.strip().upper(),))
+                           (plain(req_id).strip().upper(),))
         return self.records([r[0] for r in rows])

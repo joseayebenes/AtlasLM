@@ -15,6 +15,8 @@ atlas.toml of the project, the same one atlas reads.
     hephesto serve   [atlas.toml]        MCP server over stdio for an editor: check_code, run_test, run_tests
                      [--edit]            and judge_changes; --edit: the file tools too (atlas serve, beside
                                          it, gives what atlas knows)
+    hephesto init    --vscode [atlas.toml]   the server "hephesto" in .vscode/mcp.json, beside that of atlas
+                     [--edit]            (with --edit, the one of hephesto serve --edit)
     hephesto --version
 
 What atlas does (atlas run, trace, search, serve...) stays in atlas: `atlas --help`.
@@ -34,7 +36,8 @@ __all__ = ["main"]
 
 OPTIONS = {"develop": {"--check": bool, "--resume": bool},
            "eval": {"--compare": bool, "--set": str},
-           "serve": {"--edit": bool}}
+           "serve": {"--edit": bool},
+           "init": {"--vscode": bool, "--edit": bool}}
 
 
 def tests(cfg: Config, target: str) -> int:
@@ -166,6 +169,16 @@ def serve(cfg: Config, edit: bool = False) -> int:
     return 0
 
 
+def init(path: Path, vscode: bool = False, edit: bool = False) -> int:
+    """The server of hephesto in .vscode/mcp.json, next to atlas.toml (atlas init --vscode)."""
+    from atlas.cli import vscode_server
+    if not vscode:
+        sys.exit("hephesto init --vscode [atlas.toml]: atlas.toml is written by `atlas init`")
+    if not path.exists():
+        sys.exit(f"{path} does not exist: `atlas init --vscode {path}` first")
+    return vscode_server(path, "hephesto", args=("--edit",) if edit else ())
+
+
 def main(argv: list[str] | None = None) -> None:
     for stream in (sys.stdout, sys.stderr):        # a Windows console is cp1252 (see atlas.cli.main)
         if hasattr(stream, "reconfigure"):
@@ -194,6 +207,9 @@ def main(argv: list[str] | None = None) -> None:
 
 
 def _dispatch(action: str, rest: list[str]) -> None:
+    if action == "init":
+        rest, options = _options(action, rest, OPTIONS, "hephesto")
+        sys.exit(init(Path(rest[0] if rest else "atlas.toml"), **options))
     actions = {"eval": evaluate, "serve": serve}
     with_text = {"develop": develop, "hints": hints, "tests": tests}
     if action not in actions and action not in with_text:

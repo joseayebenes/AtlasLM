@@ -57,6 +57,7 @@
     atlas serve    [atlas.toml]     MCP server over stdio, for OpenCode, VS Code...
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
                    [--profile ollama|gateway]   for a local model (the default) or the corporate gateway
+                   [--vscode]       and the server "atlas" in .vscode/mcp.json, next to it (VS Code)
     atlas --version
 
     develop, hints and tests are hephesto's (pip install hephestolm): it writes and runs the code;
@@ -1423,7 +1424,7 @@ def coverage(cfg: Config, module: str, as_json: bool = False) -> int:
 
 # options of the actions that take them: --name -> type (bool: a flag)
 FILTERS = {"--module": str, "--chapter": str, "--attribute": str}
-OPTIONS = {"init": {"--profile": str},
+OPTIONS = {"init": {"--profile": str, "--vscode": bool},
            "run": {"--until": str, "--max-minutes": int, "--max-requests": int},
            "estimate": {"--latency": float},
            "search": {"--k": int, "--kind": str, "--document": str, **FILTERS},
@@ -1990,11 +1991,16 @@ TEMPLATES = {"ollama": Path(__file__).parent / "templates" / "atlas.toml",      
              "gateway": Path(__file__).parent / "templates" / "atlas-gateway.toml"}
 
 
-def init(path: Path, profile: str = "ollama") -> int:
-    """Writes the template of atlas.toml for `profile` in `path`, unless the file exists."""
+def init(path: Path, profile: str = "ollama", vscode: bool = False) -> int:
+    """Writes the template of atlas.toml for `profile` in `path`, unless the file exists; with
+    `vscode`, also the server of atlas in .vscode/mcp.json (and an atlas.toml that exists is
+    kept, not an error)."""
     if profile not in TEMPLATES:
         print(f"unknown profile '{profile}' (valid: {', '.join(TEMPLATES)})", file=sys.stderr)
         return 1
+    if vscode:
+        created = 0 if path.exists() else init(path, profile)
+        return created or vscode_server(path, "atlas")
     if path.exists():
         print(f"{path} already exists: it is not overwritten", file=sys.stderr)
         return 1
@@ -2002,6 +2008,19 @@ def init(path: Path, profile: str = "ollama") -> int:
     path.write_text(TEMPLATES[profile].read_text(encoding="utf-8"), encoding="utf-8")
     print(f"created {path}: edit the sources and the model, then `atlas doctor {path.name}` and "
           f"`atlas run {path.name}`")
+    return 0
+
+
+def vscode_server(path: Path, name: str, module: str = "", args: tuple[str, ...] = ()) -> int:
+    """The server `name` in the .vscode/mcp.json of the folder of `path` (atlas/vscode.py)."""
+    from atlas.vscode import add_server
+    try:
+        mcp_json, done = add_server(path, name, module, args)
+    except ValueError as e:
+        print(e, file=sys.stderr)
+        return 1
+    print(f"{mcp_json}: the server {name} {done}" + ("" if done == "unchanged" else
+          f"; in VS Code, open the folder {path.resolve().parent} and start it from the list of MCP servers"))
     return 0
 
 

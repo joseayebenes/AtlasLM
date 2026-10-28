@@ -43,14 +43,19 @@ entre las herramientas de las fuentes configuradas:
 
 | Perfil | Herramientas | Por defecto |
 |---|---|---|
-| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `similar_requirements`, `find_symbol`, `read_source` y `read_file` | con `[sources.code]` |
+| `editor` | `build_context`, `search`, `trace`, `impact` y `find_symbol` | con `[sources.code]` |
 | `trace` | `trace`, `matrix`, `gaps`, `list_requirements`, `neighbors`, `get_requirement` y `search` | |
 | `all` | todas las de las fuentes configuradas (abajo) | sin código |
 
-`editor` es lo que necesita saber el agente de un editor antes de cambiar código: 13
-herramientas en vez de 29. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
-descripción en cada petición. `trace` es para quien revisa la trazabilidad sin tocar el
-código.
+`editor` es lo que necesita saber el agente de un editor antes de cambiar código, en 5
+herramientas. Medido el 2026-10-28 con gemma-4-26b (sin razonamiento y con low, medium y high)
+y con gpt-oss-120b, en 28 preguntas de asistente y de editor: con 5 aciertan igual o más que con
+13 o con las 29, con la mitad de tokens de entrada (unos 4 400 por pregunta frente a 9 100), y
+con 13 o 29 gpt-oss se perdía leyendo ficheros hasta agotar los pasos. Lo que falta en las 5 lo
+cubren `build_context` (requisitos, firma, llamadores, pruebas, documentos y código de un
+elemento, también por `fichero:línea`) y las herramientas del propio editor para leer y buscar
+en los ficheros. `trace` es para quien revisa la trazabilidad sin tocar el código; `all`, o una
+lista en `[mcp] tools`, ofrece más.
 
 Las herramientas de las fuentes configuradas son:
 - con `[[sources.docs]]`, las de documentos;
@@ -72,10 +77,16 @@ Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
-Las instrucciones del servidor explican cada grupo de herramientas ofrecidas. El párrafo del
-grafo solo nombra las que se ofrecen: el flujo habitual (`find_symbol -> trace_code / impact
--> read_source` en el perfil `editor`, con `get_node`, `callers` y `callees` en `all`) y lo
-que dan `trace`, `trace_code`, `impact`, `matrix` y `gaps`. Además cuentan, en un
+Las instrucciones del servidor explican cada grupo de herramientas ofrecidas, y solo nombran
+las que se ofrecen: el párrafo de los documentos, una frase por cada una de `search`,
+`list_documents`, `get_section`, `get_requirement` y `ask_docs`; el del contexto, por
+`build_context`, `context_at` y `similar_requirements`; y el del grafo, el flujo habitual
+(`find_symbol -> impact` en el perfil `editor`, con `get_node`, `callers`, `callees` y
+`read_source` en `all`) y lo que dan `trace`, `trace_code`, `impact`, `matrix` y `gaps`. Con
+`trace`, también cómo leerlo: lo que un requisito satisface está en `ancestors` y `links_out`,
+y `parent` es solo su sitio en el esquema de DOORS (gemma-4-26b y gpt-oss-120b los confundían);
+si DOORS y un documento difieren (`values_differ`), manda DOORS; y un `implemented_by` vacío es
+que aún no hay código. Además cuentan, en un
 párrafo «Traceability of this project», cómo cita el código los requisitos (`req_tag` o
 `req_regex`), cómo son sus ID (`id_pattern`), qué módulos de DOORS hay y los pasos de un
 cambio: contexto (`context_at` o `build_context`), editar, compilar y pasar las pruebas que da

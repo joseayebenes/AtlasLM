@@ -33,9 +33,8 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     code = f'[sources.code]\nroots = ["{tmp_path.as_posix()}"]\n'
     docs = f'[[sources.docs]]\nname = "d"\npaths = ["{tmp_path.as_posix()}"]\n'
     cfg = load_config(toml(code + docs))
-    names = tool_names(cfg)                       # with code, the profile of an editor
-    assert names == ["list_documents", "search", "get_section", "get_requirement", "find_symbol", "impact",
-                     "read_source", "trace", "trace_code", "build_context", "context_at", "similar_requirements", "read_file"]
+    names = tool_names(cfg)                       # with code, the profile of an editor: five
+    assert names == ["search", "find_symbol", "impact", "trace", "build_context"]
     checked = load_config(toml(code + 'check_command = ["gcc", "-c", "{file}"]\n' + docs))
     assert tool_names(checked) == names                 # a compiler: hephesto serve offers check_code
     names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "all"\n')))
@@ -45,12 +44,12 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     assert not {"edit_file", "write_file", "grep"} & set(names)              # knowledge; the editor edits
     graph = graph_instructions(names)
     assert "Usual flow: find_symbol -> get_node -> callers / callees / trace_code / impact -> read_source." in graph
-    assert graph.endswith("; `matrix` and `gaps`, the traceability of a DOORS module and what it lacks.")
+    assert "; `matrix` and `gaps`, the traceability of a DOORS module and what it lacks. In `trace`" in graph
     names = tool_names(load_config(toml(code + docs + '[mcp]\nprofile = "trace"\n')))
     assert names == ["search", "get_requirement", "trace", "matrix", "gaps", "list_requirements", "neighbors"]
-    assert graph_instructions(names).endswith("in lower case. `trace` gives everything about a requirement (DOORS, "
-                                              "documents, code, tests); `matrix` and `gaps`, the traceability of a "
-                                              "DOORS module and what it lacks.")         # no flow without code
+    assert "in lower case. `trace` gives everything about a requirement (DOORS, documents, code, tests); `matrix` " \
+           "and `gaps`, the traceability of a DOORS module and what it lacks. In `trace`" \
+           in graph_instructions(names)                                               # no flow without code
     assert tool_names(load_config(toml())) == default_tools(load_config(toml()))     # without code, all
     with pytest.raises(ConfigError, match="profile must be one of editor, trace, all"):
         load_config(toml('[mcp]\nprofile = "small"\n'))
@@ -58,17 +57,21 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     tools = _tools(server)
     assert list(tools) == tool_names(cfg)
     assert tools["impact"]["inputSchema"]["required"] == ["name"]
-    assert tools["trace_code"]["title"] == "Trace code"
+    assert tools["find_symbol"]["title"] == "Find symbol"
     assert tools["impact"]["annotations"] == {"readOnlyHint": True, "destructiveHint": False,
                                               "idempotentHint": True, "openWorldHint": False}
     assert tools["impact"]["description"].startswith("What changing a code element or a requirement affects.")
     graph = next(p for p in server.instructions.split("\n\n") if p.startswith("Graph of"))
-    assert graph == ("Graph of code, requirements and documents: code identifiers are `unit.name` in lower case. "
-                     "Usual flow: find_symbol -> trace_code / impact -> read_source. `trace` gives everything about a "
-                     "requirement (DOORS, documents, code, tests); `trace_code`, the requirements and tests of a code "
-                     "element; `impact`, what a change affects.")      # no get_node, callers, matrix or gaps
+    assert graph.startswith("Graph of code, requirements and documents: code identifiers are `unit.name` in lower "
+                            "case. Usual flow: find_symbol -> impact. `trace` gives everything about a requirement "
+                            "(DOORS, documents, code, tests); `impact`, what a change affects. In `trace`, what a "
+                            "requirement satisfies")    # no get_node, callers, trace_code, read_source, matrix or gaps
+    assert "`parent` is only its place in the DOORS outline" in graph
     assert "edit_file" not in server.instructions
     assert "`build_context` gives in one call" in server.instructions
+    for other in ("get_section", "get_requirement", "ask_docs", "list_documents", "context_at",
+                  "similar_requirements", "trace_code", "read_source", "read_file"):
+        assert other not in server.instructions, other           # only the tools offered are named
     assert "`attribute` (\"status=Approved" in server.instructions                 # the filters of search
     assert {"attribute", "module", "chapter"} <= set(tools["search"]["inputSchema"]["properties"])
     assert "status=Approved;verification=Test" in tools["search"]["description"]
@@ -84,7 +87,7 @@ def test_the_configuration_chooses_the_tools(toml, tmp_path):
     with pytest.raises(ConfigError, match="disabled"):
         create_server(load_config(toml('[mcp]\ntools = ["search"]\n[plugins]\ndisabled = ["tool:search"]\n')))
     names = tool_names(load_config(toml(code + '[plugins]\ndisabled = ["tool:impact"]\n')))
-    assert "impact" not in names and "trace_code" in names
+    assert "impact" not in names and "trace" in names
     with pytest.raises(ConfigError, match="turned off"):
         create_server(load_config(toml("[mcp]\nenabled = false\n")))
 
@@ -95,7 +98,8 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
     is read-only (those of hephesto, which write or run the code, are not offered)."""
     pytest.importorskip("mcp")
     import re
-    from atlas.mcp import INSTRUCTIONS, create_server, graph_instructions, tool_groups
+    from atlas.mcp import (INSTRUCTIONS, context_instructions, create_server, docs_instructions, graph_instructions,
+                           tool_groups)
     from atlas.plugins import Requirement
     from atlas.store import Store
     plugins.load_plugins()
@@ -108,10 +112,13 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
         server = create_server(cfg)
         paragraphs = [INSTRUCTIONS[g] for g, tools in groups.items() if name in tools]
         assert paragraphs and all(p in server.instructions for p in paragraphs), name
-        if name in groups.get("graph", ()):
-            graph = graph_instructions([name])
-            assert graph in server.instructions, name
-            assert not [t for t in groups["graph"] if t != name and re.search(rf"\b{t}\b", graph)], name
+        for group, paragraph_of in (("graph", graph_instructions), ("docs", docs_instructions),
+                                     ("context", context_instructions)):
+            if name in groups.get(group, ()):
+                paragraph = paragraph_of([name])
+                assert paragraph and paragraph in server.instructions, name
+                assert group == "graph" or f"`{name}`" in paragraph, name      # graph: not every tool has a clause
+                assert not [t for t in groups[group] if t != name and re.search(rf"\b{t}\b", paragraph)], name
         assert _tools(server)[name]["annotations"]["readOnlyHint"] is True, name
 
     # how this project cites requirements, its IDs and modules, and the steps of a change
@@ -122,8 +129,8 @@ def test_the_instructions_name_every_tool_and_the_traceability_of_the_project(to
     assert "Traceability of this project: The code cites the requirements it implements in a comment with the " \
            "tag `Req:` (`-- Req: SRS-0004`)" in text
     assert "Requirement IDs match `^(?:SRS|SSS)-\\d{4}$`. DOORS modules: SRS_TMS." in text
-    assert "A change: `context_at` or `build_context` of the code to change -> edit it -> compile it -> run the " \
-           "tests that `trace` gives for its requirements." in text
+    assert "A change: `build_context` of the code to change -> edit it -> compile it -> run the tests that `trace` " \
+           "gives for its requirements." in text
     text = create_server(load_config(toml(code.replace("languages", 'req_regex = "@req (.+)"\nlanguages') +
                                           '[mcp]\ntools = ["read_file"]\n'))).instructions
     assert "in comments that match `@req (.+)`" in text

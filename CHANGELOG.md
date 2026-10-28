@@ -45,6 +45,16 @@ orden.
   `[mcp] tools`, donde pedirla es un error que remite a `hephesto serve`. `check_code` sale
   del perfil `editor`, y las instrucciones del servidor cambian el párrafo de compilar por el
   de la biblioteca.
+- El perfil `editor` de `atlas serve`, el de por defecto con código, ofrece cinco herramientas:
+  `build_context`, `search`, `trace`, `impact` y `find_symbol` (eran 13). Medido con
+  gemma-4-26b y gpt-oss-120b: con 5 aciertan igual o más que con 13 o 29, con la mitad de tokens
+  de entrada; los ficheros los lee el editor.
+- Las instrucciones de `atlas serve` solo nombran las herramientas que ofrece: los párrafos de
+  los documentos y del contexto se construyen como el del grafo (antes hablaban de
+  `get_section`, `ask_docs`, `context_at`... aunque no se ofrecieran). Con `trace`, dicen cómo
+  leerlo: lo que un requisito satisface está en `ancestors`/`links_out` y `parent` es solo su
+  sitio en el esquema de DOORS (gemma y gpt-oss los confundían), si DOORS y un documento
+  difieren manda DOORS, y un `implemented_by` vacío es que no hay código.
 - `mcp` pasa a ser una dependencia de atlaslm: el servidor viene siempre. `atlaslm[mcp]` se
   sigue aceptando.
 - `atlas eval` comprueba los casos `develop` y los cuenta en `skipped`, sin ejecutarlos.
@@ -72,6 +82,10 @@ orden.
   60 % de lo que acertaba un 94 %). `atlas.text.plain` los convierte en los ASCII.
 
 ### Al actualizar
+- Un editor que usaba de `atlas serve` `get_requirement`, `get_section`, `list_documents`,
+  `trace_code`, `context_at`, `similar_requirements`, `read_source` o `read_file` sin
+  `[mcp] tools` ya no las tiene: `[mcp] profile = "all"`, o una lista en `[mcp] tools` con las
+  que quieras.
 - `atlas develop`, `atlas hints` y `atlas tests` son ahora `hephesto develop`, `hephesto hints` y
   `hephesto tests`: `pip install hephestolm` (desde el repositorio, `make install`). Las de
   atlas lo dicen y salen con error. Los planes y `atlas.toml` no cambian.

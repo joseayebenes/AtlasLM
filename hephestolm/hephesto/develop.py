@@ -201,7 +201,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from atlas.agents.hints import shape as _shape, write_hints_draft
+from hephesto.hints import shape as _shape, write_hints_draft
 from atlas.agents.guard import data_block
 from atlas.config import Config, ConfigError
 
@@ -483,7 +483,7 @@ class _Workspace:
     parallel attempt (`base`, its number)."""
 
     def __init__(self, dev: "Developer", base: Path | None = None, number: int = 0):
-        from atlas.code import BuildTools, CodeTools
+        from hephesto import BuildTools, CodeTools
         self.dev, self.base, self.number = dev, base, number
         self.code = CodeTools.from_config(dev.cfg, base=base)
         self.build = BuildTools.from_config(dev.cfg, self.code, base=base)
@@ -494,7 +494,7 @@ class _Workspace:
         """What the tools of an agent receive: their file and build tools on this folder
         (`read_only`: the file tools change nothing, for the reviewer)."""
         from atlas.agents.runtime import context_for
-        from atlas.code import BuildTools, CodeTools
+        from hephesto import BuildTools, CodeTools
         context = context_for(self.dev.cfg)
         if self.base is not None or read_only:
             context._code_tools = CodeTools.from_config(self.dev.cfg, read_only=read_only, base=self.base)
@@ -646,7 +646,7 @@ class Developer:
         those named after it (test_stp_0101.py, as atlas tests names them)."""
         if not requirements:
             return []
-        from atlas.code.procedures import slugs
+        from hephesto.procedures import slugs
         files, names = set(), set()
 
         def cited_by(r: str) -> None:

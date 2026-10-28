@@ -17,8 +17,6 @@
                                            by obligation, with the model; * = all
     atlas link     ID|MODULE [atlas.toml]  code that may implement the requirements without code, with the
                                            model; a report of proposals, the code is not changed; * = all
-    atlas tests    ID|MODULE [atlas.toml]  the test procedures as tests in each language, step by step, by
-                                           the patterns of [tests], without the model; * = all
     atlas impact   NAME [atlas.toml]   report of what changing a code element or a requirement affects
     atlas coverage MODULE [atlas.toml] report of the traceability gaps of a DOORS module; * = all
     atlas search   TEXT [atlas.toml]   hybrid search in the indexed documents, requirements and code
@@ -35,17 +33,12 @@
     atlas agent    NAME TEXT [atlas.toml]   asks an agent (with its tools); prints the tools it called
     atlas chat     [atlas.toml]     a conversation with an agent (the assistant, or --agent NAME): each
                    [--agent NAME]   question sees the earlier ones; /help for the orders without model
-    atlas develop  PLAN [atlas.toml]   an agent writes the code task by task, the tests judge it: what breaks
-                   [--check] [--resume]  is undone, and what it cannot fix goes to a person (a report);
-                                       --check: the plan, check_code and the tests at the start, no model;
-                                       --resume: goes on from where an earlier run stopped (Ctrl+C)
-    atlas hints    PLAN [atlas.toml]   drafts of hints for the errors of the compiler that came without one in
-                                       the last atlas develop of the plan, with how the agent fixed each one
     atlas eval     [atlas.toml]     the evaluation sets of [agents.eval]: answers scored without a model
                    [--compare]      and each case against the last report of another version of atlas
                    [--generate FILE [--n 50]]   writes a set of search and graph cases from the index and the
                                     graph of the workspace, the same each time (instead of evaluating)
-                   [--set FILE]     only that set (examples/eval/develop.yaml: plans of atlas develop)
+                   [--set FILE]     only that set (its develop cases, plans of hephesto develop, are run by
+                                    hephesto eval)
     atlas usage    [atlas.toml] [--since 30d]   what the usage log of the workspace says: calls by tool
                                     and week, milliseconds, errors, tokens and cost, answers with
                                     and without sources
@@ -65,6 +58,9 @@
     atlas init     [atlas.toml]     writes a commented atlas.toml to start from (never overwrites)
                    [--profile ollama|gateway]   for a local model (the default) or the corporate gateway
     atlas --version
+
+    develop, hints and tests are hephesto's (pip install hephestolm): it writes and runs the code;
+    this command line only reads it.
 
     --json         status, sections, graph, trace, matrix, verify, comply, link, coverage and impact
                    print only the result as JSON on stdout (the dictionary of their library
@@ -1399,26 +1395,6 @@ def link(cfg: Config, target: str, as_json: bool = False) -> int:
     return 0
 
 
-def tests(cfg: Config, target: str) -> int:
-    """The tests of the test procedures of a module (or of one), from their steps."""
-    from atlas.code.procedures import generate_tests
-    from atlas.graph import KnowledgeGraph
-    ctx = _context(cfg)
-    res = generate_tests(KnowledgeGraph.open(ctx.store.path, cfg.home), "" if target == "*" else target, cfg["tests"],
-                         cfg.home)
-    if "error" in res:
-        print(res["error"] + (f"; modules: {', '.join(res['modules'])}" if res.get("modules") else ""))
-        return 1
-    for p in res["procedures"]:
-        files = ", ".join(f"{f['path']} ({f['status']})" for f in p["files"])
-        print(f"{p['id']}: {files}" if files else f"{p['id']}: not written")
-        for e in p["errors"]:
-            print(f"    {e}")
-    print(f"{res['written']} written, {res['unchanged']} unchanged"
-          + (f"; {res['errors']} procedures with steps that no pattern of [tests] steps matches" if res["errors"] else ""))
-    return 1 if res["errors"] else 0
-
-
 def impact(cfg: Config, name: str, as_json: bool = False) -> int:
     from atlas.agents.reports import impact_report
     _context(cfg)
@@ -1453,7 +1429,6 @@ OPTIONS = {"init": {"--profile": str},
            "search": {"--k": int, "--kind": str, "--document": str, **FILTERS},
            "ask": {"--k": int, "--kind": str, "--document": str, "--whole": bool, "--section": str, "--dry-run": bool,
                    **FILTERS},
-           "develop": {"--check": bool, "--resume": bool},
            "eval": {"--compare": bool, "--generate": str, "--n": int, "--set": str},
            "cache": {"--with-judgements": bool},
            "usage": {"--since": str},
@@ -1464,10 +1439,10 @@ DESTINATIONS = {"--json": "as_json"}      # the argument of the function, when i
 REPEATABLE = {"--attribute": ";"}       # given twice: joined with this
 
 
-def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
+def _options(action: str, args: list[str], table: dict | None = None, program: str = "atlas") -> tuple[list[str], dict]:
     """The positional arguments and the --options of an action ({"k": 5, "whole": True,
-    "as_json": True})."""
-    allowed, positional, options = OPTIONS.get(action, {}), [], {}
+    "as_json": True}), by the options of `table` (OPTIONS)."""
+    allowed, positional, options = (OPTIONS if table is None else table).get(action, {}), [], {}
     it = iter(args)
     for arg in it:
         if not arg.startswith("--") or arg == "--":
@@ -1475,7 +1450,7 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
             continue
         name, has_value, value = arg.partition("=")
         if name not in allowed:
-            sys.exit(f"atlas {action}: unknown option {name}"
+            sys.exit(f"{program} {action}: unknown option {name}"
                      + (f" (valid: {', '.join(allowed)})" if allowed else " (it takes none)"))
         kind, dest = allowed[name], DESTINATIONS.get(name, name[2:].replace("-", "_"))
         if kind is bool:
@@ -1484,13 +1459,13 @@ def _options(action: str, args: list[str]) -> tuple[list[str], dict]:
         if not has_value:
             value = next(it, None)
             if value is None:
-                sys.exit(f"atlas {action}: {name} needs a value")
+                sys.exit(f"{program} {action}: {name} needs a value")
         if name in REPEATABLE and name[2:] in options:
             value = f"{options[name[2:]]}{REPEATABLE[name]}{value}"
         try:
             options[dest] = kind(value)
         except ValueError:
-            sys.exit(f"atlas {action}: {name} must be "
+            sys.exit(f"{program} {action}: {name} must be "
                      + {int: "an integer", float: "a number"}.get(kind, "a text"))
     return positional, options
 
@@ -1671,26 +1646,6 @@ def agent(cfg: Config, name: str, question: str) -> int:
     return 1 if res["stopped"] else 0
 
 
-def _develop_check(cfg: Config, plan: str) -> int:
-    """What a plan starts from, without a model: its agents and tests checked, check_code on
-    its files and its tests run once (Developer.check)."""
-    from atlas.agents.develop import Developer, load_plan
-    found = Developer(load_plan(plan), cfg).check()
-    print(f"plan {found['plan']}: {found['tasks']} tasks, {len(found['tests'])} tests; "
-          + ", ".join(f"{k} {v}" for k, v in found["agents"].items()))
-    print(f"check_code: {len(found['check_errors'])} files with errors" if found["check_errors"] else
-          "check_code: no errors")
-    for f, errors in found["check_errors"].items():
-        print(f"  {f}: {errors[0]}" + (f" (and {len(errors) - 1} more)" if len(errors) > 1 else ""))
-    print(f"tests: {found['tests_passed']} of {len(found['tests'])} pass at the start")
-    for test, result in found["tests"].items():
-        print(f"  {test}: {result}")
-    for warning in found["warnings"]:
-        print(f"warning: {warning}")
-    print("nothing was changed and no model was asked")
-    return 0
-
-
 CHAT_HELP = """Write a question, or one of these orders, which need no model:
   /trace ID        everything about a requirement, as atlas trace
   /matrix MODULE   the traceability matrix of a DOORS module (* = all), as atlas matrix
@@ -1772,64 +1727,6 @@ def chat(cfg: Config, agent: str = "assistant") -> int:
             print(CHAT_HELP)
 
 
-def develop(cfg: Config, plan: str, check: bool = False, resume: bool = False) -> int:
-    """The tasks of a plan, then the rounds that fix the failing tests (atlas/agents/develop.py);
-    with `check`, only what the plan starts from; with `resume`, from where it stopped."""
-    from atlas.agents.develop import develop as run_plan
-
-    def show(s: dict) -> None:
-        cost = f" ${s['cost']:.4f}" if "cost" in s else ""
-        stop = " (stalled)" if s.get("stalled") else " (max_steps)" if s.get("stopped") else ""
-        attempt = f" #{s['attempt']}" if s.get("attempt") else ""
-        print(f"{s['n']:3d} {s['kind'] + attempt:10s} {s['task']}: {s.get('outcome', '')}, {s['seconds']} s, "
-              f"{s['calls']} calls{stop}{cost}; tests passing: {s.get('tests_passed', '?')}"
-              + (f"\n      broke: {'; '.join(s['broke'])[:300]}" if s.get("broke") else "")
-              + (f"\n      did not advance: {', '.join(s['not_advanced'])}" if s.get("not_advanced") else "")
-              + (f"\n      untagged: {', '.join(s['untagged'])}" if s.get("untagged") else "")
-              + (f"\n      new files: {', '.join(s['created'])}" if s.get("created") else "")
-              + (f"\n      deleted (a test among the code): {', '.join(s['deleted'])}" if s.get("deleted") else "")
-              + (f"\n      error: {s['error']}" if s.get("error") else "")
-              + (f"\n      budget spent: {s['budget_exceeded']}" if s.get("budget_exceeded") else "")
-              + (f"\n      conflict: {', '.join(s['conflict']['files'])}"
-                 + (f" (with {', '.join(s['conflict']['with'])})" if s["conflict"]["with"] else "")
-                 + "; undone, it goes again alone" if s.get("conflict") else ""), flush=True)
-
-    _context(cfg)
-    try:
-        if check:
-            return _develop_check(cfg, plan)
-        report = run_plan(plan, cfg, on_step=show, resume=resume)
-    except ImportError as e:            # without the [agents] extra
-        sys.exit(str(e))
-    except KeyboardInterrupt:
-        print(f"\ninterrupted: the files of the step are as they were before it; `atlas develop {plan} "
-              f"{cfg.path.name} --resume` goes on from there")
-        return 130
-    final, totals = report["final"], report["totals"]
-    print(f"\n{final['tests_passed']} of {final['tests']} tests pass; {len(report['steps'])} agent runs, "
-          f"{totals['seconds'] // 60} min of runs, {totals.get('wall_seconds', 0) // 60} min in all"
-          + (f", ${totals['cost']}" if "cost" in totals else "")
-          + (f"; {final['errors']} runs failed with an error" if final.get("errors") else ""))
-    schedule = report.get("schedule")
-    if schedule:
-        print(f"tasks: {schedule['tasks_seconds'] // 60} min one after another in "
-              f"{schedule['wall_seconds'] // 60} min, {schedule['speedup']:g}x as fast with {schedule['parallel']} at once"
-              + (f"; {schedule['conflicts']} done again alone after a conflict" if schedule["conflicts"] else ""))
-    for warning in report.get("warnings", []):
-        print(f"warning: {warning}")
-    for test, why in (report.get("for_a_person") or {}).items():
-        print(f"for a person: {test} ({why['reason']})")
-    created = [f for s in report["steps"] if s.get("outcome") not in ("undone", "not chosen")
-               for f in s.get("created", [])]
-    if created:
-        print(f"new files: {', '.join(created)}")
-    if report.get("proposal"):
-        print(f"a proposal: the working folder is unchanged; the patches in {report['proposal']['patches']}, the "
-              f"code in {report['proposal']['copy']}")
-    print(f"report: {cfg.workspace / 'reports' / ('develop-' + report['plan'] + '.md')}")
-    return 0 if final["tests_passed"] == final["tests"] else 1
-
-
 def _hits(m: dict) -> str:
     return ", ".join(f"hit@{k} {m[f'hit@{k}']:.0%}" for k in (1, 3, 5, 10)) + f", MRR {m['mrr']:.2f}"
 
@@ -1870,23 +1767,10 @@ def generate_set(cfg: Config, path: str, n: int) -> int:
     return 0
 
 
-def hints(cfg: Config, plan: str) -> int:
-    """Drafts of hints from the calls of the last atlas develop of a plan (atlas/agents/hints.py)."""
-    from atlas.agents.hints import write_hints_draft
-    calls = cfg.workspace / "reports" / f"develop-{Path(plan).stem}.calls.jsonl"
-    if not calls.is_file():
-        sys.exit(f"no calls of atlas develop for {Path(plan).stem}: {calls} does not exist")
-    path, drafts = write_hints_draft(calls)
-    for d in drafts:
-        fixed = f", fixed in run {d['fix']['run']}" if d["fix"] else ""
-        print(f"{d['count']:4d}  {d['message'][:100]}{fixed}")
-    print(f"\n{len(drafts)} errors without a hint; drafts in {path}: write the hints there and copy them to a "
-          "file of [sources.code] hints" if drafts else "every error of the compiler came with a hint")
-    return 0
-
-
-def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0, set: str = "") -> int:
-    """The sets of [agents.eval] sets, or only `set` (--set FILE, relative to atlas.toml)."""
+def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0, set: str = "",
+             runners: dict | None = None) -> int:
+    """The sets of [agents.eval] sets, or only `set` (--set FILE, relative to atlas.toml).
+    `runners`: those of the kinds of cases atlas does not run (hephesto eval: develop)."""
     from atlas import __version__
     from atlas.agents.evaluate import SEARCH_MODES, evaluate_sets, previous_report
     if n and not generate:
@@ -1927,7 +1811,7 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0,
                   + (f"  {r['error']}" if r.get("error") else ""), flush=True)
 
     try:
-        results = evaluate_sets(cfg, context=_context(cfg), on_result=show, sets=[set] if set else None)
+        results = evaluate_sets(cfg, context=_context(cfg), on_result=show, sets=[set] if set else None, runners=runners)
     except ImportError as e:
         sys.exit(str(e))
     regressions = 0
@@ -1955,6 +1839,8 @@ def evaluate(cfg: Config, compare: bool = False, generate: str = "", n: int = 0,
             print(f"  agents: {a['passed']} of {a['total']} right ({a['rate']:.0%}), median {a['median_seconds']:.0f} s"
                   + (f", {tokens['prompt']} + {tokens['completion']} tokens" if tokens.get("prompt") else "")
                   + (f", ${a['cost']:.4f}" if "cost" in a else ""))
+        for kind, count in res.get("skipped", {}).items():
+            print(f"  {kind}: {count} cases not run" + (": hephesto eval runs them" if kind == "develop" else ""))
         if "develop" in res:
             d, totals = res["develop"], res["develop"]["totals"]
             print(f"  develop: {d['passed']} of {d['total']} runs reached their tests ({d['rate']:.0%}); "
@@ -2119,6 +2005,9 @@ def init(path: Path, profile: str = "ollama") -> int:
     return 0
 
 
+MOVED = {"develop": "hephesto develop PLAN [atlas.toml] [--check] [--resume]",
+         "hints": "hephesto hints PLAN [atlas.toml]",
+         "tests": "hephesto tests ID|MODULE [atlas.toml]"}
 UNLOGGED = ("serve", "usage", "ask")     # serve: each tool call; ask: its answer (see ask)
 
 
@@ -2165,7 +2054,10 @@ def _dispatch(action: str, rest: list[str]) -> None:
                "plugins": list_plugins, "agents": list_agents, "eval": evaluate, "check": check, "doctor": doctor,
                "probe": probe, "reference": reference, "serve": serve, "usage": usage, "chat": chat}
     with_text = {"search": search, "ask": ask, "trace": trace, "matrix": matrix, "verify": verify, "link": link, "comply": comply,
-                 "tests": tests, "develop": develop, "hints": hints, "impact": impact, "coverage": coverage}
+                 "impact": impact, "coverage": coverage}
+    if action in MOVED:
+        sys.exit(f"atlas {action} is now hephesto {action} (pip install hephestolm): atlas reads the code, "
+                 f"hephesto writes and runs it. {MOVED[action]}")
     if action == "agent":                       # two arguments: NAME TEXT [atlas.toml]
         if len(rest) < 2:
             sys.exit("usage: atlas agent NAME TEXT [atlas.toml]")

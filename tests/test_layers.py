@@ -1,14 +1,11 @@
-"""atlas knows and reads; hephesto writes and runs. The modules that write or run the code of
-the project (on their way to hephesto) are only imported by the ones that are going with them,
-and by the few that still mix both sides (TRANSITIONAL), until they are split."""
+"""atlas knows and reads; hephesto writes and runs. atlas never imports hephesto, but for the few
+modules that still mix both sides (TRANSITIONAL), until they are split."""
 import ast
 from pathlib import Path
 
 ATLAS = Path(__file__).resolve().parents[1] / "atlas"
 
-HEPHESTO = {"atlas.agents.develop", "atlas.agents.hints", "atlas.code.build", "atlas.code.judge", "atlas.code.tools",
-            "atlas.code.procedures"}
-TRANSITIONAL = {"atlas.cli", "atlas.mcp", "atlas.agents.evaluate", "atlas.code"}
+TRANSITIONAL = {"atlas.mcp"}
 
 
 def _module(path: Path) -> str:
@@ -54,13 +51,13 @@ def test_the_reading_tools_bring_nothing_that_writes_or_runs(tmp_path):
     assert not any(t.writes for t in tools.values())
 
 
-def test_atlas_does_not_import_what_writes_or_runs_the_code():
+def test_atlas_does_not_import_hephesto():
     wrong = {}
     for path in ATLAS.rglob("*.py"):
         module = _module(path)
-        if module in HEPHESTO | TRANSITIONAL:
+        if module in TRANSITIONAL:
             continue
-        bad = sorted(i for i in _imports(path, module) if i in HEPHESTO)
+        bad = sorted(i for i in _imports(path, module) if i == "hephesto" or i.startswith("hephesto."))
         if bad:
             wrong[module] = bad
-    assert not wrong, f"modules of atlas that import what writes or runs the code: {wrong}"
+    assert not wrong, f"modules of atlas that import hephesto: {wrong}"

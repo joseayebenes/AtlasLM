@@ -71,8 +71,8 @@ compare-openrouter: ## lo mismo con cada modelo de MODELS="a b c" y una tabla qu
 	$(PY) tools/compare_models.py $(MODELS)
 
 EVAL_CONFIG ?= atlas.openrouter.toml
-eval-develop:       ## el banco de encargos de atlas develop (examples/eval/develop.yaml) con EVAL_CONFIG; atlas.test.toml y make fake, sin modelo
-	$(PY) -m atlas.cli eval $(EVAL_CONFIG) --set examples/eval/develop.yaml
+eval-develop:       ## el banco de encargos de hephesto develop (hephestolm/examples/develop.yaml) con EVAL_CONFIG; atlas.test.toml y make fake, sin modelo
+	$(PY) -m hephesto.cli eval $(EVAL_CONFIG) --set hephestolm/examples/develop.yaml
 
 wheel:          ## dist/atlaslm-<versión>-py3-none-any.whl y el .tar.gz
 	rm -f $(WHEEL)

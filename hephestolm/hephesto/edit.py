@@ -106,7 +106,7 @@ class CodeTools(CodeReader):
             if reader is not None:              # the same reads: a read there allows an edit here
                 tools._seen, tools._outlined, tools._lock = reader._seen, reader._outlined, reader._lock
             context._code_tools = tools
-            from atlas.code.build import BuildTools
+            from hephesto.build import BuildTools
             BuildTools.for_context(context)
         return tools
 

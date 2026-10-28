@@ -182,7 +182,7 @@ def test_agent_edits_code_with_the_file_tools(served, samples, tmp_path, monkeyp
     Before edit_file tolerated escaped quotes and other indentation, the model found the
     line but looped until the timeout; with that tolerance, 5 out of 5 in about 20 s."""
     import shutil
-    from atlas.code import CodeTools
+    from hephesto import CodeTools
     shutil.copytree(samples / "ada", tmp_path / "ada")
     monkeypatch.chdir(tmp_path)
     before = {f: f.read_text() for f in (tmp_path / "ada").rglob("*.ad?")}

@@ -101,7 +101,7 @@ from typing import Any, Iterable, NamedTuple
 from atlas.agents import guard
 from atlas.code.library import with_clauses
 from atlas.code.toolchain import Toolchain, on_path, toolchain_settings
-from atlas.code.tools import CodeTools
+from hephesto.edit import CodeTools
 from atlas.config import ConfigError
 from atlas.plugins import register_methods
 

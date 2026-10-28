@@ -120,7 +120,7 @@ py = []                                 # off: these tests write code that does 
 
 
 def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     client = StubClient(
         write(ADD)                                              # add: the test gets to step 2, kept
@@ -164,7 +164,7 @@ def test_what_breaks_is_undone_and_what_is_stuck_goes_to_a_person(project):
 def test_a_change_that_breaks_the_syntax_is_not_made(project):
     """With the syntax check (Python's needs no command), the broken write of the agent is
     refused, it sees why, and the code stays as it was: nothing to undo."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     cfg["sources"]["code"]["syntax_commands"] = {}
     (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0] + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
@@ -189,7 +189,7 @@ def test_a_change_that_breaks_the_syntax_is_not_made(project):
 def test_a_run_that_stalls_starts_again_fresh_with_what_it_did(project, caplog):
     """stall_steps: tool calls without changing the code end the run; develop starts it again,
     with a new conversation that says what the first one changed (restarts)."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "agents" / "implementer.md").write_text(AGENT.replace("NAME", "implementer")
                                                    .replace("max_steps: 6", "max_steps: 6\nstall_steps: 2"))
@@ -238,7 +238,7 @@ class ParallelClient:
 def test_parallel_attempts_each_in_a_copy_and_the_tests_choose(project):
     """attempts = 3: three runs at once, each in its own copy; the one that breaks nothing and
     gets further wins, and its files come to the working folder."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "tests" / "test_calc.py").write_text(RELATIVE)
     plan = PLAN.split("[[tasks]]")[0].replace("build_fixes = 1", "build_fixes = 0").replace("fix_rounds = 4",
@@ -278,7 +278,7 @@ def test_a_proposal_leaves_the_working_folder_as_it_was_and_gives_patches(projec
     they apply on the working folder, where the tests then pass."""
     import shutil
     import subprocess
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "tests" / "test_calc.py").write_text(RELATIVE)
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
@@ -327,7 +327,7 @@ def test_a_proposal_leaves_the_working_folder_as_it_was_and_gives_patches(projec
 
 
 def test_a_working_folder_that_cannot_be_copied(project):
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     base, cfg = project
     plan = PLAN.split("[[tasks]]")[0]
     (base / "plan.toml").write_text(plan + "propose = true\n")
@@ -342,7 +342,7 @@ def test_a_working_folder_that_cannot_be_copied(project):
 
 def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
     """planner: the architect and editor of Aider, with the same model in both roles."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     from atlas.config import ConfigError
     base, cfg = project
     (base / "agents" / "planner.md").write_text(AGENT.replace("NAME", "planner").replace(
@@ -365,7 +365,7 @@ def test_a_planner_reads_and_the_agent_gets_the_task_with_its_plan(project):
 def test_a_reviewer_reads_the_diff_and_its_issues_go_back_once(project):
     """reviewer: after a task that compiles and breaks nothing, a read-only run with the task and
     its diff; its JSON verdict goes back to the agent once (review_fixes)."""
-    from atlas.agents.develop import _verdict, develop
+    from hephesto.develop import _verdict, develop
     base, cfg = project
     (base / "agents" / "reviewer.md").write_text(AGENT.replace("NAME", "reviewer"))   # it has write_file: refused
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
@@ -397,7 +397,7 @@ def test_the_files_a_task_leaves(project, stray):
     """The agent of the fourth run left a test of its own in src: a kept task lists what it
     created; with stray = "delete", a new file that is a test among the code is deleted before
     the task is judged, and a new module is not."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     cfg["sources"]["code"]["test_patterns"] = ["tests/**", "**/*_test.py"]
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
@@ -424,7 +424,7 @@ def test_the_files_a_task_leaves(project, stray):
 
 
 def test_a_round_that_fixes_the_test(project):
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0])          # no tasks: only the rounds
     (base / "src" / "calc.py").write_text(ADD)
@@ -459,7 +459,7 @@ advances = ["tests/test_*.py"]
 def test_a_task_that_does_not_advance_its_tests_goes_back_to_the_agent(project):
     """The task of HELLO left an exception that no test could get past, and eight tasks went
     by without anything saying so: a task says which tests it makes get further."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "plan.toml").write_text(ADVANCES)
     client = StubClient(
@@ -492,7 +492,7 @@ def test_an_instruction_inside_a_requirement_is_data_and_the_tests_stay(project,
     agent follows it."""
     import contextlib
     import io
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     from atlas.cli import run
     from atlas.doors.exchange import ExchangeWriter
     base, cfg = project
@@ -537,7 +537,7 @@ id_pattern = "^SRS-\\\\d{{4}}$"
 
 
 def test_bad_plans(project):
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     base, cfg = project
     (base / "bad.toml").write_text('agents = "x"\n')
     with pytest.raises(ConfigError, match="unknown keys"):
@@ -574,7 +574,7 @@ def test_bad_plans(project):
 def test_a_plan_is_checked_before_any_run(project):
     """An agent that does not exist or cannot do its part, or tests that an agent could change:
     a ConfigError at the start, and not a plan that goes through every task with an error."""
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     base, cfg = project
     head = PLAN.split("[[tasks]]")[0]
     for name, tools in (("reader", "read_file, check_code, run_test"), ("blind", "read_file, write_file, run_test"),
@@ -601,8 +601,8 @@ def test_a_plan_is_checked_before_any_run(project):
 
 
 def test_check_says_what_a_plan_starts_from_without_a_model(project, capsys):
-    from atlas.agents.develop import Developer, load_plan
-    from atlas.cli import main
+    from hephesto.develop import Developer, load_plan
+    from hephesto.cli import main
     base, cfg = project
     (base / "src" / "broken.py").write_text("def f(:\n")
     (base / "plan.toml").write_text(PLAN + '\n[[tasks]]\nid = "long"\ntext = "' + "x" * 1300 + '"\n')
@@ -627,7 +627,7 @@ def test_check_says_what_a_plan_starts_from_without_a_model(project, capsys):
 def test_a_budget_stops_the_runs_of_an_attempt(project):
     """task_calls: once an attempt at a task has spent it, no build fix (nor restart, nor turn
     of advances) starts; the task is undone or kept as always, and its step says why."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
     (base / "plan.toml").write_text(plan + 'task_calls = 2\n\n[[tasks]]\nid = "add"\ntext = "Implement add."\n')
@@ -641,7 +641,7 @@ def test_a_budget_stops_the_runs_of_an_attempt(project):
 
 
 def test_a_run_that_fails_is_an_error_and_not_a_task_done(project):
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
     (base / "plan.toml").write_text(plan + '[[tasks]]\nid = "add"\ntext = "Implement add."\n')
@@ -678,9 +678,9 @@ def test_drafts_of_hints_from_the_calls(project, capsys):
     write that got rid of it; a TOML of [[hint]] with empty hints, for a person to write."""
     import re
     import tomllib
-    from atlas import cli
-    from atlas.agents.hints import draft_hints, hint_match, write_hints_draft
-    from atlas.code.build import load_hints
+    from hephesto import cli
+    from hephesto.hints import draft_hints, hint_match, write_hints_draft
+    from hephesto.build import load_hints
     base, cfg = project
     calls = cfg.workspace / "reports" / "develop-server.calls.jsonl"
     calls.parent.mkdir(parents=True)
@@ -704,7 +704,7 @@ def test_drafts_of_hints_from_the_calls(project, capsys):
     assert cli.hints(cfg, "tasks/server.toml") == 0
     out = capsys.readouterr().out
     assert "2 errors without a hint; drafts in" in out and "fixed in run 1" in out
-    with pytest.raises(SystemExit, match="no calls of atlas develop for other"):
+    with pytest.raises(SystemExit, match="no calls of hephesto develop for other"):
         cli.hints(cfg, "other")
 
 
@@ -734,7 +734,7 @@ def outside_plan(base, text, extra="fix_rounds = 2"):
 def test_an_agent_of_outside_under_the_same_judge(project):
     """agent_command: the program runs in the working folder, the tests judge it as an agent
     of atlas, and what it prints goes to the calls log as one call."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     report = develop(outside_plan(base, "Implement add."), cfg)
     assert [(s["kind"], s["agent"], s.get("outcome")) for s in report["steps"]] == [
@@ -752,7 +752,7 @@ def test_an_agent_of_outside_under_the_same_judge(project):
 def test_an_agent_of_outside_that_changes_a_protected_test(project):
     """Its tools are its own: the protected test it changed, and the one it added, are put
     back as they were after its run, and the step says so."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     test = (base / "tests" / "test_calc.py").read_text()
     report = develop(outside_plan(base, "Implement add however you can.", "fix_rounds = 0"), cfg)
@@ -766,7 +766,7 @@ def test_an_agent_of_outside_that_changes_a_protected_test(project):
 
 def test_an_agent_of_outside_that_runs_out_of_time(project):
     """command_timeout: the run is cut and counts as one that stopped."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     report = develop(outside_plan(base, "Implement add slowly.", "fix_rounds = 0\nrestarts = 0\ncommand_timeout = 1"),
                      cfg)
@@ -777,7 +777,7 @@ def test_an_agent_of_outside_that_runs_out_of_time(project):
 
 
 def test_a_failure_in_a_line():
-    from atlas.agents.develop import _last_lines
+    from hephesto.develop import _last_lines
     output = '''Traceback (most recent call last):
   File "tests/python/test_stp_0101.py", line 11, in test_stp_0101
     raise AssertionError(f"Step {step}: command '{command}'")
@@ -799,7 +799,7 @@ def test_an_interrupted_run_leaves_the_files_as_they_were_and_resume_ends_it(pro
     patch of each task applies to the code as it was before it."""
     import shutil
     import subprocess
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     original = (base / "src" / "calc.py").read_text()
     plan = PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 0")
@@ -840,7 +840,7 @@ def test_an_interrupted_run_leaves_the_files_as_they_were_and_resume_ends_it(pro
 
 def test_resume_goes_on_with_the_rounds(project):
     """A round interrupted is done again; those before it count, and so does what they tried."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "plan.toml").write_text(PLAN.split("[[tasks]]")[0].replace("fix_rounds = 4", "fix_rounds = 3"))
     (base / "src" / "calc.py").write_text(ADD)
@@ -858,7 +858,7 @@ def test_resume_goes_on_with_the_rounds(project):
 def test_the_rounds_have_parallel_attempts_too(project):
     """attempts = 2 in a round: the attempt that breaks the code is undone, the one that fixes
     the test wins; the report has the wall time of the plan as well as that of the runs."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
                                                                         '.resolve().parent.parent / "src")'))
@@ -965,7 +965,7 @@ TAGGED_MUL = TAGGED_ADD + "\n\n# Req: SRS-0002\ndef mul(a, b):\n    return a * b
 def test_tasks_anchored_to_requirements(anchored):
     """requirements: the agent gets their text, the tests that verify them are the advances of
     the task, and a kept task whose requirements no changed subprogram cites goes back once."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = anchored
     (base / "plan.toml").write_text(ANCHORED)
     client = StubClient(write(ADD)                                    # add: passes, but cites nothing
@@ -991,7 +991,7 @@ def test_tasks_anchored_to_requirements(anchored):
 
 
 def test_the_code_that_already_cites_a_requirement_and_untagged_without_require_tags(anchored):
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     import contextlib
     import io
     from atlas.cli import run
@@ -1016,7 +1016,7 @@ def test_the_code_that_already_cites_a_requirement_and_untagged_without_require_
 
 
 def test_requirements_that_are_not_in_the_graph(anchored):
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     base, cfg = anchored
     (base / "bad.toml").write_text(ANCHORED.replace('"srs-0002"', '"SRS-0003"'))
     with pytest.raises(ConfigError, match="task mul: requirement 'SRS-0003' is not in the graph"):
@@ -1106,7 +1106,7 @@ def independent(base):
 def test_independent_tasks_at_once_end_as_one_after_another(project):
     """parallel: three tasks without `after` go at once (at most 2 until the request limit is
     shared), each in its copy; the tests that pass at the end are those of the tasks one by one."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     independent(base)
     one = "def value():\n    return 1\n"
@@ -1139,7 +1139,7 @@ def test_independent_tasks_at_once_end_as_one_after_another(project):
 def test_ctrl_c_with_tasks_at_once_and_resume(project):
     """Ctrl+C in one task leaves the working folder with only the tasks brought to it; one that
     ended in its copy and was not brought goes again with --resume."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     independent(base)
     one = "def value():\n    return 1\n"
@@ -1164,7 +1164,7 @@ def test_ctrl_c_with_tasks_at_once_and_resume(project):
 def test_two_tasks_at_once_that_change_the_same_file(project):
     """The second one to end finds the file changed by the first: it is undone, and goes again
     alone on the code that the first one left."""
-    from atlas.agents.develop import develop
+    from hephesto.develop import develop
     base, cfg = project
     (base / "tests" / "test_calc.py").write_text(TEST.replace('"SRC"', 'str(__import__("pathlib").Path(__file__)'
                                                                         '.resolve().parent.parent / "src")'))
@@ -1189,7 +1189,7 @@ def test_two_tasks_at_once_that_change_the_same_file(project):
 
 
 def test_after_names_tasks_of_the_plan_without_a_cycle(project):
-    from atlas.agents.develop import load_plan
+    from hephesto.develop import load_plan
     base, _ = project
     head = 'tests = ["tests/test_*.py"]\n'
     (base / "p.toml").write_text(head + '[[tasks]]\ntext = "x"\n[[tasks]]\ntext = "y"\n'
@@ -1210,7 +1210,7 @@ def test_after_names_tasks_of_the_plan_without_a_cycle(project):
 
 def test_the_agents_at_once_against_the_request_limit(project):
     """parallel x attempts agents, a turn every 30 s each: against [network] requests_per_minute."""
-    from atlas.agents.develop import Developer, load_plan
+    from hephesto.develop import Developer, load_plan
     base, cfg = project
     (base / "tests" / "test_calc.py").write_text(RELATIVE)              # the copies run the tests
     head = PLAN.split("[[tasks]]")[0]

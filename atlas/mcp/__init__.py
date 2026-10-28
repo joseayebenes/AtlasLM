@@ -190,8 +190,11 @@ def tool_names(cfg: Config) -> list[str]:
 def tool_groups() -> dict[str, tuple[str, ...]]:
     """Group of INSTRUCTIONS -> its tools: the paragraph of a group goes in the instructions
     when the server offers any of them."""
-    from atlas.code.build import BUILD_TOOL_NAMES
-    from atlas.code.judge import JUDGE_TOOL_NAMES
+    try:                                    # hephesto installed: its tools, by name
+        from hephesto.build import BUILD_TOOL_NAMES
+        from hephesto.judge import JUDGE_TOOL_NAMES
+    except ImportError:
+        BUILD_TOOL_NAMES, JUDGE_TOOL_NAMES = ("check_code", "run_test", "run_program"), ("run_tests", "judge_changes")
     from atlas.code.lsp import LSP_TOOL_NAMES
     from atlas.code.files import READ_TOOL_NAMES
     from atlas.code.toolchain import TOOLCHAIN_TOOL_NAMES

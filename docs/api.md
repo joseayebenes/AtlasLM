@@ -20,7 +20,8 @@ módulo).
 | `atlas.docs` | `DocsOptions`, `preview`, `process_document` | un documento a Markdown por secciones ([README](../atlas/docs/README.md)) |
 | `atlas.index` | `Index`, `cite` | buscar y responder con citas ([README](../atlas/index/README.md)) |
 | `atlas.graph` | `KnowledgeGraph` | las consultas de trazabilidad ([README](../atlas/graph/README.md)) |
-| `atlas.code` | `AdaAnalyzer`, `BuildTools`, `CodeTools` | analizar Ada; leer, editar y compilar código ([README](../atlas/code/README.md)) |
+| `atlas.code` | `AdaAnalyzer`, `CodeReader`, `Toolchain` | analizar Ada; leer el código y conocer su compilador sin ejecutarlo ([README](../atlas/code/README.md)) |
+| `hephesto` | `BuildTools`, `CodeTools`, `develop` | editar, compilar y probar código, y los planes de `hephesto develop` (paquete `hephestolm`, [README](../hephestolm/README.md)) |
 | `atlas.agents` | `run_agent`, `build_context` | un agente de Markdown; el paquete de contexto de un requisito ([README](../atlas/agents/README.md)) |
 | `atlas.mcp` | `create_server` | el servidor MCP sobre una configuración ([README](../atlas/mcp/README.md)) |
 | `atlas.cli` | `run` | la ingesta entera de una configuración, como `atlas run` |

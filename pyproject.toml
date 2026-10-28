@@ -46,7 +46,7 @@ include = ["atlas*"]
 "atlas.code" = ["hints.toml", "rules.toml"]   # las pistas y las reglas de serie
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "hephestolm/tests"]   # atlas, and hephesto over it
 addopts = "--durations=15"                   # the 15 slowest tests at the end of every run
 markers = ["model: needs the real model of ATLAS_TEST_CONFIG (atlas.dev.toml by default); skipped if atlas check fails",
            "ollama: the old name of the marker model (the same tests)",
@@ -80,7 +80,6 @@ warn_unused_ignores = true
 module = [
     "atlas.agents.comply",
     "atlas.agents.context",
-    "atlas.agents.develop",
     "atlas.agents.evaluate",
     "atlas.agents.link",
     "atlas.agents.model",
@@ -88,15 +87,12 @@ module = [
     "atlas.agents.verify",
     "atlas.cli",
     "atlas.code.ada",
-    "atlas.code.build",
     "atlas.code.files",
     "atlas.code.library",
     "atlas.code.lsp",
-    "atlas.code.procedures",
     "atlas.code.python",
     "atlas.code.reference",
     "atlas.code.symbols",
-    "atlas.code.tools",
     "atlas.docs",
     "atlas.docs.analysis",
     "atlas.docs.process",
@@ -112,5 +108,9 @@ module = [
     "atlas.mcp",
     "atlas.pipeline",
     "atlas.plugins",
+    "hephesto.build",
+    "hephesto.develop",
+    "hephesto.edit",
+    "hephesto.procedures",
 ]
 ignore_errors = true

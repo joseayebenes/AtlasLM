@@ -106,6 +106,24 @@ def test_ask_cases_check_the_answer_and_its_citations():
     assert res["by_case"] == {"right": "2/2", "wrong": "0/2", "uncited": "2/2", "section": "0/2", "broken": "0/2"}
 
 
+def test_an_id_written_with_a_unicode_dash_is_the_id():
+    """gpt-oss-120b writes "SRS‑0004" with U+2011: a literal comparison gave 60 % for ~94 %."""
+    from atlas.agents.evaluate import evaluate_answers
+    from atlas.text import plain
+
+    class FakeIndex:
+        def answer(self, question, document="", scope=""):
+            context = "SRS–0004 refines SRS-0003"                       # an en dash, in a PDF
+            return {"answer": "SRS‑0005 refines SRS‑0004 [1].", "sources": [{"n": 1, "context": context}]}
+
+    cases = [{"id": "dash", "kind": "ask", "ask": "x", "expect": ["SRS-0005", "srs-0004"], "cited": False},
+             {"id": "cited", "kind": "ask", "ask": "x", "expect": ["SRS-0004"], "cited": True},
+             {"id": "other", "kind": "ask", "ask": "x", "expect": ["SRS-0006"]}]
+    res = evaluate_answers(cases, None, index=FakeIndex())
+    assert res["by_case"] == {"dash": "1/1", "cited": "1/1", "other": "0/1"}
+    assert plain("SRS‑­0004 −") == "SRS-0004 -"
+
+
 def test_search_and_graph_are_scored_without_a_model(indexed, fake_stats):
     from atlas.agents.evaluate import evaluate_retrieval, load_cases
     cases = load_cases(SET)

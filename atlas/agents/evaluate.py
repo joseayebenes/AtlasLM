@@ -29,9 +29,10 @@ A set is a YAML file, a list of cases of four kinds, by the key that holds the q
       expect_tests_passed: 2
 
 An agent case passes when the answer contains every expected text (IDs, identifiers, values,
-in any case) and the agent called the expected tools, without reaching max_steps; it is asked
-`runs` times, since the models answer with some randomness. Its result keeps the tokens and,
-when the server says it, the cost.
+in any case, and with any dash: "SRS‑0004" with U+2011 says SRS-0004) and the agent called
+the expected tools, without reaching max_steps; it is asked `runs` times, since the models
+answer with some randomness. Its result keeps the tokens and, when the server says it, the
+cost.
 
 An ask case is answered by Index.answer (`atlas ask`, the tool ask_docs) with its document,
 scope and section, if it has them; it passes when the answer contains every expected text
@@ -87,6 +88,7 @@ from typing import Any, Callable
 
 from atlas.config import SEARCH_SCOPES, Config, ConfigError
 from atlas.pipeline import atomic_write
+from atlas.text import plain
 
 __all__ = ["compare_reports", "evaluate", "evaluate_answers", "evaluate_retrieval", "evaluate_sets",
            "generate_cases", "load_cases", "previous_report", "write_cases"]
@@ -175,7 +177,7 @@ def evaluate(cases: list[dict], cfg: Config, runs: int = 1, context: Any = None,
                 res = {"answer": "", "calls": [], "stopped": False, "error": f"{type(e).__name__}: {e}"[:300]}
             tokens = res.get("tokens") or {"prompt": 0, "completion": 0}
             called = [c["name"] for c in res["calls"]]
-            missing = [x for x in case["expect"] if x.lower() not in res["answer"].lower()]
+            missing = [x for x in case["expect"] if not _says(res["answer"], x)]
             missing_tools = [t for t in case["tools"] if t not in called]
             result = {"id": case["id"], "run": n, "seconds": round(time.time() - t0, 1),
                       "passed": not (missing or missing_tools or res["stopped"] or res.get("error")),
@@ -237,9 +239,9 @@ def evaluate_answers(cases: list[dict], cfg: Config, runs: int = 1, index: Any =
             text = res.get("answer", "")
             numbers = {int(x) for group in CITED.findall(text) for x in re.split(r"\s*,\s*", group)}
             cited = [s for s in res.get("sources", []) if s.get("n") in numbers]
-            read = " ".join(str(s.get("context") or s.get("excerpt") or "") for s in cited).lower()
-            missing = [x for x in case["expect"] if x.lower() not in text.lower()]
-            uncited = [x for x in case["expect"] if x.lower() not in read] if case.get("cited") else []
+            read = " ".join(str(s.get("context") or s.get("excerpt") or "") for s in cited)
+            missing = [x for x in case["expect"] if not _says(text, x)]
+            uncited = [x for x in case["expect"] if not _says(read, x)] if case.get("cited") else []
             result = {"id": case["id"], "kind": "ask", "run": n, "seconds": round(time.time() - t0, 1),
                       "passed": not (missing or uncited or res.get("error")), "missing": missing, "uncited": uncited,
                       "scope": res.get("scope", ""), "requests": res.get("requests", 0),
@@ -253,6 +255,12 @@ def evaluate_answers(cases: list[dict], cfg: Config, runs: int = 1, index: Any =
     out = _answer_figures(results, cases, runs)
     out["requests"] = sum(r["requests"] for r in results)
     return out
+
+
+def _says(text: str, expected: str) -> bool:
+    """Whether an answer contains `expected`, without case and with the dashes and spaces of
+    Unicode as their ASCII ones: a model writes "SRS‑0004" with U+2011 (atlas.text.plain)."""
+    return plain(expected).lower() in plain(text).lower()
 
 
 def _rank(expected: str, hits: list[dict]) -> int | None:

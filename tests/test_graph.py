@@ -346,6 +346,7 @@ def test_trace_and_trace_code(unified):
     _, g, _ = unified
     t = g.trace("srs-0004")
     assert (t["in_doors"], t["module"], t["parent"], t["attributes"]) == (True, "SRS", None, {"Verification": "Test"})
+    assert g.trace("SRS‑0004") == t and g.trace("SRS– 0004") == t     # U+2011, an en dash and a space
     assert t["exported_at"] == "2026-10-14T08:00:00+00:00" and "exported_at" not in g.trace("SSS-0005")
     from atlas.agents.context import build_context
     context = build_context(g, "SRS-0004")

@@ -9,6 +9,7 @@ import threading
 from pathlib import Path
 
 from atlas.db import connect
+from atlas.text import plain
 
 __all__ = ["Store"]
 
@@ -77,7 +78,7 @@ class Store:
 
     def requirement(self, rid: str) -> dict | None:
         with self.lock:
-            rows = self._query("SELECT * FROM requirements WHERE id=?", (rid.upper(),))
+            rows = self._query("SELECT * FROM requirements WHERE id=?", (plain(rid).upper(),))
             if not rows:
                 return None
             d = dict(rows[0])
@@ -106,7 +107,7 @@ class Store:
     def requirement_ids(self, contains: str, limit: int = 10) -> list[str]:
         """IDs that contain a text (any case): suggestions for an ID that is not there."""
         return [r["id"] for r in self._query("SELECT id FROM requirements WHERE UPPER(id) LIKE ? ORDER BY id LIMIT ?",
-                                             (f"%{contains.strip().upper()}%", limit))]
+                                             (f"%{plain(contains).strip().upper()}%", limit))]
 
     # --- code ---------------------------------------------------------------
     def put_code_unit(self, unit) -> None:

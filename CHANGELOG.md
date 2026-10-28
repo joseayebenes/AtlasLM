@@ -65,6 +65,11 @@ orden.
   bucle (de 3 a 12 respuestas largas más por conjunto, medido con gemma-4-26b). En `atlas chat`
   pasaba igual al repetir una pregunta. Ahora cada pregunta empieza la cuenta
   (`atlas.agents.runtime.reset_loop_guard`).
+- Un ID escrito con un guion o un espacio de Unicode ("SRS‑0004" con U+2011, como lo escribe
+  gpt-oss-120b, o con una raya de un PDF) ya es el ID: lo encuentran `trace`, `impact`,
+  `build_context`, `get_requirement` y las sugerencias de un ID que falta, y `atlas eval` lo
+  da por dicho en la respuesta de un caso `agent` o `ask` (antes gpt-oss parecía acertar un
+  60 % de lo que acertaba un 94 %). `atlas.text.plain` los convierte en los ASCII.
 
 ### Al actualizar
 - `atlas develop`, `atlas hints` y `atlas tests` son ahora `hephesto develop`, `hephesto hints` y

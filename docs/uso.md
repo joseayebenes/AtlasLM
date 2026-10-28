@@ -24,7 +24,7 @@ textos dicen lo mismo, redactar un informe.
 | saber qué rompo si cambio algo | `atlas impact NOMBRE` | `impact`, `callers`, `trace_code` | solo el informe |
 | saber qué falta por trazar | `atlas graph`, `atlas matrix MÓDULO`, `atlas coverage MÓDULO`, `atlas link MÓDULO` | `gaps`, `matrix`, `untraced`, `link_requirement` | `coverage` y `link` |
 | preparar la matriz para una revisión | `atlas matrix MÓDULO`, `atlas verify MÓDULO`, `atlas comply MÓDULO` | `matrix`, `check_compliance` | `verify` y `comply` |
-| escribir código para un requisito | `atlas develop PLAN` (por tandas), `atlas tests MÓDULO` | `build_context`, `read_source`, `find_symbol`, `check_code` | el del editor |
+| escribir código para un requisito | `hephesto develop PLAN` (por tandas), `hephesto tests MÓDULO` | `build_context`, `read_source`, `find_symbol`; `check_code` y `judge_changes` de `hephesto serve` | el del editor |
 | encontrar un dato | `atlas search TEXTO` | `search`, `get_section` | los embeddings |
 | una pregunta concreta | `atlas ask PREGUNTA` | `ask_docs` | sí, 2 peticiones |
 | una pregunta amplia | `atlas ask PREGUNTA [--whole]` | `ask_docs` con `whole`, `ask_atlas` | sí, varias peticiones |
@@ -171,25 +171,27 @@ days», dio por cumplido «keep logs» con un `Put_Line` a la salida estándar).
 
 ## Quiero escribir código para un requisito desde el editor
 
-Con `atlas serve` en el editor ([instalación](instalacion.md#5-conectar-el-editor)), el
-modelo del editor escribe y atlas le da el conocimiento:
+Con `atlas serve` en el editor ([atlas en VS Code](vscode.md)), el modelo del editor escribe y
+atlas le da el conocimiento; atlas no cambia ni ejecuta nada. Con `hephesto serve` a su lado, el
+agente también compila, pasa las pruebas y sabe qué ha roto cada cambio:
 
 1. **El contexto**: «Implementa SRS-0123. Empieza por build_context». `build_context` da en
    una llamada el requisito, las secciones que lo enuncian, el código que ya lo implementa,
    sus pruebas, sus llamadores y el código fuente, en unos 4000 tokens como mucho.
 2. **El sitio**: `find_symbol`, `read_source` y `unit_info` para ver qué hay y dónde va el
    cambio.
-3. **El cambio**, con las herramientas de edición del editor. Las de atlas (`edit_file`,
-   `write_file`) solo se ofrecen si se piden en `[mcp] tools`.
-4. **La comprobación**: `check_code` compila el fichero (si hay `check_command`) y
-   `run_test` pasa una prueba (si se pide en `[mcp] tools`).
+3. **El cambio**, con las herramientas de edición del editor (o las de `hephesto serve
+   --edit`, para un cliente que no tenga las suyas).
+4. **La comprobación**, con hephesto: `check_code` compila el fichero (si hay
+   `check_command`), `run_test` pasa una prueba y `judge_changes` dice qué pruebas han
+   avanzado o retrocedido con el cambio.
 5. **La etiqueta**: `-- Req: SRS-0123` en el comentario del subprograma. Tras el siguiente
    `atlas run`, `trace` lo encuentra; el servidor vuelve a leer el grafo sin reiniciarlo.
 
 Encargos pequeños: un requisito, un subprograma. Los cambios de varios ficheros a la vez
 salen mal con un modelo pequeño.
 
-Para una tanda de requisitos con pruebas de aceptación, `atlas develop PLAN atlas.toml`
+Para una tanda de requisitos con pruebas de aceptación, `hephesto develop PLAN atlas.toml`
 encarga el código a un agente, encargo a encargo, y deja que las pruebas juzguen: lo que
 rompe algo se deshace. En el informe (`<workspace>/reports/develop-<plan>.md`):
 - **`not_advanced`** («did not advance»): el encargo compila y no rompe nada, pero las
@@ -197,9 +199,9 @@ rompe algo se deshace. En el informe (`<workspace>/reports/develop-<plan>.md`):
   y hay que mirarlo;
 - **`for a person`**: pruebas que no avanzaron en varias rondas; el agente no insiste.
 
-`atlas tests MÓDULO atlas.toml` escribe, sin modelo, las pruebas de los procedimientos de
+`hephesto tests MÓDULO atlas.toml` escribe, sin modelo, las pruebas de los procedimientos de
 prueba de un módulo, paso a paso, con los patrones de `[tests]`. Más en
-[atlas.agents](../atlas/agents/README.md).
+[hephesto develop](../hephestolm/docs/develop.md).
 
 ## Quiero encontrar un dato o hacer una pregunta concreta
 

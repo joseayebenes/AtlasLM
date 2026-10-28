@@ -6,11 +6,50 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
 
 ## [Sin publicar]
 
+atlas se separa en dos paquetes del mismo repositorio: **atlaslm** sabe y lee, y
+**hephestolm** escribe y ejecuta el código del proyecto. atlas se instala en VS Code con una
+orden.
+
 ### Añadido
+- **hephestolm** (`hephestolm/`, `import hephesto`, orden `hephesto`): lo que cambia o ejecuta
+  el código. `CodeTools` (editar ficheros), `BuildTools` (`check_code`, `run_test`,
+  `run_program`), `JudgeTools` (`run_tests`, `judge_changes`), `develop`, las pistas, los tests
+  de los procedimientos y los casos `develop` de la evaluación. Depende de atlaslm y lee el
+  mismo `atlas.toml`. Órdenes: `hephesto develop`, `hints`, `tests`, `eval`, `serve` e `init`.
+  Sus pruebas están en `hephestolm/tests`, y su documentación en
+  [hephestolm/README.md](hephestolm/README.md) y `hephestolm/docs/`.
+- `hephesto serve [atlas.toml] [--edit]`: el servidor MCP de hephesto, sobre el de atlas, con
+  `check_code`, `run_test`, `run_tests` y `judge_changes` (y `run_program` con
+  `program_command`); con `--edit`, también las herramientas de ficheros.
+- `atlas init --vscode [atlas.toml]` añade el servidor `atlas` a `.vscode/mcp.json` junto a
+  `atlas.toml` (y escribe `atlas.toml` si falta); `hephesto init --vscode [--edit]`, el suyo.
+  Arrancan con `python -m atlas serve` / `python -m hephesto serve`, con el Python que ejecutó
+  la orden. Guía: [atlas en VS Code](docs/vscode.md).
+- `python -m atlas` y `python -m hephesto`.
+- `atlas.code.CodeReader` (lectura del código: `list_files`, `grep`, `read_file`, `outline`,
+  `read_subprogram`) y `atlas.code.Toolchain` (`tool_path`, carpeta de compilación,
+  `library_spec`, `search_reference`, sin ejecutar nada). `CodeTools` y `BuildTools` de
+  hephesto parten de ellos.
+- Los plugins `tool` dicen si ejecutan comandos del proyecto (`runs`), además de si escriben
+  (`writes`).
+- `atlas.mcp.create_server(cfg, context, names=..., title=..., extra=...)`: otro servidor con
+  sus herramientas y sus párrafos de instrucciones (el de hephesto).
+- `evaluate_sets(..., runners=...)`: los tipos de caso que atlas no ejecuta los ejecuta otro
+  (`hephesto.evaluate.RUNNERS`).
 - `[network] limits_dir`: la carpeta de las ventanas del límite compartido, `limits` dentro
   del workspace por defecto; una absoluta común a varios workspaces hace que lo compartan.
 
 ### Cambiado
+- atlas solo lee el código: `atlas serve` no ofrece nunca una herramienta que escriba o
+  ejecute (`edit_file`, `check_code`, `run_test`, `judge_changes`...), ni por perfil ni en
+  `[mcp] tools`, donde pedirla es un error que remite a `hephesto serve`. `check_code` sale
+  del perfil `editor`, y las instrucciones del servidor cambian el párrafo de compilar por el
+  de la biblioteca.
+- `mcp` pasa a ser una dependencia de atlaslm: el servidor viene siempre. `atlaslm[mcp]` se
+  sigue aceptando.
+- `atlas eval` comprueba los casos `develop` y los cuenta en `skipped`, sin ejecutarlos.
+- Los agentes de código de ejemplo, el proyecto `calc` y su conjunto de evaluación pasan de
+  `examples/` a `hephestolm/examples/` (`develop.yaml`).
 - Todo lo que atlas escribe para funcionar se queda en el workspace: las ventanas del límite
   de peticiones compartido (`[network] shared_limit`) pasan de `~/.atlas/limits` (en Windows,
   `%LOCALAPPDATA%\atlas\limits`) a `<workspace>/limits`; las copias con OCR de
@@ -19,6 +58,20 @@ obligue a tocar la configuración o reprocese datos se anota en «Al actualizar�
   `<workspace>/eval`. Los logs ya iban a `<workspace>/logs`.
 
 ### Al actualizar
+- `atlas develop`, `atlas hints` y `atlas tests` son ahora `hephesto develop`, `hephesto hints` y
+  `hephesto tests`: `pip install hephestolm` (desde el repositorio, `make install`). Las de
+  atlas lo dicen y salen con error. Los planes y `atlas.toml` no cambian.
+- Un editor que usaba `check_code`, `run_test`, `run_tests`, `judge_changes` o las herramientas
+  que escriben a través de `atlas serve` necesita además `hephesto serve` (`hephesto init
+  --vscode` lo añade en VS Code). Un `[mcp] tools` de atlas que las nombre es ahora un error:
+  quítalas de la lista.
+- En la librería: `from atlas.code import CodeTools, BuildTools, JudgeTools` pasa a
+  `from hephesto import CodeTools, BuildTools, JudgeTools`; `atlas.agents.develop` a
+  `hephesto.develop`, `atlas.agents.hints` a `hephesto.hints`, `atlas.code.procedures` a
+  `hephesto.procedures` y `evaluate_develop` a `hephesto.evaluate`. `LanguageTools` toma un
+  `Toolchain` (vale un `BuildTools`) y su atributo `build` es ahora `toolchain`.
+- `[agents] dirs` con `examples/agents` pasa a `hephestolm/examples/agents`, y
+  `--set examples/eval/develop.yaml` a `hephesto eval --set hephestolm/examples/develop.yaml`.
 - El límite compartido ya es de los procesos del mismo workspace, no de todo el puesto: dos
   workspaces contra el mismo gateway vuelven a sumar sus límites. Para que lo compartan, la
   misma `[network] limits_dir` absoluta en los dos (o la variable `ATLAS_LIMITS_DIR`).

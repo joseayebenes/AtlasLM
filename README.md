@@ -4,6 +4,15 @@ Base de conocimiento de ingeniería: documentos, requisitos de DOORS, código Ad
 que los une, configurable con un fichero, importable como librería y al servicio de
 agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
 
+El repositorio tiene dos paquetes:
+
+- **atlaslm** (`atlas`): sabe y recuerda. Documentos, requisitos, grafo, trazabilidad y la
+  lectura del código. Nunca edita ni ejecuta el código del proyecto: su servidor MCP solo lee.
+  Se instala en VS Code con una orden: [atlas en VS Code](docs/vscode.md).
+- **hephestolm** (`hephesto`, en [hephestolm/](hephestolm/README.md)): hace. Edita, compila,
+  pasa los tests, juzga cada cambio y lleva los planes de `hephesto develop`. Depende de atlas
+  y lee el mismo `atlas.toml`.
+
 - **Procesa una vez.** Un motor incremental y recuperable analiza cada documento, módulo de
   requisitos y fichero de código solo cuando cambia, y sigue donde se quedó tras un corte.
 - **Determinista primero.** Estructura, grafo, trazabilidad y búsqueda funcionan sin
@@ -14,7 +23,7 @@ agentes (Google ADK) y de editores (OpenCode, VS Code) por MCP.
 
 Versión 0.3.0: las fases 0 a 6 del plan del proyecto y, desde la 0.2.0, las mejoras
 del [análisis de octubre](docs/analisis-mejoras-2026-10.md): el contexto para el editor por
-MCP, `atlas develop` que se reanuda, va en paralelo y propone parches, `atlas chat`, la
+MCP, `develop` que se reanuda, va en paralelo y propone parches (hoy `hephesto develop`), `atlas chat`, la
 búsqueda con filtros y léxico, DOORS con la semántica de sus enlaces y ReqIF, y lo que sale al
 gateway bajo control. Los cambios de cada versión están en el [CHANGELOG](CHANGELOG.md).
 
@@ -24,6 +33,7 @@ gateway bajo control. Los cambios de cada versión están en el [CHANGELOG](CHAN
 |---|---|
 | [Uso](docs/uso.md) | para el ingeniero, por tareas: qué pide un requisito, qué rompo si cambio algo, qué falta por trazar, la matriz, código desde el editor, preguntas |
 | [Instalación](docs/instalacion.md) | instalar en un puesto nuevo, con o sin red; preparar la entrega |
+| [atlas en VS Code](docs/vscode.md) | `atlas init --vscode`: el servidor MCP en el editor, y el de hephesto a su lado |
 | [Configuración](docs/configuracion.md) | cada sección y clave de `atlas.toml` |
 | [Seguridad](docs/seguridad.md) | qué sale del puesto, secretos, qué puede hacer cada pieza |
 | [Aceptación](docs/aceptacion.md) | el guion de las dos primeras semanas en Windows con el proyecto real, con una cifra por paso |
@@ -36,10 +46,11 @@ gateway bajo control. Los cambios de cada versión están en el [CHANGELOG](CHAN
 | [atlas.docs](atlas/docs/README.md) | documentos: extracción, secciones, análisis, Markdown |
 | [atlas.index](atlas/index/README.md) | índice, búsqueda híbrida y respuestas citadas |
 | [atlas.doors](atlas/doors/README.md) | requisitos: la base de intercambio y sus adaptadores |
-| [atlas.code](atlas/code/README.md) | análisis de Ada y herramientas de ficheros para agentes |
+| [atlas.code](atlas/code/README.md) | análisis de Ada y lectura del código para agentes |
 | [atlas.graph](atlas/graph/README.md) | el grafo unificado y las consultas de trazabilidad |
 | [atlas.mcp](atlas/mcp/README.md) | el servidor MCP y su configuración en el editor |
 | [atlas.agents](atlas/agents/README.md) | agentes en Markdown, verificación, informes, evaluación |
+| [hephestolm](hephestolm/README.md) | hephesto: editar, compilar, probar, el juez y `hephesto develop` ([develop](hephestolm/docs/develop.md), [herramientas](hephestolm/docs/codigo.md), [servidor](hephestolm/docs/servidor.md)) |
 | [tools/doors_export](tools/doors_export/README.md) | el exportador de DOORS a la base de intercambio |
 | [tools/reqif_import](tools/reqif_import/README.md) | el importador de ReqIF a la base de intercambio |
 | [Análisis de mejoras](docs/analisis-mejoras-2026-10.md) | qué mejorar tras la 0.2.0: el contexto para el editor, `atlas develop`, la aceptación en el proyecto real; hoja de ruta de la 0.3 y la 0.4 |
@@ -50,7 +61,7 @@ En un Mac (para un puesto de usuario, la [guía de instalación](docs/instalacio
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e ".[all,dev]" -c constraints.txt    # o: make install
+pip install -e ".[all,dev]" -e "./hephestolm[all]" -c constraints.txt    # o: make install
 python examples/make_samples.py                    # datos de ejemplo (PDFs, Ada, requisitos)
 python -m pytest -q                                # las pruebas sin modelo (+7 con modelo, si atlas check pasa)
 ```
@@ -157,22 +168,30 @@ atlas impact Logger.Log atlas.dev.toml # informe de lo que afecta un cambio
 atlas coverage SRS_TMS atlas.dev.toml  # informe de los huecos de trazabilidad
 atlas link SRS_TMS atlas.dev.toml      # código que puede implementar los requisitos sin código (propuestas)
 atlas comply SRS_TMS atlas.dev.toml    # si el código de cada requisito hace todo lo que pide, obligación a obligación
-atlas tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
-atlas develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
-                                             # (con propose = true en el plan, en una copia: deja parches)
-atlas hints tasks/server.toml atlas.toml     # borradores de pistas para los errores sin pista de la última tanda
 atlas eval     atlas.dev.toml # evaluación del índice, el grafo y los agentes con respuestas conocidas
 atlas eval --compare atlas.dev.toml   # y cada caso contra el último informe de otra versión
 atlas eval --generate examples/eval/tms.yaml --n 50 atlas.toml   # casos de búsqueda y grafo desde el workspace
 atlas doctor   atlas.toml     # lo que puede fallar en este puesto antes de un run: tabla OK/WARN/FAIL
 atlas usage    atlas.dev.toml --since 30d   # llamadas del editor y de la CLI, errores, tokens y coste
-atlas eval atlas.openrouter.toml --set examples/eval/develop.yaml   # el banco de encargos de atlas develop
 atlas check    atlas.dev.toml # conexión con el modelo
 atlas probe    atlas.dev.toml # el modelo como agente: llama a una herramienta, usa el resultado y su razonamiento
 atlas reference atlas.toml    # los manuales y la biblioteca para search_reference (también en la primera búsqueda)
 atlas cache export tms-cache.sqlite atlas.toml   # los análisis y vectores de este workspace, para otros puestos
 atlas cache import tms-cache.sqlite atlas.toml   # añade lo que falta (antes del primer run de un puesto)
-atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...
+atlas serve    atlas.dev.toml # servidor MCP (stdio) para OpenCode, VS Code...: solo lee
+atlas init --vscode            # atlas.toml (si falta) y el servidor en .vscode/mcp.json
+```
+
+Y lo que escribe o ejecuta el código, con hephesto:
+
+```bash
+hephesto tests STP_SOCKET atlas.toml      # los procedimientos de prueba como tests, paso a paso, sin modelo
+hephesto develop tasks/server.toml atlas.toml   # un agente escribe el código encargo a encargo; los tests lo juzgan
+                                                # (con propose = true en el plan, en una copia: deja parches)
+hephesto hints tasks/server.toml atlas.toml     # borradores de pistas para los errores sin pista de la última tanda
+hephesto eval atlas.openrouter.toml --set hephestolm/examples/develop.yaml   # el banco de encargos de develop
+hephesto serve atlas.toml [--edit]        # servidor MCP: check_code, run_test y el juez de cada cambio
+hephesto init --vscode                    # su servidor en .vscode/mcp.json, junto al de atlas
 atlas --version
 ```
 
@@ -233,11 +252,11 @@ atlas/
 ├── pipeline/       motor incremental: Step, Ledger, Runner; paralelismo y perfiles de tiempo
 ├── llm/            clientes OpenAI con proxy, TLS, límites y reintentos; respuestas JSON
 ├── doors/          requisitos: base de intercambio y adaptadores "exchange" y "database"
-├── code/           analizador Ada y herramientas de ficheros para agentes de código
+├── code/           analizador Ada, lectura del código, toolchain (sin ejecutarlo) y servidor de lenguaje
 ├── docs/           documentos: extractores, estructura, análisis y Markdown
 ├── index/          índice: registros, embeddings con caché, FTS5, búsqueda híbrida, respuestas
 ├── graph/          grafo de código, DOORS y documentos; trazabilidad; GraphML, JSON y Mermaid
-├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros
+├── mcp/            servidor MCP con las herramientas de documentos, grafo y ficheros (solo lectura)
 ├── agents/         agentes en Markdown (builtin/), AtlasLlm, build_context, verificación,
 │                   informes y evaluación
 ├── templates/      las plantillas de atlas init (ollama y gateway)
@@ -249,9 +268,9 @@ examples/library/           ejemplos de uso como librería (pipeline, documentos
 examples/large_project.py   proyecto grande sintético y medición del motor y del grafo (make large)
 examples/dense_search.py    medición de la búsqueda densa sobre el proyecto grande
 examples/walkthrough.py     recorrido de las acciones con una configuración, con sus tiempos (make demo)
-examples/eval/              conjuntos de evaluación de los agentes (atlas eval); develop.yaml, aparte
-examples/agents/            agentes de proyecto que escriben código: los medidos en atlas develop
-examples/develop/calc/      un proyecto Python mínimo con su plan, para el banco de encargos
+examples/eval/              conjuntos de evaluación de los agentes (atlas eval)
+hephestolm/                 el paquete hephesto: hephesto/, sus pruebas, sus docs y examples/ (los agentes de
+                            código medidos, el proyecto calc y develop.yaml, el banco de encargos)
 examples/adk/atlas_agent/   un agente de atlas para adk web y adk run
 tools/doors_export/         exportador de DOORS a la base de intercambio (descarga + publicación)
 tools/reqif_import/         importador de ReqIF (.reqif, .reqifz) a la base de intercambio, sin dependencias

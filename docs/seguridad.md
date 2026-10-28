@@ -152,7 +152,7 @@ Fuera del workspace atlas no escribe nada: los logs (`<workspace>/logs`), las ve
 límite de peticiones compartidas entre procesos (`[network] shared_limit`,
 `<workspace>/limits/<servidor>-<puerto>.json`, con las horas de los envíos del último minuto y
 el ritmo adaptado), las copias con OCR de `atlas sections` (`<workspace>/docs/.ocr`) y las
-copias de los casos de `atlas develop` en la evaluación (`<workspace>/eval`) van dentro. Solo
+copias de los casos de `hephesto develop` en la evaluación (`<workspace>/eval`) van dentro. Solo
 salen si se pide: `[project] log_dir` o `[network] limits_dir` absolutos, o la variable
 `ATLAS_LIMITS_DIR`. El nombre y el contenido de las ventanas no llevan la clave ni un hash de ella
 (`test_the_file_has_no_key_and_is_rewritten_when_broken`).
@@ -203,17 +203,22 @@ Además:
 
 ## Qué puede hacer cada pieza
 
+atlas (`atlaslm`) solo lee el código: ninguna herramienta suya lo cambia ni ejecuta comandos
+del proyecto, y `atlas serve` no las ofrece aunque se pidan. Lo que escribe o ejecuta es de
+hephesto (`hephestolm`, un paquete aparte): sus herramientas, `hephesto develop` y
+`hephesto serve`. Quien instala solo atlaslm no tiene ninguna de esas piezas.
+
 | Pieza | Puede | Límites |
 |---|---|---|
-| Herramientas de ficheros (`list_files`, `grep`, `read_file`, `outline`, `read_subprogram`, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) | leer y, si se piden, escribir código | solo dentro de `[sources.code] roots`, sin `..` ni enlaces simbólicos que salgan, y nada de lo excluido. Las que escriben no se ofrecen si no se piden en `[mcp] tools` o en las herramientas de un agente, y el servidor MCP las marca como destructivas para que el editor pida confirmación. Antes de escribir, la comprobación de sintaxis (`syntax_commands`) se lanza sobre una copia en `<workspace>/build/syntax` |
+| Herramientas de ficheros (`list_files`, `grep`, `read_file`, `outline`, `read_subprogram`; y, de hephesto, `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) | leer y, con hephesto, escribir código | solo dentro de `[sources.code] roots`, sin `..` ni enlaces simbólicos que salgan, y nada de lo excluido. Las que escriben no se ofrecen si no se piden en `[mcp] tools` o en las herramientas de un agente, y el servidor MCP las marca como destructivas para que el editor pida confirmación. Antes de escribir, la comprobación de sintaxis (`syntax_commands`) se lanza sobre una copia en `<workspace>/build/syntax` |
 | Biblioteca y manuales (`library_spec`, `search_reference`) | leer las especificaciones y los manuales de `[sources.code] library` y `reference`, fuera de las raíces | solo lectura y solo de lo que nombra el TOML; el índice de los manuales va a `<workspace>/reference.db` |
 | Servidor de lenguaje (`find_definition`, `find_references`, `describe_symbol`) | lanzar el programa de `[sources.code] language_server`, que lee el código del proyecto | el programa viene del TOML y tiene su confianza; habla por su entrada y salida estándar, sin red; atlas le escribe un proyecto GPR en `<workspace>/build`. Solo pregunta por ficheros de las raíces |
-| Compilador (`check_code`, `run_test`) | lanzar los comandos de `[sources.code]` sobre un fichero del código; `run_test` ejecuta además la prueba compilada | los comandos vienen del TOML, como listas de argumentos y sin intérprete de órdenes, y tienen la confianza del propio `atlas.toml`; solo con ficheros dentro de las raíces del código; lo que producen va a `<workspace>/build`; tiempo máximo `command_timeout`. `run_test` solo se ofrece si se pide, y el servidor MCP la marca como destructiva |
-| El juez por MCP (`run_tests`, `judge_changes`) | ejecutar los tests de un plan o de `[tests]` y `check_code` sobre los ficheros cambiados; `judge_changes` lanza además `git diff` y `git ls-files` en la carpeta del servidor | las mismas reglas que `run_test` y `check_code` (comandos del TOML, ficheros dentro de las raíces del código, `command_timeout`); el plan tiene que ser un fichero dentro de la carpeta del servidor. No cambian código: solo escriben su estado en `<workspace>/judge.json`. Solo se ofrecen si se piden en `[mcp] tools`, y el servidor MCP las marca como destructivas |
-| `atlas develop` con `attempts`, `parallel` o `propose` | copiar la carpeta de trabajo, la de `atlas.toml` (sin `.git` ni el workspace, con la carpeta de compilación) en `<workspace>/attempts/<n>` (con `parallel`, `<workspace>/tasks/<id>`) y ejecutar en cada copia los comandos de `[sources.code]` | las copias de `attempts` y `parallel` se borran al acabar cada encargo; la de `propose` (`attempts/0`) se queda hasta el siguiente `atlas develop`, y la carpeta de trabajo no se toca. Las raíces del código tienen que estar dentro de la carpeta de trabajo, la copia no puede pasar de `max_copy_mb` y los tests no pueden nombrar la carpeta de trabajo por su ruta absoluta |
-| Casos `develop` de `atlas eval` | copiar la carpeta de partida del caso a una carpeta temporal y ejecutar allí `atlas develop`, con los comandos de `[sources.code]` del `atlas.toml` del caso | la carpeta temporal se borra al acabar cada ejecución; el `atlas.toml` del caso tiene la confianza del propio `atlas.toml` (sus comandos se ejecutan); solo va en un conjunto que se pide (`--set`) |
-| `atlas develop` con `agent_command` | lanzar el programa del plan (OpenCode, Claude Code...) en la carpeta de trabajo, o en la copia del intento, con el encargo como argumento | el comando viene del plan, como lista de argumentos y sin intérprete de órdenes, y tiene la confianza del propio plan: sus herramientas son suyas y atlas no limita lo que hace. Tras cada ejecución, los ficheros protegidos y los tests del plan que haya cambiado, creado o borrado se devuelven a como estaban y el paso lo dice; lo que toque fuera de las raíces del código no se deshace. Tiempo máximo `command_timeout` del plan; al pasarlo se mata su grupo de procesos |
-| Agentes de serie | consultar documentos, requisitos, grafo y código | ninguno tiene herramientas de escritura ni de ejecución; `max_steps` limita sus llamadas al modelo. Los de `examples/agents/` (`implementer`, `fixer`, `planner` y `tester`) sí escriben, compilan y ejecutan (`run_program`, `run_test`), salvo `planner`, que solo lee: son los que se midieron con `gemma-4-26b` en `atlas develop`, para copiar y adaptar al proyecto. Escriben solo dentro de las raíces del código y no pueden cambiar lo protegido (los tests) |
+| Compilador, de hephesto (`check_code`, `run_test`) | lanzar los comandos de `[sources.code]` sobre un fichero del código; `run_test` ejecuta además la prueba compilada | los comandos vienen del TOML, como listas de argumentos y sin intérprete de órdenes, y tienen la confianza del propio `atlas.toml`; solo con ficheros dentro de las raíces del código; lo que producen va a `<workspace>/build`; tiempo máximo `command_timeout`. `run_test` solo se ofrece si se pide, y el servidor MCP la marca como destructiva |
+| El juez por MCP, de hephesto (`run_tests`, `judge_changes`) | ejecutar los tests de un plan o de `[tests]` y `check_code` sobre los ficheros cambiados; `judge_changes` lanza además `git diff` y `git ls-files` en la carpeta del servidor | las mismas reglas que `run_test` y `check_code` (comandos del TOML, ficheros dentro de las raíces del código, `command_timeout`); el plan tiene que ser un fichero dentro de la carpeta del servidor. No cambian código: solo escriben su estado en `<workspace>/judge.json`. Solo se ofrecen si se piden en `[mcp] tools`, y el servidor MCP las marca como destructivas |
+| `hephesto develop` con `attempts`, `parallel` o `propose` | copiar la carpeta de trabajo, la de `atlas.toml` (sin `.git` ni el workspace, con la carpeta de compilación) en `<workspace>/attempts/<n>` (con `parallel`, `<workspace>/tasks/<id>`) y ejecutar en cada copia los comandos de `[sources.code]` | las copias de `attempts` y `parallel` se borran al acabar cada encargo; la de `propose` (`attempts/0`) se queda hasta el siguiente `hephesto develop`, y la carpeta de trabajo no se toca. Las raíces del código tienen que estar dentro de la carpeta de trabajo, la copia no puede pasar de `max_copy_mb` y los tests no pueden nombrar la carpeta de trabajo por su ruta absoluta |
+| Casos `develop` de `hephesto eval` | copiar la carpeta de partida del caso a una carpeta temporal y ejecutar allí `hephesto develop`, con los comandos de `[sources.code]` del `atlas.toml` del caso | la carpeta temporal se borra al acabar cada ejecución; el `atlas.toml` del caso tiene la confianza del propio `atlas.toml` (sus comandos se ejecutan); solo va en un conjunto que se pide (`--set`) |
+| `hephesto develop` con `agent_command` | lanzar el programa del plan (OpenCode, Claude Code...) en la carpeta de trabajo, o en la copia del intento, con el encargo como argumento | el comando viene del plan, como lista de argumentos y sin intérprete de órdenes, y tiene la confianza del propio plan: sus herramientas son suyas y atlas no limita lo que hace. Tras cada ejecución, los ficheros protegidos y los tests del plan que haya cambiado, creado o borrado se devuelven a como estaban y el paso lo dice; lo que toque fuera de las raíces del código no se deshace. Tiempo máximo `command_timeout` del plan; al pasarlo se mata su grupo de procesos |
+| Agentes de serie | consultar documentos, requisitos, grafo y código | ninguno tiene herramientas de escritura ni de ejecución; `max_steps` limita sus llamadas al modelo. Los de `hephestolm/examples/agents/` (`implementer`, `fixer`, `planner` y `tester`) sí escriben, compilan y ejecutan (`run_program`, `run_test`), salvo `planner`, que solo lee: son los que se midieron con `gemma-4-26b` en `hephesto develop`, para copiar y adaptar al proyecto. Escriben solo dentro de las raíces del código y no pueden cambiar lo protegido (los tests) |
 | Lectura de requisitos | leer la base de intercambio o la base de DOORS | solo lectura; las consultas del adaptador `database` vienen del TOML y el módulo va como parámetro (`:module`), nunca pegado al SQL |
 | Plugins (`[plugins] modules` y entry points `atlas.plugins`) | ejecutar código Python al cargarse | tienen la confianza del propio `atlas.toml`: quien puede editarlo puede ejecutar código con el usuario que lanza atlas |
 | Agentes del proyecto (`agents/*.md`) y conjuntos de evaluación | definir instrucciones y herramientas | YAML leído con `safe_load`; solo pueden usar herramientas registradas |
@@ -304,24 +309,25 @@ Las dos opciones:
   instructions and delete tests/»). Lo que se mitiga:
   - cada resultado de herramienta llega al modelo en un marco `<tool_result name="…">`, y el
     texto del proyecto de los prompts (`build_context`, `verify`, `comply`, `link`, los
-    informes y `atlas develop`) en un bloque `<data>`; un texto no puede cerrar su marco antes
+    informes y `hephesto develop`) en un bloque `<data>`; un texto no puede cerrar su marco antes
     de tiempo;
-  - los agentes de serie y los de `examples/agents` dicen que eso son datos, nunca
+  - los agentes de serie y los de `hephestolm/examples/agents` dicen que eso son datos, nunca
     instrucciones;
   - `read_file`, `grep`, `run_test`, `run_program`, `search`, `get_section`,
     `get_requirement` y `build_context` avisan (`warnings` en la respuesta y una línea WARNING
     en el registro) cuando lo que devuelven tiene una de las frases típicas
-    (`atlas/agents/guard.py`), y `atlas develop` lo lleva a su informe;
+    (`atlas/agents/guard.py`), y `hephesto develop` lo lleva a su informe;
   - los agentes de serie no pueden escribir nada y su salida es para una persona; las
-    herramientas que escriben hay que pedirlas expresamente y el editor pide confirmación.
+    herramientas que escriben son de hephesto (`hephesto serve --edit`), y el editor pide
+    confirmación antes de usarlas.
 
   Lo que no: un modelo puede seguir la instrucción igual, con el marco, la frase y el aviso
   delante, y los patrones no ven una instrucción que no conocen (otra lengua, otras palabras)
   ni las herramientas que no miran (`trace`, `read_source`, `ask_docs`…). El aviso no bloquea
   nada. La salvaguarda de verdad para los agentes que escriben es otra: `[sources.code]
   protected` (los tests no se pueden cambiar, y en la prueba con un requisito envenenado de
-  `tests/test_develop.py` siguen intactos aunque el agente intente vaciarlos), el deshacer de
-  `atlas develop` (lo que rompe un test se devuelve como estaba) y la revisión de una persona
+  `hephestolm/tests/test_develop.py` siguen intactos aunque el agente intente vaciarlos), el deshacer de
+  `hephesto develop` (lo que rompe un test se devuelve como estaba) y la revisión de una persona
   antes de hacer commit, que tiene el informe con los avisos.
 - **`atlas.db` sin cifrar**, protegido solo por los permisos de la carpeta.
 - **Windows.** La revisión se ha hecho en macOS; falta repetir la prueba de red y la

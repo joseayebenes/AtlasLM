@@ -67,16 +67,21 @@ python3.12 -m venv ~/atlas/venv
 |---|---|---|
 | `docs` | leer PDF y Office (markitdown, pymupdf; pymupdf es AGPL-3.0, ver [seguridad](seguridad.md#pymupdf-y-la-agpl-30)) | solo Markdown y texto |
 | `code` | analizar Ada y construir el grafo (tree-sitter, networkx) | sin código ni grafo |
-| `mcp` | `atlas serve`, el servidor para OpenCode y VS Code | sin servidor MCP |
+| `mcp` | ya no hace falta: el servidor MCP (`atlas serve`) viene siempre; se acepta por compatibilidad | — |
 | `xlsx` | `atlas matrix` en `.xlsx` (openpyxl); no está en `all` | solo CSV y Markdown |
 | `agents` | agentes ADK: `atlas agent`, `verify`, `impact`, `coverage`, `eval` (google-adk 2.11) | sin agentes |
 
-Por ejemplo, `"atlaslm[docs,code,mcp]"` para procesar y servir sin agentes.
+Por ejemplo, `"atlaslm[docs,code]"` para procesar y servir sin agentes.
+
+Lo que escribe o ejecuta el código (`hephesto develop`, `hephesto serve` con `check_code`,
+`run_test` y el juez) va en otro paquete, `hephestolm`, del mismo wheelhouse:
+`pip install --no-index --find-links wheelhouse hephestolm` (con `[agents]` para
+`hephesto develop`).
 
 ### El compilador de Ada (opcional)
 
-Para que los agentes compilen el código y ejecuten las pruebas (`check_code` y `run_test`, ver
-[atlas.code](../atlas/code/README.md)), GNAT. GNAT FSF es libre (GPL 3 con la excepción de la
+Para que los agentes compilen el código y ejecuten las pruebas (`check_code` y `run_test` de
+hephesto, ver [sus herramientas](../hephestolm/docs/codigo.md)), GNAT. GNAT FSF es libre (GPL 3 con la excepción de la
 biblioteca de ejecución de GCC: los programas que compila se pueden distribuir con cualquier
 licencia). En un Mac con Apple Silicon no está en Homebrew; se instala con Alire, el gestor
 de paquetes de Ada:
@@ -242,6 +247,9 @@ registro, una acción con `cmd.exe` y los argumentos
 | 3 | se alcanzó el límite (`--until`, `--max-minutes`, `max_requests`) | relanzar cuando toque: sigue donde se quedó |
 
 ## 5. Conectar el editor
+
+En VS Code, `python -m atlas init --vscode` lo deja hecho: ver [atlas en VS Code](vscode.md).
+Para otro editor, o para escribir la entrada a mano:
 
 `atlas serve atlas.toml` es un servidor MCP por stdio. Conviene que el editor lo arranque en
 la carpeta del proyecto (`cwd`), para que encuentre `atlas.toml`; las rutas de dentro del

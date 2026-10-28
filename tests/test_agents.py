@@ -389,6 +389,21 @@ def test_the_same_call_a_third_time_in_a_row_is_not_run(workspace, monkeypatch):
     assert "tracks.delete_track" in client.requests[2]["messages"][-1]["content"]      # the second one ran
 
 
+def test_the_loop_guard_counts_the_calls_of_one_answer(workspace, monkeypatch):
+    """atlas eval asks the same agent the same question several times: each run makes the same
+    first call, and the third run used to get "3 times in a row" for it, and loop."""
+    import asyncio
+    from atlas.agents.runtime import REPEATS, ask, build_agent
+    monkeypatch.chdir(workspace.path.parent)
+    same = {"trace": {"req_id": "SRS-0004"}}
+    client = StubClient([same, "SRS-0004 is implemented by tracks.delete_track."] * (REPEATS + 1))
+    agent = build_agent("assistant", workspace, client=client)
+    for _ in range(REPEATS + 1):
+        assert asyncio.run(ask(agent, "Who implements SRS-0004?"))["answer"].startswith("SRS-0004 is")
+    results = [r["messages"][-1]["content"] for r in client.requests if r["messages"][-1]["role"] == "tool"]
+    assert len(results) == REPEATS + 1 and all("tracks.delete_track" in r for r in results)
+
+
 def test_a_turn_spent_reasoning_is_asked_again_with_more_max_tokens(workspace, monkeypatch, caplog):
     from atlas.agents.runtime import run_agent
     monkeypatch.chdir(workspace.path.parent)

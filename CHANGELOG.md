@@ -57,6 +57,15 @@ orden.
   sin `--json`; y las copias de los casos `develop` de la evaluación, de `%TEMP%` a
   `<workspace>/eval`. Los logs ya iban a `<workspace>/logs`.
 
+### Corregido
+- La guarda de bucles de los agentes (la misma llamada tres veces seguidas no se ejecuta)
+  contaba las llamadas de toda la vida del agente, no las de una respuesta. `atlas eval`
+  reutiliza el agente entre ejecuciones: con `runs = 3`, la tercera ejecución de cada caso
+  recibía el error en su primera llamada, la misma que las otras dos, y el modelo entraba en
+  bucle (de 3 a 12 respuestas largas más por conjunto, medido con gemma-4-26b). En `atlas chat`
+  pasaba igual al repetir una pregunta. Ahora cada pregunta empieza la cuenta
+  (`atlas.agents.runtime.reset_loop_guard`).
+
 ### Al actualizar
 - `atlas develop`, `atlas hints` y `atlas tests` son ahora `hephesto develop`, `hephesto hints` y
   `hephesto tests`: `pip install hephestolm` (desde el repositorio, `make install`). Las de

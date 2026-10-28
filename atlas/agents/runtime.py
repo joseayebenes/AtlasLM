@@ -45,7 +45,8 @@ from atlas.llm import ServiceConfig, from_config
 from atlas.store import Store
 
 __all__ = ["Conversation", "agent_service", "agent_tools", "ask", "build_agent", "context_for", "definition",
-           "loop_guard", "model_context", "recorded", "run_agent", "sources", "stall_guard", "tool_functions"]
+           "loop_guard", "model_context", "recorded", "reset_loop_guard", "run_agent", "sources", "stall_guard",
+           "tool_functions"]
 
 REPEATS = 3      # the same call this many times in a row is a loop
 CHANGES = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
@@ -111,7 +112,11 @@ def loop_guard(functions: list) -> list:
     """The tools of one agent, wrapped so that the same call with the same arguments, the
     REPEATS-th time in a row, is not run: the model gets an error that tells it to do something
     else. Small models fall into these loops (gemma-4-26b wrote a file 17 times with the same
-    content after an error it did not understand) and spend every step of the agent."""
+    content after an error it did not understand) and spend every step of the agent.
+
+    The count is of one answer: each question starts it again (reset_loop_guard, at the start
+    of every turn). An agent asked the same question again, by atlas eval or in atlas chat, makes
+    the same call again, and that is not a loop."""
     last: dict = {"call": None, "times": 0}
 
     def wrap(f):
@@ -125,8 +130,17 @@ def loop_guard(functions: list) -> list:
                                  "times in a row: it gives the same result every time. Do something different: if "
                                  "a tool reported an error, change what causes it; if the work is done, answer."}
             return f(*args, **kwargs)
+        guarded.loop = last          # type: ignore[attr-defined]  # for reset_loop_guard
         return guarded
     return [wrap(f) for f in functions]
+
+
+def reset_loop_guard(agent: Any) -> None:
+    """Forgets the last call of the tools of `agent` (see loop_guard): a new question."""
+    for tool in getattr(agent, "tools", None) or []:
+        loop = getattr(tool, "loop", None)       # stall_guard's wrapper carries it (functools.wraps)
+        if isinstance(loop, dict):
+            loop.update(call=None, times=0)
 
 
 def stall_guard(functions: list, limit: int, state: dict) -> list:
@@ -246,6 +260,7 @@ async def _turn(runner, session_id: str, question: str, max_steps: int, state: d
     from google.adk.agents.run_config import RunConfig
     from google.genai import types
     message = types.Content(role="user", parts=[types.Part(text=question)])
+    reset_loop_guard(runner.agent)
     calls, results, answer, stopped = [], [], "", False
     tokens, cost = {"prompt": 0, "completion": 0}, None
     events = runner.run_async(user_id=USER, session_id=session_id, new_message=message,

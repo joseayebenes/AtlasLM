@@ -4,7 +4,7 @@ table with how many answers of the agents each model got right, how long it took
 tokens and the cost, and how the search ranked (hit@3 and MRR of the hybrid search).
 
     python tools/compare_models.py MODEL [MODEL...] [--config atlas.openrouter.toml] [--no-run] [--out FILE]
-                                   [--develop examples/eval/develop.yaml]
+                                   [--develop hephestolm/examples/develop.yaml]
 
 Each model goes to atlas in the ATLAS_MODEL variable. atlas.openrouter.toml gives each one its
 own workspace (workspace-openrouter/<model>): a model already processed is not processed
@@ -12,7 +12,7 @@ again, and its reports stay there. ATLAS_REASONING, if set, goes to every model.
 only builds the table from the reports already written. The table and every case of each
 model (passed, seconds, tokens, cost) go to reports/compare-<date>.md and .json, next to
 the configuration.
---develop SET also runs that set of develop cases (atlas eval --set SET: plans of atlas
+--develop SET also runs that set of develop cases (hephesto eval --set SET: plans of hephesto
 develop, minutes or hours each) and adds a second table: the tests passing at the end, the
 edits that failed, the compilations with errors, the calls, the time and the cost of each model.
 """
@@ -122,8 +122,8 @@ def evaluate(config: Path, model: str, develop_set: Path | None = None) -> tuple
             return f"atlas {action} failed ({code})", "not run"
     if develop_set is None:
         return "", ""
-    print(f"== {model}: atlas eval --set {develop_set}", file=sys.stderr, flush=True)
-    code = subprocess.run([sys.executable, "-m", "atlas.cli", "eval", str(config), "--set", str(develop_set)],
+    print(f"== {model}: hephesto eval --set {develop_set}", file=sys.stderr, flush=True)
+    code = subprocess.run([sys.executable, "-m", "hephesto.cli", "eval", str(config), "--set", str(develop_set)],
                           env=env).returncode
     return "", f"atlas eval --set failed ({code})" if code else ""
 
@@ -135,7 +135,7 @@ def main() -> None:
                     help="configuration that takes the model from ATLAS_MODEL (default atlas.openrouter.toml)")
     ap.add_argument("--no-run", action="store_true", help="only the table, from the reports already written")
     ap.add_argument("--out", type=Path, help="also write the table to this Markdown file")
-    ap.add_argument("--develop", type=Path, help="also this set of develop cases (examples/eval/develop.yaml)")
+    ap.add_argument("--develop", type=Path, help="also this set of develop cases (hephestolm/examples/develop.yaml)")
     args = ap.parse_args()
     config = args.config.resolve()
     develop_set = args.develop.resolve() if args.develop else None

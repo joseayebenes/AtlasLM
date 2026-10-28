@@ -60,12 +60,12 @@ python tools/compare_models.py MODELO... --no-run --out comparacion.md   # solo 
 Los modelos responden con algo de azar: para comparar con más seguridad, sube `runs` en
 `[agents.eval]` (cada pregunta se hace esas veces).
 
-Para comparar también cómo escriben código, el banco de encargos de `atlas develop`
-(`examples/eval/develop.yaml`, un plan pequeño sobre una calculadora en Python) va aparte,
+Para comparar también cómo escriben código, el banco de encargos de `hephesto develop`
+(`hephestolm/examples/develop.yaml`, un plan pequeño sobre una calculadora en Python) va aparte,
 porque tarda minutos u horas por modelo:
 
 ```bash
-make eval-develop ATLAS_MODEL=google/gemma-4-26b-a4b-it          # atlas eval --set examples/eval/develop.yaml
+make eval-develop ATLAS_MODEL=google/gemma-4-26b-a4b-it          # hephesto eval --set hephestolm/examples/develop.yaml
 python tools/compare_models.py MODELO... --develop examples/eval/develop.yaml   # y una segunda tabla
 ```
 

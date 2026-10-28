@@ -615,7 +615,7 @@ def test_a_configuration_finds_its_files_from_any_folder(tmp_path, samples, monk
     import os
     import shutil
     import pytest
-    from atlas.code import CodeTools
+    from hephesto import CodeTools
     from atlas.graph import KnowledgeGraph
     from atlas.store import Store
     pytest.importorskip("tree_sitter_ada")

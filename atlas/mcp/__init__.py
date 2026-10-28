@@ -7,36 +7,36 @@ A single server with the tools of the two old ones (`doc_rag.py mcp` and
     atlas serve atlas.toml        stdio, the transport of local MCP clients
 
 [mcp] tools chooses the tools. When it is empty, [mcp] profile does:
-    editor   what the agent of an editor needs to change code (search, get_requirement,
-             get_section, list_documents, trace, trace_code, impact, build_context,
-             context_at, similar_requirements, find_symbol, read_source, read_file,
-             check_code); the default with [sources.code]
+    editor   what the agent of an editor needs to know before changing code (search,
+             get_requirement, get_section, list_documents, trace, trace_code, impact,
+             build_context, context_at, similar_requirements, find_symbol, read_source,
+             read_file); the default with [sources.code]
     trace    the traceability of DOORS and the documents (trace, matrix, gaps,
              list_requirements, neighbors, get_requirement, search)
     all      the tools of the configured sources; the default without code
 The tools of the configured sources (default_tools) are the document tools with
 [[sources.docs]] (with only [sources.doors], get_requirement, and search when "index" is a
-step), the graph tools and read_file with [sources.code] (and check_code when it has a
-check_command), and without code the traceability tools of the graph (trace, matrix, gaps...)
+step), the graph tools and read_file with [sources.code], and without code the traceability tools of the graph (trace, matrix, gaps...)
 when "graph" is a step; build_context with the graph, and context_at and
 similar_requirements with the graph of the code. A profile only keeps some of them.
 ask_atlas, verify_requirement, link_requirement and check_compliance (which need the model,
-and ask_atlas also ADK) are only offered when listed. So are the tools that write (edit_file,
-write_file, replace_subprogram, add_subprogram: atlas provides knowledge and the editor
-edits) and run_test, run_tests and judge_changes, which run code (the last two are the judge
-of `atlas develop`: which tests pass, which got further and what a change broke).
-[plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
+and ask_atlas also ADK) are only offered when listed. atlas only reads the code: a tool that
+writes files or runs commands of the project (edit_file, check_code, run_test, judge_changes...:
+hephesto's) is never offered, even when listed; `hephesto serve` offers them, over the same
+create_server. [plugins] disabled removes any tool, and [mcp] enabled = false turns the server off.
 Each call goes to the usage log of the workspace ([mcp] usage_log; see atlas.usage).
 
-Every tool has a title ("Trace code") and annotations: those that write or run code are
-destructive; the others are read-only, and those that do not ask the model are also
-idempotent and closed-world (they only read the workspace and the code).
+Every tool has a title ("Trace code") and annotations: those that write are destructive, those
+that only run commands of the project are not read-only; the others are read-only, and those
+that do not ask the model are also idempotent and closed-world (they only read the workspace
+and the code).
 
 The server answers from the workspace that `atlas run` fills. A run while the server is up
 is seen at once: the graph and the vectors are read again after it.
 
     from atlas.mcp import create_server
     server = create_server(cfg)        # an MCPServer (mcp 2.x) or a FastMCP (mcp 1.x)
+    create_server(cfg, names=[...], title="hephesto", extra=[(tools, paragraph)])   # another server
 """
 from __future__ import annotations
 
@@ -53,11 +53,9 @@ __all__ = ["create_server", "default_tools", "graph_instructions", "instructions
 
 log = logging.getLogger(__name__)
 
-WRITING_TOOLS = ("edit_file", "write_file", "replace_subprogram", "add_subprogram")
 MODEL_TOOLS = ("ask_docs", "ask_atlas", "verify_requirement", "link_requirement", "check_compliance")
 EDITOR_TOOLS = ("search", "get_requirement", "get_section", "list_documents", "trace", "trace_code", "impact",
-                "build_context", "context_at", "similar_requirements", "find_symbol", "read_source", "read_file",
-                "check_code")
+                "build_context", "context_at", "similar_requirements", "find_symbol", "read_source", "read_file")
 
 INSTRUCTIONS = {
     "": "Engineering knowledge base of the project: documents, requirements and code. Answer from "
@@ -82,20 +80,13 @@ INSTRUCTIONS = {
               "of a requirement does all it asks, obligation by obligation.",
     "files": "Code files: paths are relative to the folder of atlas.toml (the project), and only the code roots "
              "can be read.",
-    "edit": "edit_file, write_file, replace_subprogram and add_subprogram only change a file after a read_file of it; "
-            "check the diff they return. replace_subprogram takes a whole subprogram and needs nothing copied.",
-    "build": "`check_code` compiles a file with the compiler of the project and returns its errors: use it after "
-             "every change; `run_test` builds a test procedure and runs it; `run_program` runs the program with "
-             "an input and returns its output; `library_spec` gives the real declarations of a package of the "
-             "runtime or of the project; `search_reference` searches the manuals of the compiler and the "
-             "declarations of the library by words. `run_tests` runs the tests of a plan of atlas develop and "
-             "says how far each one gets, and `judge_changes` says after a change what changed, whether it compiles "
-             "and which tests got further or went back: call it after each change, and undo what makes a test go "
-             "back.",
+    "library": "`library_spec` gives the real declarations of a package of the runtime or of the project: look "
+               "there before using a subprogram; `search_reference` searches the manuals of the compiler and the "
+               "declarations of the library by words.",
     "lsp": "`find_definition`, `find_references` and `describe_symbol` ask the language server about a name written "
            "in a line of a file: where it is declared, where it is used, and what it is (a profile, a type).",
 }
-GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "edit", "build", "lsp")
+GROUP_ORDER = ("docs", "graph", "context", "agents", "files", "library", "lsp")
 GRAPH_FLOW = (("find_symbol",), ("get_node",), ("callers", "callees", "trace_code", "impact"), ("read_source",))
 GRAPH_CLAUSES = (                           # the first one whose tools are all offered and not said yet
     (("trace",), "everything about a requirement (DOORS, documents, code, tests)"),
@@ -143,9 +134,6 @@ def default_tools(cfg: Config) -> list[str]:
             log.warning("no graph tools: %s", e)
     if code:
         names.append("read_file")
-        from atlas.code.gpr import code_config
-        if code_config(cfg).get("check_command"):          # a compiler: the errors the model cannot see
-            names.append("check_code")
     return names
 
 
@@ -174,10 +162,15 @@ def profile_tools(cfg: Config) -> list[str]:
 def tool_names(cfg: Config) -> list[str]:
     """The tools the server offers: [mcp] tools, or profile_tools(cfg) if it is empty.
     The plugins must be loaded (atlas.plugins.load_plugins)."""
-    available, disabled = set(plugins.available("tool")), set(cfg["plugins"]["disabled"])
+    available = {n for n in plugins.available("tool") if not _acts(n)}
+    disabled = set(cfg["plugins"]["disabled"])
     wanted = list(dict.fromkeys(cfg["mcp"]["tools"]))
     if not wanted:
         return [n for n in profile_tools(cfg) if n in available and f"tool:{n}" not in disabled]
+    acting = [n for n in wanted if n in plugins.available("tool") and _acts(n)]
+    if acting:
+        raise ConfigError(f"[mcp] tools: {acting} write or run the code, and atlas only reads it: `hephesto serve` "
+                          "offers them")
     unknown = [n for n in wanted if n not in available]
     if unknown:
         raise ConfigError(f"[mcp] tools: unknown tools {unknown} (available: {', '.join(sorted(available))})")
@@ -187,16 +180,20 @@ def tool_names(cfg: Config) -> list[str]:
     return wanted
 
 
+def _acts(name: str) -> bool:
+    """Whether a tool writes files or runs commands of the project: atlas never offers it."""
+    tool = plugins.get("tool", name)
+    return bool(tool.writes or tool.runs)
+
+
 def tool_groups() -> dict[str, tuple[str, ...]]:
     """Group of INSTRUCTIONS -> its tools: the paragraph of a group goes in the instructions
     when the server offers any of them."""
-    from atlas.code.build import BUILD_TOOL_NAMES
-    from atlas.code.judge import JUDGE_TOOL_NAMES
     from atlas.code.lsp import LSP_TOOL_NAMES
-    from atlas.code.tools import TOOL_NAMES as FILE_TOOLS
+    from atlas.code.files import READ_TOOL_NAMES
+    from atlas.code.toolchain import TOOLCHAIN_TOOL_NAMES
     from atlas.index.tools import TOOL_NAMES as DOC_TOOLS
-    groups = {"docs": DOC_TOOLS, "files": tuple(n for n in FILE_TOOLS if n not in WRITING_TOOLS),
-              "edit": WRITING_TOOLS, "build": (*BUILD_TOOL_NAMES, *JUDGE_TOOL_NAMES), "lsp": LSP_TOOL_NAMES}
+    groups = {"docs": DOC_TOOLS, "files": READ_TOOL_NAMES, "library": TOOLCHAIN_TOOL_NAMES, "lsp": LSP_TOOL_NAMES}
     try:                                    # networkx, of the [code] extra
         from atlas.agents.tools import TOOL_NAMES as AGENT_TOOLS
         from atlas.graph.tools import TOOL_NAMES as GRAPH_TOOLS
@@ -206,12 +203,15 @@ def tool_groups() -> dict[str, tuple[str, ...]]:
             "agents": tuple(n for n in AGENT_TOOLS if n in MODEL_TOOLS)}
 
 
-def instructions(names: list[str], cfg: Config | None = None, store: Store | None = None) -> str:
+def instructions(names: list[str], cfg: Config | None = None, store: Store | None = None,
+                 extra: list[tuple[tuple[str, ...], str]] = ()) -> str:
     """What the server tells the client about its tools and, with `cfg`, about the
-    traceability of the project (traceability)."""
+    traceability of the project (traceability). `extra`: the paragraphs of other tools
+    (those of hephesto), each with its tools, after those of atlas."""
     groups = tool_groups()
     parts = [INSTRUCTIONS[""]] + [graph_instructions(names) if g == "graph" else INSTRUCTIONS[g]
                                   for g in GROUP_ORDER if g in groups and set(groups[g]) & set(names)]
+    parts += [text for tools, text in extra if set(tools) & set(names)]
     if cfg is not None:
         parts.append(traceability(cfg, names, store))
     return "\n\n".join(p for p in parts if p)
@@ -277,9 +277,11 @@ def traceability(cfg: Config, names: list[str], store: Store | None = None) -> s
     return "Traceability of this project: " + " ".join(said) if said else ""
 
 
-def create_server(cfg: Config, context: Any = None) -> Any:
-    """The MCP server with the tools of tool_names(cfg). `context` is what the tool plugins
-    receive (cfg, store); by default, a new one with the plugins of the configuration."""
+def create_server(cfg: Config, context: Any = None, names: list[str] | None = None, title: str = "atlas",
+                  extra: list[tuple[tuple[str, ...], str]] = ()) -> Any:
+    """The MCP server with the tools of tool_names(cfg), or `names` (hephesto serve: its own,
+    with the paragraphs `extra` of instructions). `context` is what the tool plugins receive
+    (cfg, store); by default, a new one with the plugins of the configuration."""
     if not cfg["mcp"]["enabled"]:
         raise ConfigError("the MCP server is turned off in this configuration ([mcp] enabled = false)")
     server_class = _server_class()
@@ -288,8 +290,8 @@ def create_server(cfg: Config, context: Any = None) -> Any:
         plugins.load_plugins(cfg["plugins"]["modules"])
         context = SimpleNamespace(cfg=cfg, store=Store(cfg.workspace), disabled=cfg["plugins"]["disabled"])
     from atlas.usage import usage_sink
-    names = tool_names(cfg)
-    server = server_class("atlas", instructions=instructions(names, cfg, getattr(context, "store", None)))
+    names = tool_names(cfg) if names is None else names
+    server = server_class(title, instructions=instructions(names, cfg, getattr(context, "store", None), extra))
     usage_log = usage_sink(cfg, "mcp")          # each call, a row of the usage log ([mcp] usage_log)
     for name in names:
         tool = plugins.get("tool", name, cfg["plugins"]["disabled"])(context)
@@ -298,26 +300,30 @@ def create_server(cfg: Config, context: Any = None) -> Any:
             function = plugins.instrumented(function, usage_log, name=name)
         server.add_tool(function, name=name, title=name.replace("_", " ").capitalize(),
                         description=tool.description or None, annotations=_annotations(ToolAnnotations, name, tool))
-    log.info("MCP server over %s with %d tools (profile %s): %s", cfg.workspace, len(names),
-             profile(cfg) if not cfg["mcp"]["tools"] else "[mcp] tools", ", ".join(names))
+    log.info("MCP server over %s with %d tools (%s): %s", cfg.workspace, len(names),
+             f"those of {title}" if title != "atlas" else f"profile {profile(cfg)}" if not cfg["mcp"]["tools"]
+             else "[mcp] tools", ", ".join(names))
     return server
 
 
 def _annotations(annotations: type, name: str, tool: Any) -> Any:
-    """What a tool does, for the client: one that writes or runs code is destructive; one that
-    only reads the workspace and the code, without the model, gives the same answer to the
-    same call and reaches nothing outside."""
+    """What a tool does, for the client: one that writes is destructive; one that only runs
+    the commands of the project (check_code) is not read-only (it leaves what it builds), but
+    destroys nothing; one that only reads the workspace and the code, without the model, gives
+    the same answer to the same call and reaches nothing outside."""
     if tool.writes:
         return annotations(readOnlyHint=False, destructiveHint=True)
+    if tool.runs:
+        return annotations(readOnlyHint=False, destructiveHint=False)
     if name in MODEL_TOOLS:
         return annotations(readOnlyHint=True, destructiveHint=False)
     return annotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)
 
 
-def serve(cfg: Config, context: Any = None) -> None:
+def serve(cfg: Config, context: Any = None, **options: Any) -> None:
     """Serves over stdio until the client closes the connection. stdout is the protocol:
-    logs go to stderr."""
-    server = create_server(cfg, context)
+    logs go to stderr. `options`: the arguments of create_server (names, title, extra)."""
+    server = create_server(cfg, context, **options)
     store = getattr(context, "store", None) or Store(cfg.workspace)
     counts = store.counts()
     if not any(counts.values()):

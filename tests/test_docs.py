@@ -56,7 +56,8 @@ def test_the_sections_of_the_guide_are_the_ones_of_the_schema():
 
 def test_relative_links_lead_to_files_that_exist():
     pages = [ROOT / "README.md", ROOT / "CHANGELOG.md", *sorted((ROOT / "docs").glob("*.md")),
-             *sorted((ROOT / "atlas").glob("**/README.md")), ROOT / "tools" / "doors_export" / "README.md"]
+             *sorted((ROOT / "atlas").glob("**/README.md")), ROOT / "tools" / "doors_export" / "README.md",
+             ROOT / "hephestolm" / "README.md", *sorted((ROOT / "hephestolm" / "docs").glob("*.md"))]
     broken = []
     for page in pages:
         for target in re.findall(r"\]\(([^)\s]+)\)", page.read_text(encoding="utf-8")):

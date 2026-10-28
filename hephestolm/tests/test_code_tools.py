@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from atlas import plugins
-from atlas.code import TOOL_NAMES, CodeTools
+from hephesto.edit import TOOL_NAMES, CodeTools
 
 TRACKS = """package body Tracks is
    procedure Update (I : Integer) is
@@ -108,7 +108,7 @@ def test_an_edit_already_made_and_the_closest_block(project):
 
 
 def test_an_old_text_too_long_is_refused(project, tmp_path):
-    from atlas.code.tools import MAX_OLD_LINES
+    from hephesto.edit import MAX_OLD_LINES
     f = tmp_path / "src" / "long.adb"
     f.write_text("".join(f"   X{i} : Integer := {i};\n" for i in range(MAX_OLD_LINES + 5)))
     project.read_file("src/long.adb")

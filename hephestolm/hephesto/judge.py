@@ -23,8 +23,8 @@ import re
 import subprocess
 from typing import Any
 
-from atlas.code.build import BuildTools
-from atlas.code.tools import CodeTools
+from hephesto.build import BuildTools
+from hephesto.edit import CodeTools
 from atlas.plugins import register_methods
 
 __all__ = ["JUDGE_TOOL_NAMES", "JudgeTools"]
@@ -62,14 +62,14 @@ class JudgeTools:
     def _tests(self, plan: str) -> tuple[str, list[str], str] | dict:
         """(what they are, the tests, the progress pattern) of a plan of atlas develop, or of
         [tests] without one; or {"error"}."""
-        from atlas.agents.develop import _files
+        from hephesto.develop import _files
         from atlas.config import ConfigError
         base = self.files.base
         if plan:
             p = (base / plan).resolve()
             if base not in p.parents or not p.is_file():
                 return {"error": f"{plan} is not a plan file inside {base}"}
-            from atlas.agents.develop import load_plan
+            from hephesto.develop import load_plan
             try:
                 loaded = load_plan(p)
             except ConfigError as e:
@@ -100,7 +100,7 @@ class JudgeTools:
     @staticmethod
     def _shown(result: dict, progress: str) -> dict:
         """A test for the client: whether it passes, how far it got, what it said."""
-        from atlas.agents.develop import _last_lines
+        from hephesto.develop import _last_lines
         if result["passed"]:
             return {"passed": True}
         cited = result["code_at"][:1]
@@ -225,4 +225,4 @@ class JudgeTools:
         return out
 
 
-register_methods(JudgeTools, JUDGE_TOOL_NAMES, writes=JUDGE_TOOL_NAMES)
+register_methods(JudgeTools, JUDGE_TOOL_NAMES, writes=JUDGE_TOOL_NAMES, runs=JUDGE_TOOL_NAMES)

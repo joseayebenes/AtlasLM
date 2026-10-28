@@ -26,7 +26,7 @@ Ejemplos completos en el repositorio:
 - **Rutas.** Todas las rutas relativas lo son a la carpeta del fichero, se lance atlas
   desde donde se lance: `workspace`, las de las fuentes (`paths`, `roots`, `path`),
   `tool_path`, `library`, `reference`, `hints`, `language_server_project`, `[agents] dirs`,
-  `[agents.eval] sets`, `[tests.languages]` y las de los planes de `atlas develop`. Una
+  `[agents.eval] sets`, `[tests.languages]` y las de los planes de `hephesto develop`. Una
   absoluta se usa tal cual y `~` es la carpeta del usuario. El motor nombra cada fichero de
   las fuentes por su ruta relativa a esa carpeta (absoluta si está fuera de ella): es lo que
   sale en los informes y en las herramientas de ficheros.
@@ -139,11 +139,11 @@ cada proceso vuelve a llevar su ritmo solo, y lo avisa; si está roto, se reescr
 | `timeout` | número | `600` | segundos para conectar y, en lo que no es una vuelta de chat (embeddings), entre dos lecturas |
 | `idle_timeout` | número | `120` | vuelta de chat con streaming: segundos sin recibir un trozo, una vez empezada la respuesta, antes de cortarla (la conexión también) y preguntar otra vez, hasta dos veces. Los comentarios con que algunos servidores mantienen viva la conexión (OpenRouter) no cuentan. La espera hasta el primer trozo (la cola del servidor, la lectura del prompt) la acota `turn_timeout`; 0 = sin límite |
 | `turn_timeout` | número | `600` | vuelta de chat: segundos en total desde que sale la petición (sin contar la espera del cupo) antes de cortarla y preguntar otra vez, hasta dos veces; es también el tiempo entre dos lecturas. 0 = sin límite |
-| `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30. `atlas develop` compara con él los agentes que lanza a la vez (`parallel` × `attempts` del plan, una vuelta cada unos 30 s) y avisa si van a llenarlo |
+| `requests_per_minute` | entero | `0` | peticiones por minuto; 0 = sin límite. Deja margen: 28 si el servidor admite 30. `hephesto develop` compara con él los agentes que lanza a la vez (`parallel` × `attempts` del plan, una vuelta cada unos 30 s) y avisa si van a llenarlo |
 | `tokens_per_minute` | entero | `0` | tokens por minuto (aproximados: caracteres / 4); 0 = sin límite |
 | `adaptive` | sí/no | `true` | baja el ritmo un 30 % con cada rechazo por cupo y lo recupera poco a poco |
 | `max_concurrent` | entero | `0` | peticiones simultáneas al servidor desde este proceso; 0 = sin límite |
-| `shared_limit` | sí/no | `true` | con `requests_per_minute` o `tokens_per_minute`, el límite es de todos los procesos del workspace que van al mismo servidor (`atlas serve`, un `atlas run` largo, `atlas develop`): comparten la ventana del último minuto, el ritmo adaptado y las pausas en `<limits_dir>/<servidor>-<puerto>.json`. `false`: cada proceso cree tener el cupo entero |
+| `shared_limit` | sí/no | `true` | con `requests_per_minute` o `tokens_per_minute`, el límite es de todos los procesos del workspace que van al mismo servidor (`atlas serve`, un `atlas run` largo, `hephesto develop`): comparten la ventana del último minuto, el ritmo adaptado y las pausas en `<limits_dir>/<servidor>-<puerto>.json`. `false`: cada proceso cree tener el cupo entero |
 | `limits_dir` | texto | `"limits"` | la carpeta de esas ventanas, relativa al workspace (`<workspace>/limits`) o absoluta: una común a varios workspaces hace que compartan el límite. La variable `ATLAS_LIMITS_DIR` manda sobre ella. `""`: el límite no se comparte |
 | `max_retries` | entero | `6` | reintentos tras un 5xx o un fallo de conexión |
 | `max_backoff` | número | `60` | espera máxima entre reintentos sin `Retry-After` (s) |
@@ -360,8 +360,8 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | `exclude` | lista | `[]` | patrones que no se analizan ni se dejan leer: `["**/obj/**"]`. Con `project`, se añaden las carpetas de objetos, ejecutables y bibliotecas del proyecto |
 | `req_tag` | texto | `"Req:"` | la etiqueta de trazabilidad en los comentarios |
 | `req_regex` | texto | `""` | en vez de `req_tag`: grupo 1 = la lista de IDs |
-| `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos. Con `stray = "delete"` en el plan de `atlas develop`, un fichero nuevo de un encargo que casa con ellos y no con `protected` (un test del agente entre el código) se borra |
-| `check_command` | lista | `[]` | el compilador para la herramienta `check_code`, como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código, `{build}` la carpeta `<workspace>/build` y `{project}` el fichero de `project`. Vacía: sin `check_code`. Con `project` y sin esta clave, `["gprbuild", "-P", "{project}", "-X...", "--autoconf={build}/gprbuild.cgpr", "--relocate-build-tree={build}/check", "--root-dir=...", "-c", "-u", "-f", "{file}"]`, y las `.ads` con `-cargs -gnatc` en `check_commands`: las comprobaciones compilan en un árbol aparte, para que el `.ali` de una especificación comprobada con `-gnatc` no deje sin enlazar la siguiente prueba |
+| `test_patterns` | lista | `[]` | ficheros de prueba (`["**/tests/**"]`): sus subprogramas son pruebas, que verifican y cubren requisitos. Con `stray = "delete"` en el plan de `hephesto develop`, un fichero nuevo de un encargo que casa con ellos y no con `protected` (un test del agente entre el código) se borra |
+| `check_command` | lista | `[]` | el compilador para la herramienta `check_code` (de hephesto: atlas no compila), como lista de argumentos: `["gcc", "-c", "-gnatc", "{include}", "{file}"]`. `{file}` es el fichero, `{include}` un `-I` por carpeta de código, `{build}` la carpeta `<workspace>/build` y `{project}` el fichero de `project`. Vacía: sin `check_code`. Con `project` y sin esta clave, `["gprbuild", "-P", "{project}", "-X...", "--autoconf={build}/gprbuild.cgpr", "--relocate-build-tree={build}/check", "--root-dir=...", "-c", "-u", "-f", "{file}"]`, y las `.ads` con `-cargs -gnatc` en `check_commands`: las comprobaciones compilan en un árbol aparte, para que el `.ali` de una especificación comprobada con `-gnatc` no deje sin enlazar la siguiente prueba |
 | `check_commands` | tabla | `{}` | otro `check_command` para los ficheros de una extensión. GNAT ve más errores cuando genera código (una cadena asignada a otra de distinta longitud es un aviso, y un error con `-gnatwE`), pero no puede generarlo para una especificación sola: `check_command` sin `-gnatc` y `{ ads = ["gcc", "-c", "-gnatc", "{include}", "{file}"] }` |
 | `test_command` | lista | `[]` | cómo construir una prueba para `run_test`, que después la ejecuta: `["gnatmake", "-q", "{include}", "-D", "{build}", "{file}", "-o", "{exe}"]`. `{exe}` es el ejecutable que se lanza: en `run_command`, el que exista de `<build>/<nombre>` y `<build>/<nombre>.exe` (GNAT le añade `.exe` en Windows). Con `project` y sin esta clave, `["gprbuild", "-P", "{project}", "-X...", "--autoconf=...", "{file}", "-o", "{exe}"]`: la prueba tiene que estar en las carpetas de fuentes del proyecto |
 | `run_command` | lista | `["{exe}"]` | cómo se ejecuta lo que construyó `test_command`. Un envoltorio puede arrancar antes lo que la prueba necesita: `["with_server", "{exe}"]` |
@@ -369,8 +369,8 @@ columnas de `database`. `atlas graph` dice qué formas de ID aparecen en cada or
 | `program_command` | lista | `[]` | lo que ejecuta la herramienta `run_program`, con las líneas que le da el agente en su entrada estándar: el programa, o un cliente que se las pasa, `["with_server", "session"]`. Vacía: sin `run_program` |
 | `protected` | lista | `[]` | patrones de ficheros que los agentes leen pero no cambian: `["tests/**"]`. Los tests, para que el agente que escribe el código no pueda cambiar lo que lo juzga |
 | `syntax_commands` | tabla | `{}` | la comprobación de sintaxis por extensión, sobre una copia del texto nuevo: un cambio que rompe la sintaxis de un fichero que no tenía errores no se hace, y el agente recibe los errores y las líneas de alrededor. GNAT: `{ adb = ["gcc", "-c", "-gnats", "{file}"], ads = [...] }`. Python no necesita comando (`ast`); una lista vacía apaga la comprobación de su extensión (`py = []`) |
-| `hints` | lista | `[]` | ficheros de pistas para los mensajes del compilador, relativos a `atlas.toml`: `[[hint]]` con `match` (expresión regular; sus grupos con nombre van al texto como `{nombre}`) y `hint`. Van antes que las de serie (`atlas/code/hints.toml`, para GNAT). El informe de `atlas develop` dice qué errores salieron sin pista y deja un borrador de cada una en `reports/hints-<plan>.toml` (también `atlas hints PLAN`), con la `hint` vacía: se escribe y se copia aquí |
-| `rules` | lista | `[]` | ficheros de reglas para el texto nuevo de cada cambio, relativos a `atlas.toml`: `[[rule]]` con `match` (expresión regular sobre las líneas que añade el cambio, todas en un fichero nuevo), `message`, `level` (`"error"`: el cambio no se hace y el agente recibe la línea; `"warning"`, por defecto: se hace y el mensaje va en `notes`) y, opcional, `files` (patrones de nombres de fichero, `["*.adb"]`). Van antes que las de serie (`atlas/code/rules.toml`: avisos para `when others => null;`, `pragma Suppress` y `except: pass`) |
+| `hints` | lista | `[]` | ficheros de pistas para los mensajes del compilador, relativos a `atlas.toml`: `[[hint]]` con `match` (expresión regular; sus grupos con nombre van al texto como `{nombre}`) y `hint`. Van antes que las de serie (`hephesto/hints.toml`, para GNAT). El informe de `hephesto develop` dice qué errores salieron sin pista y deja un borrador de cada una en `reports/hints-<plan>.toml` (también `hephesto hints PLAN`), con la `hint` vacía: se escribe y se copia aquí |
+| `rules` | lista | `[]` | ficheros de reglas para el texto nuevo de cada cambio, relativos a `atlas.toml`: `[[rule]]` con `match` (expresión regular sobre las líneas que añade el cambio, todas en un fichero nuevo), `message`, `level` (`"error"`: el cambio no se hace y el agente recibe la línea; `"warning"`, por defecto: se hace y el mensaje va en `notes`) y, opcional, `files` (patrones de nombres de fichero, `["*.adb"]`). Van antes que las de serie (`hephesto/rules.toml`: avisos para `when others => null;`, `pragma Suppress` y `except: pass`) |
 | `library` | lista | `[]` | carpetas de especificaciones (`.ads`) de bibliotecas que el proyecto usa, con comodines: el runtime de GNAT, `["~/.local/share/alire/toolchains/gnat_native_*/lib/gcc/*/*/adainclude"]` (`gcc -print-file-name=adainclude` dice cuál). Para la herramienta `library_spec` y para los errores que nombran algo que no existe; las especificaciones de las raíces del código van siempre |
 | `reference` | lista | `[]` | manuales para la herramienta `search_reference` (y `atlas reference`), con comodines; una carpeta, todos los suyos: `.info` (los de GNAT, `~/.local/share/alire/toolchains/gnat_native_*/share/info/gnat_rm.info` y `gnat_ugn.info`), `.md`, `.txt` y `.html`. Van con las declaraciones de `library` en `<workspace>/reference.db`, no en el índice del proyecto |
 | `language_server` | lista | `[]` | el servidor de lenguaje de las herramientas `find_definition`, `find_references` y `describe_symbol`, con comodines en el programa: el Ada Language Server de la extensión de VS Code, `["~/.vscode/extensions/adacore.ada-*/*/*/ada_language_server"]` |
@@ -455,8 +455,8 @@ local_only = ["SRS_CLIENTE"]
 
 ## [tests]
 
-Para `atlas tests`, que escribe un test por procedimiento de prueba y lenguaje a partir de sus
-pasos numerados, sin modelo (ver [atlas/code](../atlas/code/README.md#tests-desde-los-procedimientos-de-prueba)).
+Para `hephesto tests`, que escribe un test por procedimiento de prueba y lenguaje a partir de sus
+pasos numerados, sin modelo (ver [las herramientas de hephesto](../hephestolm/docs/codigo.md#tests-desde-los-procedimientos-de-prueba)).
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
@@ -592,12 +592,12 @@ Retoca un agente sin tocar su fichero. Solo estas claves:
 | `top_p` | número | su `top_p` (de 0 a 1); sin poner, el del servidor. La ficha de gemma 4 recomienda 0,95 |
 | `top_k` | entero | su `top_k`; sin poner, el del servidor. No es de la API de OpenAI: va en `extra_body`, y un servidor estricto puede rechazarlo. La ficha de gemma 4 recomienda 64 |
 | `keep_tool_results` | entero | cuántos resultados grandes de herramientas conserva enteros; los anteriores quedan en una nota con sus campos cortos, y una lectura de un fichero que se volvió a leer se quita. 0 (por defecto): todos; `atlas chat` usa 6 si el agente no dice nada |
-| `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `atlas develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
+| `stall_steps` | entero | llamadas seguidas sin que el código avance (un cambio tras el que el fichero compila o tiene menos errores, o un test que pasa) que paran una ejecución; `hephesto develop` la vuelve a empezar, limpia. Solo en agentes que pueden cambiar el código. 0 (por defecto): sin límite |
 
-### El plan de `atlas develop`
+### El plan de `hephesto develop`
 
 El plan no va en `atlas.toml`: es su propio TOML, descrito en
-[atlas/agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests). Dos de sus claves
+[hephesto develop](../hephestolm/docs/develop.md). Dos de sus claves
 dependen de esta configuración:
 
 - `attempts`, `parallel` (encargos a la vez, los que ya tienen hechos los de su `after`) y
@@ -612,20 +612,20 @@ dependen de esta configuración:
 
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
-| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice, consultas del grafo, respuestas de los documentos (`ask`) y planes de `atlas develop`. `atlas eval --set FICHERO` pasa solo ese conjunto |
+| `sets` | lista | obligatoria para `atlas eval` | conjuntos de casos (YAML), relativos al fichero: preguntas a un agente, búsquedas en el índice, consultas del grafo, respuestas de los documentos (`ask`) y planes de `hephesto develop` (que solo ejecuta `hephesto eval`). `atlas eval --set FICHERO` pasa solo ese conjunto |
 | `runs` | entero | `1` | veces que se hace cada pregunta a un agente o caso `ask`, o cada plan de un caso `develop` que no diga las suyas: los modelos no responden siempre igual |
 
-Los casos `develop` (`examples/eval/develop.yaml`, fuera de los conjuntos por defecto porque
+Los casos `develop` (`hephestolm/examples/develop.yaml`, que ejecuta `hephesto eval`, fuera de los conjuntos por defecto porque
 tardan) ejecutan un plan sobre una copia temporal de su carpeta de partida (`from`). Toman el
 modelo y la red de este fichero, y `[sources.code]` y `[agents] dirs` del `atlas.toml` que hay
 junto al plan (o del de su clave `config`). Sus rutas son relativas a este fichero.
 `ATLAS_PYTHON`, si no está puesta, es el Python que ejecuta atlas, para los comandos de un
 proyecto en Python.
 
-## El plan de `atlas develop`
+## El plan de `hephesto develop`
 
-El plan no va en `atlas.toml`: es un TOML aparte, `atlas develop PLAN atlas.toml` (ver
-[atlas.agents](../atlas/agents/README.md#desarrollo-guiado-por-los-tests)). Una clave
+El plan no va en `atlas.toml`: es un TOML aparte, `hephesto develop PLAN atlas.toml` (ver
+[hephesto develop](../hephestolm/docs/develop.md)). Una clave
 desconocida es un error, como aquí.
 
 | Clave | Tipo | Por defecto | Qué hace |
@@ -646,6 +646,6 @@ desconocida es un error, como aquí.
 | Clave | Tipo | Por defecto | Qué hace |
 |---|---|---|---|
 | `enabled` | sí/no | `true` | `false` apaga `atlas serve` |
-| `tools` | lista | `[]` | las herramientas del servidor; vacío = las del perfil (`profile`). `edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`, `run_test`, `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden |
-| `profile` | texto | `editor` con `[sources.code]`; si no, `all` | qué herramientas de las fuentes configuradas ofrece el servidor cuando `tools` está vacío: `editor`, las que necesita el agente de un editor para cambiar código (buscar, requisitos, trazabilidad, contexto y lectura de código); `trace`, las de trazabilidad de DOORS y los documentos; `all`, todas. Ver [los perfiles](../atlas/mcp/README.md#qué-herramientas-ofrece) |
+| `tools` | lista | `[]` | las herramientas del servidor; vacío = las del perfil (`profile`). `library_spec`, `search_reference`, las del servidor de lenguaje, `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` solo se ofrecen si se piden. Las que escriben o ejecutan el código (`edit_file`, `check_code`, `run_test`, `judge_changes`...) no se ofrecen nunca: son de `hephesto serve`, y pedirlas aquí es un error |
+| `profile` | texto | `editor` con `[sources.code]`; si no, `all` | qué herramientas de las fuentes configuradas ofrece el servidor cuando `tools` está vacío: `editor`, las que necesita saber el agente de un editor antes de cambiar código (buscar, requisitos, trazabilidad, contexto y lectura de código); `trace`, las de trazabilidad de DOORS y los documentos; `all`, todas. Ver [los perfiles](../atlas/mcp/README.md#qué-herramientas-ofrece) |
 | `usage_log` | texto | `"counts"` | registro de uso en la tabla `usage` de `atlas.db`: una fila por llamada a una herramienta del servidor o de un agente y por comando de la CLI, con su tiempo, si falló, el estado de la respuesta y las peticiones, tokens y coste. `counts`: sin el texto de los argumentos; `full`: con los argumentos, cortados a 200 caracteres; `off`: nada. `atlas usage` lo resume |

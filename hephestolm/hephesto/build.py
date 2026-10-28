@@ -8,10 +8,9 @@
                  that is not built (a Python script) is just run
     run_program  runs the program of the project with some lines as its input and returns
                  what it wrote: to try what the code does before and after a change
-    library_spec the public declarations of a library unit: of the runtime of the compiler
-                 ([sources.code] library: GNAT's adainclude) or of the project (library.py)
-    search_reference  the manuals of the language and of the compiler ([sources.code]
-                 reference) and the declarations of the library, by words (reference.py)
+
+A BuildTools is the Toolchain of the project (toolchain.py: where its tools are, library_spec
+and search_reference) that also runs its commands.
 
 When an output cites places of the code ("controller.adb:103", the place of an exception, or
 'File "x.py", line 12'), the lines around them come with it, in `code_at`: a small model that
@@ -91,10 +90,8 @@ from __future__ import annotations
 import ast
 import difflib
 import fnmatch
-import glob
 import os
 import re
-import shutil
 import signal
 import subprocess
 import time
@@ -102,9 +99,9 @@ from pathlib import Path
 from typing import Any, Iterable, NamedTuple
 
 from atlas.agents import guard
-from atlas.code.library import Library, with_clauses
-from atlas.code.reference import Reference
-from atlas.code.tools import CodeTools, rebased
+from atlas.code.library import with_clauses
+from atlas.code.toolchain import Toolchain, on_path, toolchain_settings
+from hephesto.edit import CodeTools
 from atlas.config import ConfigError
 from atlas.plugins import register_methods
 
@@ -120,7 +117,7 @@ HINTS = Path(__file__).parent / "hints.toml"
 RULES = Path(__file__).parent / "rules.toml"
 RULE_LEVELS = ("error", "warning")
 
-BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program", "library_spec", "search_reference")
+BUILD_TOOL_NAMES = ("check_code", "run_test", "run_program")
 MAX_MESSAGES = 10          # of each kind: the first errors are the ones to fix, and a small model's context is small
 MAX_EDIT_ERRORS = 5        # errors of check_code in the answer of a change
 MAX_OUTPUT_CHARS = 3000
@@ -275,15 +272,6 @@ def hint_for(hints: list[tuple[re.Pattern, str]], message: str, details: Iterabl
     return ""
 
 
-def on_path(args: list[str], path: str) -> list[str]:
-    """`args` with its program looked up in `path` (tool_path, then PATH). Windows looks for it in
-    the PATH of atlas, not in the one given to the process, and would not see tool_path; there
-    `which` also finds the .exe, .cmd or .bat of a name."""
-    if os.name != "nt" or not args or os.path.dirname(args[0]):
-        return args
-    return [shutil.which(args[0], path=path) or args[0], *args[1:]]
-
-
 def _tail(text: str) -> str:
     return text if len(text) <= MAX_OUTPUT_CHARS else "…" + text[-MAX_OUTPUT_CHARS:]
 
@@ -298,7 +286,7 @@ def cited_places(output: str) -> list[tuple[str, int]]:
     return found
 
 
-class BuildTools:
+class BuildTools(Toolchain):
     def __init__(self, files: CodeTools, build_dir: str | Path, check_command: Iterable[str] = (),
                  test_command: Iterable[str] = (), tool_path: Iterable[str] = (), timeout: int = 120,
                  run_command: Iterable[str] = ("{exe}",), test_commands: dict | None = None,
@@ -307,12 +295,10 @@ class BuildTools:
                  hints: list[tuple[re.Pattern, str]] | None = None, library: Iterable[str] = (),
                  reference: Iterable[str] = (), reference_db: str | Path | None = None,
                  timeouts: dict[str, int] | None = None, rules: list[Rule] | None = None, project: str = ""):
-        self.files = files                    # the confinement of the file tools: same roots and exclusions
+        super().__init__(files, build_dir, tool_path, library, reference, reference_db, project)
+        self.files: CodeTools = files
         self.hints = hints if hints is not None else load_hints([HINTS])
         self.rules = rules if rules is not None else load_rules([RULES])
-        self.library = Library(library, files.roots)
-        self.reference = Reference(reference_db or Path(build_dir).parent / "reference.db", reference, self.library)
-        self.build_dir = Path(build_dir)
         self.check_command, self.test_command = list(check_command), list(test_command)
         self.run_command = list(run_command) or ["{exe}"]
         by_extension = lambda d: {k.lower().lstrip("."): list(v) for k, v in (d or {}).items()}
@@ -320,35 +306,25 @@ class BuildTools:
         self.syntax_commands = by_extension(syntax_commands)
         self.check_on_edit = check_on_edit
         self.program_command = list(program_command)
-        self.tool_path = [p for pattern in tool_path            # the commands run in build_dir: absolute paths
-                          for p in sorted(glob.glob(os.path.abspath(os.path.expanduser(pattern))), reverse=True)]
         self.timeout = timeout
         self.timeouts = {kind: int((timeouts or {}).get(kind) or timeout) for kind in TIMEOUT_KEYS}   # by kind
-        self.project = project                # {project}: the GPR of [sources.code] project
 
     @classmethod
-    def from_config(cls, cfg, files: CodeTools | None = None, base: str | Path | None = None) -> "BuildTools":
-        """Over [sources.code]. With `base`, a copy of the working folder (a parallel attempt of
-        atlas develop): its own build folder, and the folders of tool_path in the copy (the
-        scripts of the project build what is in it); the manuals and the library are shared."""
+    def from_config(cls, cfg, files: CodeTools | None = None,  # type: ignore[override]
+                    base: str | Path | None = None) -> "BuildTools":
+        """Over [sources.code]: the toolchain (toolchain_settings, `base` included) and its commands."""
         from atlas.code.gpr import code_config
         sc = code_config(cfg)
-        tool_path = [str(cfg.resolve(p)) if base is None else rebased(p, base, cfg.home)
-                     for p in sc.get("tool_path", [])]
         timeout = int(sc.get("command_timeout", 120))
-        build_dir = cfg.workspace / "build" if base is None else Path(base) / ".atlas" / "build"
-        project = sc.get("project", "")
-        if base is not None and project:
-            project = rebased(project, base, cfg.home)
-        return cls(files or CodeTools.from_config(cfg, base=base), build_dir, sc.get("check_command", []),
-                   sc.get("test_command", []), tool_path, timeout,
+        tc = toolchain_settings(cfg, base)
+        return cls(files or CodeTools.from_config(cfg, base=base), tc["build_dir"], sc.get("check_command", []),
+                   sc.get("test_command", []), tc["tool_path"], timeout,
                    sc.get("run_command", ["{exe}"]), sc.get("test_commands", {}), sc.get("check_commands", {}),
                    sc.get("program_command", []), sc.get("syntax_commands", {}), sc.get("check_on_edit", True),
                    load_hints([*(cfg.resolve(h) for h in sc.get("hints", [])), HINTS]),
-                   [str(cfg.resolve(p)) for p in sc.get("library", [])],
-                   [str(cfg.resolve(p)) for p in sc.get("reference", [])], cfg.workspace / "reference.db",
+                   tc["library"], tc["reference"], tc["reference_db"],
                    {kind: sc.get(key, timeout) for kind, key in TIMEOUT_KEYS.items()},
-                   load_rules([*(cfg.resolve(r) for r in sc.get("rules", [])), RULES]), project)
+                   load_rules([*(cfg.resolve(r) for r in sc.get("rules", [])), RULES]), tc["project"])
 
     @classmethod
     def for_context(cls, context: Any) -> "BuildTools":
@@ -506,35 +482,6 @@ class BuildTools:
                 pass
         return errors
 
-    def library_spec(self, unit: str, name: str = "") -> dict:
-        """The public declarations of a library unit: a package of the runtime of the
-        compiler (Ada.Command_Line, Ada.Strings.Unbounded, GNAT.Sockets...) or a spec of the
-        project: its subprograms with their parameters, its types, constants and exceptions,
-        with their comment. `name` keeps those whose name contains it. Look here before using
-        a subprogram you have not used in this project: do not guess names or parameters."""
-        try:
-            return self.library.spec(unit, name, shown=self._shown)
-        except ImportError as e:
-            return {"error": f"library_spec needs tree-sitter-ada: {e}"}
-
-    def search_reference(self, query: str, k: int = 5) -> dict:
-        """Searches by words the manuals of the language and of the compiler (the reference
-        manual and the user's guide of GNAT) and the declarations of the library: which
-        package has a subprogram for something ("split a string by a separator"), what a
-        pragma, an attribute or a switch of the compiler does. Returns `k` passages, each with
-        where it comes from (a manual and its section, or Unit.Name), the best first."""
-        if not (self.reference.patterns or self.library.folders):
-            return {"error": "no manuals and no library to search: [sources.code] reference and library"}
-        try:
-            return {"passages": self.reference.search(query, k)}
-        except ImportError as e:
-            return {"error": f"search_reference needs tree-sitter-ada for the library: {e}"}
-
-    def _shown(self, p: Path) -> str:
-        """A spec as an answer shows it: as read_file takes it if it is in the code roots, else
-        its name (the runtime of the compiler cannot be read with read_file)."""
-        return self.files._show(p) if self.files._resolve(str(p))[1] is None else p.name
-
     def code_at(self, output: str) -> list[dict]:
         """The lines around the places of the code that `output` cites, in the files that an
         agent can change (in the roots, neither excluded nor protected), MAX_CITED at most."""
@@ -675,4 +622,4 @@ def _kill_group(proc: subprocess.Popen) -> None:
             time.sleep(0.05)
 
 
-register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"))
+register_methods(BuildTools, BUILD_TOOL_NAMES, writes=("run_test", "run_program"), runs=BUILD_TOOL_NAMES)

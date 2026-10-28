@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import networkx as nx
 import pytest
 
-from atlas.code.procedures import generate_tests, literal, slugs, split_steps
+from hephesto.procedures import generate_tests, literal, slugs, split_steps
 from atlas.config import ConfigError, load_config
 
 NOMINAL = """Objective: a client identifies itself and closes the session, VERSION 1.0 included.

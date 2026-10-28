@@ -151,7 +151,7 @@ instrucciones la nombran a ella o a su grupo (habría cazado esto).
 
 **Problema.** El editor (o `edit_file`/`replace_subprogram` por MCP) cambia ficheros; el
 grafo, las líneas de sus nodos y el índice de código siguen siendo los del último `atlas
-run`. `after_change` solo compila ([build.py:290-301](../atlas/code/build.py)),
+run`. `after_change` solo compila ([build.py:290-301](../hephestolm/hephesto/build.py)),
 `GraphTools.graph()` recarga solo cuando cambia `graph_builds`
 ([graph/tools.py:67-74](../atlas/graph/tools.py)) y `_lines` lee el fichero actual con
 rangos antiguos. Tras añadir un subprograma con su `Req:`, `callers`, `impact` y
@@ -329,7 +329,7 @@ de agente). Lo que cojea:
 
 **Problema.** Una tanda dura horas (5 h y media la tanda 3; 4 h 52 min la tanda 4).
 `run_plan` borra el `.calls.jsonl` y empieza desde el primer encargo
-([develop.py:619-621](../atlas/agents/develop.py)); no hay `--resume`. El informe JSON sí
+([develop.py:619-621](../hephestolm/hephesto/develop.py)); no hay `--resume`. El informe JSON sí
 se escribe tras cada paso, pero nadie lo lee al relanzar. Un fallo del servidor del modelo
 no tira la tanda: `_run_once` captura `Exception`, el paso queda con `error` y el encargo
 se conserva como `kept` sin haberse hecho, sin avisar. Lo que sí se pierde del todo es el
@@ -348,7 +348,7 @@ permite revisar el resultado encargo a encargo. Los commits automáticos, solo c
 ### 4.2 Comprobación previa del plan y presupuesto por encargo (S, alta)
 
 **Problema.** Peor de lo que parece: `Developer.__init__` solo valida `planner`
-([develop.py:285-287](../atlas/agents/develop.py)). Con `agent = "nadie"`, el `ConfigError`
+([develop.py:285-287](../hephestolm/hephesto/develop.py)). Con `agent = "nadie"`, el `ConfigError`
 lo atrapa el `except Exception` de `_run_once`, cada encargo queda como paso con `error`,
 no rompe nada y se conserva: el plan recorre todos los encargos y las rondas sin ninguna
 llamada al modelo (gastando una ejecución del planificador por encargo, si lo hay) y
@@ -391,7 +391,7 @@ pipeline) y el paso dice qué requisitos del encargo no cita ningún subprograma
 
 **Problema.** Toda edición exige haber leído el fichero con `read_file`, también
 `replace_subprogram` y `add_subprogram`, que no copian nada del fichero
-([tools.py:252-258](../atlas/code/tools.py)). El agente lee ficheros enteros (300 líneas,
+([tools.py:252-258](../hephestolm/hephesto/edit.py)). El agente lee ficheros enteros (300 líneas,
 unos 4000 tokens) y los relee tras cada cambio: en la tanda 4, las vueltas de un arreglo
 llevaban 55 000 tokens de entrada, casi todo lecturas viejas. En el proyecto real, con
 cuerpos de cientos o miles de líneas, `read_file` trunca a 300 y el modelo no sabe las
@@ -407,7 +407,7 @@ devuelve solo ese bloque numerado con su comentario, marcando el fichero como le
 
 ### 4.5 Procesos huérfanos, tiempos por clase y el `.exe` de Windows (S, alta)
 
-**Problema.** `_run` usa `subprocess.run(timeout=...)` ([build.py:322-332](../atlas/code/build.py));
+**Problema.** `_run` usa `subprocess.run(timeout=...)` ([build.py:322-332](../hephestolm/hephesto/build.py));
 al expirar, Python mata solo al hijo directo (reproducido: un envoltorio que lanza `sleep
 20` deja el `sleep` vivo). Con un envoltorio como `with_server`, el servidor sobrevive y
 los tests siguientes fallan por una causa que no es del código, que el agente intenta

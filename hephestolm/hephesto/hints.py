@@ -24,7 +24,7 @@ import json
 import re
 from pathlib import Path
 
-from atlas.code.tools import WRITE_TOOLS
+from hephesto.edit import WRITE_TOOLS
 
 __all__ = ["draft_hints", "hint_match", "shape", "write_hints_draft"]
 

@@ -1,7 +1,8 @@
 # atlas.mcp — servidor MCP
 
 `atlas serve` arranca un servidor MCP por stdio con las herramientas de documentos,
-requisitos y código, para OpenCode, VS Code o cualquier otro cliente MCP. Sustituye a los
+requisitos y código, para OpenCode, VS Code ([cómo instalarlo](../../docs/vscode.md)) o cualquier
+otro cliente MCP. Solo lee: lo que cambia o ejecuta el código lo ofrece `hephesto serve`. Sustituye a los
 dos servidores anteriores (`doc_rag.py mcp` y `ada_graph_mcp.py`). Sus herramientas son los
 plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 
@@ -9,9 +10,9 @@ plugins `tool` que usan también los agentes ADK, con los mismos nombres:
 |---|---|---|
 | Documentos y requisitos | `list_documents`, `search`, `get_section`, `get_requirement`, `ask_docs` | `atlas.index.DocTools` |
 | Grafo y trazabilidad | `graph_stats`, `find_symbol`, `search_code_docs`, `get_node`, `callers`, `callees`, `impact`, `call_chain`, `read_source`, `unit_info`, `type_users`, `variable_users`, `trace`, `trace_code`, `matrix`, `gaps`, `list_requirements`, `untraced`, `neighbors`, `communities` | `atlas.graph.GraphTools` |
-| Ficheros de código | `list_files`, `grep`, `read_file`, `edit_file`, `write_file` | `atlas.code.CodeTools` |
-| Compilador | `check_code`, `run_test` | `atlas.code.BuildTools` |
-| Juez de `atlas develop` | `run_tests`, `judge_changes` | `atlas.code.JudgeTools` |
+| Ficheros de código | `list_files`, `grep`, `read_file`, `outline`, `read_subprogram` | `atlas.code.CodeReader` |
+| Biblioteca y manuales | `library_spec`, `search_reference` | `atlas.code.Toolchain` |
+| Servidor de lenguaje | `find_definition`, `find_references`, `describe_symbol` | `atlas.code.LanguageTools` |
 | Agentes | `build_context`, `context_at`, `similar_requirements`, `verify_requirement`, `link_requirement`, `check_compliance`, `ask_atlas` | `atlas.agents.tools.AgentTools` |
 
 Cambios respecto a los servidores anteriores:
@@ -23,7 +24,7 @@ Cambios respecto a los servidores anteriores:
     documentos y pruebas.
 - `get_requirement` devuelve también el texto oficial de DOORS, con su módulo, atributos,
   padre y enlaces. Si el ID no existe, sugiere IDs parecidos.
-- `read_file` es el de `CodeTools`, que solo lee dentro de `[sources.code] roots`. El de
+- `read_file` es el de `CodeReader`, que solo lee dentro de `[sources.code] roots`. El de
   `ada_graph_mcp.py` leía cualquier fichero.
 - `get_section` acepta el ID que da `search` (`"004"`) y también el número o el título que
   la sección tiene en el documento (`"3"`, `"2.1"`, `"Logging"`). Si el número es el de un
@@ -42,11 +43,11 @@ entre las herramientas de las fuentes configuradas:
 
 | Perfil | Herramientas | Por defecto |
 |---|---|---|
-| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `similar_requirements`, `find_symbol`, `read_source`, `read_file` y `check_code` (si hay `check_command`) | con `[sources.code]` |
+| `editor` | `search`, `get_requirement`, `get_section`, `list_documents`, `trace`, `trace_code`, `impact`, `build_context`, `context_at`, `similar_requirements`, `find_symbol`, `read_source` y `read_file` | con `[sources.code]` |
 | `trace` | `trace`, `matrix`, `gaps`, `list_requirements`, `neighbors`, `get_requirement` y `search` | |
 | `all` | todas las de las fuentes configuradas (abajo) | sin código |
 
-`editor` es lo que necesita el agente de un editor para cambiar código: 13 o 14
+`editor` es lo que necesita saber el agente de un editor antes de cambiar código: 13
 herramientas en vez de 29. Un modelo pequeño elige mejor entre pocas, y cada una ocupa su
 descripción en cada petición. `trace` es para quien revisa la trazabilidad sin tocar el
 código.
@@ -55,7 +56,7 @@ Las herramientas de las fuentes configuradas son:
 - con `[[sources.docs]]`, las de documentos;
 - con solo `[sources.doors]`, `get_requirement`, y `search` si `index` está entre los
   pasos;
-- con `[sources.code]`, las del grafo y `read_file`, y `check_code` si hay `check_command`;
+- con `[sources.code]`, las del grafo y `read_file`;
 - sin código pero con DOORS o documentos, las de trazabilidad (`trace`, `matrix`, `gaps`,
   `list_requirements` y `neighbors`), si `graph` está entre los pasos;
 - con el grafo, `build_context`, y con el del código, `context_at` y
@@ -66,10 +67,8 @@ Un perfil solo quita: no ofrece nada que las fuentes no tengan. Además:
   perfil.
 - `verify_requirement`, `link_requirement`, `check_compliance` y `ask_atlas` necesitan el
   modelo (y `ask_atlas`, también ADK): solo se ofrecen si están en la lista.
-- `edit_file` y `write_file` solo se ofrecen si están en la lista: atlas aporta conocimiento
-  y el editor edita. El servidor las marca como herramientas que escriben, y el cliente
-  puede pedir confirmación antes de usarlas. Lo mismo `run_test`, `run_tests` y
-  `judge_changes`, que ejecutan código.
+- Las que escriben o ejecutan el código (`edit_file`, `check_code`, `run_test`,
+  `judge_changes`...) no se ofrecen nunca, ni en la lista: son de hephesto (abajo).
 - `[plugins] disabled = ["tool:ask_docs"]` quita una herramienta, y `[mcp] enabled = false`
   apaga el servidor.
 
@@ -79,14 +78,15 @@ grafo solo nombra las que se ofrecen: el flujo habitual (`find_symbol -> trace_c
 que dan `trace`, `trace_code`, `impact`, `matrix` y `gaps`. Además cuentan, en un
 párrafo «Traceability of this project», cómo cita el código los requisitos (`req_tag` o
 `req_regex`), cómo son sus ID (`id_pattern`), qué módulos de DOORS hay y los pasos de un
-cambio: contexto (`context_at` o `build_context`), editar, `check_code` y `run_test` de las
-pruebas que da `trace`, con las herramientas que se ofrecen.
+cambio: contexto (`context_at` o `build_context`), editar, compilar y pasar las pruebas que da
+`trace`, con las herramientas que se ofrecen (`check_code` y `run_test` si es el servidor de
+hephesto el que las da).
 
 Cada herramienta lleva un título (`Trace code`) y unas anotaciones que el cliente puede
 usar para pedir confirmación o repetir llamadas sin preguntar:
-- las que escriben (`edit_file`, `write_file`, `replace_subprogram`, `add_subprogram`) y las
-  que ejecutan código (`run_test`, `run_program`) son destructivas (`destructiveHint`);
-- las demás solo leen (`readOnlyHint`);
+- todas las de atlas solo leen (`readOnlyHint`); en el servidor de hephesto, las que escriben
+  o ejecutan una prueba son destructivas (`destructiveHint`) y `check_code` no es de solo
+  lectura (deja lo que compila), pero no destruye nada;
 - y las que no preguntan al modelo (todas menos `ask_docs`, `ask_atlas`,
   `verify_requirement`, `link_requirement` y `check_compliance`) dan la misma respuesta a la
   misma llamada y no salen del workspace y el código (`idempotentHint`, y `openWorldHint`
@@ -108,35 +108,13 @@ Cada llamada del editor queda en el registro de uso del workspace (la tabla `usa
 de `ask_docs` tenía fuentes, y las peticiones, tokens y coste que costó. Por defecto sin el
 texto de los argumentos. `atlas usage --since 30d` lo resume por herramienta y semana.
 
-## El juez de `atlas develop` en el editor
+## Lo que escribe o ejecuta el código
 
-`atlas develop` juzga cada cambio de sus agentes sin modelo: qué compila, qué tests pasan y
-hasta dónde llegan los demás, y qué ha empeorado. Desde OpenCode o VS Code el agente del
-editor cambia el código con sus herramientas, y estas dos le dan ese juicio. Ejecutan código
-(los tests y el compilador), así que solo se ofrecen si se piden en `[mcp] tools`, y el
-servidor las marca como destructivas para que el editor pida confirmación:
-
-```toml
-[mcp]
-tools = ["search", "get_requirement", "trace", "build_context", "read_file", "check_code",
-         "run_tests", "judge_changes"]
-```
-
-- `run_tests(plan)` ejecuta los tests de un plan de `atlas develop` (`plan`: su TOML, relativo
-  a la carpeta del servidor) o, sin plan, los que escribe `atlas tests` (los `path` de
-  `[tests.languages]`). Por test: si pasa y, si no, hasta qué paso llegó (con `progress` del
-  plan), lo que dijo al fallar y el sitio del código que cita.
-- `judge_changes(paths)` dice qué ficheros de las raíces del código cambiaron (frente al
-  último commit si la carpeta es un repositorio de git; si no, desde la llamada anterior),
-  si compilan (`check_code` sobre ellos, o sobre `paths` si se dan) y qué tests avanzaron o
-  retrocedieron desde la última llamada a una de las dos. Los tests son los del último plan
-  que recibió `run_tests`, o los de `[tests]`.
-
-Lo que recuerdan entre llamadas (el hash de cada fichero, hasta dónde llegó cada test y el
-último plan) está en `<workspace>/judge.json`. No cambian código: deshacer lo que hace
-retroceder un test es cosa del agente del editor, al que las instrucciones del servidor se lo
-piden. Para que sea `atlas develop` quien encargue, juzgue y deshaga con un agente de fuera,
-ver `agent_command` en [atlas/agents](../agents/README.md#un-agente-de-fuera-bajo-el-mismo-juez).
+atlas solo lee el código. Una herramienta que cambia ficheros o ejecuta comandos del proyecto
+(`edit_file`, `check_code`, `run_test`, `run_tests`, `judge_changes`...) es de hephesto, y
+`atlas serve` no la ofrece nunca, tampoco si se pide en `[mcp] tools` (es un error que remite a
+`hephesto serve`). Las ofrece [hephesto serve](../../hephestolm/docs/servidor.md), sobre este
+mismo servidor.
 
 ## Configurar el editor
 

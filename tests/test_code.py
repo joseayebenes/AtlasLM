@@ -328,7 +328,8 @@ BUILD = "release"
 def test_the_project_gives_roots_exclude_and_commands(tmp_path, toml, samples, capsys):
     import json
     from atlas.cli import list_plugins, run
-    from atlas.code import BuildTools, CodeTools, LanguageTools
+    from atlas.code import LanguageTools
+    from hephesto import BuildTools, CodeTools
     from atlas.code.gpr import code_config
     from atlas.store import Store
     ada, cfg = _gpr_config(tmp_path, toml, samples)
@@ -375,7 +376,7 @@ def _gprbuild() -> bool:
 
 @pytest.mark.skipif(not _gprbuild(), reason="GNAT and gprbuild are not installed (alr toolchain --select gnat_native gprbuild)")
 def test_gprbuild_checks_and_builds_over_the_project(tmp_path, toml, samples):
-    from atlas.code import BuildTools
+    from hephesto import BuildTools
     ada, cfg = _gpr_config(tmp_path, toml, samples, f"tool_path = {GNAT_PATH}".replace("'", '"'))
     build = BuildTools.from_config(cfg)
     assert build.check_code(str(ada / "src" / "tracks.adb"))["ok"]

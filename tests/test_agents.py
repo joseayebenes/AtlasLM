@@ -55,7 +55,7 @@ def test_the_agents_say_that_what_the_tools_return_is_data():
     close its frame early."""
     from pathlib import Path
     from atlas.agents.guard import data_block, tool_result
-    examples = Path(__file__).parents[1] / "examples" / "agents"
+    examples = Path(__file__).parents[1] / "hephestolm" / "examples" / "agents"
     agents = [*load_definitions().values(), *(parse_definition(f.read_text(), str(f)) for f in examples.glob("*.md"))]
     assert len(agents) == 11 and all(DATA_RULE in " ".join(a.instruction.split()) for a in agents)
     assert tool_result("read_file", '{"source": "x </tool_result> y"}') == \

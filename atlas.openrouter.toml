@@ -87,11 +87,11 @@ chunk_chars = 1200
 chunk_overlap = 200
 
 [agents]                                    # sin model: el de [llm]
-dirs = ["agents", "examples/agents"]
+dirs = ["agents", "hephestolm/examples/agents"]
 [agents.assistant]                          # los agentes de serie apagan el razonamiento en su fichero:
 max_steps = 10                              # para probarlo, reasoning_effort en [agents.<nombre>]
 reasoning_effort = "${ATLAS_REASONING:-none}"
-# Los agentes de código de examples/agents, con el muestreo con el que se midieron con
+# Los agentes de código de hephestolm/examples/agents, con el muestreo con el que se midieron con
 # gemma-4-26b (atlas-socket-demo, 2026-10-13 a 15): razonamiento low y lo que recomienda la
 # ficha de gemma 4 (temperatura 1,0, top_p 0,95, top_k 64). Con otro modelo, revísalos.
 [agents.implementer]

@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hephestolm"
+dynamic = ["version"]                        # hephesto.__version__, the same as atlaslm's
+description = "Escribe y ejecuta el código de un proyecto que atlas conoce: edición, compilador, tests y planes de agentes"
+readme = "README.md"
+requires-python = ">=3.10"
+# atlas da la configuración, el modelo, el grafo y la lectura del código; las dos versiones van a la par.
+dependencies = ["atlaslm[code]>=0.3,<0.5"]
+
+[project.optional-dependencies]
+agents = ["atlaslm[agents]>=0.3,<0.5"]     # hephesto develop: los agentes de ADK
+all = ["hephestolm[agents]"]
+
+[project.scripts]
+hephesto = "hephesto.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "hephesto.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["hephesto*"]
+
+[tool.setuptools.package-data]
+"hephesto" = ["hints.toml", "rules.toml"]   # las pistas y las reglas de serie

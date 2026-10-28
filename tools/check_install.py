@@ -4,9 +4,9 @@
     python tools/check_install.py WHEELHOUSE [--python PYTHON] [--keep]
 
 1. a new virtual environment with PYTHON (by default, the one running this script);
-2. `pip install --no-index --find-links WHEELHOUSE "atlaslm[all]"`: no network, only the
-   wheelhouse (make wheelhouse builds it for this machine);
-3. `atlas --version` and `atlas init` in a new project folder;
+2. `pip install --no-index --find-links WHEELHOUSE "atlaslm[all]" hephestolm`: no network, only
+   the wheelhouse (make wheelhouse builds it for this machine);
+3. `atlas --version`, `hephesto --version` and `atlas init` in a new project folder;
 4. the sample data (examples/samples) as the project's documents, code and requirements,
    and the template edited to use them and the fake API (tests/fakes/fake_api.py);
 5. `atlas check`, `atlas run` twice (the second one must process nothing), `atlas status`,
@@ -62,8 +62,10 @@ def main() -> None:
     try:
         step([args.python, "-m", "venv", venv], base, env)
         step([bin_dir / "python", "-m", "pip", "install", "-q", "--no-index", "--find-links", wheelhouse,
-              "atlaslm[all]"], base, env)
+              "atlaslm[all]", *(["hephestolm"] if any(wheelhouse.glob("hephestolm-*.whl")) else [])], base, env)
         step([bin_dir / "atlas", "--version"], base, env)
+        if any(wheelhouse.glob("hephestolm-*.whl")):
+            step([bin_dir / "hephesto", "--version"], base, env)
         project.mkdir()
         step([bin_dir / "atlas", "init"], project, env)
 

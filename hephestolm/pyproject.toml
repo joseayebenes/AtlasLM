@@ -12,9 +12,8 @@ requires-python = ">=3.10"
 dependencies = ["atlaslm[code]>=0.3,<0.5"]
 
 [project.optional-dependencies]
-agents = ["atlaslm[agents]>=0.3,<0.5"]
-mcp = ["atlaslm[mcp]>=0.3,<0.5"]
-all = ["hephestolm[agents,mcp]"]
+agents = ["atlaslm[agents]>=0.3,<0.5"]     # hephesto develop: los agentes de ADK
+all = ["hephestolm[agents]"]
 
 [project.scripts]
 hephesto = "hephesto.cli:main"

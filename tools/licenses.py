@@ -42,6 +42,7 @@ except ImportError:                         # Python 3.10
 ROOT = Path(__file__).resolve().parents[1]
 NOTICES, SBOM = "THIRD_PARTY_NOTICES.md", "sbom.cdx.json"
 SELF = "atlaslm"
+OURS = {SELF, "hephestolm"}              # the packages of this repository: not third parties
 
 # License texts and classifiers that mean one SPDX identifier (lowercase, single spaces).
 ALIASES = {
@@ -183,7 +184,7 @@ def in_wheelhouse(folder: Path) -> list:
                 text = z.read(name).decode("utf-8")
         if text is not None:
             md = parser.parsestr(text)
-            if normalize(md["Name"]) != SELF:
+            if normalize(md["Name"]) not in OURS:
                 result.append(md)
     return result
 

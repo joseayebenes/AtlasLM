@@ -16,12 +16,13 @@ dependencies = [
     "pyyaml>=6,<7",
     "truststore>=0.9,<1",                    # ca_cert = "system": el almacén de certificados del sistema
     "tomli>=2.0; python_version < '3.11'",
+    "mcp>=2.3,<3",                           # atlas serve, el uso principal: el servidor para VS Code
 ]
 
 [project.optional-dependencies]
 docs = ["markitdown[pdf]>=0.1.2,<0.2", "pymupdf>=1.24,<2"]
 code = ["tree-sitter>=0.23,<0.27", "tree-sitter-ada>=0.1,<0.2", "networkx>=3,<4"]
-mcp = ["mcp>=2.3,<3"]
+mcp = []                                     # ya va en las dependencias; se queda para atlaslm[mcp]
 agents = ["google-adk>=2.11,<2.12"]
 xlsx = ["openpyxl>=3.1,<4"]                  # atlas matrix en .xlsx; wheel puro (con et-xmlfile)
 all = ["atlaslm[docs,code,mcp,agents]"]
@@ -43,7 +44,6 @@ include = ["atlas*"]
 [tool.setuptools.package-data]
 "atlas.agents" = ["builtin/*.md"]            # los agentes de serie
 "atlas" = ["templates/*.toml"]               # las plantillas de atlas init (ollama y gateway)
-"atlas.code" = ["hints.toml", "rules.toml"]   # las pistas y las reglas de serie
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "hephestolm/tests"]   # atlas, and hephesto over it
